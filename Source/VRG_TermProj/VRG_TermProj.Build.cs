@@ -7,7 +7,11 @@ public class VRG_TermProj : ModuleRules
 	public VRG_TermProj(ReadOnlyTargetRules Target) : base(Target)
 	{
 		PCHUsage = PCHUsageMode.UseExplicitOrSharedPCHs;
-	
+
+		// Simulation/Core 같은 하위 폴더를 모듈 루트 기준 경로로 include 하기 위해 필요하다.
+		// (의존 모듈 추가가 아니라 include 경로 설정이다.)
+		PublicIncludePaths.Add(ModuleDirectory);
+
 		PublicDependencyModuleNames.AddRange(new string[] { "Core", "CoreUObject", "Engine", "InputCore" });
 
 		PrivateDependencyModuleNames.AddRange(new string[] {  });
