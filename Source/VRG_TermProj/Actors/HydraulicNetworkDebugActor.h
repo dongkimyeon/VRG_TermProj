@@ -40,6 +40,14 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Hydraulics")
 	double GetPumpSpeedRatio() const { return PumpSpeedRatio; }
 
+	// 랙 한 대에서 꽂힐 유닛 수를 바꾼다. 분기 저항이 달라져 네트워크를 다시 푼다.
+	// D4: 영향 범위는 재계산 결과로 판정한다. 위상표로 정하지 않는다.
+	UFUNCTION(BlueprintCallable, Category = "Hydraulics")
+	void SetRackDockedSleds(int32 RackIndex, int32 NumDockedSleds);
+
+	UFUNCTION(BlueprintCallable, Category = "Hydraulics")
+	int32 GetRackDockedSleds(int32 RackIndex) const;
+
 	// ---- 배치 (m) ----
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Layout", meta = (ClampMin = "1", ClampMax = "64"))
 	int32 NumRacks = 6;
@@ -75,8 +83,22 @@ public:
 
 	// 랙 콜드플레이트 분기. 공급 쪽과 회수 쪽에 각각 적용된다.
 	// 실제 시스템에서도 콜드플레이트가 루프 저항의 대부분을 차지한다.
+	//
+	// 이 값은 **슬롯이 전부 참을 때**의 분기 저항이다. 유닛을 뽑으면
+	// 병렬로 물린 콜드플레이트 수가 줄어 분기 저항이 올라간다.
+	// 2차 손실에서 동일 저항 N개를 병렬로 묶으면 합성 저항은 R/N^2이므로,
+	// 꽂힌 수가 n일 때 유효 저항은 RackBranchResistancePaS2M6 * (SledsPerRack/n)^2다.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hydraulics")
 	double RackBranchResistancePaS2M6 = 1.4e11;
+
+	// 랙 한 대의 슬롯 수.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Layout", meta = (ClampMin = "1", ClampMax = "64"))
+	int32 SledsPerRack = 12;
+
+	// 랙별로 지금 꽂혀 있는 유닛 수. 길이가 NumRacks와 다르면 전부 만재로 본다.
+	// 0이면 분기를 아예 도면에서 뺀다 (저항을 큰 값으로 주는 것이 아니라 진짜로 없앤다).
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Layout")
+	TArray<int32> DockedSledsPerRack;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hydraulics")
 	double ReturnToCduResistancePaS2M6 = 5.4e8;
@@ -128,7 +150,11 @@ private:
 	// 솔버가 모르는 기하 정보. 노드 인덱스와 1:1로 대응한다.
 	TArray<FVector> NodePositionM;
 
-	// 랙별 공급 분기 파이프 인덱스. 유량 라벨과 편차 계산에 쓴다.
+	// 랙 상자를 그릴 위치 [m]. 분기가 끊긴 랙도 그려야 하므로 노드와 별도로 든다.
+	TArray<FVector> RackBoxPositionM;
+
+	// 랙별 공급 분기 파이프 인덱스. 유닛이 0대면 INDEX_NONE이다.
+	// 유량 라벨과 편차 계산에 쓴다.
 	TArray<int32> RackBranchPipeIndices;
 
 	bool bNeedsRebuild = true;

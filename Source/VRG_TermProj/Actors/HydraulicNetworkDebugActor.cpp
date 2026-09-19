@@ -35,6 +35,27 @@ void AHydraulicNetworkDebugActor::SetPumpSpeedRatio(double InSpeedRatio)
 	bNeedsRebuild = true;
 }
 
+void AHydraulicNetworkDebugActor::SetRackDockedSleds(int32 RackIndex, int32 NumDockedSleds)
+{
+	const int32 RackCount = FMath::Max(1, NumRacks);
+	if (DockedSledsPerRack.Num() != RackCount)
+	{
+		DockedSledsPerRack.Init(SledsPerRack, RackCount);
+	}
+	if (!DockedSledsPerRack.IsValidIndex(RackIndex))
+	{
+		return;
+	}
+
+	DockedSledsPerRack[RackIndex] = FMath::Clamp(NumDockedSleds, 0, SledsPerRack);
+	bNeedsRebuild = true;
+}
+
+int32 AHydraulicNetworkDebugActor::GetRackDockedSleds(int32 RackIndex) const
+{
+	return DockedSledsPerRack.IsValidIndex(RackIndex) ? DockedSledsPerRack[RackIndex] : SledsPerRack;
+}
+
 void AHydraulicNetworkDebugActor::Tick(float DeltaTime)
 {
 	Super::Tick(DeltaTime);
@@ -82,12 +103,23 @@ void AHydraulicNetworkDebugActor::RebuildAndSolve()
 	RackNodes.Reserve(RackCount);
 	ReturnNodes.Reserve(RackCount);
 
+	RackBoxPositionM.Reset();
+	RackBoxPositionM.Reserve(RackCount);
+
 	for (int32 RackIndex = 0; RackIndex < RackCount; ++RackIndex)
 	{
 		const double XM = RackIndex * RackSpacingM;
+		const FVector RackPositionM(XM, RowCenterYM, RackNodeHeightM);
+		RackBoxPositionM.Add(RackPositionM);
+
 		SupplyNodes.Add(AddNodeAt(FHydraulicNode(), FVector(XM, SupplyHeaderYM, HeaderHeightM)));
-		RackNodes.Add(AddNodeAt(FHydraulicNode(), FVector(XM, RowCenterYM, RackNodeHeightM)));
 		ReturnNodes.Add(AddNodeAt(FHydraulicNode(), FVector(XM, ReturnHeaderYM, HeaderHeightM)));
+
+		// 유닛이 한 대도 안 꽂힌 랙은 연결될 곳이 없으므로 노드를 만들지 않는다.
+		// 만들어 두면 어떤 배관에도 닿지 않는 자유 노드가 생겨 압력이 결정되지 않고
+		// Jacobian이 특이해진다.
+		const bool bHasDockedSleds = FMath::Clamp(GetRackDockedSleds(RackIndex), 0, FMath::Max(1, SledsPerRack)) > 0;
+		RackNodes.Add(bHasDockedSleds ? AddNodeAt(FHydraulicNode(), RackPositionM) : INDEX_NONE);
 	}
 
 	// 펌프: CDU -> 공급 헤더 시작점
@@ -117,9 +149,23 @@ void AHydraulicNetworkDebugActor::RebuildAndSolve()
 			AddPipe(SupplyNodes[RackIndex], SupplyNodes[RackIndex + 1], HeaderSegmentResistancePaS2M6);
 		}
 
-		// 랙 분기 (공급 -> 랙 -> 회수)
-		RackBranchPipeIndices.Add(AddPipe(SupplyNodes[RackIndex], RackNodes[RackIndex], RackBranchResistancePaS2M6));
-		AddPipe(RackNodes[RackIndex], ReturnNodes[RackIndex], RackBranchResistancePaS2M6);
+		// 랙 분기 (공급 -> 랙 -> 회수).
+		// 꽂힌 유닛 수가 줄면 병렬 콜드플레이트가 줄어 저항이 올라간다.
+		// 0대면 연결 자체가 없으므로 노드와 배관을 만들지 않는다.
+		// 큰 저항으로 흥내 내면 미세 유량이 남아 거짓 결과가 된다.
+		const int32 DockedSleds = FMath::Clamp(GetRackDockedSleds(RackIndex), 0, FMath::Max(1, SledsPerRack));
+		if (DockedSleds <= 0)
+		{
+			RackBranchPipeIndices.Add(INDEX_NONE);
+		}
+		else
+		{
+			const double ParallelScale = static_cast<double>(SledsPerRack) / static_cast<double>(DockedSleds);
+			const double BranchResistancePaS2M6 = RackBranchResistancePaS2M6 * ParallelScale * ParallelScale;
+
+			RackBranchPipeIndices.Add(AddPipe(SupplyNodes[RackIndex], RackNodes[RackIndex], BranchResistancePaS2M6));
+			AddPipe(RackNodes[RackIndex], ReturnNodes[RackIndex], BranchResistancePaS2M6);
+		}
 
 		// 회수 헤더 구간. CDU 쪽으로 되돌아간다.
 		if (RackIndex + 1 < RackCount)
@@ -234,13 +280,21 @@ void AHydraulicNetworkDebugActor::DrawNetwork() const
 	if (bShowRackBoxes)
 	{
 		const FVector HalfExtentCm = SimUnits::MetersToUnreal(RackSizeM) * 0.5;
-		for (int32 RackIndex = 0; RackIndex < RackBranchPipeIndices.Num(); ++RackIndex)
+		for (int32 RackIndex = 0; RackIndex < RackBoxPositionM.Num(); ++RackIndex)
 		{
-			const int32 RackNodeIndex = Network.GetPipeToNodeIndex(RackBranchPipeIndices[RackIndex]);
-			const FVector RackNodeCm = NodeWorldLocation(RackNodeIndex);
-			const FVector CenterCm(RackNodeCm.X, RackNodeCm.Y,
-				GetActorLocation().Z + HalfExtentCm.Z);
-			DrawDebugBox(World, CenterCm, HalfExtentCm, FColor(90, 110, 140), false, -1.0f, 0, 1.5f);
+			const FVector RackCm = GetActorLocation() + SimUnits::MetersToUnreal(RackBoxPositionM[RackIndex]);
+			const FVector CenterCm(RackCm.X, RackCm.Y, GetActorLocation().Z + HalfExtentCm.Z);
+
+			// 유닛이 하나도 없어 분기가 끊긴 랙은 다른 색으로 구분한다.
+			const bool bIsolated = !RackBranchPipeIndices.IsValidIndex(RackIndex)
+				|| RackBranchPipeIndices[RackIndex] == INDEX_NONE;
+			DrawDebugBox(World, CenterCm, HalfExtentCm,
+				bIsolated ? FColor(160, 70, 70) : FColor(90, 110, 140), false, -1.0f, 0, 1.5f);
+
+			DrawDebugString(World, CenterCm + FVector(0, 0, HalfExtentCm.Z + 20.0),
+				FString::Printf(TEXT("R%d 유닛 %d/%d"), RackIndex,
+					GetRackDockedSleds(RackIndex), SledsPerRack),
+				nullptr, bIsolated ? FColor(255, 140, 140) : FColor(200, 220, 255), 0.0f, true, 1.0f);
 		}
 	}
 }
@@ -255,11 +309,28 @@ void AHydraulicNetworkDebugActor::DrawSummary() const
 	// 랙별 유량 편차. 실제 데이터센터에서 앞쪽 랙이 더 많이 받는 현상이 보인다.
 	double MinRackFlowM3s = TNumericLimits<double>::Max();
 	double MaxRackFlowM3s = 0.0;
-	for (const int32 PipeIndex : RackBranchPipeIndices)
+	int32 NumConnectedRacks = 0;
+	int32 NumDockedSledsTotal = 0;
+	for (int32 RackIndex = 0; RackIndex < RackBranchPipeIndices.Num(); ++RackIndex)
 	{
-		const double FlowM3s = FMath::Abs(Network.GetPipeFlowM3s(PipeIndex));
+		NumDockedSledsTotal += GetRackDockedSleds(RackIndex);
+
+		// 분기가 없는 랙은 유량 편차 계산에서 뺀다. 0을 넣으면 편차가 100%로 보이지만
+		// 그건 분배 불균형이 아니라 연결이 없는 것이다.
+		if (RackBranchPipeIndices[RackIndex] == INDEX_NONE)
+		{
+			continue;
+		}
+		++NumConnectedRacks;
+
+		const double FlowM3s = FMath::Abs(Network.GetPipeFlowM3s(RackBranchPipeIndices[RackIndex]));
 		MinRackFlowM3s = FMath::Min(MinRackFlowM3s, FlowM3s);
 		MaxRackFlowM3s = FMath::Max(MaxRackFlowM3s, FlowM3s);
+	}
+
+	if (NumConnectedRacks == 0)
+	{
+		MinRackFlowM3s = 0.0;
 	}
 	const double SpreadPercent = MaxRackFlowM3s > UE_DOUBLE_SMALL_NUMBER
 		? (1.0 - MinRackFlowM3s / MaxRackFlowM3s) * 100.0
@@ -291,8 +362,9 @@ void AHydraulicNetworkDebugActor::DrawSummary() const
 			PumpSpeedRatio * PumpSpeedRatio));
 
 	GEngine->AddOnScreenDebugMessage(BaseKey + 2, 0.0f, FColor::Yellow,
-		FString::Printf(TEXT("랙 %d대 | 분기 유량 최소 %.2f L/s ~ 최대 %.2f L/s | 편차 %.1f%% (앞쪽 랙이 더 받음)"),
-			RackBranchPipeIndices.Num(),
+		FString::Printf(TEXT("랙 %d대(연결 %d대) | 유닛 %d/%d대 | 분기 유량 %.2f ~ %.2f L/s | 편차 %.1f%% (앞쪽 랙이 더 받음)"),
+			RackBranchPipeIndices.Num(), NumConnectedRacks,
+			NumDockedSledsTotal, RackBranchPipeIndices.Num() * SledsPerRack,
 			MinRackFlowM3s * 1000.0, MaxRackFlowM3s * 1000.0, SpreadPercent));
 
 	GEngine->AddOnScreenDebugMessage(BaseKey + 3, 0.0f, FColor(150, 150, 150),
