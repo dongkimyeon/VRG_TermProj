@@ -43,9 +43,8 @@ namespace SimMeshBuilder
 
 	// 온도 색상표 [K]. 청 -> 녹 -> 황 -> 적.
 	//
-	// 연속 스칼라장(Experimental의 열장)은 흑->백 회색조를 쓰고, 이쪽은 부품처럼
-	// 떨어진 대상의 온도를 읽는 용도라 일부러 다르게 둔다.
-	// 배관 액터의 유량 색상표(남->청->녹->황)와도 다르다. S3에서 공기 격자를 넣을 때
-	// 세 색상표를 한 번 정리한다.
+	// 부품처럼 떨어진 대상의 온도를 읽는 용도다.
+	// 공기 격자의 연속 온도장은 Simulation/Air 쪽에서 따로 색을 정한다
+	// (연속장과 이산 대상은 눈으로 구분돼야 한다).
 	VRG_TERMPROJ_API FLinearColor TemperatureToColor(double TempK, double MinTempK, double MaxTempK);
 }
