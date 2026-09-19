@@ -151,9 +151,6 @@ public:
 	// 도메인 밖은 경계로 잘라 낸다 (벽을 통과하지 않는다).
 	FVector SampleVelocityMs(const FVector& PositionM) const;
 
-	// 임의 위치의 셀 중심 스칼라. 삼선형 보간이다.
-	double SampleCellScalar(const TArray<double>& CellField, const FVector& PositionM) const;
-
 	// ---- 검사용 ----
 	// 셀의 속도 발산 [1/s]. 비압축 조건에서 0에 가까워야 한다.
 	double CellDivergencePerS(int32 X, int32 Y, int32 Z) const;

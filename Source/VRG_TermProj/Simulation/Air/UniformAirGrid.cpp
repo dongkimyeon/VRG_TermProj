@@ -101,39 +101,6 @@ FVector FUniformAirGrid::SampleVelocityMs(const FVector& PositionM) const
 		SampleFaceComponent(VelocityZMs, PositionM, 2));
 }
 
-double FUniformAirGrid::SampleCellScalar(const TArray<double>& CellField, const FVector& PositionM) const
-{
-	const double InvCellSize = 1.0 / Params.CellSizeM;
-
-	// 셀 중심이 (i+0.5)*h이므로 반 칸을 빼면 격자 인덱스 좌표가 된다.
-	const double GridX = FMath::Clamp(PositionM.X * InvCellSize - 0.5, 0.0, static_cast<double>(Params.NumCellsX - 1));
-	const double GridY = FMath::Clamp(PositionM.Y * InvCellSize - 0.5, 0.0, static_cast<double>(Params.NumCellsY - 1));
-	const double GridZ = FMath::Clamp(PositionM.Z * InvCellSize - 0.5, 0.0, static_cast<double>(Params.NumCellsZ - 1));
-
-	const int32 X0 = FMath::Clamp(FMath::FloorToInt32(GridX), 0, Params.NumCellsX - 1);
-	const int32 Y0 = FMath::Clamp(FMath::FloorToInt32(GridY), 0, Params.NumCellsY - 1);
-	const int32 Z0 = FMath::Clamp(FMath::FloorToInt32(GridZ), 0, Params.NumCellsZ - 1);
-	const int32 X1 = FMath::Min(X0 + 1, Params.NumCellsX - 1);
-	const int32 Y1 = FMath::Min(Y0 + 1, Params.NumCellsY - 1);
-	const int32 Z1 = FMath::Min(Z0 + 1, Params.NumCellsZ - 1);
-
-	const double TX = GridX - X0;
-	const double TY = GridY - Y0;
-	const double TZ = GridZ - Z0;
-
-	auto At = [&](int32 X, int32 Y, int32 Z) -> double
-	{
-		return CellField[CellIndex(X, Y, Z)];
-	};
-
-	const double C00 = FMath::Lerp(At(X0, Y0, Z0), At(X1, Y0, Z0), TX);
-	const double C10 = FMath::Lerp(At(X0, Y1, Z0), At(X1, Y1, Z0), TX);
-	const double C01 = FMath::Lerp(At(X0, Y0, Z1), At(X1, Y0, Z1), TX);
-	const double C11 = FMath::Lerp(At(X0, Y1, Z1), At(X1, Y1, Z1), TX);
-
-	return FMath::Lerp(FMath::Lerp(C00, C10, TY), FMath::Lerp(C01, C11, TY), TZ);
-}
-
 double FUniformAirGrid::CellDivergencePerS(int32 X, int32 Y, int32 Z) const
 {
 	// MAC 격자라 발산이 마주 보는 두 면의 차이로 바로 떨어진다.
