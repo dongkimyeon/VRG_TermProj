@@ -2,32 +2,39 @@
 
 #include "Actors/DataCenterRoomActor.h"
 
+#include "Actors/CoolingDistributionUnitActor.h"
 #include "Actors/RackThermalActor.h"
-#include "Simulation/Thermal/RackThermalModel.h"
 #include "Simulation/Core/SimUnits.h"
 #include "Simulation/Hydraulics/InRowLoopBuilder.h"
+#include "Simulation/Thermal/RackThermalModel.h"
 #include "Visualization/SimMeshBuilder.h"
 
 #include "Components/SceneComponent.h"
 #include "Components/StaticMeshComponent.h"
 #include "Engine/Engine.h"
 #include "Engine/World.h"
+#include "EngineUtils.h"
 
 namespace
 {
-	// 케이블 색. 실제 데이터센터에서 쓰는 색 구분(관리망/데이터/전원)을 흉내 낸 것이며
-	// 계산 결과가 아니다. 배관 색(유량)과 헷갈리지 않게 채도를 다르게 뒀다.
+	// 케이블 색. 실제 데이터센터의 용도 구분(관리망/데이터/전원)을 흉내 낸 것이며
+	// 계산 결과가 아니다.
 	const FLinearColor CableColors[] = {
-		FLinearColor(0.15f, 0.85f, 0.25f),   // 초록 - 관리망
-		FLinearColor(0.95f, 0.45f, 0.10f),   // 주황 - 데이터
-		FLinearColor(0.60f, 0.88f, 0.95f),   // 하늘 - 데이터
-		FLinearColor(0.85f, 0.85f, 0.88f),   // 흰색 - 전원
+		FLinearColor(0.15f, 0.85f, 0.25f),
+		FLinearColor(0.95f, 0.45f, 0.10f),
+		FLinearColor(0.60f, 0.88f, 0.95f),
+		FLinearColor(0.85f, 0.85f, 0.88f),
 	};
 	constexpr int32 NumCableColors = UE_ARRAY_COUNT(CableColors);
 
 	const FLinearColor TrayColor(0.16f, 0.17f, 0.19f);
-	const FLinearColor CabinetPlaceholderColor(0.06f, 0.07f, 0.09f);
-	const FLinearColor CduColor(0.85f, 0.65f, 0.15f);
+
+	// 줄 묶기용 방향 반올림. 거의 같은 방향을 보는 랙을 한 줄로 본다.
+	FVector QuantizeDirection(const FVector& Direction)
+	{
+		const FVector Unit = Direction.GetSafeNormal2D();
+		return FVector(FMath::RoundToDouble(Unit.X), FMath::RoundToDouble(Unit.Y), 0.0).GetSafeNormal();
+	}
 }
 
 ADataCenterRoomActor::ADataCenterRoomActor()
@@ -57,144 +64,297 @@ void ADataCenterRoomActor::RebuildRoom()
 
 void ADataCenterRoomActor::SetPumpSpeedRatio(double InSpeedRatio)
 {
-	PumpSpeedRatio = FMath::Clamp(InSpeedRatio, 0.0, 1.5);
+	LastPumpSpeedRatio = FMath::Clamp(InSpeedRatio, 0.0, 1.5);
+
+	// 회전수는 CDU가 들고 있다. 줄마다 붙은 CDU에 같은 값을 준다.
+	for (const FRackRow& Row : Rows)
+	{
+		if (Row.Cdu != nullptr)
+		{
+			Row.Cdu->SetPumpSpeedRatio(LastPumpSpeedRatio);
+		}
+	}
+
 	bNeedsRebuild = true;
 }
 
-double ADataCenterRoomActor::ColumnYM(int32 ColumnIndex) const
+int32 ADataCenterRoomActor::GetNumRoutedRacks() const
 {
-	return ColumnIndex * RackPitchM;
+	int32 Count = 0;
+	for (const FRackRow& Row : Rows)
+	{
+		Count += Row.Racks.Num();
+	}
+	return Count;
 }
 
-ADataCenterRoomActor::FRowGeometry ADataCenterRoomActor::ComputeRowGeometry(int32 RowIndex) const
+TArray<ARackThermalActor*> ADataCenterRoomActor::GetRoutedRacks() const
 {
-	FRowGeometry Geometry;
-
-	// 두 줄이 통로 하나를 사이에 두고 마주 본다. 쌍끼리는 서비스 통로로 벌린다.
-	const int32 PairIndex = RowIndex / 2;
-	const bool bSecondSide = (RowIndex % 2) == 1;
-
-	const double HalfDepthM = RackSizeM.X * 0.5;
-	const double PairPitchM = AisleWidthM + 2.0 * RackSizeM.X + ServiceAisleWidthM;
-	const double PairCenterXM = PairIndex * PairPitchM;
-	const double SideOffsetM = AisleWidthM * 0.5 + HalfDepthM;
-
-	Geometry.FacingSign = bSecondSide ? -1.0 : 1.0;
-	Geometry.RackCenterXM = PairCenterXM + (bSecondSide ? SideOffsetM : -SideOffsetM);
-
-	// 배관은 전부 뒷면 쪽이다. 뒷면은 앞면의 반대이므로 -FacingSign 방향이다.
-	const double RearXM = Geometry.RackCenterXM - Geometry.FacingSign * HalfDepthM;
-	Geometry.SupplyXM = RearXM - Geometry.FacingSign * PipeStandoffM;
-	Geometry.ReturnXM = RearXM - Geometry.FacingSign * (PipeStandoffM + SupplyReturnSpacingM);
-	Geometry.TrayXM = RearXM - Geometry.FacingSign * (PipeStandoffM + SupplyReturnSpacingM * 2.0);
-
-	return Geometry;
-}
-
-FVector ADataCenterRoomActor::GetRackWorldLocationM(int32 RowIndex, int32 ColumnIndex) const
-{
-	const FRowGeometry Geometry = ComputeRowGeometry(RowIndex);
-	const FVector LocalM(Geometry.RackCenterXM, ColumnYM(ColumnIndex), 0.0);
-
-	// 액터 위치는 cm이므로 m로 바꿔 더한다 (규약 1).
-	return SimUnits::UnrealToMeters(GetActorLocation()) + LocalM;
+	TArray<ARackThermalActor*> Result;
+	for (const FRackRow& Row : Rows)
+	{
+		for (const TObjectPtr<ARackThermalActor>& Rack : Row.Racks)
+		{
+			if (Rack != nullptr)
+			{
+				Result.Add(Rack);
+			}
+		}
+	}
+	return Result;
 }
 
 FBox ADataCenterRoomActor::GetRoomBoundsM() const
 {
-	const int32 RowCount = FMath::Max(1, NumRows);
-	const int32 ColumnCount = FMath::Max(1, RacksPerRow);
-
 	FBox BoundsM(ForceInit);
-	for (int32 RowIndex = 0; RowIndex < RowCount; ++RowIndex)
+
+	for (const FRackRow& Row : Rows)
 	{
-		for (int32 ColumnIndex = 0; ColumnIndex < ColumnCount; ++ColumnIndex)
+		for (const TObjectPtr<ARackThermalActor>& Rack : Row.Racks)
 		{
-			const FVector RackM = GetRackWorldLocationM(RowIndex, ColumnIndex);
+			if (Rack == nullptr)
+			{
+				continue;
+			}
+
+			const FVector RackM = SimUnits::UnrealToMeters(Rack->GetActorLocation());
+			// 회전을 따지지 않고 넉넉히 감싼다. 격자 범위라 여유가 있어도 된다.
+			const double HalfSpanM = FMath::Max(Rack->RackSizeM.X, Rack->RackSizeM.Y) * 0.5;
 			BoundsM += FBox(
-				RackM - FVector(RackSizeM.X * 0.5, RackSizeM.Y * 0.5, 0.0),
-				RackM + FVector(RackSizeM.X * 0.5, RackSizeM.Y * 0.5, RackSizeM.Z));
+				RackM - FVector(HalfSpanM, HalfSpanM, 0.0),
+				RackM + FVector(HalfSpanM, HalfSpanM, Rack->RackSizeM.Z));
 		}
 	}
 
+	if (!BoundsM.IsValid)
+	{
+		const FVector HereM = SimUnits::UnrealToMeters(GetActorLocation());
+		return FBox(HereM, HereM + FVector(1.0));
+	}
+
 	// 뒷면 배관과 천장 트레이까지 덮는다.
-	const double RearMarginM = PipeStandoffM + SupplyReturnSpacingM * 2.0 + 0.4;
-	return BoundsM.ExpandBy(FVector(RearMarginM, 0.4, 0.0))
-		+ FBox(BoundsM.Min, FVector(BoundsM.Max.X, BoundsM.Max.Y, CableTrayHeightM + 0.3));
+	const double RearMarginM = PipeStandoffM + SupplyReturnSpacingM * 2.0 + 0.5;
+	BoundsM = BoundsM.ExpandBy(FVector(RearMarginM, RearMarginM, 0.0));
+	BoundsM.Max.Z = FMath::Max(BoundsM.Max.Z, CableTrayHeightM + 0.3);
+	return BoundsM;
+}
+
+FVector ADataCenterRoomActor::RackRearAnchorM(const ARackThermalActor& Rack, const FVector& RearDir,
+	double ExtraOffsetM) const
+{
+	const FVector RackM = SimUnits::UnrealToMeters(Rack.GetActorLocation());
+	return RackM + RearDir * (Rack.RackSizeM.X * 0.5 + ExtraOffsetM);
+}
+
+void ADataCenterRoomActor::DiscoverRows()
+{
+	Rows.Reset();
+
+	UWorld* World = GetWorld();
+	if (World == nullptr)
+	{
+		return;
+	}
+
+	TArray<ACoolingDistributionUnitActor*> Cdus;
+	for (TActorIterator<ACoolingDistributionUnitActor> It(World); It; ++It)
+	{
+		Cdus.Add(*It);
+	}
+
+	// 같은 방향을 보면서 뒷면이 한 줄로 늘어선 랙을 묶는다.
+	// 키는 (반올림한 뒷면 방향, 그 방향으로 잰 위치)다.
+	struct FRowKey
+	{
+		int32 DirX = 0;
+		int32 DirY = 0;
+		int32 OffsetBucket = 0;
+
+		bool operator==(const FRowKey& Other) const
+		{
+			return DirX == Other.DirX && DirY == Other.DirY && OffsetBucket == Other.OffsetBucket;
+		}
+	};
+
+	TArray<FRowKey> Keys;
+	const double ToleranceM = FMath::Max(RowGroupToleranceM, 0.05);
+
+	for (TActorIterator<ARackThermalActor> It(World); It; ++It)
+	{
+		ARackThermalActor* Rack = *It;
+		if (Rack == nullptr)
+		{
+			continue;
+		}
+
+		// 랙 앞면은 로컬 +X다 (유닛이 앞으로 뽑히고 공기도 앞에서 들어온다).
+		// 뒷면은 그 반대다.
+		const FVector RearDir = QuantizeDirection(-Rack->GetActorForwardVector());
+		if (RearDir.IsNearlyZero())
+		{
+			continue;
+		}
+
+		const FVector RackM = SimUnits::UnrealToMeters(Rack->GetActorLocation());
+		const double OffsetM = FVector::DotProduct(RackM, RearDir);
+
+		FRowKey Key;
+		Key.DirX = FMath::RoundToInt32(RearDir.X);
+		Key.DirY = FMath::RoundToInt32(RearDir.Y);
+		Key.OffsetBucket = FMath::RoundToInt32(OffsetM / ToleranceM);
+
+		int32 RowIndex = Keys.IndexOfByKey(Key);
+		if (RowIndex == INDEX_NONE)
+		{
+			RowIndex = Rows.Num();
+			Keys.Add(Key);
+
+			FRackRow NewRow;
+			NewRow.RearDir = RearDir;
+			// 줄 방향은 뒷면 방향과 수직인 수평 방향이다.
+			NewRow.AlongDir = FVector::CrossProduct(FVector::UpVector, RearDir).GetSafeNormal();
+			Rows.Add(NewRow);
+		}
+
+		Rows[RowIndex].Racks.Add(Rack);
+	}
+
+	for (FRackRow& Row : Rows)
+	{
+		// 줄 방향으로 정렬한다. 헤더가 한쪽 끝에서 다른 끝으로 흐르려면 순서가 필요하다.
+		const FVector AlongDir = Row.AlongDir;
+		Row.Racks.Sort([AlongDir](const ARackThermalActor& A, const ARackThermalActor& B)
+		{
+			return FVector::DotProduct(SimUnits::UnrealToMeters(A.GetActorLocation()), AlongDir)
+				< FVector::DotProduct(SimUnits::UnrealToMeters(B.GetActorLocation()), AlongDir);
+		});
+
+		// 줄의 첫 랙에서 가장 가까운 CDU를 맡긴다.
+		if (Cdus.Num() > 0 && Row.Racks.Num() > 0)
+		{
+			const FVector FirstRackM = SimUnits::UnrealToMeters(Row.Racks[0]->GetActorLocation());
+			double BestDistanceSq = TNumericLimits<double>::Max();
+			for (ACoolingDistributionUnitActor* Cdu : Cdus)
+			{
+				const double DistanceSq =
+					FVector::DistSquared(SimUnits::UnrealToMeters(Cdu->GetActorLocation()), FirstRackM);
+				if (DistanceSq < BestDistanceSq)
+				{
+					BestDistanceSq = DistanceSq;
+					Row.Cdu = Cdu;
+				}
+			}
+		}
+	}
+
+	if (Rows.Num() == 0)
+	{
+		UE_LOG(LogTemp, Warning,
+			TEXT("DataCenterRoomActor: 레벨에서 ARackThermalActor를 찾지 못했습니다. ")
+			TEXT("랙을 직접 놓거나 SpawnRackGrid 버튼을 누르세요."));
+	}
+	else if (Cdus.Num() == 0)
+	{
+		UE_LOG(LogTemp, Warning,
+			TEXT("DataCenterRoomActor: 레벨에 CDU가 없어 줄 시작점 앞에 가상 CDU를 둡니다. ")
+			TEXT("ACoolingDistributionUnitActor를 놓으면 그 자리로 배관이 이어집니다."));
+	}
 }
 
 void ADataCenterRoomActor::BuildNetwork()
 {
 	Network.Reset();
 	NodePositionM.Reset();
-	RowGeometries.Reset();
-	RowPumpIndices.Reset();
 	RackBranchPipeIndices.Reset();
-
-	const int32 RowCount = FMath::Max(1, NumRows);
-	const int32 ColumnCount = FMath::Max(1, RacksPerRow);
-
-	// 위상은 InRowLoopBuilder가 만든다. 이 액터는 거기에 좌표만 붙인다.
-	// 솔버는 좌표를 모른다 (규약 1: 변환은 액터-솔버 경계에서만).
-	FInRowLoopSpec Spec;
-	Spec.NumRacks = ColumnCount;
-	Spec.SledsPerRack = SledsPerRack;
-	Spec.HeaderSegmentResistancePaS2M6 = HeaderSegmentResistancePaS2M6;
-	Spec.RackBranchResistancePaS2M6 = RackBranchResistancePaS2M6;
-	Spec.ReturnToCduResistancePaS2M6 = ReturnToCduResistancePaS2M6;
-	Spec.CduReferencePressurePa = CduReferencePressurePa;
-	Spec.PumpShutoffHeadPa = PumpShutoffHeadPa;
-	Spec.PumpCurveCoeffPaS2M6 = PumpCurveCoeffPaS2M6;
-	Spec.PumpEfficiency = PumpEfficiency;
-	Spec.PumpSpeedRatio = PumpSpeedRatio;
-
-	RackBranchPipeIndices.Init(INDEX_NONE, RowCount * ColumnCount);
 	bPipeIsSupplySide.Reset();
 
-	for (int32 RowIndex = 0; RowIndex < RowCount; ++RowIndex)
+	for (FRackRow& Row : Rows)
 	{
-		const FRowGeometry Geometry = ComputeRowGeometry(RowIndex);
-		RowGeometries.Add(Geometry);
-
-		Spec.DockedSledsPerRack.Reset();
-		for (int32 ColumnIndex = 0; ColumnIndex < ColumnCount; ++ColumnIndex)
+		if (Row.Racks.Num() == 0)
 		{
-			Spec.DockedSledsPerRack.Add(GetDockedSledsAt(RowIndex, ColumnIndex));
+			continue;
+		}
+
+		// 위상은 InRowLoopBuilder가 만든다. 이 액터는 거기에 좌표만 붙인다.
+		FInRowLoopSpec Spec;
+		Spec.NumRacks = Row.Racks.Num();
+		Spec.SledsPerRack = FMath::Max(1, SledsPerRack);
+		Spec.HeaderSegmentResistancePaS2M6 = HeaderSegmentResistancePaS2M6;
+		Spec.RackBranchResistancePaS2M6 = RackBranchResistancePaS2M6;
+		Spec.ReturnToCduResistancePaS2M6 = ReturnToCduResistancePaS2M6;
+
+		// 펌프와 기준 압력은 CDU가 들고 있다. 없으면 이 액터의 예비값을 쓴다.
+		if (Row.Cdu != nullptr)
+		{
+			Spec.CduReferencePressurePa = Row.Cdu->ReferencePressurePa;
+			Spec.PumpShutoffHeadPa = Row.Cdu->PumpShutoffHeadPa;
+			Spec.PumpCurveCoeffPaS2M6 = Row.Cdu->PumpCurveCoeffPaS2M6;
+			Spec.PumpEfficiency = Row.Cdu->PumpEfficiency;
+			Spec.PumpSpeedRatio = Row.Cdu->PumpSpeedRatio;
+		}
+		else
+		{
+			Spec.CduReferencePressurePa = FallbackCduReferencePressurePa;
+			Spec.PumpShutoffHeadPa = FallbackPumpShutoffHeadPa;
+			Spec.PumpCurveCoeffPaS2M6 = FallbackPumpCurveCoeffPaS2M6;
+			Spec.PumpSpeedRatio = LastPumpSpeedRatio;
+		}
+
+		// 랙마다 지금 꽂혀 있는 유닛 수를 읽는다. 뽑으면 분기 저항이 올라간다 (D4).
+		Spec.DockedSledsPerRack.Reset();
+		for (const TObjectPtr<ARackThermalActor>& Rack : Row.Racks)
+		{
+			Spec.DockedSledsPerRack.Add(Rack != nullptr ? Rack->GetNumDockedSleds() : Spec.SledsPerRack);
 		}
 
 		const FInRowLoopHandles Handles = InRowLoopBuilder::AddLoop(Network, Spec);
-		RowPumpIndices.Add(Handles.PumpIndex);
+		Row.PumpIndex = Handles.PumpIndex;
 
-		// 좌표 배열을 노드 인덱스와 같은 길이로 맞춘 뒤 자리마다 채운다.
 		NodePositionM.SetNum(Network.GetNumNodes());
 
-		// CDU는 행의 첫 랙보다 앞쪽(열 방향으로 음수)에 선다.
-		NodePositionM[Handles.CduNodeIndex] =
-			FVector(Geometry.SupplyXM, -CduOffsetM, RackManifoldZM * 0.5);
-
-		for (int32 ColumnIndex = 0; ColumnIndex < ColumnCount; ++ColumnIndex)
+		// CDU 노드. 실제 CDU가 있으면 그 포트 자리에, 없으면 줄 시작 앞쪽에 둔다.
+		if (Row.Cdu != nullptr)
 		{
-			const double YM = ColumnYM(ColumnIndex);
+			// 노드는 하나인데 포트가 둘이라 가운데에 둔다.
+			NodePositionM[Handles.CduNodeIndex] =
+				(Row.Cdu->GetSupplyPortWorldM() + Row.Cdu->GetReturnPortWorldM()) * 0.5;
+		}
+		else
+		{
+			const FVector FirstAnchorM = RackRearAnchorM(*Row.Racks[0], Row.RearDir, PipeStandoffM);
+			NodePositionM[Handles.CduNodeIndex] =
+				FVector(FirstAnchorM.X, FirstAnchorM.Y, HeaderHeightM) - Row.AlongDir * 1.5;
+		}
 
-			// 헤더 노드는 천장 높이, 랙 노드는 뒷면 매니폴드 높이다.
-			// 그래서 분기관이 헤더에서 랙 뒤로 내려오는 모양이 된다.
+		for (int32 ColumnIndex = 0; ColumnIndex < Row.Racks.Num(); ++ColumnIndex)
+		{
+			const ARackThermalActor* Rack = Row.Racks[ColumnIndex];
+			if (Rack == nullptr)
+			{
+				continue;
+			}
+
+			const FVector SupplyAnchorM = RackRearAnchorM(*Rack, Row.RearDir, PipeStandoffM);
+			const FVector ReturnAnchorM =
+				RackRearAnchorM(*Rack, Row.RearDir, PipeStandoffM + SupplyReturnSpacingM);
+
+			// 헤더는 바닥 높이, 랙 노드는 뒷면 매니폴드 높이다.
+			// 그래서 분기관이 바닥에서 랙 뒤로 올라왔다가 다시 내려가는 모양이 된다.
 			NodePositionM[Handles.SupplyNodeIndices[ColumnIndex]] =
-				FVector(Geometry.SupplyXM, YM, HeaderHeightM);
+				FVector(SupplyAnchorM.X, SupplyAnchorM.Y, HeaderHeightM);
 			NodePositionM[Handles.ReturnNodeIndices[ColumnIndex]] =
-				FVector(Geometry.ReturnXM, YM, HeaderHeightM);
+				FVector(ReturnAnchorM.X, ReturnAnchorM.Y, HeaderHeightM);
 
 			if (Handles.RackNodeIndices[ColumnIndex] != INDEX_NONE)
 			{
 				NodePositionM[Handles.RackNodeIndices[ColumnIndex]] =
-					FVector(Geometry.SupplyXM, YM, RackManifoldZM);
+					FVector(SupplyAnchorM.X, SupplyAnchorM.Y, RackManifoldZM);
 			}
 
-			RackBranchPipeIndices[RowIndex * ColumnCount + ColumnIndex] =
-				Handles.RackBranchPipeIndices[ColumnIndex];
+			RackBranchPipeIndices.Add(Handles.RackBranchPipeIndices[ColumnIndex]);
 		}
 
-		// 관 색을 공급(파랑)/회수(빨강)로 나누기 위한 역할표.
-		// 솔버는 이걸 모른다. 순수 표시용이다.
+		// 관 색을 공급/회수로 나누기 위한 역할표. 솔버는 이걸 모른다.
 		bPipeIsSupplySide.SetNum(Network.GetNumPipes());
 		for (int32 PipeIndex = 0; PipeIndex < Network.GetNumPipes(); ++PipeIndex)
 		{
@@ -205,14 +365,19 @@ void ADataCenterRoomActor::BuildNetwork()
 		}
 	}
 
+	if (Network.GetNumNodes() == 0)
+	{
+		LastResult = FHydraulicSolveResult();
+		return;
+	}
+
 	// D3: 노드 200개 미만이면 밀행렬 LU로 충분하다는 전제로 짠 솔버다.
-	// 방이 커지면 그 전제를 넘는다 (노드 수 = 행 * (1 + 3 * 랙수)).
 	// 밀행렬 LU는 O(n^3)이라 노드가 두 배면 여덟 배 걸린다.
 	if (Network.GetNumNodes() >= 200)
 	{
 		UE_LOG(LogTemp, Warning,
 			TEXT("DataCenterRoomActor: 노드 %d개로 D3의 밀행렬 LU 전제(200개 미만)를 넘었습니다. ")
-			TEXT("결과는 맞지만 재계산이 느려집니다. 희소 솔버가 필요하면 별도 단계로 다룰 것."),
+			TEXT("결과는 맞지만 재계산이 느려집니다."),
 			Network.GetNumNodes());
 	}
 
@@ -226,22 +391,10 @@ void ADataCenterRoomActor::BuildNetwork()
 	}
 }
 
-int32 ADataCenterRoomActor::GetDockedSledsAt(int32 RowIndex, int32 ColumnIndex) const
-{
-	// Play 중이면 실제 랙 액터의 도킹 상태를 읽는다. 유닛을 뽑으면 다음 재계산에
-	// 분기 저항이 올라간다. 에디터에서는 만재로 본다.
-	if (const ARackThermalActor* Rack = GetRackAt(RowIndex, ColumnIndex))
-	{
-		return Rack->GetNumDockedSleds();
-	}
-	return SledsPerRack;
-}
-
 FVector ADataCenterRoomActor::NodeWorldOffsetCm(int32 NodeIndex) const
 {
-	// 길이 단위 변환은 여기서만 한다 (규약 1). 컴포넌트는 상대 좌표를 쓰므로
-	// 액터 위치를 더하지 않는다.
-	return SimUnits::MetersToUnreal(NodePositionM[NodeIndex]);
+	// 노드 좌표는 월드 m다. 컴포넌트는 액터 기준 상대 cm라 액터 위치를 뺀다 (규약 1).
+	return SimUnits::MetersToUnreal(NodePositionM[NodeIndex]) - GetActorLocation();
 }
 
 void ADataCenterRoomActor::DestroyMeshes(TArray<TObjectPtr<UStaticMeshComponent>>& Meshes)
@@ -261,20 +414,20 @@ void ADataCenterRoomActor::BuildPipeMeshes()
 	DestroyMeshes(PipeMeshes);
 
 	UStaticMesh* CylinderMesh = SimMeshBuilder::LoadCylinderMesh();
-	if (CylinderMesh == nullptr)
+	if (CylinderMesh == nullptr || Network.GetNumPipes() == 0)
 	{
-		UE_LOG(LogTemp, Warning, TEXT("DataCenterRoomActor: 엔진 기본 원통 메쉬를 찾지 못했습니다."));
 		return;
 	}
 	UMaterialInterface* Material = SimMeshBuilder::LoadColorableMaterial();
 
-	// 관 굵기는 헤더와 분기를 다르게 준다. 분기가 헤더보다 가늘어야 흐름이 읽힌다.
+	// 길이 단위 변환은 여기서만 한다 (규약 1).
 	const double HeaderDiameterCm = SimUnits::MetersToCentimeters(HeaderDiameterM);
 	const double BranchDiameterCm = SimUnits::MetersToCentimeters(BranchDiameterM);
 
 	PipeMeshes.Reserve(Network.GetNumPipes());
 	for (int32 PipeIndex = 0; PipeIndex < Network.GetNumPipes(); ++PipeIndex)
 	{
+		// 분기관은 헤더보다 가늘어야 흐름이 읽힌다.
 		const bool bIsBranch = RackBranchPipeIndices.Contains(PipeIndex)
 			|| (PipeIndex > 0 && RackBranchPipeIndices.Contains(PipeIndex - 1));
 
@@ -291,21 +444,14 @@ void ADataCenterRoomActor::BuildDecorMeshes()
 {
 	DestroyMeshes(DecorMeshes);
 
-	UStaticMesh* CubeMesh = SimMeshBuilder::LoadCubeMesh();
 	UStaticMesh* CylinderMesh = SimMeshBuilder::LoadCylinderMesh();
-	if (CubeMesh == nullptr || CylinderMesh == nullptr)
+	if (CylinderMesh == nullptr || !bShowCableTray)
 	{
 		return;
 	}
 	UMaterialInterface* Material = SimMeshBuilder::LoadColorableMaterial();
 
-	const int32 RowCount = RowGeometries.Num();
-	const int32 ColumnCount = FMath::Max(1, RacksPerRow);
-
 	const double CableDiameterCm = SimUnits::MetersToCentimeters(CableDiameterM);
-	const double TrayZCm = SimUnits::MetersToCentimeters(CableTrayHeightM);
-	const double RackWidthCm = SimUnits::MetersToCentimeters(RackSizeM.Y);
-	const double RowLengthCm = SimUnits::MetersToCentimeters(ColumnYM(ColumnCount - 1) + RackPitchM);
 
 	auto AddTube = [&](const FVector& StartCm, const FVector& EndCm, double DiameterCm, const FLinearColor& Color)
 	{
@@ -315,137 +461,138 @@ void ADataCenterRoomActor::BuildDecorMeshes()
 		DecorMeshes.Add(Tube);
 	};
 
-	auto AddBox = [&](const FVector& CenterCm, const FVector& SizeCm, const FLinearColor& Color)
+	// 액터 상대 좌표로 옮기는 변환. 노드 좌표와 같은 규칙이다 (규약 1).
+	auto ToLocalCm = [this](const FVector& WorldM) -> FVector
 	{
-		UStaticMeshComponent* Box = SimMeshBuilder::CreateMeshComponent(this, CubeMesh, Material, TEXT("Decor"));
-		SimMeshBuilder::SetBox(Box, CenterCm, SizeCm);
-		SimMeshBuilder::SetMeshColor(Box, Color);
-		DecorMeshes.Add(Box);
+		return SimUnits::MetersToUnreal(WorldM) - GetActorLocation();
 	};
 
-	for (int32 RowIndex = 0; RowIndex < RowCount; ++RowIndex)
+	for (const FRackRow& Row : Rows)
 	{
-		const FRowGeometry& Geometry = RowGeometries[RowIndex];
-		const double TrayXCm = SimUnits::MetersToCentimeters(Geometry.TrayXM);
-		const double StartYCm = SimUnits::MetersToCentimeters(ColumnYM(0) - RackPitchM * 0.5);
-
-		// 케이블 트레이: 옆 레일 두 줄. 사다리 가로대는 개수가 많아 넣지 않는다.
-		if (bShowCableTray)
+		if (Row.Racks.Num() == 0)
 		{
-			const double TrayHalfWidthCm = 18.0;
-			for (int32 RailIndex = 0; RailIndex < 2; ++RailIndex)
-			{
-				const double RailXCm = TrayXCm + (RailIndex == 0 ? -TrayHalfWidthCm : TrayHalfWidthCm);
-				AddBox(FVector(RailXCm, StartYCm + RowLengthCm * 0.5, TrayZCm),
-					FVector(4.0, RowLengthCm, 8.0), TrayColor);
-			}
-			// 트레이 바닥
-			AddBox(FVector(TrayXCm, StartYCm + RowLengthCm * 0.5, TrayZCm - 5.0),
-				FVector(TrayHalfWidthCm * 2.0, RowLengthCm, 2.0), TrayColor);
+			continue;
 		}
 
-		for (int32 ColumnIndex = 0; ColumnIndex < ColumnCount; ++ColumnIndex)
-		{
-			const double YCm = SimUnits::MetersToCentimeters(ColumnYM(ColumnIndex));
+		// 트레이는 랙 뒷면 바깥, 배관보다 더 뒤쪽 천장에 건다.
+		const double TrayOffsetM = PipeStandoffM + SupplyReturnSpacingM * 2.0;
 
-			// 케이블: 트레이에서 랙 뒷면 위쪽으로 내려온다.
-			// 가닥마다 트레이 위 진입점과 랙 쪽 도착점을 조금씩 어긋나게 둬서
-			// 한 다발처럼 보이게 한다.
-			const double RearXCm = SimUnits::MetersToCentimeters(
-				Geometry.RackCenterXM - Geometry.FacingSign * RackSizeM.X * 0.5);
-			const double CableLandZCm = SimUnits::MetersToCentimeters(RackSizeM.Z * 0.92);
+		const FVector FirstTrayM = RackRearAnchorM(*Row.Racks[0], Row.RearDir, TrayOffsetM);
+		const FVector LastTrayM = RackRearAnchorM(*Row.Racks.Last(), Row.RearDir, TrayOffsetM);
+
+		const FVector TrayStartCm =
+			ToLocalCm(FVector(FirstTrayM.X, FirstTrayM.Y, CableTrayHeightM)) - Row.AlongDir * 40.0;
+		const FVector TrayEndCm =
+			ToLocalCm(FVector(LastTrayM.X, LastTrayM.Y, CableTrayHeightM)) + Row.AlongDir * 40.0;
+
+		// 사다리 옆 레일 두 줄. 가로대는 개수가 많아 넣지 않는다.
+		const FVector RailOffsetCm = Row.RearDir * 16.0;
+		AddTube(TrayStartCm - RailOffsetCm, TrayEndCm - RailOffsetCm, 7.0, TrayColor);
+		AddTube(TrayStartCm + RailOffsetCm, TrayEndCm + RailOffsetCm, 7.0, TrayColor);
+
+		// 랙마다 케이블 다발을 트레이에서 뒷면 위쪽으로 내린다.
+		for (const TObjectPtr<ARackThermalActor>& Rack : Row.Racks)
+		{
+			if (Rack == nullptr)
+			{
+				continue;
+			}
+
+			const FVector TrayPointM = RackRearAnchorM(*Rack, Row.RearDir, TrayOffsetM);
+			const FVector LandPointM = RackRearAnchorM(*Rack, Row.RearDir, 0.02);
+			const double LandZM = Rack->RackSizeM.Z * 0.92;
 
 			for (int32 CableIndex = 0; CableIndex < CablesPerRack; ++CableIndex)
 			{
 				const double Spread = (CableIndex - (CablesPerRack - 1) * 0.5);
-				const double CableYCm = YCm + Spread * 5.0;
-				const double LandYCm = YCm + Spread * (RackWidthCm * 0.18);
+				const FVector SpreadCm = Row.AlongDir * (Spread * 5.0);
+				const FVector LandSpreadCm = Row.AlongDir * (Spread * Rack->RackSizeM.Y * 18.0);
 
-				// 트레이에서 수직으로 조금 내려온 뒤 랙 뒤로 휘어 붙는다.
-				const FVector TrayPointCm(TrayXCm, CableYCm, TrayZCm - 6.0);
-				const FVector BendPointCm(TrayXCm, CableYCm, CableLandZCm + 22.0);
-				const FVector LandPointCm(RearXCm, LandYCm, CableLandZCm);
+				const FVector TrayCm =
+					ToLocalCm(FVector(TrayPointM.X, TrayPointM.Y, CableTrayHeightM))
+					+ SpreadCm - FVector(0.0, 0.0, 6.0);
+				const FVector BendCm =
+					FVector(TrayCm.X, TrayCm.Y, SimUnits::MetersToCentimeters(LandZM) + 22.0);
+				const FVector LandCm =
+					ToLocalCm(FVector(LandPointM.X, LandPointM.Y, LandZM)) + LandSpreadCm;
 
 				const FLinearColor Color = CableColors[CableIndex % NumCableColors];
-				AddTube(TrayPointCm, BendPointCm, CableDiameterCm, Color);
-				AddTube(BendPointCm, LandPointCm, CableDiameterCm, Color);
-			}
-		}
-	}
-
-	// CDU 표시. 노드 0번부터 행마다 하나씩이다.
-	for (int32 RowIndex = 0; RowIndex < RowPumpIndices.Num(); ++RowIndex)
-	{
-		const FRowGeometry& Geometry = RowGeometries[RowIndex];
-		const FVector CduCenterCm(
-			SimUnits::MetersToCentimeters(Geometry.SupplyXM),
-			SimUnits::MetersToCentimeters(-CduOffsetM),
-			SimUnits::MetersToCentimeters(0.6));
-		AddBox(CduCenterCm, FVector(70.0, 60.0, 120.0), CduColor);
-	}
-
-	// 랙 액터를 띄우지 않는 상태(에디터)에서는 자리를 상자로 보여준다.
-	if (SpawnedRacks.Num() == 0)
-	{
-		const FVector RackSizeCm = SimUnits::MetersToUnreal(RackSizeM);
-		for (int32 RowIndex = 0; RowIndex < RowCount; ++RowIndex)
-		{
-			const FRowGeometry& Geometry = RowGeometries[RowIndex];
-			for (int32 ColumnIndex = 0; ColumnIndex < ColumnCount; ++ColumnIndex)
-			{
-				AddBox(FVector(
-					SimUnits::MetersToCentimeters(Geometry.RackCenterXM),
-					SimUnits::MetersToCentimeters(ColumnYM(ColumnIndex)),
-					RackSizeCm.Z * 0.5),
-					RackSizeCm, CabinetPlaceholderColor);
+				AddTube(TrayCm, BendCm, CableDiameterCm, Color);
+				AddTube(BendCm, LandCm, CableDiameterCm, Color);
 			}
 		}
 	}
 }
 
-void ADataCenterRoomActor::DestroySpawnedRacks()
+void ADataCenterRoomActor::UpdatePipeColors() const
 {
-	for (ARackThermalActor* Rack : SpawnedRacks)
+	double MaxFlowMagnitudeM3s = 0.0;
+	for (int32 PipeIndex = 0; PipeIndex < Network.GetNumPipes(); ++PipeIndex)
 	{
-		if (Rack != nullptr)
-		{
-			Rack->Destroy();
-		}
+		MaxFlowMagnitudeM3s = FMath::Max(MaxFlowMagnitudeM3s, FMath::Abs(Network.GetPipeFlowM3s(PipeIndex)));
 	}
-	SpawnedRacks.Reset();
+	const double NormalizationM3s = FMath::Max(MaxFlowMagnitudeM3s, UE_DOUBLE_SMALL_NUMBER);
+
+	// 색상(hue)은 공급/회수 역할, 밝기는 계산된 유량 크기다.
+	// 낮은 쪽을 어둡게 두면 분기관이 검은 랙에 묻혀 화면에서 사라진다.
+	static const FLinearColor SupplyLowColor(0.08f, 0.22f, 0.55f);
+	static const FLinearColor SupplyHighColor(0.25f, 0.65f, 1.00f);
+	static const FLinearColor ReturnLowColor(0.55f, 0.16f, 0.12f);
+	static const FLinearColor ReturnHighColor(1.00f, 0.35f, 0.28f);
+
+	for (int32 PipeIndex = 0; PipeIndex < PipeMeshes.Num(); ++PipeIndex)
+	{
+		const double Normalized = FMath::Abs(Network.GetPipeFlowM3s(PipeIndex)) / NormalizationM3s;
+
+		// 제곱근을 씌워 낮은 유량 구간을 펼친다. 표시용 보정이며 계산과 무관하다.
+		const float Shaped = FMath::Sqrt(FMath::Clamp(static_cast<float>(Normalized), 0.0f, 1.0f));
+		const bool bSupply = bPipeIsSupplySide.IsValidIndex(PipeIndex) && bPipeIsSupplySide[PipeIndex];
+
+		SimMeshBuilder::SetMeshColor(PipeMeshes[PipeIndex],
+			FMath::Lerp(bSupply ? SupplyLowColor : ReturnLowColor,
+				bSupply ? SupplyHighColor : ReturnHighColor, Shaped));
+	}
 }
 
-void ADataCenterRoomActor::SpawnRacks()
+void ADataCenterRoomActor::SpawnRackGrid()
 {
-	DestroySpawnedRacks();
-
 	UWorld* World = GetWorld();
-	// 에디터 리스너에서는 액터를 띄우지 않는다. 자리만 상자로 보여준다.
-	if (World == nullptr || !World->IsGameWorld() || !bSpawnRackActors)
+	if (World == nullptr)
 	{
 		return;
 	}
 
+	DestroySpawnedRackGrid();
+
+	const int32 RowCount = FMath::Max(1, NumRows);
 	const int32 ColumnCount = FMath::Max(1, RacksPerRow);
+
+	const double HalfDepthM = RackSizeM.X * 0.5;
+	const double PairPitchM = AisleWidthM + 2.0 * RackSizeM.X + ServiceAisleWidthM;
+	const double SideOffsetM = AisleWidthM * 0.5 + HalfDepthM;
 
 	FActorSpawnParameters SpawnParams;
 	SpawnParams.Owner = this;
 	SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
 
-	for (int32 RowIndex = 0; RowIndex < RowGeometries.Num(); ++RowIndex)
-	{
-		const FRowGeometry& Geometry = RowGeometries[RowIndex];
+	const FVector OriginM = SimUnits::UnrealToMeters(GetActorLocation());
 
-		// 앞면이 통로를 향하도록 돌린다. FacingSign이 -1이면 180도다.
-		const FRotator Rotation(0.0, Geometry.FacingSign > 0.0 ? 0.0 : 180.0, 0.0);
+	for (int32 RowIndex = 0; RowIndex < RowCount; ++RowIndex)
+	{
+		// 두 줄이 통로 하나를 사이에 두고 마주 본다.
+		const int32 PairIndex = RowIndex / 2;
+		const bool bSecondSide = (RowIndex % 2) == 1;
+		const double RowXM = PairIndex * PairPitchM + (bSecondSide ? SideOffsetM : -SideOffsetM);
+
+		// 앞면이 통로를 향하게 돌린다.
+		const FRotator Rotation(0.0, bSecondSide ? 180.0 : 0.0, 0.0);
 
 		for (int32 ColumnIndex = 0; ColumnIndex < ColumnCount; ++ColumnIndex)
 		{
-			const FVector LocationCm = GetActorLocation() + SimUnits::MetersToUnreal(
-				FVector(Geometry.RackCenterXM, ColumnYM(ColumnIndex), 0.0));
+			const FVector LocationM = OriginM + FVector(RowXM, ColumnIndex * RackPitchM, 0.0);
 
 			ARackThermalActor* Rack = World->SpawnActor<ARackThermalActor>(
-				ARackThermalActor::StaticClass(), LocationCm, Rotation, SpawnParams);
+				ARackThermalActor::StaticClass(), SimUnits::MetersToUnreal(LocationM), Rotation, SpawnParams);
 			if (Rack == nullptr)
 			{
 				continue;
@@ -458,63 +605,36 @@ void ADataCenterRoomActor::SpawnRacks()
 			Rack->Input.SledDocked.Init(true, Rack->Params.NumSleds);
 
 			// 유량과 라디에이터도 같은 운전점에서 역산한 값으로 맞춘다.
-			// 랙 1대 액랭 97 kW를 냉각수 ΔT 약 10 K로 빼는 유량이 2.3 kg/s다.
 			Rack->Input.CoolantMassFlowKgs = 2.3;
 			Rack->Input.TotalAirMassFlowKgs = 0.6;
 			Rack->Radiator.UAWK = 1.1e4;
 
-			// 유닛 라벨은 방 전체에서는 글자가 너무 많아진다. 랙 하나를 볼 때만 켠다.
+			// 방 전체에서는 유닛 라벨이 너무 많아진다. 랙 하나를 볼 때만 켠다.
 			Rack->bShowSledLabels = false;
 			Rack->bShowReadout = false;
 			Rack->ResetSim();
-			Rack->StartSim();
 
-			SpawnedRacks.Add(Rack);
+			GridSpawnedRacks.Add(Rack);
 		}
 	}
+
+	UE_LOG(LogTemp, Log, TEXT("DataCenterRoomActor: 랙 %d대를 찍어 냈습니다. 이제 자유롭게 옮길 수 있습니다."),
+		GridSpawnedRacks.Num());
+
+	bNeedsRebuild = true;
 }
 
-ARackThermalActor* ADataCenterRoomActor::GetRackAt(int32 RowIndex, int32 ColumnIndex) const
+void ADataCenterRoomActor::DestroySpawnedRackGrid()
 {
-	const int32 SlotIndex = RowIndex * FMath::Max(1, RacksPerRow) + ColumnIndex;
-	return SpawnedRacks.IsValidIndex(SlotIndex) ? SpawnedRacks[SlotIndex] : nullptr;
-}
-
-void ADataCenterRoomActor::UpdatePipeColors() const
-{
-	double MaxFlowMagnitudeM3s = 0.0;
-	for (int32 PipeIndex = 0; PipeIndex < Network.GetNumPipes(); ++PipeIndex)
+	for (ARackThermalActor* Rack : GridSpawnedRacks)
 	{
-		MaxFlowMagnitudeM3s = FMath::Max(MaxFlowMagnitudeM3s, FMath::Abs(Network.GetPipeFlowM3s(PipeIndex)));
+		if (Rack != nullptr)
+		{
+			Rack->Destroy();
+		}
 	}
-	const double NormalizationM3s = FMath::Max(MaxFlowMagnitudeM3s, UE_DOUBLE_SMALL_NUMBER);
-
-	// 색상(hue)은 공급/회수를 나타내고, 밝기는 계산된 유량 크기를 나타낸다.
-	// 공급은 차갑게 들어오므로 파랑, 회수는 데워져 나오므로 빨강이다.
-	// 온도를 직접 그린 것이 아니다 - 이 도메인에는 아직 온도가 없다.
-	//
-	// 낮은 쪽 색을 어둡게 두면 안 된다. 정규화 기준이 전체 최대 유량인데
-	// 헤더가 분기의 8배쯤 흘러서 분기관의 정규화 값이 0.12 수준이 된다.
-	// 처음에 낮은 쪽을 거의 검정으로 뒀더니 공급 분기관이 검은 랙에 묻혀
-	// 화면에서 아예 사라졌다. 낮은 쪽에서도 색이 읽히게 밝기를 올렸다.
-	static const FLinearColor SupplyLowColor(0.08f, 0.22f, 0.55f);
-	static const FLinearColor SupplyHighColor(0.25f, 0.65f, 1.00f);
-	static const FLinearColor ReturnLowColor(0.55f, 0.16f, 0.12f);
-	static const FLinearColor ReturnHighColor(1.00f, 0.35f, 0.28f);
-
-	for (int32 PipeIndex = 0; PipeIndex < PipeMeshes.Num(); ++PipeIndex)
-	{
-		const double Normalized = FMath::Abs(Network.GetPipeFlowM3s(PipeIndex)) / NormalizationM3s;
-
-		// 제곱근을 씌워 낮은 유량 구간을 펼친다. 표시용 보정이며 계산에는 쓰이지 않는다.
-		// 선형으로 두면 분기관이 전부 같은 어두운 색이 되어 구분이 안 된다.
-		const float Shaped = FMath::Sqrt(FMath::Clamp(static_cast<float>(Normalized), 0.0f, 1.0f));
-		const bool bSupply = bPipeIsSupplySide.IsValidIndex(PipeIndex) && bPipeIsSupplySide[PipeIndex];
-
-		SimMeshBuilder::SetMeshColor(PipeMeshes[PipeIndex],
-			FMath::Lerp(bSupply ? SupplyLowColor : ReturnLowColor,
-				bSupply ? SupplyHighColor : ReturnHighColor, Shaped));
-	}
+	GridSpawnedRacks.Reset();
+	bNeedsRebuild = true;
 }
 
 void ADataCenterRoomActor::Tick(float DeltaTime)
@@ -523,8 +643,8 @@ void ADataCenterRoomActor::Tick(float DeltaTime)
 
 	if (bNeedsRebuild)
 	{
+		DiscoverRows();
 		BuildNetwork();
-		SpawnRacks();
 		BuildPipeMeshes();
 		BuildDecorMeshes();
 		bNeedsRebuild = false;
@@ -540,17 +660,33 @@ void ADataCenterRoomActor::Tick(float DeltaTime)
 
 void ADataCenterRoomActor::DrawSummary() const
 {
-	if (GEngine == nullptr || RowPumpIndices.Num() == 0)
+	if (GEngine == nullptr)
 	{
+		return;
+	}
+
+	const uint64 BaseKey = static_cast<uint64>(GetUniqueID());
+
+	if (Rows.Num() == 0)
+	{
+		GEngine->AddOnScreenDebugMessage(BaseKey, 0.0f, FColor::Orange,
+			FString::Printf(TEXT("[%s] 레벨에서 랙을 찾지 못했습니다. 랙을 놓거나 SpawnRackGrid를 누르세요."),
+				*GetName()));
 		return;
 	}
 
 	double TotalPumpFlowM3s = 0.0;
 	double TotalPumpElectricalW = 0.0;
-	for (const int32 PumpIndex : RowPumpIndices)
+	int32 NumCduRows = 0;
+	for (const FRackRow& Row : Rows)
 	{
-		TotalPumpFlowM3s += Network.GetPumpFlowM3s(PumpIndex);
-		TotalPumpElectricalW += Network.GetPumpElectricalInputPowerW(PumpIndex);
+		if (Row.PumpIndex == INDEX_NONE)
+		{
+			continue;
+		}
+		TotalPumpFlowM3s += Network.GetPumpFlowM3s(Row.PumpIndex);
+		TotalPumpElectricalW += Network.GetPumpElectricalInputPowerW(Row.PumpIndex);
+		NumCduRows += (Row.Cdu != nullptr) ? 1 : 0;
 	}
 
 	double MinBranchFlowM3s = TNumericLimits<double>::Max();
@@ -570,21 +706,19 @@ void ADataCenterRoomActor::DrawSummary() const
 		MinBranchFlowM3s = 0.0;
 	}
 
-	const uint64 BaseKey = static_cast<uint64>(GetUniqueID());
-
 	GEngine->AddOnScreenDebugMessage(BaseKey, 0.0f,
 		LastResult.bConverged ? FColor::Green : FColor::Red,
-		FString::Printf(TEXT("[%s] %s | 랙 %d대 (행 %d x %d) | Newton %d회 | 정규화 잔차 %.2e"),
+		FString::Printf(TEXT("[%s] %s | 랙 %d대 / 줄 %d개 (CDU 연결 %d줄) | Newton %d회 | 정규화 잔차 %.2e"),
 			*GetName(),
 			LastResult.bConverged ? TEXT("수렴") : TEXT("수렴 실패 - 아래 값 믿지 말 것"),
-			GetNumRackSlots(), NumRows, RacksPerRow,
+			GetNumRoutedRacks(), Rows.Num(), NumCduRows,
 			LastResult.IterationsUsed, LastResult.NormalizedResidual));
 
 	GEngine->AddOnScreenDebugMessage(BaseKey + 1, 0.0f, FColor::Cyan,
-		FString::Printf(TEXT("펌프 %d대 합계 유량 %.2f L/s | 전기 입력 %.2f kW | 랙 분기 %.2f ~ %.2f L/s | 펌프 r=%.2f"),
-			RowPumpIndices.Num(), TotalPumpFlowM3s * 1000.0, TotalPumpElectricalW / 1000.0,
-			MinBranchFlowM3s * 1000.0, MaxBranchFlowM3s * 1000.0, PumpSpeedRatio));
+		FString::Printf(TEXT("펌프 합계 유량 %.2f L/s | 전기 입력 %.2f kW | 랙 분기 %.2f ~ %.2f L/s | 펌프 r=%.2f"),
+			TotalPumpFlowM3s * 1000.0, TotalPumpElectricalW / 1000.0,
+			MinBranchFlowM3s * 1000.0, MaxBranchFlowM3s * 1000.0, LastPumpSpeedRatio));
 
 	GEngine->AddOnScreenDebugMessage(BaseKey + 2, 0.0f, FColor(150, 150, 150),
-		TEXT("배관: 파랑 = 공급, 빨강 = 회수 (색상은 역할, 밝기는 계산된 유량 크기). 온도를 그린 것이 아니다. 케이블 색은 용도 구분이며 계산 결과가 아니다."));
+		TEXT("배관: 파랑 = 공급, 빨강 = 회수 (색상은 역할, 밝기는 계산된 유량 크기). 온도를 그린 것이 아니다."));
 }

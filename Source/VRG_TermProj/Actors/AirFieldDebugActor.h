@@ -150,15 +150,15 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Visualization")
 	bool bShowSummary = true;
 
-	// 레벨의 ADataCenterRoomActor를 찾아 격자를 그 방에 맞춘다.
+	// 레벨에 놓인 랙을 전부 찾아 격자를 그 범위에 맞춘다.
 	// 위치와 셀 개수를 직접 맞추는 건 손이 많이 간다.
 	UFUNCTION(BlueprintCallable, CallInEditor, Category = "Air")
-	void FitToRoom();
+	void FitToRacks();
 
-	// 열원 상자를 방의 랙 자리마다 하나씩 놓는다.
+	// 랙마다 배기 열원 상자를 하나씩 놓는다.
 	// S4에서 랙 발열을 직접 받게 되면 이 버튼은 필요 없어진다.
 	UFUNCTION(BlueprintCallable, CallInEditor, Category = "Air")
-	void PlaceHeatSourcesFromRoom();
+	void PlaceHeatSourcesFromRacks();
 
 	// 위 두 버튼이 랙 1대에 줄 발열 [W]. GB200 NVL72 컴퓨트 트레이 18장 기준 약 105 kW지만,
 	// 그중 액랭으로 빠지는 몫을 뺀 공랭 부하만 공기에 들어간다.

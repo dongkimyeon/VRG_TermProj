@@ -8,26 +8,27 @@
 #include "DataCenterRoomActor.generated.h"
 
 class ARackThermalActor;
+class ACoolingDistributionUnitActor;
 class UStaticMeshComponent;
 
-// 데이터센터 한 방. 랙을 배치하면 배관과 배선이 자동으로 랙 뒤에 붙는다.
+// 레벨에 놓인 랙과 CDU를 찾아 배관을 자동으로 잇는다.
+//
+// --- 자리를 만들지 않고 읽는다 ---
+// 전에는 이 액터가 행·열 수를 받아 랙 자리를 만들어 냈다. 그러면 랙을 원하는 데
+// 옮길 수 없고, 에디터에서는 진짜 랙 대신 상자만 보였다.
+// 지금은 반대다. `ARackThermalActor`와 `ACoolingDistributionUnitActor`를 직접 놓으면
+// 이 액터가 그 위치를 읽어 배관을 잇는다. 랙을 옮기면 배관이 따라온다.
+// 처음 깔 때가 번거로우면 SpawnRackGrid() 버튼으로 찍어 낸 뒤 옮기면 된다.
 //
 // --- 배관은 장식이 아니다 ---
 // 눈에 보이는 관은 수력 솔버가 실제로 푸는 파이프를 그대로 그린 것이다.
-// 노드 위치를 이 액터가 m 단위로 들고 있고, 솔버는 위상만 안다 (규약 1).
-// 관 색은 계산된 유량 크기다. 온도가 아니다.
+// 위상은 InRowLoopBuilder가 만들고 이 액터는 좌표만 붙인다 (솔버는 위상만 안다).
+// 관 색상은 공급(파랑)/회수(빨강) 역할이고 밝기가 계산된 유량 크기다.
 //
-// --- 배치 ---
-// 랙은 두 줄이 통로를 사이에 두고 마주 보는 쌍으로 놓인다 (핫/콜드 통로).
-// 앞면이 통로를 향하고, 배관과 배선은 전부 뒷면에 붙는다.
-//
-//   행 0 (yaw 0, 앞면 +X)        통로        행 1 (yaw 180, 앞면 -X)
-//   [랙][랙][랙][랙]         <--------->      [랙][랙][랙][랙]
-//    |배관 뒤                                   배관 뒤|
-//
-// --- 수력 위상 (행마다 하나씩) ---
-//   CDU -> 펌프 -> 공급 헤더(행을 따라) -> 랙 분기(뒤로 내려옴) -> 회수 헤더 -> CDU
-// AHydraulicNetworkDebugActor가 검증한 인로우 루프와 같은 위상이다.
+// --- 줄 묶기 ---
+// 같은 방향을 보면서 뒷면이 한 줄로 늘어선 랙들을 한 줄로 묶는다.
+// 줄마다 가장 가까운 CDU를 붙이고 그 줄의 수력 루프를 따로 푼다.
+//   CDU -> 펌프 -> 공급 헤더(줄을 따라) -> 랙 분기(뒤로 올라옴) -> 회수 헤더 -> CDU
 UCLASS()
 class VRG_TERMPROJ_API ADataCenterRoomActor : public AActor
 {
@@ -41,58 +42,71 @@ public:
 	// 레벨 뷰포트에서도 틱이 돌게 해서 Play 없이 배치를 확인할 수 있게 한다.
 	virtual bool ShouldTickIfViewportsOnly() const override { return true; }
 
+	// 랙이나 CDU를 옮긴 뒤 누른다. 배관을 다시 잇고 다시 푼다.
 	UFUNCTION(BlueprintCallable, CallInEditor, Category = "Room")
 	void RebuildRoom();
 
-	// ---- 배치 (m) ----
-	// 통로 하나를 사이에 둔 두 줄이 1쌍이다. 홀수면 마지막 쌍은 한 줄만 선다.
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Layout", meta = (ClampMin = "1", ClampMax = "16"))
+	// 랙을 격자로 찍어 낸다. 찍은 뒤에는 개별 액터이므로 자유롭게 옮길 수 있다.
+	// 처음 깔 때만 쓰는 보조 기능이다.
+	UFUNCTION(BlueprintCallable, CallInEditor, Category = "Room|Setup")
+	void SpawnRackGrid();
+
+	// SpawnRackGrid가 찍어 낸 랙을 전부 지운다. 손으로 놓은 랙은 건드리지 않는다.
+	UFUNCTION(BlueprintCallable, CallInEditor, Category = "Room|Setup")
+	void DestroySpawnedRackGrid();
+
+	// ---- SpawnRackGrid 설정 (m) ----
+	// 배관을 잇는 데는 쓰이지 않는다. 찍어 낼 때만 쓴다.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Room|Setup", meta = (ClampMin = "1", ClampMax = "16"))
 	int32 NumRows = 2;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Layout", meta = (ClampMin = "1", ClampMax = "32"))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Room|Setup", meta = (ClampMin = "1", ClampMax = "32"))
 	int32 RacksPerRow = 8;
 
-	// 랙 외형. ARackThermalActor의 RackSizeM과 같아야 배관이 뒷면에 맞는다.
-	// X = 깊이, Y = 폭, Z = 높이.
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Layout")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Room|Setup")
 	FVector RackSizeM = FVector(1.2, 0.6, 2.0);
 
-	// 랙 중심 사이 거리 (행 방향). 랙 폭보다 커야 틈이 생긴다.
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Layout")
+	// 랙 중심 사이 거리 (줄 방향). 랙 폭보다 커야 틈이 생긴다.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Room|Setup")
 	double RackPitchM = 0.66;
 
 	// 마주 보는 두 줄의 앞면 사이 거리 (콜드 통로).
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Layout")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Room|Setup")
 	double AisleWidthM = 2.4;
 
 	// 쌍과 쌍 사이에 두는 뒷면 서비스 통로.
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Layout")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Room|Setup")
 	double ServiceAisleWidthM = 1.6;
 
+	// 랙 한 대의 슬롯 수. GB200 NVL72는 컴퓨트 트레이 18장이다.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Room|Setup", meta = (ClampMin = "1", ClampMax = "64"))
+	int32 SledsPerRack = 18;
+
+	// ---- 배관 배치 (m) ----
 	// 랙 뒷면에서 배관 중심까지의 거리.
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Layout")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Routing")
 	double PipeStandoffM = 0.18;
 
 	// 공급관과 회수관 사이 거리 (뒤로 더 나간 쪽이 회수관).
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Layout")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Routing")
 	double SupplyReturnSpacingM = 0.16;
 
 	// 냉각수 헤더 높이. GB200 NVL72 참고 배치는 헤더가 바닥 레벨을 따라 돌고
 	// 분기관이 랙 밑에서 위로 올라간다 (천장 배관이 아니다).
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Layout")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Routing")
 	double HeaderHeightM = 0.25;
-
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Layout")
-	double CableTrayHeightM = 2.85;
 
 	// 랙 뒷면 매니폴드 높이. 분기관이 바닥 헤더에서 여기까지 올라왔다가
 	// 다시 회수 헤더로 내려간다.
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Layout")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Routing")
 	double RackManifoldZM = 1.1;
 
-	// 행의 첫 랙에서 CDU까지의 거리.
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Layout")
-	double CduOffsetM = 1.4;
+	// 같은 줄로 묶는 허용 오차 [m]. 뒷면이 이만큼 안에서 일치하면 한 줄로 본다.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Routing", meta = (ClampMin = "0.05"))
+	double RowGroupToleranceM = 0.5;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Routing")
+	double CableTrayHeightM = 2.85;
 
 	// ---- 굵기 (m) ----
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Visualization")
@@ -104,7 +118,6 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Visualization")
 	double CableDiameterM = 0.022;
 
-	// 랙 1대에 내려오는 케이블 가닥 수.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Visualization", meta = (ClampMin = "0", ClampMax = "12"))
 	int32 CablesPerRack = 4;
 
@@ -115,11 +128,10 @@ public:
 	bool bShowSummary = true;
 
 	// ---- 수력 파라미터 ----
-	// GB200 NVL72 운전점에서 역산했다. AHydraulicNetworkDebugActor(15 kW 하이브리드 랙)와는
-	// 다른 장비이므로 값이 다르다.
+	// GB200 NVL72 운전점에서 역산했다.
 	//   랙 1대 105 kW 중 액랭 97 kW를 냉각수 ΔT 약 10 K로 빼려면 랙당 2.3 L/s가 필요하다.
-	//   행 8대면 18.4 L/s이고, 그 유량에서 루프 전체 압력 강하가 약 195 kPa이 되도록 잡았다.
-	// 감으로 넣은 값이 아니다. 바꾸면 타당성을 다시 봐야 한다.
+	//   줄에 8대면 18.4 L/s이고, 그 유량에서 루프 전체 압력 강하가 약 195 kPa이 되도록 잡았다.
+	// 감으로 넣은 값이 아니다. 다른 랙을 쓰면 여기부터 다시 역산해야 한다.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hydraulics")
 	double HeaderSegmentResistancePaS2M6 = 6.0e6;
 
@@ -127,60 +139,39 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hydraulics")
 	double RackBranchResistancePaS2M6 = 1.7e10;
 
-	// 랙 한 대의 슬롯 수. GB200 NVL72는 컴퓨트 트레이 18장이다.
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Layout", meta = (ClampMin = "1", ClampMax = "64"))
-	int32 SledsPerRack = 18;
-
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hydraulics")
 	double ReturnToCduResistancePaS2M6 = 1.5e7;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hydraulics")
-	double CduReferencePressurePa = 2.0e5;
-
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hydraulics")
-	double PumpShutoffHeadPa = 4.0e5;
-
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hydraulics")
-	double PumpCurveCoeffPaS2M6 = 6.0e8;
-
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hydraulics", meta = (ClampMin = "0.01", ClampMax = "1.0"))
-	double PumpEfficiency = 0.7;
-
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hydraulics", meta = (ClampMin = "0.0", ClampMax = "1.5"))
-	double PumpSpeedRatio = 1.0;
-
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hydraulics")
 	FHydraulicSolveSettings SolveSettings;
 
-	// ---- 랙 액터 ----
-	// 켜면 Play할 때 자리마다 진짜 ARackThermalActor를 띄운다 (유닛을 뽑을 수 있다).
-	// 에디터에서는 자리만 상자로 보여준다.
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Room")
-	bool bSpawnRackActors = true;
+	// 레벨에 CDU가 하나도 없을 때 쓰는 값. CDU를 놓으면 그쪽 값이 이긴다.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hydraulics")
+	double FallbackCduReferencePressurePa = 2.0e5;
 
-	// 디버그 키용. 방 전체 펌프에 같은 회전수비를 준다.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hydraulics")
+	double FallbackPumpShutoffHeadPa = 4.0e5;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hydraulics")
+	double FallbackPumpCurveCoeffPaS2M6 = 6.0e8;
+
+	// 디버그 키용. 레벨의 모든 CDU에 같은 회전수비를 준다.
 	UFUNCTION(BlueprintCallable, Category = "Hydraulics")
 	void SetPumpSpeedRatio(double InSpeedRatio);
 
 	UFUNCTION(BlueprintCallable, Category = "Hydraulics")
-	double GetPumpSpeedRatio() const { return PumpSpeedRatio; }
-
-	// 자리(행, 열)에 놓인 랙 액터. 없으면 nullptr.
-	UFUNCTION(BlueprintCallable, Category = "Room")
-	ARackThermalActor* GetRackAt(int32 RowIndex, int32 ColumnIndex) const;
+	double GetPumpSpeedRatio() const { return LastPumpSpeedRatio; }
 
 	UFUNCTION(BlueprintCallable, Category = "Room")
-	int32 GetNumRackSlots() const { return FMath::Max(1, NumRows) * FMath::Max(1, RacksPerRow); }
+	int32 GetNumRoutedRacks() const;
 
-	// 랙 자리의 월드 좌표 [m]. 바닥 중심이다.
-	// 다른 도메인(공기 격자)이 랙 위치를 알아야 할 때 쓴다. 단위는 m이므로
-	// 부르는 쪽이 필요할 때만 cm로 바꾼다 (규약 1).
-	UFUNCTION(BlueprintCallable, Category = "Room")
-	FVector GetRackWorldLocationM(int32 RowIndex, int32 ColumnIndex) const;
-
-	// 랙이 차지하는 전체 범위의 월드 좌표 [m]. 배관과 트레이까지 포함한다.
+	// 랙이 차지하는 전체 범위의 월드 좌표 [m]. 공기 격자를 맞출 때 쓴다.
 	UFUNCTION(BlueprintCallable, Category = "Room")
 	FBox GetRoomBoundsM() const;
+
+	// 줄 묶기에 쓰인 랙 목록. 공기 열원을 랙마다 놓을 때 쓴다.
+	UFUNCTION(BlueprintCallable, Category = "Room")
+	TArray<ARackThermalActor*> GetRoutedRacks() const;
 
 protected:
 	virtual void BeginPlay() override;
@@ -190,21 +181,22 @@ protected:
 #endif
 
 private:
-	// 행 하나의 기하. 한 번 계산해 배관·배선·랙 배치가 전부 같은 값을 쓰게 한다.
-	struct FRowGeometry
+	// 한 줄. 같은 방향을 보면서 뒷면이 한 줄로 늘어선 랙들이다.
+	struct FRackRow
 	{
-		// 랙 중심이 놓이는 X [m].
-		double RackCenterXM = 0.0;
+		// 줄 방향으로 정렬돼 있다.
+		TArray<TObjectPtr<ARackThermalActor>> Racks;
 
-		// 랙이 바라보는 방향. +1이면 앞면이 +X, -1이면 -X.
-		double FacingSign = 1.0;
+		// 앞면에서 뒷면으로 향하는 단위 벡터 (월드).
+		FVector RearDir = FVector::ForwardVector;
 
-		// 공급관 / 회수관 중심 X [m]. 둘 다 랙 뒤쪽이다.
-		double SupplyXM = 0.0;
-		double ReturnXM = 0.0;
+		// 줄을 따라가는 단위 벡터 (월드).
+		FVector AlongDir = FVector::RightVector;
 
-		// 케이블 트레이 중심 X [m].
-		double TrayXM = 0.0;
+		// 이 줄을 맡는 CDU. 없으면 nullptr.
+		TObjectPtr<ACoolingDistributionUnitActor> Cdu;
+
+		int32 PumpIndex = INDEX_NONE;
 	};
 
 	FHydraulicNetwork Network;
@@ -213,18 +205,17 @@ private:
 	// 솔버가 모르는 기하. 노드 인덱스와 1:1로 대응한다.
 	TArray<FVector> NodePositionM;
 
-	// 행마다의 기하. 길이 NumRows.
-	TArray<FRowGeometry> RowGeometries;
+	TArray<FRackRow> Rows;
 
-	// 행별 펌프 인덱스. 길이 NumRows.
-	TArray<int32> RowPumpIndices;
-
-	// 랙 자리별 공급 분기 파이프 인덱스. 평탄 배열 [Row * RacksPerRow + Column].
+	// 랙 자리별 공급 분기 파이프 인덱스. 줄 순서대로 펼친 평탄 배열.
 	TArray<int32> RackBranchPipeIndices;
 
-	// 파이프마다 공급 쪽인지. 길이는 Network.GetNumPipes().
-	// 표시용이며 계산에 쓰이지 않는다 - 솔버는 어느 쪽이 공급인지 모른다.
+	// 파이프마다 공급 쪽인지. 표시용이며 계산에 쓰이지 않는다.
 	TArray<bool> bPipeIsSupplySide;
+
+	// SpawnRackGrid가 찍어 낸 랙. 지울 때 손으로 놓은 랙과 구분한다.
+	UPROPERTY()
+	TArray<TObjectPtr<ARackThermalActor>> GridSpawnedRacks;
 
 	UPROPERTY(Transient)
 	TArray<TObjectPtr<UStaticMeshComponent>> PipeMeshes;
@@ -232,28 +223,22 @@ private:
 	UPROPERTY(Transient)
 	TArray<TObjectPtr<UStaticMeshComponent>> DecorMeshes;
 
-	UPROPERTY(Transient)
-	TArray<TObjectPtr<ARackThermalActor>> SpawnedRacks;
-
 	bool bNeedsRebuild = true;
+	double LastPumpSpeedRatio = 1.0;
 
-	FRowGeometry ComputeRowGeometry(int32 RowIndex) const;
-
-	// 그 자리의 랙에 지금 꽂혀 있는 유닛 수. Play 중이면 랙 액터에서 읽는다.
-	int32 GetDockedSledsAt(int32 RowIndex, int32 ColumnIndex) const;
-
-	// 행 방향 위치 [m]. 열 0이 원점 쪽이다.
-	double ColumnYM(int32 ColumnIndex) const;
+	// 레벨에서 랙과 CDU를 찾아 줄로 묶는다.
+	void DiscoverRows();
 
 	void BuildNetwork();
 	void BuildPipeMeshes();
 	void BuildDecorMeshes();
-	void SpawnRacks();
-	void DestroySpawnedRacks();
 	void DestroyMeshes(TArray<TObjectPtr<UStaticMeshComponent>>& Meshes);
 
 	void UpdatePipeColors() const;
 	void DrawSummary() const;
+
+	// 랙 뒷면 바깥의 배관 기준점 [m].
+	FVector RackRearAnchorM(const ARackThermalActor& Rack, const FVector& RearDir, double ExtraOffsetM) const;
 
 	FVector NodeWorldOffsetCm(int32 NodeIndex) const;
 };

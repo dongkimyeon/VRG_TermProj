@@ -2,7 +2,7 @@
 
 #include "Actors/AirFieldDebugActor.h"
 
-#include "Actors/DataCenterRoomActor.h"
+#include "Actors/RackThermalActor.h"
 #include "Simulation/Core/SimUnits.h"
 
 #include "EngineUtils.h"
@@ -144,34 +144,54 @@ void AAirFieldDebugActor::BuildCellHeat()
 	}
 }
 
-void AAirFieldDebugActor::FitToRoom()
+namespace
 {
-	UWorld* World = GetWorld();
-	if (World == nullptr)
+	// 레벨에 놓인 랙을 전부 모은다. 방 액터를 거치지 않는다 -
+	// 공기 격자가 알아야 하는 것은 랙의 위치와 방향뿐이다.
+	TArray<ARackThermalActor*> GatherRacks(UWorld* World)
 	{
+		TArray<ARackThermalActor*> Racks;
+		if (World == nullptr)
+		{
+			return Racks;
+		}
+		for (TActorIterator<ARackThermalActor> It(World); It; ++It)
+		{
+			Racks.Add(*It);
+		}
+		return Racks;
+	}
+}
+
+void AAirFieldDebugActor::FitToRacks()
+{
+	const TArray<ARackThermalActor*> Racks = GatherRacks(GetWorld());
+	if (Racks.Num() == 0)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("AirFieldDebugActor: 레벨에서 랙을 찾지 못했습니다."));
 		return;
 	}
 
-	ADataCenterRoomActor* Room = nullptr;
-	for (TActorIterator<ADataCenterRoomActor> It(World); It; ++It)
+	FBox BoundsM(ForceInit);
+	for (const ARackThermalActor* Rack : Racks)
 	{
-		Room = *It;
-		break;
+		const FVector RackM = SimUnits::UnrealToMeters(Rack->GetActorLocation());
+		// 회전을 따지지 않고 넉넉히 감싼다. 격자 범위라 여유가 있어도 된다.
+		const double HalfSpanM = FMath::Max(Rack->RackSizeM.X, Rack->RackSizeM.Y) * 0.5;
+		BoundsM += FBox(
+			RackM - FVector(HalfSpanM, HalfSpanM, 0.0),
+			RackM + FVector(HalfSpanM, HalfSpanM, Rack->RackSizeM.Z));
 	}
 
-	if (Room == nullptr)
-	{
-		UE_LOG(LogTemp, Warning, TEXT("AirFieldDebugActor: 레벨에서 ADataCenterRoomActor를 찾지 못했습니다."));
-		return;
-	}
-
-	// 배기 기둥이 랙 뒤와 위로 뻗으므로 방 범위보다 조금 넉넉하게 잡는다.
+	// 배기 기둥이 랙 뒤와 위로 뻗으므로 넉넉하게 잡는다.
 	// 격자 밖으로 나간 열은 버려지고, 그러면 열수지 장부가 어긋난 것처럼 보인다.
-	const FBox BoundsM = Room->GetRoomBoundsM()
-		.ExpandBy(FVector(ExhaustStandoffM * 2.0 + 0.3, 0.3, 0.0));
+	const double MarginM = ExhaustStandoffM * 2.0 + 0.6;
+	BoundsM = BoundsM.ExpandBy(FVector(MarginM, MarginM, 0.0));
+	BoundsM.Max.Z = FMath::Max(BoundsM.Max.Z, ExhaustTopZM + 1.0);
+
 	const double CellSizeM = FMath::Max(GridParams.CellSizeM, 0.01);
 
-	// 도메인 원점은 격자의 (0,0,0) 셀 바깥 모서리다. 액터를 거기에 둔다.
+	// 도메인 원점은 격자 (0,0,0) 셀의 바깥 모서리다. 액터를 거기에 둔다.
 	SetActorLocation(SimUnits::MetersToUnreal(BoundsM.Min));
 
 	const FVector SpanM = BoundsM.GetSize();
@@ -180,32 +200,20 @@ void AAirFieldDebugActor::FitToRoom()
 	GridParams.NumCellsZ = FMath::Clamp(FMath::CeilToInt32(SpanM.Z / CellSizeM), 1, 128);
 
 	UE_LOG(LogTemp, Log,
-		TEXT("AirFieldDebugActor: 방에 맞췄습니다. %.2f x %.2f x %.2f m -> 격자 %dx%dx%d (셀 %d개)."),
-		SpanM.X, SpanM.Y, SpanM.Z,
+		TEXT("AirFieldDebugActor: 랙 %d대에 맞췄습니다. %.2f x %.2f x %.2f m -> 격자 %dx%dx%d (셀 %d개)."),
+		Racks.Num(), SpanM.X, SpanM.Y, SpanM.Z,
 		GridParams.NumCellsX, GridParams.NumCellsY, GridParams.NumCellsZ,
 		GridParams.NumCellsX * GridParams.NumCellsY * GridParams.NumCellsZ);
 
 	bNeedsReset = true;
 }
 
-void AAirFieldDebugActor::PlaceHeatSourcesFromRoom()
+void AAirFieldDebugActor::PlaceHeatSourcesFromRacks()
 {
-	UWorld* World = GetWorld();
-	if (World == nullptr)
+	const TArray<ARackThermalActor*> Racks = GatherRacks(GetWorld());
+	if (Racks.Num() == 0)
 	{
-		return;
-	}
-
-	ADataCenterRoomActor* Room = nullptr;
-	for (TActorIterator<ADataCenterRoomActor> It(World); It; ++It)
-	{
-		Room = *It;
-		break;
-	}
-
-	if (Room == nullptr)
-	{
-		UE_LOG(LogTemp, Warning, TEXT("AirFieldDebugActor: 레벨에서 ADataCenterRoomActor를 찾지 못했습니다."));
+		UE_LOG(LogTemp, Warning, TEXT("AirFieldDebugActor: 레벨에서 랙을 찾지 못했습니다."));
 		return;
 	}
 
@@ -213,41 +221,34 @@ void AAirFieldDebugActor::PlaceHeatSourcesFromRoom()
 
 	// 액터 기준 로컬 좌표로 바꿔 담는다.
 	const FVector ActorLocationM = SimUnits::UnrealToMeters(GetActorLocation());
+	const double ExhaustCenterZM = 0.5 * (ExhaustBottomZM + ExhaustTopZM);
+	const double ExhaustHeightM = FMath::Max(ExhaustTopZM - ExhaustBottomZM, GridParams.CellSizeM);
 
-	for (int32 RowIndex = 0; RowIndex < Room->NumRows; ++RowIndex)
+	for (const ARackThermalActor* Rack : Racks)
 	{
-		for (int32 ColumnIndex = 0; ColumnIndex < Room->RacksPerRow; ++ColumnIndex)
-		{
-			const FVector RackWorldM = Room->GetRackWorldLocationM(RowIndex, ColumnIndex);
+		// 열원을 랙 몸통 안이 아니라 **뒷면 배기 쪽**에 둔다.
+		// 더운 공기는 랙 뒤로 나오므로 그게 물리적으로 맞고, 랙 안에 넣으면
+		// 불투명한 랙 메쉬에 가려 화면에서 아무것도 안 보인다.
+		// 랙 앞면이 로컬 +X이므로 뒷면은 그 반대다.
+		const FVector RearDir = -Rack->GetActorForwardVector().GetSafeNormal2D();
+		const FVector RackM = SimUnits::UnrealToMeters(Rack->GetActorLocation());
+		const FVector ExhaustCenterM =
+			RackM + RearDir * (Rack->RackSizeM.X * 0.5 + ExhaustStandoffM);
 
-			// 열원을 랙 몸통 안이 아니라 **뒷면 배기 쪽**에 둔다.
-			// 더운 공기는 랙 뒤로 나오므로 그게 물리적으로 맞고, 랙 안에 넣으면
-			// 불투명한 랙 메쉬에 가려 화면에서 아무것도 안 보인다.
-			//
-			// 앞면이 통로를 향하므로 뒷면은 그 반대다. 행 기하에서 바라보는 방향을
-			// 되짚는다 - 통로 중심에서 멀어지는 쪽이 뒷면이다.
-			const double RowCenterX = Room->GetRackWorldLocationM(RowIndex, 0).X;
-			const double PairCenterX = 0.5 * (Room->GetRackWorldLocationM(0, 0).X
-				+ Room->GetRackWorldLocationM(FMath::Min(1, Room->NumRows - 1), 0).X);
-			const double RearSign = (RowCenterX >= PairCenterX) ? 1.0 : -1.0;
+		FAirHeatSourceBox Source;
+		Source.CenterM = ExhaustCenterM - ActorLocationM + FVector(0.0, 0.0, ExhaustCenterZM);
 
-			const double RearOffsetM = Room->RackSizeM.X * 0.5 + ExhaustStandoffM;
-			const double ExhaustCenterZM = 0.5 * (ExhaustBottomZM + ExhaustTopZM);
+		// 상자는 축에 정렬돼 있다. 랙이 돌아가 있으면 폭과 깊이를 바꿔 넣는다.
+		const bool bAlongX = FMath::Abs(RearDir.X) > FMath::Abs(RearDir.Y);
+		Source.SizeM = bAlongX
+			? FVector(ExhaustStandoffM * 2.0, Rack->RackSizeM.Y, ExhaustHeightM)
+			: FVector(Rack->RackSizeM.Y, ExhaustStandoffM * 2.0, ExhaustHeightM);
 
-			FAirHeatSourceBox Source;
-			Source.CenterM = RackWorldM - ActorLocationM
-				+ FVector(RearSign * RearOffsetM, 0.0, ExhaustCenterZM);
-			Source.SizeM = FVector(
-				ExhaustStandoffM * 2.0,
-				Room->RackSizeM.Y,
-				FMath::Max(ExhaustTopZM - ExhaustBottomZM, GridParams.CellSizeM));
+		// D1: 랙 하나가 공기에 주는 열을 하나의 체적 열원으로 준다.
+		// 부품별로 쪼개 넣지 않는다.
+		Source.HeatW = AirHeatPerRackW;
 
-			// D1: 랙 하나가 공기에 주는 열을 하나의 체적 열원으로 준다.
-			// 부품별로 쪼개 넣지 않는다.
-			Source.HeatW = AirHeatPerRackW;
-
-			HeatSources.Add(Source);
-		}
+		HeatSources.Add(Source);
 	}
 
 	UE_LOG(LogTemp, Log, TEXT("AirFieldDebugActor: 열원 %d개를 놓았습니다 (랙당 %.0f W, 합계 %.1f kW)."),
