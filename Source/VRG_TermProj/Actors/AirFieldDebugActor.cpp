@@ -1,0 +1,348 @@
+// Fill out your copyright notice in the Description page of Project Settings.
+
+#include "Actors/AirFieldDebugActor.h"
+
+#include "Simulation/Core/SimUnits.h"
+
+#include "Components/SceneComponent.h"
+#include "DrawDebugHelpers.h"
+#include "Engine/Engine.h"
+
+namespace
+{
+	// 공기 온도장 색상표. 부품 온도(SimMeshBuilder)와 일부러 다르게 둔다.
+	// 연속장은 반투명하게 겹쳐 그리므로 채도를 낮추고 파랑->빨강만 쓴다.
+	FLinearColor AirTemperatureColor(double Normalized)
+	{
+		const float T = FMath::Clamp(static_cast<float>(Normalized), 0.0f, 1.0f);
+		static const FLinearColor ColdColor(0.05f, 0.25f, 0.85f);
+		static const FLinearColor MidColor(0.15f, 0.85f, 0.55f);
+		static const FLinearColor HotColor(1.00f, 0.25f, 0.10f);
+
+		return T < 0.5f
+			? FMath::Lerp(ColdColor, MidColor, T * 2.0f)
+			: FMath::Lerp(MidColor, HotColor, (T - 0.5f) * 2.0f);
+	}
+}
+
+AAirFieldDebugActor::AAirFieldDebugActor()
+{
+	PrimaryActorTick.bCanEverTick = true;
+	RootComponent = CreateDefaultSubobject<USceneComponent>(TEXT("Root"));
+
+	// 기본 구성은 랙 한 줄이 들어갈 만한 작은 방이다.
+	GridParams.NumCellsX = 24;
+	GridParams.NumCellsY = 24;
+	GridParams.NumCellsZ = 16;
+	GridParams.CellSizeM = 0.25;
+
+	// 공기 해석은 압력 풀이가 무겁다. 목표를 너무 조이면 프레임이 죽는다.
+	// D5대로 목표와 상한을 함께 두고, 못 미치면 화면에 수렴 실패를 띄운다.
+	PressureSettings.NormalizedResidualTarget = 1.0e-5;
+	PressureSettings.MaxIterations = 120;
+
+	HeatSources.Add(FAirHeatSourceBox());
+}
+
+void AAirFieldDebugActor::BeginPlay()
+{
+	Super::BeginPlay();
+	ResetSim();
+	StartSim();
+}
+
+#if WITH_EDITOR
+void AAirFieldDebugActor::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent)
+{
+	Super::PostEditChangeProperty(PropertyChangedEvent);
+	bNeedsReset = true;
+}
+#endif
+
+void AAirFieldDebugActor::StartSim()
+{
+	bSimRunning = true;
+}
+
+void AAirFieldDebugActor::PauseSim()
+{
+	bSimRunning = false;
+}
+
+void AAirFieldDebugActor::ResetSim()
+{
+	Clock.Reset(FixedStepS);
+	Solver.Initialize(GridParams, InitialTempK);
+	Solver.GetMutablePressureSettings() = PressureSettings;
+
+	Input.GravityZMs2 = GravityZMs2;
+	Input.bEnableBuoyancy = bEnableBuoyancy;
+	BuildCellHeat();
+
+	bNeedsReset = false;
+}
+
+FAirSolverSnapshot AAirFieldDebugActor::GetSnapshot() const
+{
+	return Solver.MakeSnapshot(Clock.GetSimTimeS());
+}
+
+void AAirFieldDebugActor::BuildCellHeat()
+{
+	const FUniformAirGrid& Grid = Solver.GetGrid();
+	Input.CellHeatW.Init(0.0, Grid.GetNumCells());
+
+	for (const FAirHeatSourceBox& Source : HeatSources)
+	{
+		if (Source.HeatW == 0.0)
+		{
+			continue;
+		}
+
+		const FVector MinM = Source.CenterM - Source.SizeM * 0.5;
+		const FVector MaxM = Source.CenterM + Source.SizeM * 0.5;
+
+		// 상자에 중심이 들어가는 셀을 모은다.
+		TArray<int32> CoveredCells;
+		for (int32 Z = 0; Z < Grid.GetNumCellsZ(); ++Z)
+		{
+			for (int32 Y = 0; Y < Grid.GetNumCellsY(); ++Y)
+			{
+				for (int32 X = 0; X < Grid.GetNumCellsX(); ++X)
+				{
+					const FVector CenterM = Grid.CellCenterM(X, Y, Z);
+					if (CenterM.X >= MinM.X && CenterM.X <= MaxM.X
+						&& CenterM.Y >= MinM.Y && CenterM.Y <= MaxM.Y
+						&& CenterM.Z >= MinM.Z && CenterM.Z <= MaxM.Z)
+					{
+						CoveredCells.Add(Grid.CellIndex(X, Y, Z));
+					}
+				}
+			}
+		}
+
+		if (CoveredCells.Num() == 0)
+		{
+			UE_LOG(LogTemp, Warning,
+				TEXT("AirFieldDebugActor: 열원 상자가 격자에 걸리지 않습니다 (%.1f W가 버려집니다)."),
+				Source.HeatW);
+			continue;
+		}
+
+		// D1: 체적 열원으로 넣는다. 셀이 겹치면 합산한다 - 덮어쓰면 열이 사라진다.
+		const double PerCellW = Source.HeatW / CoveredCells.Num();
+		for (const int32 Index : CoveredCells)
+		{
+			Input.CellHeatW[Index] += PerCellW;
+		}
+	}
+}
+
+void AAirFieldDebugActor::Tick(float DeltaTime)
+{
+	Super::Tick(DeltaTime);
+
+	if (bNeedsReset)
+	{
+		ResetSim();
+	}
+
+	if (bSimRunning)
+	{
+		// 규약 4: 시계가 남은 시간을 버리지 않고 다음 프레임으로 넘긴다.
+		// 다만 공기 해석은 무거워서 한 프레임에 돌릴 스텝 수를 따로 제한한다.
+		const int32 RequestedSteps = Clock.BeginFrame(DeltaTime);
+		const int32 NumSteps = FMath::Min(RequestedSteps, MaxStepsPerFrame);
+
+		for (int32 StepIndex = 0; StepIndex < NumSteps; ++StepIndex)
+		{
+			Solver.Step(Input, Clock.GetFixedStepS());
+			Clock.CompleteStep();
+		}
+	}
+
+	if (bDrawSlice)
+	{
+		DrawSlice();
+	}
+
+	if (bShowSummary)
+	{
+		DrawSummaryText();
+	}
+}
+
+void AAirFieldDebugActor::DrawSlice() const
+{
+	UWorld* World = GetWorld();
+	if (World == nullptr)
+	{
+		return;
+	}
+
+	const FUniformAirGrid& Grid = Solver.GetGrid();
+	const double CellSizeM = Grid.GetCellSizeM();
+
+	// 길이 단위 변환은 여기서만 한다 (규약 1).
+	const FVector ActorLocationCm = GetActorLocation();
+	const double HalfCellCm = SimUnits::MetersToCentimeters(CellSizeM) * 0.5;
+
+	if (bDrawDomainBounds)
+	{
+		const FVector DomainSizeCm = SimUnits::MetersToUnreal(Grid.GetDomainSizeM());
+		DrawDebugBox(World, ActorLocationCm + DomainSizeCm * 0.5, DomainSizeCm * 0.5,
+			FColor(120, 140, 170), false, -1.0f, 0, 2.0f);
+	}
+
+	if (bDrawHeatSources)
+	{
+		for (const FAirHeatSourceBox& Source : HeatSources)
+		{
+			DrawDebugBox(World,
+				ActorLocationCm + SimUnits::MetersToUnreal(Source.CenterM),
+				SimUnits::MetersToUnreal(Source.SizeM) * 0.5,
+				FColor(255, 160, 60), false, -1.0f, 0, 2.0f);
+		}
+	}
+
+	// 온도 표시는 여기서만 °C로 바꾼다 (규약 2).
+	const double MinTempK = SimUnits::CelsiusToKelvin(ColorMinCelsius);
+	const double MaxTempK = SimUnits::CelsiusToKelvin(ColorMaxCelsius);
+	const double SpanK = FMath::Max(MaxTempK - MinTempK, UE_DOUBLE_SMALL_NUMBER);
+
+	const int32 Stride = FMath::Max(1, DrawStride);
+
+	// 슬라이스 축에 따라 훑을 범위를 정한다.
+	int32 FixedIndex = 0;
+	switch (SliceAxis)
+	{
+	case EAirSliceAxis::X:
+		FixedIndex = FMath::Clamp(FMath::RoundToInt32(SliceFraction * (Grid.GetNumCellsX() - 1)),
+			0, Grid.GetNumCellsX() - 1);
+		break;
+	case EAirSliceAxis::Y:
+		FixedIndex = FMath::Clamp(FMath::RoundToInt32(SliceFraction * (Grid.GetNumCellsY() - 1)),
+			0, Grid.GetNumCellsY() - 1);
+		break;
+	default:
+		FixedIndex = FMath::Clamp(FMath::RoundToInt32(SliceFraction * (Grid.GetNumCellsZ() - 1)),
+			0, Grid.GetNumCellsZ() - 1);
+		break;
+	}
+
+	// 슬라이스 면에 맞춰 납작한 상자를 그린다. 두께는 한 셀의 1/6로 둔다.
+	const FVector ThicknessCm(
+		SliceAxis == EAirSliceAxis::X ? HalfCellCm / 3.0 : HalfCellCm,
+		SliceAxis == EAirSliceAxis::Y ? HalfCellCm / 3.0 : HalfCellCm,
+		SliceAxis == EAirSliceAxis::Z ? HalfCellCm / 3.0 : HalfCellCm);
+
+	for (int32 Z = 0; Z < Grid.GetNumCellsZ(); Z += Stride)
+	{
+		for (int32 Y = 0; Y < Grid.GetNumCellsY(); Y += Stride)
+		{
+			for (int32 X = 0; X < Grid.GetNumCellsX(); X += Stride)
+			{
+				const bool bOnSlice =
+					(SliceAxis == EAirSliceAxis::X && X == FixedIndex)
+					|| (SliceAxis == EAirSliceAxis::Y && Y == FixedIndex)
+					|| (SliceAxis == EAirSliceAxis::Z && Z == FixedIndex);
+				if (!bOnSlice)
+				{
+					continue;
+				}
+
+				const double TempK = Grid.TemperatureK[Grid.CellIndex(X, Y, Z)];
+				const double Normalized = (TempK - MinTempK) / SpanK;
+
+				FLinearColor Color = AirTemperatureColor(Normalized);
+				// 기준 온도에 가까운 셀은 흐리게 둬야 뜨거운 기둥이 눈에 띈다.
+				Color.A = FMath::Clamp(0.12f + 0.75f * static_cast<float>(Normalized), 0.12f, 0.9f);
+
+				const FVector CenterCm = ActorLocationCm + SimUnits::MetersToUnreal(Grid.CellCenterM(X, Y, Z));
+				DrawDebugSolidBox(World, CenterCm, ThicknessCm, Color.ToFColor(false), false, -1.0f, 0);
+			}
+		}
+	}
+
+	if (bDrawVelocityArrows)
+	{
+		for (int32 Z = 0; Z < Grid.GetNumCellsZ(); Z += Stride)
+		{
+			for (int32 Y = 0; Y < Grid.GetNumCellsY(); Y += Stride)
+			{
+				for (int32 X = 0; X < Grid.GetNumCellsX(); X += Stride)
+				{
+					const bool bOnSlice =
+						(SliceAxis == EAirSliceAxis::X && X == FixedIndex)
+						|| (SliceAxis == EAirSliceAxis::Y && Y == FixedIndex)
+						|| (SliceAxis == EAirSliceAxis::Z && Z == FixedIndex);
+					if (!bOnSlice)
+					{
+						continue;
+					}
+
+					const FVector VelocityMs(
+						0.5 * (Grid.VelocityXMs[Grid.FaceXIndex(X, Y, Z)] + Grid.VelocityXMs[Grid.FaceXIndex(X + 1, Y, Z)]),
+						0.5 * (Grid.VelocityYMs[Grid.FaceYIndex(X, Y, Z)] + Grid.VelocityYMs[Grid.FaceYIndex(X, Y + 1, Z)]),
+						0.5 * (Grid.VelocityZMs[Grid.FaceZIndex(X, Y, Z)] + Grid.VelocityZMs[Grid.FaceZIndex(X, Y, Z + 1)]));
+
+					if (VelocityMs.IsNearlyZero())
+					{
+						continue;
+					}
+
+					// 화살표 길이는 속도에 비례하되 셀 크기를 넘지 않게 자른다.
+					const FVector StartCm = ActorLocationCm + SimUnits::MetersToUnreal(Grid.CellCenterM(X, Y, Z));
+					const FVector OffsetCm = SimUnits::MetersToUnreal(
+						VelocityMs.GetClampedToMaxSize(1.0) * CellSizeM * 0.8);
+					DrawDebugDirectionalArrow(World, StartCm, StartCm + OffsetCm, 6.0f,
+						FColor(230, 230, 230), false, -1.0f, 0, 1.0f);
+				}
+			}
+		}
+	}
+}
+
+void AAirFieldDebugActor::DrawSummaryText() const
+{
+	if (GEngine == nullptr)
+	{
+		return;
+	}
+
+	const FAirSolverSnapshot Snapshot = GetSnapshot();
+	const FUniformAirGrid& Grid = Solver.GetGrid();
+
+	double TotalHeatW = 0.0;
+	for (const double HeatW : Input.CellHeatW)
+	{
+		TotalHeatW += HeatW;
+	}
+
+	const uint64 BaseKey = static_cast<uint64>(GetUniqueID());
+
+	GEngine->AddOnScreenDebugMessage(BaseKey, 0.0f,
+		Snapshot.bPressureConverged ? FColor::Green : FColor::Red,
+		FString::Printf(TEXT("[%s] t=%.1f s | 격자 %dx%dx%d (h=%.2f m) | 압력 %s (반복 %d회, 정규화 잔차 %.2e)"),
+			*GetName(), Snapshot.SimTimeS,
+			Grid.GetNumCellsX(), Grid.GetNumCellsY(), Grid.GetNumCellsZ(), Grid.GetCellSizeM(),
+			Snapshot.bPressureConverged ? TEXT("수렴") : TEXT("수렴 실패 - 속도장 믿지 말 것"),
+			Snapshot.PressureIterations, Snapshot.PressureNormalizedResidual));
+
+	// 온도 표시는 여기서만 °C로 바꾼다 (규약 2).
+	GEngine->AddOnScreenDebugMessage(BaseKey + 1, 0.0f, FColor::Cyan,
+		FString::Printf(TEXT("열원 %.0f W | 공기 %.2f ~ %.2f C | 최대 속도 %.3f m/s | CFL %.2f%s"),
+			TotalHeatW,
+			SimUnits::KelvinToCelsius(Snapshot.MinTemperatureK),
+			SimUnits::KelvinToCelsius(Snapshot.MaxTemperatureK),
+			Snapshot.MaxSpeedMs, Snapshot.CourantNumber,
+			Snapshot.CourantNumber > 1.0 ? TEXT(" [CFL>1: 결과가 뭉개짐]") : TEXT("")));
+
+	GEngine->AddOnScreenDebugMessage(BaseKey + 2, 0.0f, FColor::Yellow,
+		FString::Printf(TEXT("정규화 발산 %.2e (무차원) | 유입 %.3e J / 축적 %.3e J / 정규화 열수지 잔차 %.2e"),
+			Snapshot.NormalizedDivergence,
+			Solver.GetEnergyInJ(), Solver.GetEnergyStoredJ(), Snapshot.NormalizedEnergyResidual));
+
+	GEngine->AddOnScreenDebugMessage(BaseKey + 3, 0.0f, FColor(150, 150, 150),
+		TEXT("공기 색 = 온도 (파랑 낮음 -> 빨강 높음). 막힌 상자이며 급배기는 S4에서 붙인다."));
+}
