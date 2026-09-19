@@ -118,4 +118,8 @@ namespace JacobiPoissonSolver
 
 	// 전체 Neumann이라 해가 상수만큼 자유롭다. 평균을 0으로 맞춘다.
 	VRG_TERMPROJ_API void RemoveMean(TArray<double>& Field);
+
+	// 위와 같지만 고체 셀을 빼고 평균을 낸다.
+	// 고체 셀은 방정식에 들어가지 않으므로 평균에도 넣으면 안 된다.
+	VRG_TERMPROJ_API void RemoveFluidMean(const FUniformAirGrid& Grid, TArray<double>& Field);
 }

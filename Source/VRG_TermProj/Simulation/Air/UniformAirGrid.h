@@ -140,11 +140,38 @@ public:
 	TArray<double> NextVelocityZMs;
 	TArray<double> NextTemperatureK;
 
+	// 고체가 막고 있는 셀. 공기가 없는 자리다 (랙 몸통, 기둥 등).
+	// 길이는 셀 수와 같다. 고체 셀은:
+	//   - 속도가 0이고, 그 셀에 닿는 면의 법선 속도도 0이다 (공기가 못 지나간다)
+	//   - 압력 방정식에서 이웃으로 치지 않는다 (벽과 같은 Neumann 경계가 된다)
+	//   - 온도 이류의 플럭스가 0이다
+	// 규약 7대로 평탄 배열이다. TArray<bool>은 비트 패킹이 아니라 바이트 배열이라
+	// 인덱싱이 다른 장과 같은 규칙으로 돈다.
+	TArray<bool> bSolidCell;
+
 	void SwapVelocityBuffers();
 	void SwapTemperatureBuffers();
 
-	// 모든 셀 온도를 같은 값으로 채우고 속도를 0으로 둔다.
+	// 모든 셀 온도를 같은 값으로 채우고 속도를 0으로 둔다. 고체 표시는 지우지 않는다.
 	void ResetToUniform(double InTemperatureK);
+
+	// 고체 표시를 전부 지운다.
+	void ClearSolidCells();
+
+	FORCEINLINE bool IsSolidCell(int32 X, int32 Y, int32 Z) const
+	{
+		const int32 Index = CellIndex(X, Y, Z);
+		return bSolidCell.IsValidIndex(Index) && bSolidCell[Index];
+	}
+
+	// 공기가 있는 셀인가. 격자 밖은 false다.
+	FORCEINLINE bool IsFluidCell(int32 X, int32 Y, int32 Z) const
+	{
+		return IsValidCell(X, Y, Z) && !IsSolidCell(X, Y, Z);
+	}
+
+	// 공기가 든 셀의 개수. 열수지를 정규화할 때 쓴다.
+	int32 GetNumFluidCells() const;
 
 	// ---- 보간 ----
 	// 임의 위치의 속도 [m/s]. 반라그랑주 이류에서 쓴다.
@@ -162,6 +189,7 @@ public:
 	double MaxAbsVelocityMs() const;
 
 	// 공기가 담고 있는 총 열에너지 [J]. 기준 온도에서 잰다.
+	// 고체 셀은 공기가 아니므로 세지 않는다.
 	double TotalThermalEnergyJ(double DatumTempK) const;
 
 private:

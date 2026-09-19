@@ -15,6 +15,7 @@ void FUniformAirGrid::Initialize(const FAirGridParams& InParams)
 	VelocityZMs.Init(0.0, GetNumFacesZ());
 	TemperatureK.Init(Params.ReferenceTempK, GetNumCells());
 	PressurePa.Init(0.0, GetNumCells());
+	bSolidCell.Init(false, GetNumCells());
 
 	NextVelocityXMs = VelocityXMs;
 	NextVelocityYMs = VelocityYMs;
@@ -138,15 +139,35 @@ double FUniformAirGrid::MaxAbsVelocityMs() const
 	return MaxAbs;
 }
 
+void FUniformAirGrid::ClearSolidCells()
+{
+	bSolidCell.Init(false, GetNumCells());
+}
+
+int32 FUniformAirGrid::GetNumFluidCells() const
+{
+	int32 Count = 0;
+	for (int32 Index = 0; Index < GetNumCells(); ++Index)
+	{
+		Count += (bSolidCell.IsValidIndex(Index) && bSolidCell[Index]) ? 0 : 1;
+	}
+	return Count;
+}
+
 double FUniformAirGrid::TotalThermalEnergyJ(double DatumTempK) const
 {
 	// 밀도는 Boussinesq 기준값 하나를 쓴다. 부력에만 온도 의존을 남긴다.
 	const double CellMassKg = Params.DensityKgM3 * GetCellVolumeM3();
 
 	double EnergyJ = 0.0;
-	for (const double CellTempK : TemperatureK)
+	for (int32 Index = 0; Index < TemperatureK.Num(); ++Index)
 	{
-		EnergyJ += CellMassKg * Params.SpecificHeatJKgK * (CellTempK - DatumTempK);
+		// 고체 셀에는 공기가 없다. 세면 장부가 어긋난다.
+		if (bSolidCell.IsValidIndex(Index) && bSolidCell[Index])
+		{
+			continue;
+		}
+		EnergyJ += CellMassKg * Params.SpecificHeatJKgK * (TemperatureK[Index] - DatumTempK);
 	}
 	return EnergyJ;
 }

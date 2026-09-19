@@ -9,6 +9,8 @@ void FAirSolver::Initialize(const FAirGridParams& InGridParams, double InitialTe
 
 	InitialTemperatureK = InitialTempK;
 	EnergyInJ = 0.0;
+	EnergyOutJ = 0.0;
+	LastCoolingRemovedW = 0.0;
 	LastCourantNumber = 0.0;
 
 	DivergencePerS.Init(0.0, Grid.GetNumCells());
@@ -101,6 +103,13 @@ void FAirSolver::ApplyBuoyancy(const FAirSolverInput& Input, double DeltaTimeS)
 		{
 			for (int32 X = 0; X < Grid.GetNumCellsX(); ++X)
 			{
+				// 고체가 막은 면에는 부력을 붙이지 않는다. 어차피 다음 단계에서 0이 되지만,
+				// 고체 셀의 온도는 공기 온도가 아니므로 읽어 쓰면 안 된다.
+				if (Grid.IsSolidCell(X, Y, Z - 1) || Grid.IsSolidCell(X, Y, Z))
+				{
+					continue;
+				}
+
 				const double BelowTempK = Grid.TemperatureK[Grid.CellIndex(X, Y, Z - 1)];
 				const double AboveTempK = Grid.TemperatureK[Grid.CellIndex(X, Y, Z)];
 				const double FaceTempK = 0.5 * (BelowTempK + AboveTempK);
@@ -116,10 +125,27 @@ void FAirSolver::ApplyBuoyancy(const FAirSolverInput& Input, double DeltaTimeS)
 	}
 }
 
+void FAirSolver::OnSolidCellsChanged()
+{
+	// 고체 셀 안에 남아 있던 속도와 압력을 지운다.
+	ApplyWallBoundary();
+
+	for (int32 Index = 0; Index < Grid.GetNumCells(); ++Index)
+	{
+		if (Grid.bSolidCell.IsValidIndex(Index) && Grid.bSolidCell[Index])
+		{
+			Grid.PressurePa[Index] = 0.0;
+		}
+	}
+}
+
 void FAirSolver::ApplyWallBoundary()
 {
 	// 막힌 상자: 벽면을 지나는 법선 속도는 0이다.
 	// 이렇게 둬야 총 질량과 총 에너지가 정확히 보존되고 보존 검사가 의미를 갖는다.
+	//
+	// 고체 셀에 닿는 면도 같다. 한쪽이라도 고체면 그 면으로 공기가 못 지나간다.
+	// 이걸 안 하면 기류가 랙을 그냥 통과한다.
 	for (int32 Z = 0; Z < Grid.GetNumCellsZ(); ++Z)
 	{
 		for (int32 Y = 0; Y < Grid.GetNumCellsY(); ++Y)
@@ -146,6 +172,49 @@ void FAirSolver::ApplyWallBoundary()
 			Grid.VelocityZMs[Grid.FaceZIndex(X, Y, Grid.GetNumCellsZ())] = 0.0;
 		}
 	}
+
+	// 고체가 막은 면. 마주 보는 두 셀 중 하나라도 고체면 법선 속도를 0으로 둔다.
+	for (int32 Z = 0; Z < Grid.GetNumCellsZ(); ++Z)
+	{
+		for (int32 Y = 0; Y < Grid.GetNumCellsY(); ++Y)
+		{
+			for (int32 X = 1; X < Grid.GetNumCellsX(); ++X)
+			{
+				if (Grid.IsSolidCell(X - 1, Y, Z) || Grid.IsSolidCell(X, Y, Z))
+				{
+					Grid.VelocityXMs[Grid.FaceXIndex(X, Y, Z)] = 0.0;
+				}
+			}
+		}
+	}
+
+	for (int32 Z = 0; Z < Grid.GetNumCellsZ(); ++Z)
+	{
+		for (int32 Y = 1; Y < Grid.GetNumCellsY(); ++Y)
+		{
+			for (int32 X = 0; X < Grid.GetNumCellsX(); ++X)
+			{
+				if (Grid.IsSolidCell(X, Y - 1, Z) || Grid.IsSolidCell(X, Y, Z))
+				{
+					Grid.VelocityYMs[Grid.FaceYIndex(X, Y, Z)] = 0.0;
+				}
+			}
+		}
+	}
+
+	for (int32 Z = 1; Z < Grid.GetNumCellsZ(); ++Z)
+	{
+		for (int32 Y = 0; Y < Grid.GetNumCellsY(); ++Y)
+		{
+			for (int32 X = 0; X < Grid.GetNumCellsX(); ++X)
+			{
+				if (Grid.IsSolidCell(X, Y, Z - 1) || Grid.IsSolidCell(X, Y, Z))
+				{
+					Grid.VelocityZMs[Grid.FaceZIndex(X, Y, Z)] = 0.0;
+				}
+			}
+		}
+	}
 }
 
 void FAirSolver::ProjectToDivergenceFree(double DeltaTimeS)
@@ -168,14 +237,18 @@ void FAirSolver::ProjectToDivergenceFree(double DeltaTimeS)
 		{
 			for (int32 X = 0; X < Grid.GetNumCellsX(); ++X)
 			{
-				DivergencePerS[Grid.CellIndex(X, Y, Z)] = RhoOverDt * Grid.CellDivergencePerS(X, Y, Z);
+				// 고체 셀에는 풀 방정식이 없다. 우변을 0으로 둬야 적합성이 깨지지 않는다.
+				DivergencePerS[Grid.CellIndex(X, Y, Z)] = Grid.IsFluidCell(X, Y, Z)
+					? RhoOverDt * Grid.CellDivergencePerS(X, Y, Z)
+					: 0.0;
 			}
 		}
 	}
 
 	// 막힌 상자에서는 총 발산이 0이라 우변이 적합하다. 반올림으로 남는 평균만 덜어 낸다.
 	// 이걸 안 하면 Neumann Poisson이 풀리지 않아 수렴 실패로 보고된다.
-	JacobiPoissonSolver::RemoveMean(DivergencePerS);
+	// 고체 셀은 방정식에 없으므로 평균에서 뺀다.
+	JacobiPoissonSolver::RemoveFluidMean(Grid, DivergencePerS);
 
 	LastPressureResult = JacobiPoissonSolver::Solve(Grid, DivergencePerS, Grid.PressurePa,
 		PressureScratch, PressureSettings);
@@ -190,6 +263,11 @@ void FAirSolver::ProjectToDivergenceFree(double DeltaTimeS)
 		{
 			for (int32 X = 1; X < Grid.GetNumCellsX(); ++X)
 			{
+				// 고체가 막은 면은 손대지 않는다. 고체 셀의 압력은 해가 아니다.
+				if (Grid.IsSolidCell(X - 1, Y, Z) || Grid.IsSolidCell(X, Y, Z))
+				{
+					continue;
+				}
 				const double GradPa = (Grid.PressurePa[Grid.CellIndex(X, Y, Z)]
 					- Grid.PressurePa[Grid.CellIndex(X - 1, Y, Z)]) * InvCellSize;
 				Grid.VelocityXMs[Grid.FaceXIndex(X, Y, Z)] -= DtOverRho * GradPa;
@@ -203,6 +281,10 @@ void FAirSolver::ProjectToDivergenceFree(double DeltaTimeS)
 		{
 			for (int32 X = 0; X < Grid.GetNumCellsX(); ++X)
 			{
+				if (Grid.IsSolidCell(X, Y - 1, Z) || Grid.IsSolidCell(X, Y, Z))
+				{
+					continue;
+				}
 				const double GradPa = (Grid.PressurePa[Grid.CellIndex(X, Y, Z)]
 					- Grid.PressurePa[Grid.CellIndex(X, Y - 1, Z)]) * InvCellSize;
 				Grid.VelocityYMs[Grid.FaceYIndex(X, Y, Z)] -= DtOverRho * GradPa;
@@ -216,6 +298,10 @@ void FAirSolver::ProjectToDivergenceFree(double DeltaTimeS)
 		{
 			for (int32 X = 0; X < Grid.GetNumCellsX(); ++X)
 			{
+				if (Grid.IsSolidCell(X, Y, Z - 1) || Grid.IsSolidCell(X, Y, Z))
+				{
+					continue;
+				}
 				const double GradPa = (Grid.PressurePa[Grid.CellIndex(X, Y, Z)]
 					- Grid.PressurePa[Grid.CellIndex(X, Y, Z - 1)]) * InvCellSize;
 				Grid.VelocityZMs[Grid.FaceZIndex(X, Y, Z)] -= DtOverRho * GradPa;
@@ -258,6 +344,15 @@ void FAirSolver::AdvectTemperature(double DeltaTimeS)
 				const int32 FaceIndex = Grid.FaceXIndex(X, Y, Z);
 				const int32 UpstreamX = FMath::Max(X - 1, 0);
 				const int32 DownstreamX = FMath::Min(X, Grid.GetNumCellsX() - 1);
+
+				// 고체가 막은 면은 플럭스가 0이다. 속도도 0이라 값은 같지만,
+				// 고체 셀의 온도를 읽어 쓰지 않도록 여기서 끊는다.
+				if (Grid.IsSolidCell(UpstreamX, Y, Z) || Grid.IsSolidCell(DownstreamX, Y, Z))
+				{
+					TemperatureFluxX[FaceIndex] = 0.0;
+					continue;
+				}
+
 				TemperatureFluxX[FaceIndex] = UpwindFlux(Grid.VelocityXMs[FaceIndex],
 					Grid.TemperatureK[Grid.CellIndex(UpstreamX, Y, Z)],
 					Grid.TemperatureK[Grid.CellIndex(DownstreamX, Y, Z)]);
@@ -274,6 +369,13 @@ void FAirSolver::AdvectTemperature(double DeltaTimeS)
 				const int32 FaceIndex = Grid.FaceYIndex(X, Y, Z);
 				const int32 UpstreamY = FMath::Max(Y - 1, 0);
 				const int32 DownstreamY = FMath::Min(Y, Grid.GetNumCellsY() - 1);
+
+				if (Grid.IsSolidCell(X, UpstreamY, Z) || Grid.IsSolidCell(X, DownstreamY, Z))
+				{
+					TemperatureFluxY[FaceIndex] = 0.0;
+					continue;
+				}
+
 				TemperatureFluxY[FaceIndex] = UpwindFlux(Grid.VelocityYMs[FaceIndex],
 					Grid.TemperatureK[Grid.CellIndex(X, UpstreamY, Z)],
 					Grid.TemperatureK[Grid.CellIndex(X, DownstreamY, Z)]);
@@ -290,6 +392,13 @@ void FAirSolver::AdvectTemperature(double DeltaTimeS)
 				const int32 FaceIndex = Grid.FaceZIndex(X, Y, Z);
 				const int32 UpstreamZ = FMath::Max(Z - 1, 0);
 				const int32 DownstreamZ = FMath::Min(Z, Grid.GetNumCellsZ() - 1);
+
+				if (Grid.IsSolidCell(X, Y, UpstreamZ) || Grid.IsSolidCell(X, Y, DownstreamZ))
+				{
+					TemperatureFluxZ[FaceIndex] = 0.0;
+					continue;
+				}
+
 				TemperatureFluxZ[FaceIndex] = UpwindFlux(Grid.VelocityZMs[FaceIndex],
 					Grid.TemperatureK[Grid.CellIndex(X, Y, UpstreamZ)],
 					Grid.TemperatureK[Grid.CellIndex(X, Y, DownstreamZ)]);
@@ -352,6 +461,12 @@ void FAirSolver::InjectHeat(const FAirSolverInput& Input, double DeltaTimeS)
 		{
 			continue;
 		}
+		// 고체 셀에는 공기가 없다. 넣으면 장부에는 잡히는데 공기는 안 데워진다.
+		if (Grid.bSolidCell.IsValidIndex(Index) && Grid.bSolidCell[Index])
+		{
+			continue;
+		}
+
 		Grid.TemperatureK[Index] += HeatW * DeltaTimeS / CellHeatCapacityJK;
 		InjectedJ += HeatW * DeltaTimeS;
 	}
@@ -376,6 +491,55 @@ void FAirSolver::Step(const FAirSolverInput& Input, double DeltaTimeS)
 	ProjectToDivergenceFree(DeltaTimeS);
 	AdvectTemperature(DeltaTimeS);
 	InjectHeat(Input, DeltaTimeS);
+	ApplyCooling(Input, DeltaTimeS);
+}
+
+void FAirSolver::ApplyCooling(const FAirSolverInput& Input, double DeltaTimeS)
+{
+	LastCoolingRemovedW = 0.0;
+
+	if (Input.CellCoolingUAWK.Num() != Grid.GetNumCells())
+	{
+		return;
+	}
+
+	const FAirGridParams& Params = Grid.GetParams();
+	const double CellHeatCapacityJK = Params.DensityKgM3 * Grid.GetCellVolumeM3() * Params.SpecificHeatJKgK;
+	if (CellHeatCapacityJK <= UE_DOUBLE_SMALL_NUMBER)
+	{
+		return;
+	}
+
+	double RemovedW = 0.0;
+	for (int32 Index = 0; Index < Grid.GetNumCells(); ++Index)
+	{
+		const double CoolingUAWK = Input.CellCoolingUAWK[Index];
+		if (CoolingUAWK <= 0.0)
+		{
+			continue;
+		}
+		if (Grid.bSolidCell.IsValidIndex(Index) && Grid.bSolidCell[Index])
+		{
+			continue;
+		}
+
+		// 코일이 빼 가는 열을 한 번만 계산해 공기에서 빼고 장부에 적는다 (규약 6).
+		const double HeatW = CoolingUAWK * (Grid.TemperatureK[Index] - Input.CoolingSupplyTempK);
+
+		// 명시적 갱신이라 한 스텝에 공급 온도를 지나치면 진동한다.
+		// 빼는 양을 "공급 온도까지 내려가는 만큼"으로 잘라 둔다.
+		const double MaxRemovableW =
+			(Grid.TemperatureK[Index] - Input.CoolingSupplyTempK) * CellHeatCapacityJK / DeltaTimeS;
+		const double AppliedW = (HeatW >= 0.0)
+			? FMath::Min(HeatW, FMath::Max(MaxRemovableW, 0.0))
+			: FMath::Max(HeatW, FMath::Min(MaxRemovableW, 0.0));
+
+		Grid.TemperatureK[Index] -= AppliedW * DeltaTimeS / CellHeatCapacityJK;
+		RemovedW += AppliedW;
+	}
+
+	LastCoolingRemovedW = RemovedW;
+	EnergyOutJ += RemovedW * DeltaTimeS;
 }
 
 double FAirSolver::GetEnergyStoredJ() const
@@ -385,8 +549,9 @@ double FAirSolver::GetEnergyStoredJ() const
 
 double FAirSolver::GetEnergyResidualJ() const
 {
-	// 막힌 상자라 유출이 없다. 넣은 열은 전부 공기에 쌓여 있어야 한다.
-	return EnergyInJ - GetEnergyStoredJ();
+	// 유입(체적 열원) - 유출(냉각 코일) - 축적(공기 온도 상승).
+	// 벽을 통한 질량 출입이 없으므로 이 셋이 전부다.
+	return EnergyInJ - EnergyOutJ - GetEnergyStoredJ();
 }
 
 double FAirSolver::GetNormalizedEnergyResidual() const
@@ -417,6 +582,12 @@ FAirSolverSnapshot FAirSolver::MakeSnapshot(double SimTimeS) const
 				const int32 Index = Grid.CellIndex(X, Y, Z);
 				const double SpeedMs = CellCenterVelocityMs(X, Y, Z).Length();
 				Snapshot.SpeedMs[Index] = SpeedMs;
+
+				// 고체 셀은 공기가 아니다. 통계에 넣으면 최저/최고 온도가 엉뚱해진다.
+				if (!Grid.IsFluidCell(X, Y, Z))
+				{
+					continue;
+				}
 				Snapshot.MaxSpeedMs = FMath::Max(Snapshot.MaxSpeedMs, SpeedMs);
 
 				const double TempK = Grid.TemperatureK[Index];
@@ -435,6 +606,8 @@ FAirSolverSnapshot FAirSolver::MakeSnapshot(double SimTimeS) const
 		: 0.0;
 
 	Snapshot.NormalizedEnergyResidual = GetNormalizedEnergyResidual();
+	Snapshot.CoolingRemovedW = LastCoolingRemovedW;
+	Snapshot.NumFluidCells = Grid.GetNumFluidCells();
 	Snapshot.bPressureConverged = LastPressureResult.bConverged;
 	Snapshot.PressureIterations = LastPressureResult.IterationsUsed;
 	Snapshot.PressureNormalizedResidual = LastPressureResult.NormalizedResidual;

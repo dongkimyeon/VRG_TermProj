@@ -42,9 +42,13 @@
 // 부호와 크기가 모두 틀린다. 온도는 K로만 들고 있는다 (규약 2).
 //
 // --- 경계 ---
-// 지금은 사방이 막힌 상자다. 벽면 법선 속도를 0으로 두므로 질량과 에너지가
-// 정확히 보존되고, 그래서 보존 검사가 의미를 갖는다.
-// 방 급배기(CRAH)는 S4에서 붙인다.
+// 사방이 막힌 상자다. 벽면 법선 속도를 0으로 둔다.
+// 방 안의 고체(랙 몸통 등)는 bSolidCell로 표시한다. 고체 셀에 닿는 면은
+// 벽과 똑같이 다뤄서 공기가 지나가지 못한다.
+//
+// 열은 두 경로로 드나든다: 체적 열원으로 들어오고 냉각 코일(CRAH)로 나간다.
+// 둘 다 장부에 적으므로 유입 - 유출 - 축적 = 0이 성립한다.
+// 벽을 통한 급배기(질량이 드나드는 경계)는 아직 없다.
 //
 // 이 클래스는 UObject가 아니다. 액터를 조회하지 않으므로 워커 스레드에서 돌릴 수 있다.
 
@@ -66,6 +70,20 @@ struct FAirSolverInput
 	// 부력을 끄고 순수 이류만 보고 싶을 때 쓴다. 해석해 검증에서 쓴다.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Air")
 	bool bEnableBuoyancy = true;
+
+	// 셀별 냉각 전도도 [W/K]. CRAH 코일이 공기에서 열을 빼 가는 몫이다.
+	//   Heat_removed = UA * (T_cell - SupplyTempK)
+	// 길이가 셀 수와 다르면 냉각이 없는 것으로 본다.
+	//
+	// 유량 기반 장치가 아니라 뭉뚱그린 코일이다. 라디에이터와 달리 포화하지 않으므로
+	// UA를 크게 주면 그만큼 계속 빼 간다. 실제 CRAH 용량을 모사하려면 운전점에서
+	// 역산해서 넣어야 한다 (열수지 장부는 어느 쪽이든 맞는다).
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Air")
+	TArray<double> CellCoolingUAWK;
+
+	// 냉각 코일의 공급 온도 [K]. 공기가 이 온도 아래로는 내려가지 않는다.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Air")
+	double CoolingSupplyTempK = 291.15;
 };
 
 // 표시용 읽기 전용 사본. 렌더/UI는 이것만 본다 (규약 5).
@@ -106,6 +124,14 @@ struct FAirSolverSnapshot
 	UPROPERTY(BlueprintReadOnly, Category = "Air")
 	double NormalizedEnergyResidual = 0.0;
 
+	// 마지막 스텝에 냉각 코일이 빼 간 열 [W].
+	UPROPERTY(BlueprintReadOnly, Category = "Air")
+	double CoolingRemovedW = 0.0;
+
+	// 고체가 막고 있지 않은 셀 수. 온도 통계는 이 셀들만 본다.
+	UPROPERTY(BlueprintReadOnly, Category = "Air")
+	int32 NumFluidCells = 0;
+
 	// D5: 압력 풀이가 수렴했는지. false면 속도장을 믿으면 안 된다.
 	UPROPERTY(BlueprintReadOnly, Category = "Air")
 	bool bPressureConverged = true;
@@ -141,6 +167,7 @@ public:
 	void ProjectToDivergenceFree(double DeltaTimeS);
 	void AdvectTemperature(double DeltaTimeS);
 	void InjectHeat(const FAirSolverInput& Input, double DeltaTimeS);
+	void ApplyCooling(const FAirSolverInput& Input, double DeltaTimeS);
 
 	const FUniformAirGrid& GetGrid() const { return Grid; }
 	FUniformAirGrid& GetMutableGrid() { return Grid; }
@@ -148,13 +175,19 @@ public:
 	FPoissonSolveSettings& GetMutablePressureSettings() { return PressureSettings; }
 	const FPoissonSolveResult& GetLastPressureResult() const { return LastPressureResult; }
 
+	// 고체 셀 표시를 갱신한 뒤 부른다. 압력 해와 버퍼를 다시 맞춘다.
+	void OnSolidCellsChanged();
+
 	// ---- 열수지 (규약: 축적량을 포함한다) ----
 	double GetEnergyInJ() const { return EnergyInJ; }
+
+	// 냉각 코일이 빼 간 누적 열 [J].
+	double GetEnergyOutJ() const { return EnergyOutJ; }
 
 	// 초기 상태 대비 공기에 쌓인 에너지 [J].
 	double GetEnergyStoredJ() const;
 
-	// 유입 - 축적 [J]. 닫힌 상자라 유출이 없으므로 0에 가까워야 한다.
+	// 유입 - 유출 - 축적 [J]. 0에 가까워야 한다.
 	double GetEnergyResidualJ() const;
 
 	double GetNormalizedEnergyResidual() const;
@@ -169,6 +202,8 @@ private:
 
 	double InitialTemperatureK = 297.15;
 	double EnergyInJ = 0.0;
+	double EnergyOutJ = 0.0;
+	double LastCoolingRemovedW = 0.0;
 	double LastCourantNumber = 0.0;
 
 	// 압력 풀이에 쓰는 버퍼. 매 스텝 재할당하지 않으려고 멤버로 들고 있다.

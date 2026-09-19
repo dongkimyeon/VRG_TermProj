@@ -19,9 +19,11 @@ namespace
 	{
 		FNeighborSum Result;
 
+		// 고체 셀은 이웃으로 치지 않는다. 벽 바깥과 똑같이 다뤄야
+		// 그 면으로 압력 기울기가 생기지 않고, 따라서 속도도 밀려 들어가지 않는다.
 		auto Accumulate = [&](int32 NX, int32 NY, int32 NZ)
 		{
-			if (Grid.IsValidCell(NX, NY, NZ))
+			if (Grid.IsFluidCell(NX, NY, NZ))
 			{
 				Result.Sum += Field[Grid.CellIndex(NX, NY, NZ)];
 				++Result.Count;
@@ -71,6 +73,50 @@ void JacobiPoissonSolver::RemoveMean(TArray<double>& Field)
 	}
 }
 
+void JacobiPoissonSolver::RemoveFluidMean(const FUniformAirGrid& Grid, TArray<double>& Field)
+{
+	// 고체 셀은 방정식에 들어가지 않으므로 평균에도 넣지 않는다.
+	// 고체를 섞어 평균을 내면 유체 쪽 해가 고체 셀 값에 끌려다닌다.
+	double Sum = 0.0;
+	int32 Count = 0;
+	for (int32 Z = 0; Z < Grid.GetNumCellsZ(); ++Z)
+	{
+		for (int32 Y = 0; Y < Grid.GetNumCellsY(); ++Y)
+		{
+			for (int32 X = 0; X < Grid.GetNumCellsX(); ++X)
+			{
+				if (!Grid.IsFluidCell(X, Y, Z))
+				{
+					continue;
+				}
+				Sum += Field[Grid.CellIndex(X, Y, Z)];
+				++Count;
+			}
+		}
+	}
+
+	if (Count == 0)
+	{
+		return;
+	}
+	const double Mean = Sum / Count;
+
+	for (int32 Z = 0; Z < Grid.GetNumCellsZ(); ++Z)
+	{
+		for (int32 Y = 0; Y < Grid.GetNumCellsY(); ++Y)
+		{
+			for (int32 X = 0; X < Grid.GetNumCellsX(); ++X)
+			{
+				if (!Grid.IsFluidCell(X, Y, Z))
+				{
+					continue;
+				}
+				Field[Grid.CellIndex(X, Y, Z)] -= Mean;
+			}
+		}
+	}
+}
+
 double JacobiPoissonSolver::MaxAbsResidual(const FUniformAirGrid& Grid, const TArray<double>& Field,
 	const TArray<double>& RightHandSide)
 {
@@ -81,6 +127,11 @@ double JacobiPoissonSolver::MaxAbsResidual(const FUniformAirGrid& Grid, const TA
 		{
 			for (int32 X = 0; X < Grid.GetNumCellsX(); ++X)
 			{
+				// 고체 셀에는 풀 방정식이 없다. 잔차에 넣으면 못 줄이는 값이 섞인다.
+				if (!Grid.IsFluidCell(X, Y, Z))
+				{
+					continue;
+				}
 				const int32 Index = Grid.CellIndex(X, Y, Z);
 				const double Residual = LaplacianAt(Grid, Field, X, Y, Z) - RightHandSide[Index];
 				MaxAbs = FMath::Max(MaxAbs, FMath::Abs(Residual));
@@ -111,13 +162,26 @@ FPoissonSolveResult JacobiPoissonSolver::Solve(const FUniformAirGrid& Grid,
 	// 정규화 기준은 우변의 최대 크기다. 단위가 B와 같으므로 잔차를 나누면 무차원이 된다.
 	double ReferenceScale = 0.0;
 	double SumRightHandSide = 0.0;
-	for (const double Value : RightHandSide)
+	int32 NumFluidCells = 0;
+	for (int32 Z = 0; Z < Grid.GetNumCellsZ(); ++Z)
 	{
-		ReferenceScale = FMath::Max(ReferenceScale, FMath::Abs(Value));
-		SumRightHandSide += Value;
+		for (int32 Y = 0; Y < Grid.GetNumCellsY(); ++Y)
+		{
+			for (int32 X = 0; X < Grid.GetNumCellsX(); ++X)
+			{
+				if (!Grid.IsFluidCell(X, Y, Z))
+				{
+					continue;
+				}
+				const double Value = RightHandSide[Grid.CellIndex(X, Y, Z)];
+				ReferenceScale = FMath::Max(ReferenceScale, FMath::Abs(Value));
+				SumRightHandSide += Value;
+				++NumFluidCells;
+			}
+		}
 	}
 	Result.ReferenceScale = ReferenceScale;
-	Result.MeanRightHandSide = SumRightHandSide / NumCells;
+	Result.MeanRightHandSide = NumFluidCells > 0 ? SumRightHandSide / NumFluidCells : 0.0;
 
 	// 우변이 통째로 0이면 해는 상수다. 반복할 것이 없다.
 	if (ReferenceScale <= UE_DOUBLE_SMALL_NUMBER)
@@ -153,9 +217,17 @@ FPoissonSolveResult JacobiPoissonSolver::Solve(const FUniformAirGrid& Grid,
 				for (int32 X = 0; X < Grid.GetNumCellsX(); ++X)
 				{
 					const int32 Index = Grid.CellIndex(X, Y, Z);
+
+					// 고체 셀은 풀지 않고 그대로 둔다.
+					if (!Grid.IsFluidCell(X, Y, Z))
+					{
+						Scratch[Index] = OutField[Index];
+						continue;
+					}
+
 					const FNeighborSum Neighbors = GatherNeighbors(Grid, OutField, X, Y, Z);
 
-					// 이웃이 하나도 없는 격자(1x1x1)는 Laplacian이 0이라 풀 것이 없다.
+					// 이웃이 없는 셀(1x1x1 격자, 또는 고체에 둘러싸인 셀)은 풀 것이 없다.
 					if (Neighbors.Count == 0)
 					{
 						Scratch[Index] = OutField[Index];
@@ -175,7 +247,8 @@ FPoissonSolveResult JacobiPoissonSolver::Solve(const FUniformAirGrid& Grid,
 		Swap(OutField, Scratch);
 
 		// 전체 Neumann이라 해가 상수만큼 자유롭다. 매번 평균을 빼서 떠내려가지 않게 한다.
-		RemoveMean(OutField);
+		// 고체 셀은 방정식에 없으므로 평균에서 뺀다.
+		RemoveFluidMean(Grid, OutField);
 
 		Result.IterationsUsed = Iteration;
 
