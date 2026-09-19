@@ -91,6 +91,38 @@ ADataCenterRoomActor::FRowGeometry ADataCenterRoomActor::ComputeRowGeometry(int3
 	return Geometry;
 }
 
+FVector ADataCenterRoomActor::GetRackWorldLocationM(int32 RowIndex, int32 ColumnIndex) const
+{
+	const FRowGeometry Geometry = ComputeRowGeometry(RowIndex);
+	const FVector LocalM(Geometry.RackCenterXM, ColumnYM(ColumnIndex), 0.0);
+
+	// 액터 위치는 cm이므로 m로 바꿔 더한다 (규약 1).
+	return SimUnits::UnrealToMeters(GetActorLocation()) + LocalM;
+}
+
+FBox ADataCenterRoomActor::GetRoomBoundsM() const
+{
+	const int32 RowCount = FMath::Max(1, NumRows);
+	const int32 ColumnCount = FMath::Max(1, RacksPerRow);
+
+	FBox BoundsM(ForceInit);
+	for (int32 RowIndex = 0; RowIndex < RowCount; ++RowIndex)
+	{
+		for (int32 ColumnIndex = 0; ColumnIndex < ColumnCount; ++ColumnIndex)
+		{
+			const FVector RackM = GetRackWorldLocationM(RowIndex, ColumnIndex);
+			BoundsM += FBox(
+				RackM - FVector(RackSizeM.X * 0.5, RackSizeM.Y * 0.5, 0.0),
+				RackM + FVector(RackSizeM.X * 0.5, RackSizeM.Y * 0.5, RackSizeM.Z));
+		}
+	}
+
+	// 뒷면 배관과 천장 트레이까지 덮는다.
+	const double RearMarginM = PipeStandoffM + SupplyReturnSpacingM * 2.0 + 0.4;
+	return BoundsM.ExpandBy(FVector(RearMarginM, 0.4, 0.0))
+		+ FBox(BoundsM.Min, FVector(BoundsM.Max.X, BoundsM.Max.Y, CableTrayHeightM + 0.3));
+}
+
 void ADataCenterRoomActor::BuildNetwork()
 {
 	Network.Reset();
@@ -460,20 +492,28 @@ void ADataCenterRoomActor::UpdatePipeColors() const
 	// 색상(hue)은 공급/회수를 나타내고, 밝기는 계산된 유량 크기를 나타낸다.
 	// 공급은 차갑게 들어오므로 파랑, 회수는 데워져 나오므로 빨강이다.
 	// 온도를 직접 그린 것이 아니다 - 이 도메인에는 아직 온도가 없다.
-	static const FLinearColor SupplyLowColor(0.03f, 0.08f, 0.22f);
-	static const FLinearColor SupplyHighColor(0.20f, 0.60f, 1.00f);
-	static const FLinearColor ReturnLowColor(0.22f, 0.05f, 0.05f);
-	static const FLinearColor ReturnHighColor(1.00f, 0.32f, 0.28f);
+	//
+	// 낮은 쪽 색을 어둡게 두면 안 된다. 정규화 기준이 전체 최대 유량인데
+	// 헤더가 분기의 8배쯤 흘러서 분기관의 정규화 값이 0.12 수준이 된다.
+	// 처음에 낮은 쪽을 거의 검정으로 뒀더니 공급 분기관이 검은 랙에 묻혀
+	// 화면에서 아예 사라졌다. 낮은 쪽에서도 색이 읽히게 밝기를 올렸다.
+	static const FLinearColor SupplyLowColor(0.08f, 0.22f, 0.55f);
+	static const FLinearColor SupplyHighColor(0.25f, 0.65f, 1.00f);
+	static const FLinearColor ReturnLowColor(0.55f, 0.16f, 0.12f);
+	static const FLinearColor ReturnHighColor(1.00f, 0.35f, 0.28f);
 
 	for (int32 PipeIndex = 0; PipeIndex < PipeMeshes.Num(); ++PipeIndex)
 	{
 		const double Normalized = FMath::Abs(Network.GetPipeFlowM3s(PipeIndex)) / NormalizationM3s;
+
+		// 제곱근을 씌워 낮은 유량 구간을 펼친다. 표시용 보정이며 계산에는 쓰이지 않는다.
+		// 선형으로 두면 분기관이 전부 같은 어두운 색이 되어 구분이 안 된다.
+		const float Shaped = FMath::Sqrt(FMath::Clamp(static_cast<float>(Normalized), 0.0f, 1.0f));
 		const bool bSupply = bPipeIsSupplySide.IsValidIndex(PipeIndex) && bPipeIsSupplySide[PipeIndex];
 
 		SimMeshBuilder::SetMeshColor(PipeMeshes[PipeIndex],
 			FMath::Lerp(bSupply ? SupplyLowColor : ReturnLowColor,
-				bSupply ? SupplyHighColor : ReturnHighColor,
-				static_cast<float>(Normalized)));
+				bSupply ? SupplyHighColor : ReturnHighColor, Shaped));
 	}
 }
 

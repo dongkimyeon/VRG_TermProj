@@ -172,6 +172,16 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Room")
 	int32 GetNumRackSlots() const { return FMath::Max(1, NumRows) * FMath::Max(1, RacksPerRow); }
 
+	// 랙 자리의 월드 좌표 [m]. 바닥 중심이다.
+	// 다른 도메인(공기 격자)이 랙 위치를 알아야 할 때 쓴다. 단위는 m이므로
+	// 부르는 쪽이 필요할 때만 cm로 바꾼다 (규약 1).
+	UFUNCTION(BlueprintCallable, Category = "Room")
+	FVector GetRackWorldLocationM(int32 RowIndex, int32 ColumnIndex) const;
+
+	// 랙이 차지하는 전체 범위의 월드 좌표 [m]. 배관과 트레이까지 포함한다.
+	UFUNCTION(BlueprintCallable, Category = "Room")
+	FBox GetRoomBoundsM() const;
+
 protected:
 	virtual void BeginPlay() override;
 

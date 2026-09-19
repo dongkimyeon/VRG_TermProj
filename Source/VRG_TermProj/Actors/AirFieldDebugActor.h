@@ -114,11 +114,18 @@ public:
 	int32 DrawStride = 1;
 
 	// 온도 색상표의 양 끝 [°C]. 표시용이며 계산에 쓰이지 않는다.
+	// 아래끝을 초기 공기 온도에 맞춰야 상온 셀이 투명해진다. 어긋나면 화면이
+	// 파란 벽으로 덮인다.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Visualization")
-	double ColorMinCelsius = 20.0;
+	double ColorMinCelsius = 24.0;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Visualization")
 	double ColorMaxCelsius = 45.0;
+
+	// 이 값보다 덜 뜨거운 셀은 아예 그리지 않는다 (0~1의 정규화 온도).
+	// 상온 셀까지 다 그리면 슬라이스가 불투명한 벽이 되어 안쪽이 안 보인다.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Visualization", meta = (ClampMin = "0.0", ClampMax = "1.0"))
+	double MinVisibleFraction = 0.04;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Visualization")
 	bool bDrawDomainBounds = true;
@@ -132,6 +139,21 @@ public:
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Visualization")
 	bool bShowSummary = true;
+
+	// 레벨의 ADataCenterRoomActor를 찾아 격자를 그 방에 맞춘다.
+	// 위치와 셀 개수를 직접 맞추는 건 손이 많이 간다.
+	UFUNCTION(BlueprintCallable, CallInEditor, Category = "Air")
+	void FitToRoom();
+
+	// 열원 상자를 방의 랙 자리마다 하나씩 놓는다.
+	// S4에서 랙 발열을 직접 받게 되면 이 버튼은 필요 없어진다.
+	UFUNCTION(BlueprintCallable, CallInEditor, Category = "Air")
+	void PlaceHeatSourcesFromRoom();
+
+	// 위 두 버튼이 랙 1대에 줄 발열 [W]. GB200 NVL72 컴퓨트 트레이 18장 기준 약 105 kW지만,
+	// 그중 액랭으로 빠지는 몫을 뺀 공랭 부하만 공기에 들어간다.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Air")
+	double AirHeatPerRackW = 8000.0;
 
 protected:
 	virtual void BeginPlay() override;

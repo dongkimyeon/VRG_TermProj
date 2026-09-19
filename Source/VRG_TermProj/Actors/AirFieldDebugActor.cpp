@@ -2,7 +2,10 @@
 
 #include "Actors/AirFieldDebugActor.h"
 
+#include "Actors/DataCenterRoomActor.h"
 #include "Simulation/Core/SimUnits.h"
+
+#include "EngineUtils.h"
 
 #include "Components/SceneComponent.h"
 #include "DrawDebugHelpers.h"
@@ -39,7 +42,7 @@ AAirFieldDebugActor::AAirFieldDebugActor()
 	// 공기 해석은 압력 풀이가 무겁다. 목표를 너무 조이면 프레임이 죽는다.
 	// D5대로 목표와 상한을 함께 두고, 못 미치면 화면에 수렴 실패를 띄운다.
 	PressureSettings.NormalizedResidualTarget = 1.0e-5;
-	PressureSettings.MaxIterations = 120;
+	PressureSettings.MaxIterations = 300;
 
 	HeatSources.Add(FAirHeatSourceBox());
 }
@@ -136,6 +139,98 @@ void AAirFieldDebugActor::BuildCellHeat()
 			Input.CellHeatW[Index] += PerCellW;
 		}
 	}
+}
+
+void AAirFieldDebugActor::FitToRoom()
+{
+	UWorld* World = GetWorld();
+	if (World == nullptr)
+	{
+		return;
+	}
+
+	ADataCenterRoomActor* Room = nullptr;
+	for (TActorIterator<ADataCenterRoomActor> It(World); It; ++It)
+	{
+		Room = *It;
+		break;
+	}
+
+	if (Room == nullptr)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("AirFieldDebugActor: 레벨에서 ADataCenterRoomActor를 찾지 못했습니다."));
+		return;
+	}
+
+	const FBox BoundsM = Room->GetRoomBoundsM();
+	const double CellSizeM = FMath::Max(GridParams.CellSizeM, 0.01);
+
+	// 도메인 원점은 격자의 (0,0,0) 셀 바깥 모서리다. 액터를 거기에 둔다.
+	SetActorLocation(SimUnits::MetersToUnreal(BoundsM.Min));
+
+	const FVector SpanM = BoundsM.GetSize();
+	GridParams.NumCellsX = FMath::Clamp(FMath::CeilToInt32(SpanM.X / CellSizeM), 1, 128);
+	GridParams.NumCellsY = FMath::Clamp(FMath::CeilToInt32(SpanM.Y / CellSizeM), 1, 128);
+	GridParams.NumCellsZ = FMath::Clamp(FMath::CeilToInt32(SpanM.Z / CellSizeM), 1, 128);
+
+	UE_LOG(LogTemp, Log,
+		TEXT("AirFieldDebugActor: 방에 맞췄습니다. %.2f x %.2f x %.2f m -> 격자 %dx%dx%d (셀 %d개)."),
+		SpanM.X, SpanM.Y, SpanM.Z,
+		GridParams.NumCellsX, GridParams.NumCellsY, GridParams.NumCellsZ,
+		GridParams.NumCellsX * GridParams.NumCellsY * GridParams.NumCellsZ);
+
+	bNeedsReset = true;
+}
+
+void AAirFieldDebugActor::PlaceHeatSourcesFromRoom()
+{
+	UWorld* World = GetWorld();
+	if (World == nullptr)
+	{
+		return;
+	}
+
+	ADataCenterRoomActor* Room = nullptr;
+	for (TActorIterator<ADataCenterRoomActor> It(World); It; ++It)
+	{
+		Room = *It;
+		break;
+	}
+
+	if (Room == nullptr)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("AirFieldDebugActor: 레벨에서 ADataCenterRoomActor를 찾지 못했습니다."));
+		return;
+	}
+
+	HeatSources.Reset();
+
+	// 액터 기준 로컬 좌표로 바꿔 담는다.
+	const FVector ActorLocationM = SimUnits::UnrealToMeters(GetActorLocation());
+
+	for (int32 RowIndex = 0; RowIndex < Room->NumRows; ++RowIndex)
+	{
+		for (int32 ColumnIndex = 0; ColumnIndex < Room->RacksPerRow; ++ColumnIndex)
+		{
+			const FVector RackWorldM = Room->GetRackWorldLocationM(RowIndex, ColumnIndex);
+
+			FAirHeatSourceBox Source;
+			// 랙 몸통 전체를 열원 상자로 본다. 바닥 중심이 기준이라 절반 높이만큼 올린다.
+			Source.CenterM = RackWorldM - ActorLocationM + FVector(0.0, 0.0, Room->RackSizeM.Z * 0.5);
+			Source.SizeM = Room->RackSizeM;
+
+			// D1: 랙 하나가 공기에 주는 열을 하나의 체적 열원으로 준다.
+			// 부품별로 쪼개 넣지 않는다.
+			Source.HeatW = AirHeatPerRackW;
+
+			HeatSources.Add(Source);
+		}
+	}
+
+	UE_LOG(LogTemp, Log, TEXT("AirFieldDebugActor: 열원 %d개를 놓았습니다 (랙당 %.0f W, 합계 %.1f kW)."),
+		HeatSources.Num(), AirHeatPerRackW, HeatSources.Num() * AirHeatPerRackW / 1000.0);
+
+	bNeedsReset = true;
 }
 
 void AAirFieldDebugActor::Tick(float DeltaTime)
@@ -254,9 +349,16 @@ void AAirFieldDebugActor::DrawSlice() const
 				const double TempK = Grid.TemperatureK[Grid.CellIndex(X, Y, Z)];
 				const double Normalized = (TempK - MinTempK) / SpanK;
 
+				// 상온에 가까운 셀은 아예 건너뛴다.
+				// 전부 그리면 슬라이스가 불투명한 벽이 되어 안쪽 기둥이 안 보인다.
+				if (Normalized < MinVisibleFraction)
+				{
+					continue;
+				}
+
 				FLinearColor Color = AirTemperatureColor(Normalized);
-				// 기준 온도에 가까운 셀은 흐리게 둬야 뜨거운 기둥이 눈에 띈다.
-				Color.A = FMath::Clamp(0.12f + 0.75f * static_cast<float>(Normalized), 0.12f, 0.9f);
+				// 알파를 0에서 시작시켜야 경계가 부드럽게 사라진다.
+				Color.A = FMath::Clamp(0.85f * static_cast<float>(Normalized), 0.0f, 0.85f);
 
 				const FVector CenterCm = ActorLocationCm + SimUnits::MetersToUnreal(Grid.CellCenterM(X, Y, Z));
 				DrawDebugSolidBox(World, CenterCm, ThicknessCm, Color.ToFColor(false), false, -1.0f, 0);
