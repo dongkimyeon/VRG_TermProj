@@ -178,6 +178,8 @@ D:\UE_5.8\Engine\Binaries\Win64\UnrealEditor-Cmd.exe "D:\VRG_TermProj\VRG_TermPr
 | `Network.SeriesAnalytic` | 1.24e-14 | 해석해 유량 0.2828 m³/s 기준 | < 1e-10 |
 | `Network.ParallelAnalytic` | 압력 3.54e-11 | 공급압 4.0e5 Pa 기준 | < 1e-9 |
 | `Network.PumpOperatingPointAnalytic` | 유량 1.76e-16 / 동력 3.45e-16 | 해석해 운전점 기준 | < 1e-9 |
+| `Pump.AffinityLawAnalytic` | 유량 1.55e-15 / 양정 3.88e-15 | 정격(r=1) 운전점 기준, 무차원 | < 1e-9 |
+| `Pump.SpeedPowerFromOperatingPoint` | 0.00e+00 | 정격 전기 입력 1533 W 기준, 무차원 | < 1e-12 |
 | `Network.MassConservation` | 1.55e-16 | 펌프 유량 0.717 m³/s 기준 | < 1e-9 |
 | `Network.InRowLayoutFlowSpread` | 0.00e+00 | 펌프 유량 4.87 L/s 기준 | < 1e-9 |
 
@@ -218,6 +220,16 @@ S2 참고값 (인로우 냉각 루프, 랙 6대, `AHydraulicNetworkDebugActor` �
 펌프 유량 4.87 L/s, 양정 210.3 kPa, 전기 입력 1.46 kW, Newton 7회 수렴.
 랙별 분기 유량 0.80~0.84 L/s (편차 4.97%, CDU에 가까운 랙이 더 받음).
 15 kW 랙 기준 냉각수 ΔT 4.43 K, 펌프 전력은 IT 부하의 1.63%.
+
+펌프 회전수비 참고값 (테스트용 단순 루프, 체절양정 400 kPa):
+r=1.0에서 4.472 L/s / 240.0 kPa / 전기 입력 1533 W.
+r=0.5에서 2.236 L/s / 60.0 kPa / 전기 입력 192 W.
+유량비 0.500, 양정비 0.250으로 상사칙(Flow ~ r, Head ~ r^2)이 정확히 성립한다.
+
+**전력이 r^3으로 나오는 것은 식이 아니라 결과다.** 위 루프에서 전기 입력비가
+0.125 = 0.5^3로 나오지만, 모델은 `P_rated * r^3`을 쓰지 않고 매번 운전점에서
+`Δp * FlowM3s / η`로 구한다 (애초에 이 모델에는 P_rated가 없다). 시스템 곡선이
+순수 2차식이 아니면(정압 성분이 있거나 분기가 닫히면) r^3에서 벗어난다.
 
 단위 테스트 네트워크(`MassConservation` 등)는 수학만 검증하는 임의 값을 쓴다.
 데이터센터 참고값으로 쓰면 안 된다.

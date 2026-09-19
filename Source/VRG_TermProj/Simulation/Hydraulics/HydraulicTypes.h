@@ -48,7 +48,7 @@ struct FHydraulicPipe
 };
 
 // 능동 요소. 유량이 보조 미지수로 들어간다 (D3).
-// 펌프 곡선: Δp_pump = ShutoffHeadPa - CurveCoeff * Flow * |Flow|
+// 펌프 곡선: Δp_pump = ShutoffHeadPa * r^2 - CurveCoeff * Flow * |Flow|   (r = SpeedRatio)
 USTRUCT(BlueprintType)
 struct FHydraulicPump
 {
@@ -69,6 +69,20 @@ struct FHydraulicPump
 	// 곡선 기울기 [Pa*s^2/m^6]. 유량이 늘수록 양정이 떨어지는 정도.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hydraulics")
 	double CurveCoeffPaS2M6 = 1.0e6;
+
+	// 회전수비 r = N / N_rated. 디버그 키로 조절하는 "펌프 속도"가 이것이다.
+	//
+	// D8이 경고한 "P ∝ Q^3를 쓰지 말라"는 다른 장비끼리 비교할 때의 이야기고,
+	// 같은 펌프의 회전수 변경은 상사식 적용 대상이다. 상사칙은
+	//   Flow ∝ r,   Head ∝ r^2
+	// 이므로 곡선을 (Flow/r, Head/r^2) 좌표로 옮겨 놓으면 계수는 그대로 두고
+	// 체절양정만 r^2으로 스케일하면 상사 관계가 성립한다:
+	//   Δp = ShutoffHeadPa * r^2 - CurveCoeff * Flow * |Flow|
+	//
+	// 전력은 여전히 운전점에서 구한다. P_rated * r^3 으로 만들지 않는다
+	// (애초에 이 모델에는 P_rated가 없다).
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hydraulics", meta = (ClampMin = "0.0", ClampMax = "1.5"))
+	double SpeedRatio = 1.0;
 
 	// D8: 유체 동력 -> 전기 입력 환산용 종합 효율 (펌프 + 모터).
 	// 이 모델에는 P_rated가 아예 없다. 전력은 항상 운전점에서 계산한다:

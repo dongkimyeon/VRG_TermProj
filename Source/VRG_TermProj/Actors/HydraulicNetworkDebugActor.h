@@ -33,6 +33,13 @@ public:
 	UFUNCTION(BlueprintCallable, CallInEditor, Category = "Hydraulics")
 	void Resolve();
 
+	// 디버그 키용. 바꾸면 다음 틱에 네트워크를 다시 푼다.
+	UFUNCTION(BlueprintCallable, Category = "Hydraulics")
+	void SetPumpSpeedRatio(double InSpeedRatio);
+
+	UFUNCTION(BlueprintCallable, Category = "Hydraulics")
+	double GetPumpSpeedRatio() const { return PumpSpeedRatio; }
+
 	// ---- 배치 (m) ----
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Layout", meta = (ClampMin = "1", ClampMax = "64"))
 	int32 NumRacks = 6;
@@ -85,6 +92,10 @@ public:
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hydraulics", meta = (ClampMin = "0.01", ClampMax = "1.0"))
 	double PumpEfficiency = 0.7;
+
+	// 펌프 회전수비. 상사식으로 체절양정을 r^2으로 스케일한다.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hydraulics", meta = (ClampMin = "0.0", ClampMax = "1.5"))
+	double PumpSpeedRatio = 1.0;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hydraulics")
 	FHydraulicSolveSettings SolveSettings;

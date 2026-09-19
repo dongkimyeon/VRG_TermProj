@@ -29,6 +29,12 @@ void AHydraulicNetworkDebugActor::Resolve()
 	bNeedsRebuild = true;
 }
 
+void AHydraulicNetworkDebugActor::SetPumpSpeedRatio(double InSpeedRatio)
+{
+	PumpSpeedRatio = FMath::Clamp(InSpeedRatio, 0.0, 1.5);
+	bNeedsRebuild = true;
+}
+
 void AHydraulicNetworkDebugActor::Tick(float DeltaTime)
 {
 	Super::Tick(DeltaTime);
@@ -91,6 +97,7 @@ void AHydraulicNetworkDebugActor::RebuildAndSolve()
 	Pump.ShutoffHeadPa = PumpShutoffHeadPa;
 	Pump.CurveCoeffPaS2M6 = PumpCurveCoeffPaS2M6;
 	Pump.Efficiency = PumpEfficiency;
+	Pump.SpeedRatio = PumpSpeedRatio;
 	Network.AddPump(Pump);
 
 	auto AddPipe = [this](int32 FromNodeIndex, int32 ToNodeIndex, double ResistancePaS2M6) -> int32
@@ -275,6 +282,13 @@ void AHydraulicNetworkDebugActor::DrawSummary() const
 			Network.GetPumpHydraulicPowerW(0) / 1000.0,
 			Network.GetPumpElectricalInputPowerW(0) / 1000.0,
 			PumpEfficiency));
+
+	GEngine->AddOnScreenDebugMessage(BaseKey + 4, 0.0f, FColor(200, 160, 255),
+		FString::Printf(TEXT("펌프 회전수비 r=%.2f | 체절양정 %.1f kPa (정격 %.1f kPa의 r^2=%.3f배) | 전력은 운전점에서 계산 (P_rated*r^3 아님)"),
+			PumpSpeedRatio,
+			PumpShutoffHeadPa * PumpSpeedRatio * PumpSpeedRatio / 1000.0,
+			PumpShutoffHeadPa / 1000.0,
+			PumpSpeedRatio * PumpSpeedRatio));
 
 	GEngine->AddOnScreenDebugMessage(BaseKey + 2, 0.0f, FColor::Yellow,
 		FString::Printf(TEXT("랙 %d대 | 분기 유량 최소 %.2f L/s ~ 최대 %.2f L/s | 편차 %.1f%% (앞쪽 랙이 더 받음)"),

@@ -186,9 +186,10 @@ void FHydraulicNetwork::SeedInitialGuess()
 	for (int32 PumpIndex = 0; PumpIndex < Pumps.Num(); ++PumpIndex)
 	{
 		const FHydraulicPump& Pump = Pumps[PumpIndex];
-		if (Pump.CurveCoeffPaS2M6 > UE_DOUBLE_SMALL_NUMBER && Pump.ShutoffHeadPa > 0.0)
+		const double ScaledShutoffHeadPa = Pump.ShutoffHeadPa * Pump.SpeedRatio * Pump.SpeedRatio;
+		if (Pump.CurveCoeffPaS2M6 > UE_DOUBLE_SMALL_NUMBER && ScaledShutoffHeadPa > 0.0)
 		{
-			PumpFlowM3s[PumpIndex] = 0.5 * FMath::Sqrt(Pump.ShutoffHeadPa / Pump.CurveCoeffPaS2M6);
+			PumpFlowM3s[PumpIndex] = 0.5 * FMath::Sqrt(ScaledShutoffHeadPa / Pump.CurveCoeffPaS2M6);
 		}
 		else
 		{
@@ -263,11 +264,13 @@ double FHydraulicNetwork::EvaluateResidual(const FHydraulicSolveSettings& Settin
 	{
 		const FHydraulicPump& Pump = Pumps[PumpIndex];
 		const double FlowM3s = PumpFlowM3s[PumpIndex];
-		const double CurveDeltaPPa = Pump.ShutoffHeadPa - Pump.CurveCoeffPaS2M6 * FlowM3s * FMath::Abs(FlowM3s);
+		// 상사식: 계수는 그대로 두고 체절양정만 회전수비의 제곱으로 스케일한다.
+		const double ScaledShutoffHeadPa = Pump.ShutoffHeadPa * Pump.SpeedRatio * Pump.SpeedRatio;
+		const double CurveDeltaPPa = ScaledShutoffHeadPa - Pump.CurveCoeffPaS2M6 * FlowM3s * FMath::Abs(FlowM3s);
 		const double ActualDeltaPPa = NodePressurePa[Pump.ToNodeIndex] - NodePressurePa[Pump.FromNodeIndex];
 		OutResidual[NumFreeNodes + PumpIndex] = ActualDeltaPPa - CurveDeltaPPa;
 
-		MaxShutoffHeadPa = FMath::Max(MaxShutoffHeadPa, FMath::Abs(Pump.ShutoffHeadPa));
+		MaxShutoffHeadPa = FMath::Max(MaxShutoffHeadPa, FMath::Abs(ScaledShutoffHeadPa));
 	}
 
 	// 정규화 기준. 질량 블록은 유량 스케일로, 펌프 블록은 압력 스케일로 나눈다.
