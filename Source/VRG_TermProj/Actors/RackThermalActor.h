@@ -58,6 +58,24 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Rack")
 	int32 GetNumDockedSleds() const;
 
+	// 켜면 이 액터가 스스로 적분하지 않는다. 바깥(통합 액터)이 같은 시계로 돌린다.
+	// 규약 4: 도메인이 여럿이면 시계가 하나여야 한다. 액터마다 따로 돌리면
+	// 같은 시간 구간을 두 번 적분하거나 서로 어긋난 시각을 보게 된다.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Rack")
+	bool bDrivenExternally = false;
+
+	// 통합 액터가 빌려 가는 내부 모델과 입력. 수명은 이 액터가 쥔다.
+	FRackThermalModel& GetMutableModel() { return Model; }
+	FRackThermalInput& GetMutableInput() { return Input; }
+	const FRadiatorParams& GetRadiatorParams() const { return Radiator; }
+
+	// 바깥이 적분한 뒤 시각을 맞춰 준다. 표시에만 쓴다.
+	void SetExternalSimTimeS(double InSimTimeS) { ExternalSimTimeS = InSimTimeS; }
+
+	// 입력 배열 길이를 Params에 맞춘다. 통합 액터가 붙기 전에 불러야 한다.
+	UFUNCTION(BlueprintCallable, Category = "Rack")
+	void ConformInputs() { ConformInputArrays(); }
+
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Rack")
 	FRackThermalParams Params;
 
@@ -122,6 +140,7 @@ private:
 	FSimClock Clock;
 	FRackThermalModel Model;
 	bool bSimRunning = false;
+	double ExternalSimTimeS = 0.0;
 	bool bMeshesDirty = true;
 
 	// 캐비닛 껍데기. 유닛과 달리 움직이지 않는다.

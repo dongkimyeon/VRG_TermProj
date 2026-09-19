@@ -62,6 +62,13 @@ void ADataCenterRoomActor::RebuildRoom()
 	bNeedsRebuild = true;
 }
 
+bool ADataCenterRoomActor::ConsumeRebuiltFlag()
+{
+	const bool bWasRebuilt = bRebuiltSinceLastQuery;
+	bRebuiltSinceLastQuery = false;
+	return bWasRebuilt;
+}
+
 void ADataCenterRoomActor::SetPumpSpeedRatio(double InSpeedRatio)
 {
 	LastPumpSpeedRatio = FMath::Clamp(InSpeedRatio, 0.0, 1.5);
@@ -648,6 +655,7 @@ void ADataCenterRoomActor::Tick(float DeltaTime)
 		BuildPipeMeshes();
 		BuildDecorMeshes();
 		bNeedsRebuild = false;
+		bRebuiltSinceLastQuery = true;
 	}
 
 	UpdatePipeColors();

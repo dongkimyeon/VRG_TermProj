@@ -83,14 +83,20 @@ void AAirFieldDebugActor::ResetSim()
 
 	Input.GravityZMs2 = GravityZMs2;
 	Input.bEnableBuoyancy = bEnableBuoyancy;
-	BuildCellHeat();
+
+	// 바깥이 돌릴 때는 열원도 바깥이 채운다. 여기서 만들면 덮어쓰게 된다.
+	if (!bDrivenExternally)
+	{
+		BuildCellHeat();
+	}
 
 	bNeedsReset = false;
 }
 
 FAirSolverSnapshot AAirFieldDebugActor::GetSnapshot() const
 {
-	return Solver.MakeSnapshot(Clock.GetSimTimeS());
+	// 바깥이 돌릴 때는 바깥 시계를 쓴다. 이 액터의 시계는 멈춰 있다.
+	return Solver.MakeSnapshot(bDrivenExternally ? ExternalSimTimeS : Clock.GetSimTimeS());
 }
 
 void AAirFieldDebugActor::BuildCellHeat()
@@ -266,7 +272,8 @@ void AAirFieldDebugActor::Tick(float DeltaTime)
 		ResetSim();
 	}
 
-	if (bSimRunning)
+	// 규약 4: 통합 액터가 돌릴 때는 여기서 적분하지 않는다.
+	if (bSimRunning && !bDrivenExternally)
 	{
 		// 규약 4: 시계가 남은 시간을 버리지 않고 다음 프레임으로 넘긴다.
 		// 다만 공기 해석은 무거워서 한 프레임에 돌릴 스텝 수를 따로 제한한다.

@@ -88,7 +88,8 @@ void ARackThermalActor::ResetSim()
 
 FRackThermalSnapshot ARackThermalActor::GetSnapshot() const
 {
-	return Model.MakeSnapshot(Clock.GetSimTimeS());
+	// 바깥이 돌릴 때는 바깥 시계를 쓴다. 이 액터의 시계는 멈춰 있다.
+	return Model.MakeSnapshot(bDrivenExternally ? ExternalSimTimeS : Clock.GetSimTimeS());
 }
 
 void ARackThermalActor::SetSledDocked(int32 SledIndex, bool bDocked)
@@ -332,7 +333,9 @@ void ARackThermalActor::Tick(float DeltaTime)
 		bMeshesDirty = false;
 	}
 
-	if (bSimRunning)
+	// 규약 4: 통합 액터가 돌릴 때는 여기서 적분하지 않는다.
+	// 두 군데서 돌리면 같은 시간 구간을 두 번 적분한다.
+	if (bSimRunning && !bDrivenExternally)
 	{
 		const int32 NumSteps = Clock.BeginFrame(DeltaTime);
 		for (int32 StepIndex = 0; StepIndex < NumSteps; ++StepIndex)

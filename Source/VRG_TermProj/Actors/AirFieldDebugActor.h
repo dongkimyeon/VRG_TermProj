@@ -87,6 +87,16 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Air")
 	FAirSolverSnapshot GetSnapshot() const;
 
+	// 켜면 이 액터가 스스로 적분하지 않는다. 바깥(통합 액터)이 같은 시계로 돌린다.
+	// 열원도 바깥이 채우므로 HeatSources는 무시된다 (규약 4·6).
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Air")
+	bool bDrivenExternally = false;
+
+	// 통합 액터가 빌려 가는 내부 솔버. 수명은 이 액터가 쥔다.
+	FAirSolver& GetMutableSolver() { return Solver; }
+
+	void SetExternalSimTimeS(double InSimTimeS) { ExternalSimTimeS = InSimTimeS; }
+
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Air")
 	FAirGridParams GridParams;
 
@@ -215,6 +225,7 @@ private:
 	FSimClock Clock;
 	FAirSolver Solver;
 	FAirSolverInput Input;
+	double ExternalSimTimeS = 0.0;
 
 	bool bSimRunning = false;
 	bool bNeedsReset = true;

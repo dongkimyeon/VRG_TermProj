@@ -173,6 +173,17 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Room")
 	TArray<ARackThermalActor*> GetRoutedRacks() const;
 
+	// 통합 액터가 빌려 가는 수력망. 수명은 이 액터가 쥔다.
+	FHydraulicNetwork& GetMutableNetwork() { return Network; }
+	const FHydraulicSolveResult& GetLastSolveResult() const { return LastResult; }
+
+	// GetRoutedRacks()와 같은 순서로 늘어놓은 랙별 공급 분기 파이프 인덱스.
+	// 수력이 랙에 유량을 넘길 때 이 인덱스로 찾는다.
+	const TArray<int32>& GetRackBranchPipeIndices() const { return RackBranchPipeIndices; }
+
+	// 배관을 다시 이었는지. 통합 액터가 이번 스텝에 유량이 바뀌었는지 알아야 한다.
+	bool ConsumeRebuiltFlag();
+
 protected:
 	virtual void BeginPlay() override;
 
@@ -224,6 +235,10 @@ private:
 	TArray<TObjectPtr<UStaticMeshComponent>> DecorMeshes;
 
 	bool bNeedsRebuild = true;
+
+	// 마지막으로 물어본 뒤에 배관을 다시 이었는지. 통합 액터가 읽고 지운다.
+	bool bRebuiltSinceLastQuery = false;
+
 	double LastPumpSpeedRatio = 1.0;
 
 	// 레벨에서 랙과 CDU를 찾아 줄로 묶는다.
