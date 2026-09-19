@@ -171,6 +171,9 @@ D:\UE_5.8\Engine\Binaries\Win64\UnrealEditor-Cmd.exe "D:\VRG_TermProj\VRG_TermPr
 | `Rack.SteadyStateBalance` | 2.42e-12 | 발열 15000 W 기준, 무차원 | < 1e-9 |
 | `Rack.SerialAirPathOrdering` | 1.42e-10 W | 부품 발열 100 W 기준 | < 1e-6 (정규화) |
 | `Rack.AirPathEnergyBalance` | 1.14e-14 | 공기 반출열 2338 W 기준, 무차원 | < 1e-12 |
+| `Radiator.EffectivenessAnalytic` | eps 0.00e+00 / 출구 0.00e+00 K | 절대, eps 0~1 / 온도 K | < 1e-15, < 1e-12 K |
+| `Radiator.EnergyBalance` | 7.15e-14 | 반출열 기준, 무차원 (운전점 20개 중 최대) | < 1e-12 |
+| `Radiator.ClosedLoopSteadyState` | 2.42e-12 | 발열 15000 W 기준, 무차원 | < 1e-6 |
 | `Network.SinglePipeAnalytic` | 압력 3.54e-11 / 유량 8.85e-11 | 공급압 4.0e5 Pa, 수요 0.2 m³/s | < 1e-9 |
 | `Network.SeriesAnalytic` | 1.24e-14 | 해석해 유량 0.2828 m³/s 기준 | < 1e-10 |
 | `Network.ParallelAnalytic` | 압력 3.54e-11 | 공급압 4.0e5 Pa 기준 | < 1e-9 |
@@ -201,6 +204,15 @@ S1 정상 상태 참고값 (다노드 확장 이후, 기본 파라미터, 발열
 **공기 = RAM·VRM**으로 나눠 CPU/GPU의 `ToAirUAWK`가 0이다. 공랭 체인 순서는
 허용 온도가 낮은 쪽이 앞이라 RAM(85 °C) → VRM(125 °C)다.
 부품별 기본 발열·UA·열용량의 근거는 `RackThermalModel.cpp`의 `DefaultComponents()` 주석에 있다.
+
+라디에이터 참고값 (기본 UA 1600 W/K, 외기 22 °C, 유량 0.82 kg/s):
+NTU 0.467, eps 0.373. 닫힌 루프 정상 상태에서 라디에이터 반출 12518 W,
+랙 발열 15000 W = 라디에이터 12518 + 공기 2338 + 자연대류 144 W.
+
+**크기를 키우면 포화한다.** UA를 1600 -> 3200 W/K로 두 배 키우면 반출은
+16622 -> 27046 W로 1.63배만 늘고, UA를 계속 키우면 이론 최대 44580 W에 수렴한다.
+포화 검증은 **선형 UA 증분**으로 해야 한다. UA를 두 배씩 키우며 보면 증가분이
+줄지 않는데, 식이 틀려서가 아니라 로그 축에서는 S자 곡선이기 때문이다.
 
 S2 참고값 (인로우 냉각 루프, 랙 6대, `AHydraulicNetworkDebugActor` 기본값):
 펌프 유량 4.87 L/s, 양정 210.3 kPa, 전기 입력 1.46 kW, Newton 7회 수렴.

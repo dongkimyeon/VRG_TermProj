@@ -6,6 +6,7 @@
 #include "GameFramework/Actor.h"
 #include "Simulation/Core/SimClock.h"
 #include "Simulation/Thermal/RackThermalModel.h"
+#include "Simulation/Thermal/RadiatorModel.h"
 #include "RackThermalActor.generated.h"
 
 // 랙(캐비닛) 1대의 열모델을 레벨에서 돌리는 액터.
@@ -48,6 +49,16 @@ public:
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Rack")
 	FRackThermalState InitialState;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Radiator")
+	FRadiatorParams Radiator;
+
+	// 켜면 랙에서 나온 냉각수를 라디에이터에 통과시켜 다시 랙 입구로 돌린다.
+	// 열 도메인 안에서만 닫는 루프다. 유량은 여전히 이 액터의 입력이며
+	// 수력 솔버에서 받아오지 않는다 (그 연결은 S4에서 한다).
+	// 끄면 CoolantInletTempK를 고정 경계로 쓰는 S1 개루프 구성이 된다.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Radiator")
+	bool bCloseCoolantLoopThroughRadiator = true;
 
 	// 고정 시뮬레이션 스텝 [s]. 모든 도메인이 같은 시계를 쓴다 (규약 4).
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Rack")

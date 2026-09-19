@@ -83,6 +83,13 @@ void ARackThermalActor::Tick(float DeltaTime)
 		const int32 NumSteps = Clock.BeginFrame(DeltaTime);
 		for (int32 StepIndex = 0; StepIndex < NumSteps; ++StepIndex)
 		{
+			if (bCloseCoolantLoopThroughRadiator)
+			{
+				// 랙 출구 = 냉각수 노드 온도. 라디에이터를 지나 다시 랙 입구가 된다.
+				Input.CoolantInletTempK = RadiatorModel::OutletTempK(
+					Radiator, Model.GetState().CoolantTempK, Input.CoolantMassFlowKgs, Params.CoolantCpJKgK);
+			}
+
 			Model.Step(Input, Clock.GetFixedStepS());
 			Clock.CompleteStep();
 		}
