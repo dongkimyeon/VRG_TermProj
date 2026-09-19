@@ -12,7 +12,7 @@ namespace
 		| EAutomationTestFlags::CommandletContext
 		| EAutomationTestFlags::EngineFilter;
 
-	FAirGridParams MakeGridParams(int32 NumCells, double CellSizeM)
+	FAirGridParams MakeSolidTestGridParams(int32 NumCells, double CellSizeM)
 	{
 		FAirGridParams Params;
 		Params.NumCellsX = NumCells;
@@ -32,7 +32,7 @@ bool FAirSolidBlocksFlowTest::RunTest(const FString& Parameters)
 {
 	const int32 NumCells = 12;
 	FAirSolver Solver;
-	Solver.Initialize(MakeGridParams(NumCells, 0.25), 297.15);
+	Solver.Initialize(MakeSolidTestGridParams(NumCells, 0.25), 297.15);
 	Solver.GetMutablePressureSettings().NormalizedResidualTarget = 1.0e-7;
 	Solver.GetMutablePressureSettings().MaxIterations = 3000;
 
@@ -123,7 +123,7 @@ bool FAirSolidEnergyConservationTest::RunTest(const FString& Parameters)
 {
 	const int32 NumCells = 10;
 	FAirSolver Solver;
-	Solver.Initialize(MakeGridParams(NumCells, 0.25), 297.15);
+	Solver.Initialize(MakeSolidTestGridParams(NumCells, 0.25), 297.15);
 	Solver.GetMutablePressureSettings().NormalizedResidualTarget = 1.0e-7;
 	Solver.GetMutablePressureSettings().MaxIterations = 2000;
 
@@ -194,7 +194,7 @@ bool FAirCoolingSteadyStateTest::RunTest(const FString& Parameters)
 	const double InitialTempK = 297.15;
 
 	FAirSolver Solver;
-	Solver.Initialize(MakeGridParams(NumCells, 0.25), InitialTempK);
+	Solver.Initialize(MakeSolidTestGridParams(NumCells, 0.25), InitialTempK);
 	Solver.GetMutablePressureSettings().NormalizedResidualTarget = 1.0e-7;
 	Solver.GetMutablePressureSettings().MaxIterations = 2000;
 
@@ -286,7 +286,7 @@ bool FAirCoolingNoOvershootTest::RunTest(const FString& Parameters)
 {
 	const int32 NumCells = 6;
 	FAirSolver Solver;
-	Solver.Initialize(MakeGridParams(NumCells, 0.25), 320.0);
+	Solver.Initialize(MakeSolidTestGridParams(NumCells, 0.25), 320.0);
 
 	const FUniformAirGrid& Grid = Solver.GetGrid();
 
