@@ -95,8 +95,9 @@ public:
 	double FixedStepS = 0.02;
 
 	// 한 프레임에 돌릴 스텝 수 상한. 공기 해석은 압력 풀이 때문에 무겁다.
+	// 이 값이 작으면 실시간보다 느리게 흘러서 기류가 자리잡는 걸 한참 기다려야 한다.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Air", meta = (ClampMin = "1", ClampMax = "16"))
-	int32 MaxStepsPerFrame = 2;
+	int32 MaxStepsPerFrame = 4;
 
 	// ---- 표시 ----
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Visualization")
@@ -123,9 +124,18 @@ public:
 	double ColorMaxCelsius = 45.0;
 
 	// 이 값보다 덜 뜨거운 셀은 아예 그리지 않는다 (0~1의 정규화 온도).
-	// 상온 셀까지 다 그리면 슬라이스가 불투명한 벽이 되어 안쪽이 안 보인다.
+	// 0이면 전부 그린다. 참고로 삼은 상용 도구도 찬 영역을 파랗게 깔아 두므로
+	// 기본은 0이다. 뜨거운 기둥만 떼어 보고 싶을 때만 올린다.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Visualization", meta = (ClampMin = "0.0", ClampMax = "1.0"))
-	double MinVisibleFraction = 0.04;
+	double MinVisibleFraction = 0.0;
+
+	// 찬 셀과 뜨거운 셀의 불투명도. 찬 쪽을 0으로 두면 배경이 되고,
+	// 너무 올리면 슬라이스가 불투명한 벽이 되어 안쪽이 안 보인다.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Visualization", meta = (ClampMin = "0.0", ClampMax = "1.0"))
+	double ColdOpacity = 0.06;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Visualization", meta = (ClampMin = "0.0", ClampMax = "1.0"))
+	double HotOpacity = 0.85;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Visualization")
 	bool bDrawDomainBounds = true;
@@ -154,6 +164,19 @@ public:
 	// 그중 액랭으로 빠지는 몫을 뺀 공랭 부하만 공기에 들어간다.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Air")
 	double AirHeatPerRackW = 8000.0;
+
+	// 배기 열원을 랙 뒷면에서 얼마나 띄울지 [m].
+	// 열원을 랙 몸통 안에 넣으면 안 된다. 물리적으로 더운 공기는 랙 뒤로 나오고,
+	// 화면에서도 불투명한 랙 메쉬에 가려 아무것도 안 보인다.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Air")
+	double ExhaustStandoffM = 0.35;
+
+	// 배기 열원이 덮는 높이 범위 [m]. 랙 윗부분에서 위로 뻗게 둔다.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Air")
+	double ExhaustBottomZM = 0.8;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Air")
+	double ExhaustTopZM = 2.6;
 
 protected:
 	virtual void BeginPlay() override;

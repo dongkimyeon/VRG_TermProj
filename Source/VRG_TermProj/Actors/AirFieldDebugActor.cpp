@@ -41,8 +41,11 @@ AAirFieldDebugActor::AAirFieldDebugActor()
 
 	// 공기 해석은 압력 풀이가 무겁다. 목표를 너무 조이면 프레임이 죽는다.
 	// D5대로 목표와 상한을 함께 두고, 못 미치면 화면에 수렴 실패를 띄운다.
-	PressureSettings.NormalizedResidualTarget = 1.0e-5;
-	PressureSettings.MaxIterations = 300;
+	// 실시간용이라 테스트(1e-8, 수천 회)보다 훨씬 느슨하다. 프레임 안에 끝나야 한다.
+	// 1e-5 / 300회로 뒀더니 잔차 1.04e-5로 목표를 아슬아슬하게 못 넘겨 매번
+	// 수렴 실패가 떴다. 목표를 현실적인 값으로 맞췄다.
+	PressureSettings.NormalizedResidualTarget = 2.0e-5;
+	PressureSettings.MaxIterations = 400;
 
 	HeatSources.Add(FAirHeatSourceBox());
 }
@@ -162,7 +165,10 @@ void AAirFieldDebugActor::FitToRoom()
 		return;
 	}
 
-	const FBox BoundsM = Room->GetRoomBoundsM();
+	// 배기 기둥이 랙 뒤와 위로 뻗으므로 방 범위보다 조금 넉넉하게 잡는다.
+	// 격자 밖으로 나간 열은 버려지고, 그러면 열수지 장부가 어긋난 것처럼 보인다.
+	const FBox BoundsM = Room->GetRoomBoundsM()
+		.ExpandBy(FVector(ExhaustStandoffM * 2.0 + 0.3, 0.3, 0.0));
 	const double CellSizeM = FMath::Max(GridParams.CellSizeM, 0.01);
 
 	// 도메인 원점은 격자의 (0,0,0) 셀 바깥 모서리다. 액터를 거기에 둔다.
@@ -214,10 +220,27 @@ void AAirFieldDebugActor::PlaceHeatSourcesFromRoom()
 		{
 			const FVector RackWorldM = Room->GetRackWorldLocationM(RowIndex, ColumnIndex);
 
+			// 열원을 랙 몸통 안이 아니라 **뒷면 배기 쪽**에 둔다.
+			// 더운 공기는 랙 뒤로 나오므로 그게 물리적으로 맞고, 랙 안에 넣으면
+			// 불투명한 랙 메쉬에 가려 화면에서 아무것도 안 보인다.
+			//
+			// 앞면이 통로를 향하므로 뒷면은 그 반대다. 행 기하에서 바라보는 방향을
+			// 되짚는다 - 통로 중심에서 멀어지는 쪽이 뒷면이다.
+			const double RowCenterX = Room->GetRackWorldLocationM(RowIndex, 0).X;
+			const double PairCenterX = 0.5 * (Room->GetRackWorldLocationM(0, 0).X
+				+ Room->GetRackWorldLocationM(FMath::Min(1, Room->NumRows - 1), 0).X);
+			const double RearSign = (RowCenterX >= PairCenterX) ? 1.0 : -1.0;
+
+			const double RearOffsetM = Room->RackSizeM.X * 0.5 + ExhaustStandoffM;
+			const double ExhaustCenterZM = 0.5 * (ExhaustBottomZM + ExhaustTopZM);
+
 			FAirHeatSourceBox Source;
-			// 랙 몸통 전체를 열원 상자로 본다. 바닥 중심이 기준이라 절반 높이만큼 올린다.
-			Source.CenterM = RackWorldM - ActorLocationM + FVector(0.0, 0.0, Room->RackSizeM.Z * 0.5);
-			Source.SizeM = Room->RackSizeM;
+			Source.CenterM = RackWorldM - ActorLocationM
+				+ FVector(RearSign * RearOffsetM, 0.0, ExhaustCenterZM);
+			Source.SizeM = FVector(
+				ExhaustStandoffM * 2.0,
+				Room->RackSizeM.Y,
+				FMath::Max(ExhaustTopZM - ExhaustBottomZM, GridParams.CellSizeM));
 
 			// D1: 랙 하나가 공기에 주는 열을 하나의 체적 열원으로 준다.
 			// 부품별로 쪼개 넣지 않는다.
@@ -349,16 +372,17 @@ void AAirFieldDebugActor::DrawSlice() const
 				const double TempK = Grid.TemperatureK[Grid.CellIndex(X, Y, Z)];
 				const double Normalized = (TempK - MinTempK) / SpanK;
 
-				// 상온에 가까운 셀은 아예 건너뛴다.
-				// 전부 그리면 슬라이스가 불투명한 벽이 되어 안쪽 기둥이 안 보인다.
 				if (Normalized < MinVisibleFraction)
 				{
 					continue;
 				}
 
 				FLinearColor Color = AirTemperatureColor(Normalized);
-				// 알파를 0에서 시작시켜야 경계가 부드럽게 사라진다.
-				Color.A = FMath::Clamp(0.85f * static_cast<float>(Normalized), 0.0f, 0.85f);
+
+				// 찬 영역은 옅게 깔고 뜨거운 영역만 진하게 올린다.
+				// 지수를 1보다 크게 둬야 중간 온도가 화면을 덮지 않는다.
+				const float Shaped = FMath::Pow(FMath::Clamp(static_cast<float>(Normalized), 0.0f, 1.0f), 1.5f);
+				Color.A = FMath::Lerp(static_cast<float>(ColdOpacity), static_cast<float>(HotOpacity), Shaped);
 
 				const FVector CenterCm = ActorLocationCm + SimUnits::MetersToUnreal(Grid.CellCenterM(X, Y, Z));
 				DrawDebugSolidBox(World, CenterCm, ThicknessCm, Color.ToFColor(false), false, -1.0f, 0);
