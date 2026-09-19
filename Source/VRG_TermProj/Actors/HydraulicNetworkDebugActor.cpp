@@ -4,10 +4,16 @@
 #include "Simulation/Core/SimUnits.h"
 #include "DrawDebugHelpers.h"
 #include "Engine/Engine.h"
+#include "Visualization/SimMeshBuilder.h"
+#include "Components/SceneComponent.h"
+#include "Components/StaticMeshComponent.h"
 
 AHydraulicNetworkDebugActor::AHydraulicNetworkDebugActor()
 {
 	PrimaryActorTick.bCanEverTick = true;
+
+	// 메쉬를 붙일 곳이 필요하다. 액터 위치가 네트워크 원점이 된다.
+	RootComponent = CreateDefaultSubobject<USceneComponent>(TEXT("Root"));
 }
 
 void AHydraulicNetworkDebugActor::BeginPlay()
@@ -64,6 +70,11 @@ void AHydraulicNetworkDebugActor::Tick(float DeltaTime)
 	{
 		RebuildAndSolve();
 		bNeedsRebuild = false;
+	}
+
+	if (bUseStaticMeshes)
+	{
+		UpdateMeshes();
 	}
 
 	DrawNetwork();
@@ -178,6 +189,8 @@ void AHydraulicNetworkDebugActor::RebuildAndSolve()
 
 	LastResult = Network.Solve(SolveSettings);
 
+	RebuildMeshes();
+
 	if (!LastResult.bConverged)
 	{
 		UE_LOG(LogTemp, Warning,
@@ -246,7 +259,17 @@ void AHydraulicNetworkDebugActor::DrawNetwork() const
 		const FVector StartCm = NodeWorldLocation(FlowM3s >= 0.0 ? FromNodeIndex : ToNodeIndex);
 		const FVector EndCm = NodeWorldLocation(FlowM3s >= 0.0 ? ToNodeIndex : FromNodeIndex);
 
-		DrawDebugDirectionalArrow(World, StartCm, EndCm, 18.0f, Color, false, -1.0f, 0, Thickness);
+		// 메쉬를 쓰면 관 모양과 색은 메쉬가 맡고, 화살표는 흐름 방향만 보여주면 된다.
+		// 그래도 방향 표시는 남긴다. 유량 부호가 바뀜는 것은 메쉬로 보이지 않는다.
+		if (!bUseStaticMeshes)
+		{
+			DrawDebugDirectionalArrow(World, StartCm, EndCm, 18.0f, Color, false, -1.0f, 0, Thickness);
+		}
+		else
+		{
+			DrawDebugDirectionalArrow(World, FMath::Lerp(StartCm, EndCm, 0.35),
+				FMath::Lerp(StartCm, EndCm, 0.65), 14.0f, FColor::White, false, -1.0f, 0, 2.0f);
+		}
 
 		const bool bIsRackBranch = RackBranchPipeIndices.Contains(PipeIndex);
 		if (bShowAllFlowLabels || bIsRackBranch)
@@ -288,8 +311,12 @@ void AHydraulicNetworkDebugActor::DrawNetwork() const
 			// 유닛이 하나도 없어 분기가 끊긴 랙은 다른 색으로 구분한다.
 			const bool bIsolated = !RackBranchPipeIndices.IsValidIndex(RackIndex)
 				|| RackBranchPipeIndices[RackIndex] == INDEX_NONE;
-			DrawDebugBox(World, CenterCm, HalfExtentCm,
-				bIsolated ? FColor(160, 70, 70) : FColor(90, 110, 140), false, -1.0f, 0, 1.5f);
+
+			if (!bUseStaticMeshes)
+			{
+				DrawDebugBox(World, CenterCm, HalfExtentCm,
+					bIsolated ? FColor(160, 70, 70) : FColor(90, 110, 140), false, -1.0f, 0, 1.5f);
+			}
 
 			DrawDebugString(World, CenterCm + FVector(0, 0, HalfExtentCm.Z + 20.0),
 				FString::Printf(TEXT("R%d 유닛 %d/%d"), RackIndex,
@@ -369,4 +396,98 @@ void AHydraulicNetworkDebugActor::DrawSummary() const
 
 	GEngine->AddOnScreenDebugMessage(BaseKey + 3, 0.0f, FColor(150, 150, 150),
 		TEXT("배관 색 = 유량 크기 (파랑 낮음 -> 노랑 높음). 온도가 아님 - S2에는 온도가 없다."));
+}
+
+void AHydraulicNetworkDebugActor::DestroyMeshes()
+{
+	for (UStaticMeshComponent* MeshComponent : PipeMeshes)
+	{
+		if (MeshComponent != nullptr)
+		{
+			MeshComponent->DestroyComponent();
+		}
+	}
+	for (UStaticMeshComponent* MeshComponent : RackMeshes)
+	{
+		if (MeshComponent != nullptr)
+		{
+			MeshComponent->DestroyComponent();
+		}
+	}
+	PipeMeshes.Reset();
+	RackMeshes.Reset();
+}
+
+void AHydraulicNetworkDebugActor::RebuildMeshes()
+{
+	DestroyMeshes();
+
+	if (!bUseStaticMeshes)
+	{
+		return;
+	}
+
+	UStaticMesh* CylinderMesh = SimMeshBuilder::LoadCylinderMesh();
+	UStaticMesh* CubeMesh = SimMeshBuilder::LoadCubeMesh();
+	if (CylinderMesh == nullptr || CubeMesh == nullptr)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("HydraulicNetworkDebugActor: 엔진 기본 메쉬를 찾지 못했습니다."));
+		return;
+	}
+	UMaterialInterface* Material = SimMeshBuilder::LoadColorableMaterial();
+
+	// 길이 단위 변환은 여기서만 한다 (규약 1).
+	const double DiameterCm = SimUnits::MetersToCentimeters(PipeDiameterM);
+
+	PipeMeshes.Reserve(Network.GetNumPipes());
+	for (int32 PipeIndex = 0; PipeIndex < Network.GetNumPipes(); ++PipeIndex)
+	{
+		const FVector StartCm = SimUnits::MetersToUnreal(NodePositionM[Network.GetPipeFromNodeIndex(PipeIndex)]);
+		const FVector EndCm = SimUnits::MetersToUnreal(NodePositionM[Network.GetPipeToNodeIndex(PipeIndex)]);
+
+		UStaticMeshComponent* Pipe = SimMeshBuilder::CreateMeshComponent(this, CylinderMesh, Material, TEXT("Pipe"));
+		SimMeshBuilder::SetTube(Pipe, StartCm, EndCm, DiameterCm);
+		PipeMeshes.Add(Pipe);
+	}
+
+	if (bShowRackBoxes)
+	{
+		const FVector HalfExtentCm = SimUnits::MetersToUnreal(RackSizeM) * 0.5;
+		RackMeshes.Reserve(RackBoxPositionM.Num());
+
+		for (int32 RackIndex = 0; RackIndex < RackBoxPositionM.Num(); ++RackIndex)
+		{
+			const FVector RackCm = SimUnits::MetersToUnreal(RackBoxPositionM[RackIndex]);
+
+			UStaticMeshComponent* Rack = SimMeshBuilder::CreateMeshComponent(this, CubeMesh, Material, TEXT("Rack"));
+			SimMeshBuilder::SetBox(Rack, FVector(RackCm.X, RackCm.Y, HalfExtentCm.Z), HalfExtentCm * 2.0);
+			RackMeshes.Add(Rack);
+		}
+	}
+}
+
+void AHydraulicNetworkDebugActor::UpdateMeshes() const
+{
+	// 배관 색 = 유량 크기. 온도가 아니다 (S2에는 온도가 없다).
+	double MaxFlowMagnitudeM3s = 0.0;
+	for (int32 PipeIndex = 0; PipeIndex < Network.GetNumPipes(); ++PipeIndex)
+	{
+		MaxFlowMagnitudeM3s = FMath::Max(MaxFlowMagnitudeM3s, FMath::Abs(Network.GetPipeFlowM3s(PipeIndex)));
+	}
+	const double NormalizationM3s = FMath::Max(MaxFlowMagnitudeM3s, UE_DOUBLE_SMALL_NUMBER);
+
+	for (int32 PipeIndex = 0; PipeIndex < PipeMeshes.Num(); ++PipeIndex)
+	{
+		const double Normalized = FMath::Abs(Network.GetPipeFlowM3s(PipeIndex)) / NormalizationM3s;
+		SimMeshBuilder::SetMeshColor(PipeMeshes[PipeIndex], FlowMagnitudeToColor(Normalized));
+	}
+
+	// 유닛이 하나도 없어 분기가 끊긴 랙은 색으로 구분한다.
+	for (int32 RackIndex = 0; RackIndex < RackMeshes.Num(); ++RackIndex)
+	{
+		const bool bIsolated = !RackBranchPipeIndices.IsValidIndex(RackIndex)
+			|| RackBranchPipeIndices[RackIndex] == INDEX_NONE;
+		SimMeshBuilder::SetMeshColor(RackMeshes[RackIndex],
+			bIsolated ? FLinearColor(0.35f, 0.10f, 0.10f) : FLinearColor(0.10f, 0.12f, 0.16f));
+	}
 }

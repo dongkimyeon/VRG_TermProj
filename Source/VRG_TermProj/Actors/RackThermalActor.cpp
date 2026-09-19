@@ -2,12 +2,27 @@
 
 #include "Actors/RackThermalActor.h"
 #include "Simulation/Core/SimUnits.h"
+#include "Visualization/SimMeshBuilder.h"
+
+#include "Components/SceneComponent.h"
+#include "Components/StaticMeshComponent.h"
 #include "DrawDebugHelpers.h"
 #include "Engine/Engine.h"
+
+namespace
+{
+	// 캐비닛 색. 부품 온도 색상표와 섞이지 않게 무채색으로 둔다.
+	const FLinearColor CabinetColor(0.07f, 0.08f, 0.09f);
+	const FLinearColor DockedSledColor(0.22f, 0.24f, 0.28f);
+	const FLinearColor UndockedSledColor(0.45f, 0.20f, 0.20f);
+}
 
 ARackThermalActor::ARackThermalActor()
 {
 	PrimaryActorTick.bCanEverTick = true;
+
+	// 메쉬를 붙일 곳이 필요하다. 액터 위치가 캐비닛 바닥 중심이 된다.
+	RootComponent = CreateDefaultSubobject<USceneComponent>(TEXT("Root"));
 }
 
 void ARackThermalActor::BeginPlay()
@@ -16,6 +31,15 @@ void ARackThermalActor::BeginPlay()
 	ResetSim();
 	StartSim();
 }
+
+#if WITH_EDITOR
+void ARackThermalActor::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent)
+{
+	Super::PostEditChangeProperty(PropertyChangedEvent);
+	ConformInputArrays();
+	bMeshesDirty = true;
+}
+#endif
 
 void ARackThermalActor::ConformInputArrays()
 {
@@ -29,6 +53,11 @@ void ARackThermalActor::ConformInputArrays()
 	if (Input.SledDocked.Num() != NumSleds)
 	{
 		Input.SledDocked.Init(true, NumSleds);
+	}
+
+	if (SledSlideAlpha.Num() != NumSleds)
+	{
+		SledSlideAlpha.Init(0.0f, NumSleds);
 	}
 }
 
@@ -54,6 +83,7 @@ void ARackThermalActor::ResetSim()
 	ConformInputArrays();
 	Clock.Reset(FixedStepS);
 	Model.Initialize(Params, InitialState);
+	bMeshesDirty = true;
 }
 
 FRackThermalSnapshot ARackThermalActor::GetSnapshot() const
@@ -65,8 +95,14 @@ void ARackThermalActor::SetSledDocked(int32 SledIndex, bool bDocked)
 {
 	if (Input.SledDocked.IsValidIndex(SledIndex))
 	{
+		// 물리 상태는 즉시 바뀐다. 퀵디스커넥트는 레일이 다 나오기를 기다리지 않는다.
 		Input.SledDocked[SledIndex] = bDocked;
 	}
+}
+
+void ARackThermalActor::ToggleSledDocked(int32 SledIndex)
+{
+	SetSledDocked(SledIndex, !IsSledDocked(SledIndex));
 }
 
 bool ARackThermalActor::IsSledDocked(int32 SledIndex) const
@@ -74,9 +110,207 @@ bool ARackThermalActor::IsSledDocked(int32 SledIndex) const
 	return Input.SledDocked.IsValidIndex(SledIndex) ? Input.SledDocked[SledIndex] : false;
 }
 
+int32 ARackThermalActor::GetNumDockedSleds() const
+{
+	int32 NumDocked = 0;
+	for (const bool bDocked : Input.SledDocked)
+	{
+		NumDocked += bDocked ? 1 : 0;
+	}
+	return NumDocked;
+}
+
+void ARackThermalActor::GetSledBayM(int32 SledIndex, double& OutCenterZM, double& OutHeightM) const
+{
+	const int32 NumSleds = FMath::Max(1, Params.NumSleds);
+
+	// 위아래에 캐비닛 패널이 들어갈 자리를 남긴다.
+	const double BayBottomZM = PanelThicknessM;
+	const double BayTopZM = RackSizeM.Z - PanelThicknessM;
+	const double RowHeightM = (BayTopZM - BayBottomZM) / NumSleds;
+
+	OutHeightM = RowHeightM * 0.8;
+	OutCenterZM = BayBottomZM + RowHeightM * (SledIndex + 0.5);
+}
+
+void ARackThermalActor::RebuildMeshes()
+{
+	for (UStaticMeshComponent* MeshComponent : CabinetMeshes)
+	{
+		if (MeshComponent != nullptr)
+		{
+			MeshComponent->DestroyComponent();
+		}
+	}
+	for (UStaticMeshComponent* MeshComponent : SledMeshes)
+	{
+		if (MeshComponent != nullptr)
+		{
+			MeshComponent->DestroyComponent();
+		}
+	}
+	for (UStaticMeshComponent* MeshComponent : ComponentMeshes)
+	{
+		if (MeshComponent != nullptr)
+		{
+			MeshComponent->DestroyComponent();
+		}
+	}
+	CabinetMeshes.Reset();
+	SledMeshes.Reset();
+	ComponentMeshes.Reset();
+	ComponentBaseXCm.Reset();
+
+	UStaticMesh* CubeMesh = SimMeshBuilder::LoadCubeMesh();
+	if (CubeMesh == nullptr)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("RackThermalActor: 엔진 기본 큐브 메쉬를 찾지 못했습니다."));
+		return;
+	}
+	UMaterialInterface* Material = SimMeshBuilder::LoadColorableMaterial();
+
+	const int32 NumSleds = FMath::Max(1, Params.NumSleds);
+
+	// 길이 단위 변환은 여기서만 한다 (규약 1).
+	const FVector SizeCm = SimUnits::MetersToUnreal(RackSizeM);
+	const double ThicknessCm = SimUnits::MetersToCentimeters(PanelThicknessM);
+
+	auto AddCabinetPanel = [&](const FVector& CenterCm, const FVector& PanelSizeCm)
+	{
+		UStaticMeshComponent* Panel = SimMeshBuilder::CreateMeshComponent(this, CubeMesh, Material, TEXT("Cabinet"));
+		SimMeshBuilder::SetBox(Panel, CenterCm, PanelSizeCm);
+		SimMeshBuilder::SetMeshColor(Panel, CabinetColor);
+		CabinetMeshes.Add(Panel);
+	};
+
+	// 좌우 측판
+	AddCabinetPanel(FVector(0.0, -0.5 * SizeCm.Y, 0.5 * SizeCm.Z), FVector(SizeCm.X, ThicknessCm, SizeCm.Z));
+	AddCabinetPanel(FVector(0.0, 0.5 * SizeCm.Y, 0.5 * SizeCm.Z), FVector(SizeCm.X, ThicknessCm, SizeCm.Z));
+	// 뒷판 (-X가 뒤, 공기가 빠져나가는 쪽)
+	AddCabinetPanel(FVector(-0.5 * SizeCm.X, 0.0, 0.5 * SizeCm.Z), FVector(ThicknessCm, SizeCm.Y, SizeCm.Z));
+	// 바닥과 천장
+	AddCabinetPanel(FVector(0.0, 0.0, 0.5 * ThicknessCm), FVector(SizeCm.X, SizeCm.Y, ThicknessCm));
+	AddCabinetPanel(FVector(0.0, 0.0, SizeCm.Z - 0.5 * ThicknessCm), FVector(SizeCm.X, SizeCm.Y, ThicknessCm));
+
+	// 유닛과 부품
+	SledMeshes.Reserve(NumSleds);
+	ComponentMeshes.Reserve(NumSleds * NumRackComponents);
+
+	for (int32 SledIndex = 0; SledIndex < NumSleds; ++SledIndex)
+	{
+		double CenterZM = 0.0;
+		double HeightM = 0.0;
+		GetSledBayM(SledIndex, CenterZM, HeightM);
+
+		const double SledDepthCm = SizeCm.X * 0.85;
+		const double SledWidthCm = SizeCm.Y - 2.0 * ThicknessCm - 2.0;
+		const double SledHeightCm = SimUnits::MetersToCentimeters(HeightM);
+		const double CenterZCm = SimUnits::MetersToCentimeters(CenterZM);
+
+		UStaticMeshComponent* Sled = SimMeshBuilder::CreateMeshComponent(this, CubeMesh, Material, TEXT("Sled"));
+		SimMeshBuilder::SetBox(Sled, FVector(0.0, 0.0, CenterZCm),
+			FVector(SledDepthCm, SledWidthCm, SledHeightCm));
+		SledMeshes.Add(Sled);
+
+		// 부품은 유닛 위에 공랭 체인 순서대로 얹는다. 앞(+X)이 공기 입구다.
+		// 배열 순서 그대로 앞에서 뒤로 놓으므로, 눈으로 보는 순서가 곧 공기가 지나는 순서다.
+		const double SlotDepthCm = SledDepthCm / (NumRackComponents + 1);
+		const double PartDepthCm = SlotDepthCm * 0.7;
+		const double PartWidthCm = SledWidthCm * 0.55;
+		const double PartHeightCm = SledHeightCm * 0.55;
+
+		for (int32 ComponentIndex = 0; ComponentIndex < NumRackComponents; ++ComponentIndex)
+		{
+			const double PartXCm = 0.5 * SledDepthCm - SlotDepthCm * (ComponentIndex + 1);
+
+			UStaticMeshComponent* Part = SimMeshBuilder::CreateMeshComponent(this, CubeMesh, Material, TEXT("Part"));
+			SimMeshBuilder::SetBox(Part,
+				FVector(PartXCm, 0.0, CenterZCm + 0.5 * SledHeightCm + 0.5 * PartHeightCm),
+				FVector(PartDepthCm, PartWidthCm, PartHeightCm));
+			ComponentMeshes.Add(Part);
+			ComponentBaseXCm.Add(PartXCm);
+		}
+	}
+}
+
+void ARackThermalActor::UpdateSledSlide(float DeltaTime)
+{
+	const int32 NumSleds = FMath::Min(SledMeshes.Num(), SledSlideAlpha.Num());
+	const double PullOutCm = SimUnits::MetersToCentimeters(SledPullOutM);
+
+	for (int32 SledIndex = 0; SledIndex < NumSleds; ++SledIndex)
+	{
+		const float TargetAlpha = IsSledDocked(SledIndex) ? 0.0f : 1.0f;
+		SledSlideAlpha[SledIndex] = FMath::FInterpConstantTo(
+			SledSlideAlpha[SledIndex], TargetAlpha, DeltaTime, SledSlideSpeed);
+
+		const double OffsetCm = PullOutCm * SledSlideAlpha[SledIndex];
+
+		UStaticMeshComponent* Sled = SledMeshes[SledIndex];
+		if (Sled != nullptr)
+		{
+			FVector Location = Sled->GetRelativeLocation();
+			Location.X = OffsetCm;
+			Sled->SetRelativeLocation(Location);
+		}
+
+		// 부품은 유닛을 따라 함께 나온다. 꽂힌 상태의 X를 따로 들고 있다가 오프셋만 더한다.
+		for (int32 ComponentIndex = 0; ComponentIndex < NumRackComponents; ++ComponentIndex)
+		{
+			const int32 FlatIndex = SledIndex * NumRackComponents + ComponentIndex;
+			if (!ComponentMeshes.IsValidIndex(FlatIndex) || ComponentMeshes[FlatIndex] == nullptr
+				|| !ComponentBaseXCm.IsValidIndex(FlatIndex))
+			{
+				continue;
+			}
+
+			UStaticMeshComponent* Part = ComponentMeshes[FlatIndex];
+			FVector Location = Part->GetRelativeLocation();
+			Location.X = ComponentBaseXCm[FlatIndex] + OffsetCm;
+			Part->SetRelativeLocation(Location);
+		}
+	}
+}
+
+void ARackThermalActor::UpdateMeshColors() const
+{
+	const FRackThermalSnapshot Snapshot = Model.MakeSnapshot(Clock.GetSimTimeS());
+	const double MinTempK = SimUnits::CelsiusToKelvin(ColorMinCelsius);
+	const double MaxTempK = SimUnits::CelsiusToKelvin(ColorMaxCelsius);
+
+	for (int32 SledIndex = 0; SledIndex < SledMeshes.Num(); ++SledIndex)
+	{
+		SimMeshBuilder::SetMeshColor(SledMeshes[SledIndex],
+			IsSledDocked(SledIndex) ? DockedSledColor : UndockedSledColor);
+	}
+
+	for (int32 FlatIndex = 0; FlatIndex < ComponentMeshes.Num(); ++FlatIndex)
+	{
+		if (!Snapshot.ComponentTempK.IsValidIndex(FlatIndex))
+		{
+			continue;
+		}
+		SimMeshBuilder::SetMeshColor(ComponentMeshes[FlatIndex],
+			SimMeshBuilder::TemperatureToColor(Snapshot.ComponentTempK[FlatIndex], MinTempK, MaxTempK));
+	}
+}
+
 void ARackThermalActor::Tick(float DeltaTime)
 {
 	Super::Tick(DeltaTime);
+
+	// 에디터 리스너에서는 BeginPlay 없이 틱이 돌아간다.
+	// 모델이 아직 Params에 맞게 초기화되지 않았으면 먼저 맞춘다.
+	if (Model.GetState().ComponentTempK.Num() != FMath::Max(1, Params.NumSleds) * NumRackComponents)
+	{
+		ResetSim();
+	}
+
+	if (bMeshesDirty)
+	{
+		RebuildMeshes();
+		bMeshesDirty = false;
+	}
 
 	if (bSimRunning)
 	{
@@ -95,6 +329,9 @@ void ARackThermalActor::Tick(float DeltaTime)
 		}
 	}
 
+	UpdateSledSlide(DeltaTime);
+	UpdateMeshColors();
+
 	if (bShowReadout)
 	{
 		DrawReadout();
@@ -111,10 +348,43 @@ void ARackThermalActor::DrawReadout() const
 
 	const FRackThermalSnapshot Snapshot = GetSnapshot();
 
-	// 길이 단위 변환은 여기서만 한다 (규약 1).
-	const FVector HalfExtentCm = SimUnits::MetersToUnreal(RackSizeM) * 0.5;
-	const FVector CenterCm = GetActorLocation() + FVector(0.0, 0.0, HalfExtentCm.Z);
-	DrawDebugBox(World, CenterCm, HalfExtentCm, FColor::Cyan, false, -1.0f, 0, 2.0f);
+	if (bShowSledLabels)
+	{
+		for (int32 SledIndex = 0; SledIndex < Params.NumSleds; ++SledIndex)
+		{
+			double CenterZM = 0.0;
+			double HeightM = 0.0;
+			GetSledBayM(SledIndex, CenterZM, HeightM);
+
+			const int32 CpuIndex = FRackThermalModel::NodeIndex(SledIndex, ERackComponent::Cpu);
+			const int32 GpuIndex = FRackThermalModel::NodeIndex(SledIndex, ERackComponent::Gpu);
+			const int32 RamIndex = FRackThermalModel::NodeIndex(SledIndex, ERackComponent::Ram);
+			const int32 VrmIndex = FRackThermalModel::NodeIndex(SledIndex, ERackComponent::Vrm);
+			if (!Snapshot.ComponentTempK.IsValidIndex(VrmIndex))
+			{
+				continue;
+			}
+
+			const FVector LabelCm = GetActorLocation()
+				+ FVector(SimUnits::MetersToCentimeters(RackSizeM.X * 0.5 + 0.1),
+					SimUnits::MetersToCentimeters(RackSizeM.Y * 0.5 + 0.05),
+					SimUnits::MetersToCentimeters(CenterZM));
+
+			// 온도 표시는 여기서만 °C로 바꾼다 (규약 2).
+			DrawDebugString(World, LabelCm,
+				FString::Printf(TEXT("U%02d %s C%.0f G%.0f R%.0f V%.0f | 공기 %.3f kg/s"),
+					SledIndex,
+					IsSledDocked(SledIndex) ? TEXT("[꽂힘]") : TEXT("[뽑힘]"),
+					SimUnits::KelvinToCelsius(Snapshot.ComponentTempK[CpuIndex]),
+					SimUnits::KelvinToCelsius(Snapshot.ComponentTempK[GpuIndex]),
+					SimUnits::KelvinToCelsius(Snapshot.ComponentTempK[RamIndex]),
+					SimUnits::KelvinToCelsius(Snapshot.ComponentTempK[VrmIndex]),
+					Snapshot.SlotAirMassFlowKgs.IsValidIndex(SledIndex) ? Snapshot.SlotAirMassFlowKgs[SledIndex] : 0.0),
+				nullptr,
+				IsSledDocked(SledIndex) ? FColor(200, 220, 255) : FColor(255, 150, 150),
+				0.0f, true, 0.9f);
+		}
+	}
 
 	if (GEngine == nullptr)
 	{
@@ -144,20 +414,14 @@ void ARackThermalActor::DrawReadout() const
 			SimUnits::KelvinToCelsius(HottestTempK));
 	}
 
-	int32 NumDocked = 0;
-	for (const bool bDocked : Input.SledDocked)
-	{
-		NumDocked += bDocked ? 1 : 0;
-	}
-
-	// 온도 표시는 여기서만 °C로 바꾼다 (규약 2).
 	const FString Readout = FString::Printf(
-		TEXT("[%s] t=%.1f s | 유닛 %d/%d 도킹 | 최고 %s | 냉각수 출구 %.2f C | 배기 %.2f C")
+		TEXT("[%s] t=%.1f s | 유닛 %d/%d 꽂힘 | 최고 %s | 냉각수 %.2f->%.2f C | 배기 %.2f C")
 		TEXT(" | 냉각수 %.0f W + 공기 %.0f W + 자연대류 %.0f W = %.0f W (발열 %.0f W) | 정규화 잔차 %.2e%s"),
 		*GetName(),
 		Snapshot.SimTimeS,
-		NumDocked, Params.NumSleds,
+		GetNumDockedSleds(), Params.NumSleds,
 		*HottestLabel,
+		SimUnits::KelvinToCelsius(Input.CoolantInletTempK),
 		SimUnits::KelvinToCelsius(Snapshot.CoolantOutletTempK),
 		SimUnits::KelvinToCelsius(Snapshot.MixedAirOutletTempK),
 		Snapshot.HeatRemovedByCoolantW,

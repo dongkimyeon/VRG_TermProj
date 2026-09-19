@@ -300,14 +300,19 @@ double FRackThermalModel::GetEnergyStoredJ() const
 {
 	double StoredJ = Params.CoolantHeatCapacityJK * (State.CoolantTempK - InitialState.CoolantTempK);
 
-	for (int32 SledIndex = 0; SledIndex < Params.NumSleds; ++SledIndex)
+	// Initialize 전에 불릴 수 있다 (에디터 틱은 BeginPlay 없이도 돌아간다).
+	// 그럴 때는 배열이 비어 있으므로 상태 배열 길이를 기준으로 돌고 비었으면 0을 돌려준다.
+	const int32 NumNodes = FMath::Min(State.ComponentTempK.Num(), InitialState.ComponentTempK.Num());
+	if (Params.Components.Num() != NumRackComponents)
 	{
-		for (int32 ComponentIndex = 0; ComponentIndex < NumRackComponents; ++ComponentIndex)
-		{
-			const int32 Index = SledIndex * NumRackComponents + ComponentIndex;
-			StoredJ += Params.Components[ComponentIndex].HeatCapacityJK
-				* (State.ComponentTempK[Index] - InitialState.ComponentTempK[Index]);
-		}
+		return StoredJ;
+	}
+
+	for (int32 Index = 0; Index < NumNodes; ++Index)
+	{
+		const int32 ComponentIndex = Index % NumRackComponents;
+		StoredJ += Params.Components[ComponentIndex].HeatCapacityJK
+			* (State.ComponentTempK[Index] - InitialState.ComponentTempK[Index]);
 	}
 
 	return StoredJ;

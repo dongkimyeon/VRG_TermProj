@@ -7,6 +7,8 @@
 #include "Simulation/Hydraulics/HydraulicNetwork.h"
 #include "HydraulicNetworkDebugActor.generated.h"
 
+class UStaticMeshComponent;
+
 // S2 배관망을 레벨에서 눈으로 보기 위한 액터.
 //
 // 실제 데이터센터 인로우 냉각 루프 배치를 따른다:
@@ -123,6 +125,15 @@ public:
 	FHydraulicSolveSettings SolveSettings;
 
 	// ---- 표시 ----
+	// 켜면 배관과 랙을 스태틱 메쉬로 그린다. 끄면 예전처럼 DrawDebug로만 그린다.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Visualization")
+	bool bUseStaticMeshes = true;
+
+	// 배관 지름 [m]. 표시용이며 수력 계산에는 쓰이지 않는다
+	// (저항은 ResistancePaS2M6로 직접 받는다).
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Visualization")
+	double PipeDiameterM = 0.05;
+
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Visualization")
 	bool bShowRackBoxes = true;
 
@@ -159,7 +170,18 @@ private:
 
 	bool bNeedsRebuild = true;
 
+	// 배관 메쉬. Network의 파이프 인덱스와 1:1로 대응한다.
+	UPROPERTY(Transient)
+	TArray<TObjectPtr<UStaticMeshComponent>> PipeMeshes;
+
+	// 랙 상자 메쉬. 길이 NumRacks.
+	UPROPERTY(Transient)
+	TArray<TObjectPtr<UStaticMeshComponent>> RackMeshes;
+
 	void RebuildAndSolve();
+	void RebuildMeshes();
+	void UpdateMeshes() const;
+	void DestroyMeshes();
 	void DrawNetwork() const;
 	void DrawSummary() const;
 
