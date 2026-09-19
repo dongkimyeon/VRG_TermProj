@@ -376,3 +376,98 @@ FRackThermalSnapshot FRackThermalModel::MakeSnapshot(double SimTimeS) const
 	Snapshot.bStepStable = bLastStepStable;
 	return Snapshot;
 }
+
+// ---- NVIDIA GB200 NVL72 프리셋 ----
+//
+// 컴퓨트 트레이 18장, 트레이당 Grace CPU 2 + Blackwell GPU 4 (GB200 슈퍼칩 2개),
+// MGX 액랭 구성. 랙 전체로 Grace 36 + Blackwell 72가 맞는다.
+//
+// 액랭/공랭 분담은 기본 구성과 같은 원칙이다: 콜드플레이트가 CPU·GPU,
+// 공기가 나머지(로컬 메모리·NIC·전원부). NVL72는 발열의 대부분이 액랭으로 빠진다.
+//
+// 모델에 없는 것: NVLink 스위치 트레이 9장, 전원 셸프. 둘 다 발열이 있고
+// 실제 랙은 약 120 kW지만, 여기서는 컴퓨트 트레이 18장분만 다룬다.
+// 그래서 이 프리셋의 랙 발열은 약 105 kW다.
+
+TArray<FRackComponentParams> FRackThermalModel::Gb200Nvl72Components()
+{
+	TArray<FRackComponentParams> Components;
+	Components.SetNum(NumRackComponents);
+
+	// 자연대류는 기본 구성과 같은 비율로 둔다. 밀폐 캐비닛이라 반출의 1% 미만이다.
+
+	// CPU: Grace 2개 + 콜드플레이트. UA는 600 W를 약 8 K 접근온도로 뽑는 값이다.
+	// 열용량은 패키지 + 콜드플레이트 구리 약 2 kg.
+	FRackComponentParams& Cpu = Components[static_cast<int32>(ERackComponent::Cpu)];
+	Cpu.Name = TEXT("Grace CPU x2");
+	Cpu.HeatCapacityJK = 800.0;
+	Cpu.ToCoolantUAWK = 75.0;
+	Cpu.ToAirUAWK = 0.0;
+	Cpu.ToAmbientUAWK = 0.3;
+
+	// GPU: Blackwell 4장 + 콜드플레이트. UA는 4800 W를 약 12 K로 뽑는 값이다.
+	// 열용량은 보드 + 콜드플레이트 약 6 kg.
+	FRackComponentParams& Gpu = Components[static_cast<int32>(ERackComponent::Gpu)];
+	Gpu.Name = TEXT("Blackwell GPU x4");
+	Gpu.HeatCapacityJK = 2400.0;
+	Gpu.ToCoolantUAWK = 400.0;
+	Gpu.ToAirUAWK = 0.0;
+	Gpu.ToAmbientUAWK = 0.3;
+
+	// RAM/NIC: HBM은 패키지 위라 액랭으로 빠지고, 여기 남는 건 보드 위 메모리와
+	// 네트워크 카드처럼 공기가 맡는 몫이다. UA는 200 W를 약 25 K 상승으로 버티는 값.
+	FRackComponentParams& Ram = Components[static_cast<int32>(ERackComponent::Ram)];
+	Ram.Name = TEXT("RAM/NIC");
+	Ram.HeatCapacityJK = 600.0;
+	Ram.ToCoolantUAWK = 0.0;
+	Ram.ToAirUAWK = 8.0;
+	Ram.ToAmbientUAWK = 0.15;
+
+	// VRM: 트레이 전원부. 허용 온도가 RAM보다 높아 공랭 체인 뒤다.
+	// UA는 250 W를 약 30 K 상승으로 버티는 값이다.
+	FRackComponentParams& Vrm = Components[static_cast<int32>(ERackComponent::Vrm)];
+	Vrm.Name = TEXT("VRM");
+	Vrm.HeatCapacityJK = 500.0;
+	Vrm.ToCoolantUAWK = 0.0;
+	Vrm.ToAirUAWK = 8.3;
+	Vrm.ToAmbientUAWK = 0.15;
+
+	return Components;
+}
+
+TArray<double> FRackThermalModel::Gb200Nvl72TrayHeatW()
+{
+	TArray<double> HeatW;
+	HeatW.SetNum(NumRackComponents);
+	// 트레이 1장 합계 5850 W. 18장이면 랙 105.3 kW다.
+	// GB200 슈퍼칩(Grace 1 + Blackwell 2)이 약 2700 W이고 트레이에 2개 들어간다.
+	HeatW[static_cast<int32>(ERackComponent::Cpu)] = 600.0;   // Grace 2개 x 약 300 W
+	HeatW[static_cast<int32>(ERackComponent::Gpu)] = 4800.0;  // Blackwell 4장 x 약 1200 W
+	HeatW[static_cast<int32>(ERackComponent::Ram)] = 200.0;   // 보드 메모리 + NIC
+	HeatW[static_cast<int32>(ERackComponent::Vrm)] = 250.0;   // 위 5600 W를 효율 약 96%로 변환할 때의 손실
+	return HeatW;
+}
+
+FRackThermalParams FRackThermalModel::MakeGb200Nvl72Params()
+{
+	FRackThermalParams Params;
+	Params.NumSleds = Gb200Nvl72ComputeTrays;
+	Params.Components = Gb200Nvl72Components();
+
+	// 랙 매니폴드 + 콜드플레이트에 담긴 물이 약 20 kg.
+	Params.CoolantHeatCapacityJK = 8.4e4;
+
+	return Params;
+}
+
+TArray<double> FRackThermalModel::MakeGb200Nvl72HeatW()
+{
+	const TArray<double> TrayHeatW = Gb200Nvl72TrayHeatW();
+	TArray<double> HeatW;
+	HeatW.Reserve(Gb200Nvl72ComputeTrays * NumRackComponents);
+	for (int32 TrayIndex = 0; TrayIndex < Gb200Nvl72ComputeTrays; ++TrayIndex)
+	{
+		HeatW.Append(TrayHeatW);
+	}
+	return HeatW;
+}

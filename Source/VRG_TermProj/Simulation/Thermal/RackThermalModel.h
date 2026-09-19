@@ -72,6 +72,22 @@ public:
 	// NumSleds * NumRackComponents 길이로 펼친 기본 발열 배열.
 	static TArray<double> MakeUniformHeatW(int32 NumSleds);
 
+	// ---- NVIDIA GB200 NVL72 프리셋 ----
+	// 컴퓨트 트레이 18장, 트레이당 Grace CPU 2 + Blackwell GPU 4, MGX 액랭.
+	// 기본 구성(1소켓 + 가속기 1장, 15 kW)과 다른 장비이므로 따로 둔다.
+	// NVLink 스위치 트레이 9장은 아직 모델에 없다 (별도 유닛 종류가 필요하다).
+	// 근거는 cpp 주석 참고.
+	static constexpr int32 Gb200Nvl72ComputeTrays = 18;
+
+	static TArray<FRackComponentParams> Gb200Nvl72Components();
+	static TArray<double> Gb200Nvl72TrayHeatW();
+
+	// 위 둘을 묶은 파라미터. NumSleds와 냉각수 열용량까지 채워 준다.
+	static FRackThermalParams MakeGb200Nvl72Params();
+
+	// 18장 분량으로 펼친 발열 배열.
+	static TArray<double> MakeGb200Nvl72HeatW();
+
 	// 슬롯별 공기 질량유량 [kg/s]. 총 유량을 1/sqrt(R) 가중으로 나눈다.
 	// SledDocked 길이가 NumSleds와 다르면 전부 도킹으로 본다. 합은 총 유량과 같다.
 	static void DistributeSlotAirMassFlowKgs(const FRackThermalParams& InParams,

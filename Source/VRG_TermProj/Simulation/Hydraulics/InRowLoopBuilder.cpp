@@ -79,8 +79,9 @@ FInRowLoopHandles InRowLoopBuilder::AddLoop(FHydraulicNetwork& Network, const FI
 		// 공급 헤더 구간
 		if (RackIndex + 1 < RackCount)
 		{
-			AddPipe(Handles.SupplyNodeIndices[RackIndex], Handles.SupplyNodeIndices[RackIndex + 1],
-				Spec.HeaderSegmentResistancePaS2M6);
+			Handles.SupplyHeaderPipeIndices.Add(
+				AddPipe(Handles.SupplyNodeIndices[RackIndex], Handles.SupplyNodeIndices[RackIndex + 1],
+					Spec.HeaderSegmentResistancePaS2M6));
 		}
 
 		// 랙 분기 (공급 -> 랙 -> 회수)
@@ -88,24 +89,28 @@ FInRowLoopHandles InRowLoopBuilder::AddLoop(FHydraulicNetwork& Network, const FI
 		if (RackNodeIndex == INDEX_NONE)
 		{
 			Handles.RackBranchPipeIndices.Add(INDEX_NONE);
+			Handles.RackReturnPipeIndices.Add(INDEX_NONE);
 		}
 		else
 		{
 			const double BranchPaS2M6 = BranchResistancePaS2M6(Spec, DockedSledsAt(Spec, RackIndex));
 			Handles.RackBranchPipeIndices.Add(
 				AddPipe(Handles.SupplyNodeIndices[RackIndex], RackNodeIndex, BranchPaS2M6));
-			AddPipe(RackNodeIndex, Handles.ReturnNodeIndices[RackIndex], BranchPaS2M6);
+			Handles.RackReturnPipeIndices.Add(
+				AddPipe(RackNodeIndex, Handles.ReturnNodeIndices[RackIndex], BranchPaS2M6));
 		}
 
 		// 회수 헤더 구간. CDU 쪽으로 되돌아간다.
 		if (RackIndex + 1 < RackCount)
 		{
-			AddPipe(Handles.ReturnNodeIndices[RackIndex + 1], Handles.ReturnNodeIndices[RackIndex],
-				Spec.HeaderSegmentResistancePaS2M6);
+			Handles.ReturnHeaderPipeIndices.Add(
+				AddPipe(Handles.ReturnNodeIndices[RackIndex + 1], Handles.ReturnNodeIndices[RackIndex],
+					Spec.HeaderSegmentResistancePaS2M6));
 		}
 	}
 
-	AddPipe(Handles.ReturnNodeIndices[0], Handles.CduNodeIndex, Spec.ReturnToCduResistancePaS2M6);
+	Handles.ReturnToCduPipeIndex =
+		AddPipe(Handles.ReturnNodeIndices[0], Handles.CduNodeIndex, Spec.ReturnToCduResistancePaS2M6);
 
 	return Handles;
 }

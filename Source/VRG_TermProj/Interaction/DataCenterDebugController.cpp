@@ -2,9 +2,11 @@
 
 #include "Interaction/DataCenterDebugController.h"
 
+#include "Actors/DataCenterRoomActor.h"
 #include "Actors/HydraulicNetworkDebugActor.h"
 #include "Actors/RackThermalActor.h"
 #include "Simulation/Core/SimUnits.h"
+#include "Simulation/Thermal/RackThermalModel.h"
 
 #include "EnhancedInputComponent.h"
 #include "EnhancedInputSubsystems.h"
@@ -17,7 +19,10 @@ ADataCenterDebugController::ADataCenterDebugController()
 {
 	PrimaryActorTick.bCanEverTick = true;
 
-	// 기본값은 FRackThermalModel::DefaultSledHeatW()의 운전점을 가운데 두고 잡았다.
+	// 여기 값은 레벨에 랙이 하나도 없을 때만 쓰이는 자리 표시다.
+	// 랙을 찾으면 InitializeKnobsFromTargets()가 그 랙의 현재 값으로 다시 잡는다.
+	// 랙 종류마다 발열 규모가 달라서(15 kW 하이브리드 vs GB200 NVL72) 숫자를
+	// 여기 박아 두면 다른 랙을 놓는 순간 범위가 어긋난다.
 	CpuHeatKnob.Value = 350.0;
 	CpuHeatKnob.MinValue = 0.0;
 	CpuHeatKnob.MaxValue = 700.0;
@@ -28,13 +33,13 @@ ADataCenterDebugController::ADataCenterDebugController()
 	GpuHeatKnob.MaxValue = 1400.0;
 	GpuHeatKnob.StepSize = 50.0;
 
+	// 회전수비는 무차원이라 랙 종류와 무관하다. 그대로 둔다.
 	PumpSpeedKnob.Value = 1.0;
 	PumpSpeedKnob.MinValue = 0.0;
 	PumpSpeedKnob.MaxValue = 1.5;
 	PumpSpeedKnob.StepSize = 0.05;
 
-	// UA는 100 W/K에서 20000 W/K까지 훑어야 포화가 눈에 보인다.
-	// 선형 증분으로는 키를 수백 번 눌러야 하므로 곱셈으로 움직인다.
+	// UA는 자릿수를 훑어야 포화가 눈에 보인다. 선형 증분으로는 키를 수백 번 눌러야 한다.
 	RadiatorUAKnob.Value = 1.6e3;
 	RadiatorUAKnob.MinValue = 1.0e2;
 	RadiatorUAKnob.MaxValue = 2.0e4;
@@ -60,7 +65,14 @@ void ADataCenterDebugController::BeginPlay()
 		}
 	}
 
-	// 손잡이 초기값을 한 번 밀어 넣어 화면 값과 실제 값을 맞춘다.
+	if (Racks.Num() > 0)
+	{
+		InitializeKnobsFromTargets();
+		bKnobsInitialized = true;
+	}
+
+	// 손잡이 값을 한 번 밀어 넣어 화면 값과 실제 값을 맞춘다.
+	// 방 액터가 나중에 띄우는 랙은 RefreshTargetsIfStale()이 챙긴다.
 	ApplyHeatKnobs();
 	ApplyPumpSpeedKnob();
 	ApplyRadiatorKnob();
@@ -70,6 +82,7 @@ void ADataCenterDebugController::FindTargetActors()
 {
 	Racks.Reset();
 	HydraulicNetwork = nullptr;
+	Room = nullptr;
 
 	UWorld* World = GetWorld();
 	if (World == nullptr)
@@ -86,12 +99,100 @@ void ADataCenterDebugController::FindTargetActors()
 		HydraulicNetwork = *It;
 		break;
 	}
-
-	if (Racks.Num() == 0 && HydraulicNetwork == nullptr)
+	for (TActorIterator<ADataCenterRoomActor> It(World); It; ++It)
 	{
-		UE_LOG(LogTemp, Warning,
-			TEXT("DataCenterDebugController: 레벨에서 랙 액터도 배관 액터도 찾지 못했습니다. 디버그 키가 할 일이 없습니다."));
+		Room = *It;
+		break;
 	}
+}
+
+void ADataCenterDebugController::RefreshTargetsIfStale(float DeltaTime)
+{
+	TimeSinceRefreshS += DeltaTime;
+	if (TimeSinceRefreshS < TargetRefreshIntervalS)
+	{
+		return;
+	}
+	TimeSinceRefreshS = 0.0f;
+
+	UWorld* World = GetWorld();
+	if (World == nullptr)
+	{
+		return;
+	}
+
+	// 방 액터는 첫 틱에 랙을 띄우므로 BeginPlay 시점에는 아직 없다.
+	// 개수가 달라졌을 때만 다시 훑어 매 틱 순회를 피한다.
+	int32 RackCount = 0;
+	for (TActorIterator<ARackThermalActor> It(World); It; ++It)
+	{
+		++RackCount;
+	}
+
+	if (RackCount == Racks.Num() && (Racks.Num() > 0 || Room != nullptr || HydraulicNetwork != nullptr))
+	{
+		return;
+	}
+
+	FindTargetActors();
+
+	if (Racks.Num() > 0 && !bKnobsInitialized)
+	{
+		InitializeKnobsFromTargets();
+		bKnobsInitialized = true;
+	}
+
+	// 새로 뜬 랙에도 지금 손잡이 값을 밀어 넣는다.
+	ApplyHeatKnobs();
+	ApplyRadiatorKnob();
+	ApplyPumpSpeedKnob();
+}
+
+void ADataCenterDebugController::InitializeKnobsFromTargets()
+{
+	const ARackThermalActor* Rack = Racks.Num() > 0 ? Racks[0].Get() : nullptr;
+	if (Rack == nullptr)
+	{
+		return;
+	}
+
+	// 랙이 지금 쓰고 있는 값을 가운데 두고 0 ~ 2배 범위를 잡는다.
+	// 증분은 5%라 20번 누르면 0까지 내려간다.
+	auto SetupHeatKnob = [](FDebugKnob& Knob, double CurrentW)
+	{
+		if (CurrentW <= 0.0)
+		{
+			return;
+		}
+		Knob.Value = CurrentW;
+		Knob.MinValue = 0.0;
+		Knob.MaxValue = CurrentW * 2.0;
+		Knob.StepSize = CurrentW * 0.05;
+		Knob.bMultiplicative = false;
+	};
+
+	const int32 CpuIndex = FRackThermalModel::NodeIndex(0, ERackComponent::Cpu);
+	const int32 GpuIndex = FRackThermalModel::NodeIndex(0, ERackComponent::Gpu);
+	if (Rack->Input.ComponentHeatW.IsValidIndex(GpuIndex))
+	{
+		SetupHeatKnob(CpuHeatKnob, Rack->Input.ComponentHeatW[CpuIndex]);
+		SetupHeatKnob(GpuHeatKnob, Rack->Input.ComponentHeatW[GpuIndex]);
+	}
+
+	// 라디에이터는 현재 UA를 가운데 두고 위아래로 16배씩 훑는다.
+	// 곱셈 증분 1.25배이므로 한쪽 끝까지 약 13번이다.
+	if (Rack->Radiator.UAWK > 0.0)
+	{
+		RadiatorUAKnob.Value = Rack->Radiator.UAWK;
+		RadiatorUAKnob.MinValue = Rack->Radiator.UAWK / 16.0;
+		RadiatorUAKnob.MaxValue = Rack->Radiator.UAWK * 16.0;
+		RadiatorUAKnob.StepSize = 1.25;
+		RadiatorUAKnob.bMultiplicative = true;
+	}
+
+	UE_LOG(LogTemp, Log,
+		TEXT("DataCenterDebugController: 랙 %d대에서 손잡이를 잡았습니다. CPU %.0f W, GPU %.0f W, 라디에이터 UA %.0f W/K."),
+		Racks.Num(), CpuHeatKnob.Value, GpuHeatKnob.Value, RadiatorUAKnob.Value);
 }
 
 UInputAction* ADataCenterDebugController::AddKeyAction(FName ActionName, const FKey& Key)
@@ -186,6 +287,10 @@ void ADataCenterDebugController::ApplyPumpSpeedKnob()
 	{
 		HydraulicNetwork->SetPumpSpeedRatio(PumpSpeedKnob.Value);
 	}
+	if (Room != nullptr)
+	{
+		Room->SetPumpSpeedRatio(PumpSpeedKnob.Value);
+	}
 }
 
 void ADataCenterDebugController::ApplyRadiatorKnob()
@@ -275,7 +380,7 @@ void ADataCenterDebugController::OnToggleSelectedSled()
 		}
 	}
 
-	// 수력 쪽 분기 저항도 같이 바뀌어야 한다. 랙 1대의 꽂힌 유닛 수를 그대로 넘긴다.
+	// 수력 쪽 분기 저항도 같이 바뀌어야 한다.
 	if (HydraulicNetwork != nullptr && Racks.Num() > 0 && Racks[0] != nullptr)
 	{
 		const int32 NumDocked = Racks[0]->GetNumDockedSleds();
@@ -283,6 +388,12 @@ void ADataCenterDebugController::OnToggleSelectedSled()
 		{
 			HydraulicNetwork->SetRackDockedSleds(RackIndex, NumDocked);
 		}
+	}
+
+	// 방 액터는 랙 액터에서 도킹 상태를 직접 읽으므로 다시 풀라고만 알리면 된다.
+	if (Room != nullptr)
+	{
+		Room->RebuildRoom();
 	}
 }
 
@@ -308,6 +419,8 @@ void ADataCenterDebugController::OnToggleHelp()
 void ADataCenterDebugController::Tick(float DeltaTime)
 {
 	Super::Tick(DeltaTime);
+
+	RefreshTargetsIfStale(DeltaTime);
 
 	if (bShowHelp)
 	{

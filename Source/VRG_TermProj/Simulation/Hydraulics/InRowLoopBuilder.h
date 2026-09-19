@@ -72,7 +72,26 @@ struct FInRowLoopHandles
 
 	// 유닛이 0대인 랙은 INDEX_NONE이다.
 	TArray<int32> RackNodeIndices;
+
+	// 공급 헤더 -> 랙. 유닛이 0대인 랙은 INDEX_NONE이다.
 	TArray<int32> RackBranchPipeIndices;
+
+	// 랙 -> 회수 헤더. 유닛이 0대인 랙은 INDEX_NONE이다.
+	TArray<int32> RackReturnPipeIndices;
+
+	// 헤더 구간. 길이는 NumRacks - 1.
+	TArray<int32> SupplyHeaderPipeIndices;
+	TArray<int32> ReturnHeaderPipeIndices;
+
+	// 회수 헤더 끝 -> CDU.
+	int32 ReturnToCduPipeIndex = INDEX_NONE;
+
+	// 표시용 역할 구분. 관 색을 공급/회수로 나눌 때 쓴다.
+	// 계산에는 쓰이지 않는다 - 솔버는 어느 쪽이 공급인지 모른다.
+	bool IsSupplySidePipe(int32 PipeIndex) const
+	{
+		return SupplyHeaderPipeIndices.Contains(PipeIndex) || RackBranchPipeIndices.Contains(PipeIndex);
+	}
 };
 
 namespace InRowLoopBuilder

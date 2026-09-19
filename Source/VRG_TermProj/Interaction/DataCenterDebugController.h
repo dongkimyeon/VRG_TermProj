@@ -9,6 +9,7 @@
 
 class ARackThermalActor;
 class AHydraulicNetworkDebugActor;
+class ADataCenterRoomActor;
 class UInputAction;
 class UInputMappingContext;
 
@@ -19,6 +20,13 @@ class UInputMappingContext;
 //
 // 이 컨트롤러는 값을 정하지 않는다. 손잡이(FDebugKnob)가 범위와 증분을 들고 있고,
 // 여기서는 키를 손잡이에 잇고 결과를 액터에 밀어 넣기만 한다.
+//
+// 손잡이의 시작값과 범위는 레벨에서 찾은 첫 랙의 현재 값에서 잡는다.
+// 랙 종류(15 kW 하이브리드 / GB200 NVL72)마다 발열 규모가 달라서, 여기에
+// 숫자를 박아 두면 다른 랙을 놓는 순간 범위가 어긋난다.
+//
+// 대상은 한 번만 찾지 않는다. ADataCenterRoomActor는 첫 틱에 랙을 띄우므로
+// BeginPlay 시점에는 아직 없다. 주기적으로 다시 훑는다.
 //
 // 키 배치:
 //   1 / 2        CPU 발열 내리기 / 올리기 (유닛당)
@@ -58,6 +66,10 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Debug")
 	bool bShowHelp = true;
 
+	// 레벨에서 대상을 다시 훑는 주기 [s]. 방 액터가 랙을 늦게 띄우기 때문에 필요하다.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Debug")
+	float TargetRefreshIntervalS = 0.5f;
+
 protected:
 	virtual void BeginPlay() override;
 	virtual void SetupInputComponent() override;
@@ -76,12 +88,23 @@ private:
 	UPROPERTY(Transient)
 	TObjectPtr<AHydraulicNetworkDebugActor> HydraulicNetwork;
 
+	UPROPERTY(Transient)
+	TObjectPtr<ADataCenterRoomActor> Room;
+
 	int32 SelectedSledIndex = 0;
+	float TimeSinceRefreshS = 0.0f;
+	bool bKnobsInitialized = false;
 
 	// 키 하나를 InputAction으로 만들고 매핑에 넣는다.
 	UInputAction* AddKeyAction(FName ActionName, const FKey& Key);
 
 	void FindTargetActors();
+
+	// 랙 수가 달라졌으면 대상을 다시 훑고 손잡이 범위를 다시 잡는다.
+	void RefreshTargetsIfStale(float DeltaTime);
+
+	// 첫 랙의 현재 값에서 손잡이의 시작값과 범위를 잡는다.
+	void InitializeKnobsFromTargets();
 
 	// 손잡이 값을 대상 액터에 반영한다. 손잡이를 돌린 직후에만 부른다.
 	void ApplyHeatKnobs();

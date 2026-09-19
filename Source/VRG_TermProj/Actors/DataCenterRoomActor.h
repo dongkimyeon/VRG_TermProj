@@ -77,16 +77,18 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Layout")
 	double SupplyReturnSpacingM = 0.16;
 
-	// 헤더와 케이블 트레이 높이.
+	// 냉각수 헤더 높이. GB200 NVL72 참고 배치는 헤더가 바닥 레벨을 따라 돌고
+	// 분기관이 랙 밑에서 위로 올라간다 (천장 배관이 아니다).
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Layout")
-	double HeaderHeightM = 2.45;
+	double HeaderHeightM = 0.25;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Layout")
 	double CableTrayHeightM = 2.85;
 
-	// 랙 뒷면 매니폴드가 끝나는 높이. 분기관이 여기까지 내려온다.
+	// 랙 뒷면 매니폴드 높이. 분기관이 바닥 헤더에서 여기까지 올라왔다가
+	// 다시 회수 헤더로 내려간다.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Layout")
-	double RackManifoldZM = 0.9;
+	double RackManifoldZM = 1.1;
 
 	// 행의 첫 랙에서 CDU까지의 거리.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Layout")
@@ -113,21 +115,24 @@ public:
 	bool bShowSummary = true;
 
 	// ---- 수력 파라미터 ----
-	// AHydraulicNetworkDebugActor와 같은 기본값이다. 15 kW 랙을 냉각수 ΔT 약 4 K로
-	// 식히는 운전점에서 역산한 값이라 바꾸면 타당성을 다시 봐야 한다.
+	// GB200 NVL72 운전점에서 역산했다. AHydraulicNetworkDebugActor(15 kW 하이브리드 랙)와는
+	// 다른 장비이므로 값이 다르다.
+	//   랙 1대 105 kW 중 액랭 97 kW를 냉각수 ΔT 약 10 K로 빼려면 랙당 2.3 L/s가 필요하다.
+	//   행 8대면 18.4 L/s이고, 그 유량에서 루프 전체 압력 강하가 약 195 kPa이 되도록 잡았다.
+	// 감으로 넣은 값이 아니다. 바꾸면 타당성을 다시 봐야 한다.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hydraulics")
-	double HeaderSegmentResistancePaS2M6 = 2.7e8;
+	double HeaderSegmentResistancePaS2M6 = 6.0e6;
 
 	// 슬롯이 전부 찼을 때의 랙 분기 저항. 유닛을 뽑으면 R*(N/n)^2로 올라간다.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hydraulics")
-	double RackBranchResistancePaS2M6 = 1.4e11;
+	double RackBranchResistancePaS2M6 = 1.7e10;
 
-	// 랙 한 대의 슬롯 수. ARackThermalActor의 Params.NumSleds와 같아야 한다.
+	// 랙 한 대의 슬롯 수. GB200 NVL72는 컴퓨트 트레이 18장이다.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Layout", meta = (ClampMin = "1", ClampMax = "64"))
-	int32 SledsPerRack = 12;
+	int32 SledsPerRack = 18;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hydraulics")
-	double ReturnToCduResistancePaS2M6 = 5.4e8;
+	double ReturnToCduResistancePaS2M6 = 1.5e7;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hydraulics")
 	double CduReferencePressurePa = 2.0e5;
@@ -136,7 +141,7 @@ public:
 	double PumpShutoffHeadPa = 4.0e5;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hydraulics")
-	double PumpCurveCoeffPaS2M6 = 8.0e9;
+	double PumpCurveCoeffPaS2M6 = 6.0e8;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hydraulics", meta = (ClampMin = "0.01", ClampMax = "1.0"))
 	double PumpEfficiency = 0.7;
@@ -206,6 +211,10 @@ private:
 
 	// 랙 자리별 공급 분기 파이프 인덱스. 평탄 배열 [Row * RacksPerRow + Column].
 	TArray<int32> RackBranchPipeIndices;
+
+	// 파이프마다 공급 쪽인지. 길이는 Network.GetNumPipes().
+	// 표시용이며 계산에 쓰이지 않는다 - 솔버는 어느 쪽이 공급인지 모른다.
+	TArray<bool> bPipeIsSupplySide;
 
 	UPROPERTY(Transient)
 	TArray<TObjectPtr<UStaticMeshComponent>> PipeMeshes;

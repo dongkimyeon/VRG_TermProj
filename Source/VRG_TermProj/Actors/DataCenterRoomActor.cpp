@@ -3,6 +3,7 @@
 #include "Actors/DataCenterRoomActor.h"
 
 #include "Actors/RackThermalActor.h"
+#include "Simulation/Thermal/RackThermalModel.h"
 #include "Simulation/Core/SimUnits.h"
 #include "Simulation/Hydraulics/InRowLoopBuilder.h"
 #include "Visualization/SimMeshBuilder.h"
@@ -116,6 +117,7 @@ void ADataCenterRoomActor::BuildNetwork()
 	Spec.PumpSpeedRatio = PumpSpeedRatio;
 
 	RackBranchPipeIndices.Init(INDEX_NONE, RowCount * ColumnCount);
+	bPipeIsSupplySide.Reset();
 
 	for (int32 RowIndex = 0; RowIndex < RowCount; ++RowIndex)
 	{
@@ -157,6 +159,17 @@ void ADataCenterRoomActor::BuildNetwork()
 
 			RackBranchPipeIndices[RowIndex * ColumnCount + ColumnIndex] =
 				Handles.RackBranchPipeIndices[ColumnIndex];
+		}
+
+		// 관 색을 공급(파랑)/회수(빨강)로 나누기 위한 역할표.
+		// 솔버는 이걸 모른다. 순수 표시용이다.
+		bPipeIsSupplySide.SetNum(Network.GetNumPipes());
+		for (int32 PipeIndex = 0; PipeIndex < Network.GetNumPipes(); ++PipeIndex)
+		{
+			if (Handles.IsSupplySidePipe(PipeIndex))
+			{
+				bPipeIsSupplySide[PipeIndex] = true;
+			}
 		}
 	}
 
@@ -406,7 +419,18 @@ void ADataCenterRoomActor::SpawnRacks()
 				continue;
 			}
 
+			// GB200 NVL72 프리셋. 컴퓨트 트레이 18장, 트레이당 Grace 2 + Blackwell 4.
 			Rack->RackSizeM = RackSizeM;
+			Rack->Params = FRackThermalModel::MakeGb200Nvl72Params();
+			Rack->Input.ComponentHeatW = FRackThermalModel::MakeGb200Nvl72HeatW();
+			Rack->Input.SledDocked.Init(true, Rack->Params.NumSleds);
+
+			// 유량과 라디에이터도 같은 운전점에서 역산한 값으로 맞춘다.
+			// 랙 1대 액랭 97 kW를 냉각수 ΔT 약 10 K로 빼는 유량이 2.3 kg/s다.
+			Rack->Input.CoolantMassFlowKgs = 2.3;
+			Rack->Input.TotalAirMassFlowKgs = 0.6;
+			Rack->Radiator.UAWK = 1.1e4;
+
 			// 유닛 라벨은 방 전체에서는 글자가 너무 많아진다. 랙 하나를 볼 때만 켠다.
 			Rack->bShowSledLabels = false;
 			Rack->bShowReadout = false;
@@ -433,15 +457,23 @@ void ADataCenterRoomActor::UpdatePipeColors() const
 	}
 	const double NormalizationM3s = FMath::Max(MaxFlowMagnitudeM3s, UE_DOUBLE_SMALL_NUMBER);
 
-	// 배관 색 = 유량 크기다. 온도가 아니다.
-	static const FLinearColor LowFlowColor(0.05f, 0.12f, 0.45f);
-	static const FLinearColor HighFlowColor(0.20f, 0.75f, 1.00f);
+	// 색상(hue)은 공급/회수를 나타내고, 밝기는 계산된 유량 크기를 나타낸다.
+	// 공급은 차갑게 들어오므로 파랑, 회수는 데워져 나오므로 빨강이다.
+	// 온도를 직접 그린 것이 아니다 - 이 도메인에는 아직 온도가 없다.
+	static const FLinearColor SupplyLowColor(0.03f, 0.08f, 0.22f);
+	static const FLinearColor SupplyHighColor(0.20f, 0.60f, 1.00f);
+	static const FLinearColor ReturnLowColor(0.22f, 0.05f, 0.05f);
+	static const FLinearColor ReturnHighColor(1.00f, 0.32f, 0.28f);
 
 	for (int32 PipeIndex = 0; PipeIndex < PipeMeshes.Num(); ++PipeIndex)
 	{
 		const double Normalized = FMath::Abs(Network.GetPipeFlowM3s(PipeIndex)) / NormalizationM3s;
+		const bool bSupply = bPipeIsSupplySide.IsValidIndex(PipeIndex) && bPipeIsSupplySide[PipeIndex];
+
 		SimMeshBuilder::SetMeshColor(PipeMeshes[PipeIndex],
-			FMath::Lerp(LowFlowColor, HighFlowColor, static_cast<float>(Normalized)));
+			FMath::Lerp(bSupply ? SupplyLowColor : ReturnLowColor,
+				bSupply ? SupplyHighColor : ReturnHighColor,
+				static_cast<float>(Normalized)));
 	}
 }
 
@@ -514,5 +546,5 @@ void ADataCenterRoomActor::DrawSummary() const
 			MinBranchFlowM3s * 1000.0, MaxBranchFlowM3s * 1000.0, PumpSpeedRatio));
 
 	GEngine->AddOnScreenDebugMessage(BaseKey + 2, 0.0f, FColor(150, 150, 150),
-		TEXT("배관 색 = 유량 크기 (어두운 파랑 낮음 -> 밝은 하늘 높음). 온도가 아니다. 케이블 색은 용도 구분이며 계산 결과가 아니다."));
+		TEXT("배관: 파랑 = 공급, 빨강 = 회수 (색상은 역할, 밝기는 계산된 유량 크기). 온도를 그린 것이 아니다. 케이블 색은 용도 구분이며 계산 결과가 아니다."));
 }
