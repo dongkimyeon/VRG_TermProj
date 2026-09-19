@@ -182,14 +182,28 @@ void ARackThermalActor::RebuildMeshes()
 		CabinetMeshes.Add(Panel);
 	};
 
+	// 앞뒤는 뚫려 있어야 한다. 공기가 앞(+X)으로 들어와 뒤(-X)로 빠져나가는 통로이고,
+	// 막아 두면 안에 있는 유닛과 부품이 보이지 않는다.
+	// 그래서 좌우 측판, 바닥, 천장만 두고 앞판과 뒷판은 만들지 않는다.
+	// 대신 네 모서리에 기둥을 세워 랙 골조가 읽히게 한다.
+
 	// 좌우 측판
 	AddCabinetPanel(FVector(0.0, -0.5 * SizeCm.Y, 0.5 * SizeCm.Z), FVector(SizeCm.X, ThicknessCm, SizeCm.Z));
 	AddCabinetPanel(FVector(0.0, 0.5 * SizeCm.Y, 0.5 * SizeCm.Z), FVector(SizeCm.X, ThicknessCm, SizeCm.Z));
-	// 뒷판 (-X가 뒤, 공기가 빠져나가는 쪽)
-	AddCabinetPanel(FVector(-0.5 * SizeCm.X, 0.0, 0.5 * SizeCm.Z), FVector(ThicknessCm, SizeCm.Y, SizeCm.Z));
+
 	// 바닥과 천장
 	AddCabinetPanel(FVector(0.0, 0.0, 0.5 * ThicknessCm), FVector(SizeCm.X, SizeCm.Y, ThicknessCm));
 	AddCabinetPanel(FVector(0.0, 0.0, SizeCm.Z - 0.5 * ThicknessCm), FVector(SizeCm.X, SizeCm.Y, ThicknessCm));
+
+	// 앞뒤 네 모서리 기둥. 측판보다 조금 두껍게 해서 골조처럼 보이게 한다.
+	const double PostSizeCm = ThicknessCm * 1.6;
+	for (int32 CornerIndex = 0; CornerIndex < 4; ++CornerIndex)
+	{
+		const double PostXCm = ((CornerIndex & 1) ? 0.5 : -0.5) * (SizeCm.X - PostSizeCm);
+		const double PostYCm = ((CornerIndex & 2) ? 0.5 : -0.5) * (SizeCm.Y - PostSizeCm);
+		AddCabinetPanel(FVector(PostXCm, PostYCm, 0.5 * SizeCm.Z),
+			FVector(PostSizeCm, PostSizeCm, SizeCm.Z));
+	}
 
 	// 유닛과 부품
 	SledMeshes.Reserve(NumSleds);
