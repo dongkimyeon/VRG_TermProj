@@ -12,7 +12,9 @@ public class VRG_TermProj : ModuleRules
 		// (의존 모듈 추가가 아니라 include 경로 설정이다.)
 		PublicIncludePaths.Add(ModuleDirectory);
 
-		PublicDependencyModuleNames.AddRange(new string[] { "Core", "CoreUObject", "Engine", "InputCore" });
+		// EnhancedInput은 디버그 키를 실제로 쓰기 시작한 지금 추가했다.
+		// UMG, Niagara, RenderCore, RHI는 아직 쓰지 않으므로 넣지 않는다.
+		PublicDependencyModuleNames.AddRange(new string[] { "Core", "CoreUObject", "Engine", "InputCore", "EnhancedInput" });
 
 		PrivateDependencyModuleNames.AddRange(new string[] {  });
 

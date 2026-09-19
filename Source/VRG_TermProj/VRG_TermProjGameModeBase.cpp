@@ -2,4 +2,9 @@
 
 
 #include "VRG_TermProjGameModeBase.h"
+#include "Interaction/DataCenterDebugController.h"
 
+AVRG_TermProjGameModeBase::AVRG_TermProjGameModeBase()
+{
+	PlayerControllerClass = ADataCenterDebugController::StaticClass();
+}
