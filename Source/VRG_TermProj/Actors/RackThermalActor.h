@@ -8,7 +8,7 @@
 #include "Simulation/Thermal/RackThermalModel.h"
 #include "RackThermalActor.generated.h"
 
-// S1 랙 1대 열모델을 레벨에서 돌려보기 위한 액터.
+// 랙(캐비닛) 1대의 열모델을 레벨에서 돌리는 액터.
 // 액터는 입력 전달과 결과 표현만 한다. 물리 계산은 전부 FRackThermalModel 안에 있다.
 // 길이는 m로 들고 있다가 그리는 순간에만 cm로 바꾼다 (규약 1).
 UCLASS()
@@ -32,6 +32,13 @@ public:
 
 	UFUNCTION(BlueprintCallable, Category = "Rack")
 	FRackThermalSnapshot GetSnapshot() const;
+
+	// 유닛을 뽑거나 꽂는다. 공랭 유로 배분과 콜드플레이트 결합이 함께 바뀐다.
+	UFUNCTION(BlueprintCallable, Category = "Rack")
+	void SetSledDocked(int32 SledIndex, bool bDocked);
+
+	UFUNCTION(BlueprintCallable, Category = "Rack")
+	bool IsSledDocked(int32 SledIndex) const;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Rack")
 	FRackThermalParams Params;
@@ -60,6 +67,9 @@ private:
 	FSimClock Clock;
 	FRackThermalModel Model;
 	bool bSimRunning = false;
+
+	// Input의 TArray 길이를 Params.NumSleds에 맞춘다. 비어 있으면 기본값으로 채운다.
+	void ConformInputArrays();
 
 	void DrawReadout() const;
 };

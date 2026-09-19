@@ -166,9 +166,11 @@ D:\UE_5.8\Engine\Binaries\Win64\UnrealEditor-Cmd.exe "D:\VRG_TermProj\VRG_TermPr
 | `SimClock.NoTimeLost` | 1.14e-13 s | 절대 (s) | < 1e-9 s |
 | `Rack.LinearRampAnalytic` | 2.61e-10 K | 절대 (K), 상승분 300 K | < 1e-8 K |
 | `Rack.ExponentialAnalytic` | 2.65e-4 K | 절대 (K), 상승분 59.0 K 대비 4.5e-6 | < 1e-3 K |
-| `Rack.EnergyConservation` | 1.54e-14 | 총 유입 9.0e6 J 기준, 무차원 | < 1e-12 |
-| `Rack.ZeroFlowNoSingularity` | 1.28e-14 | 기대 축적 4.5e6 J 기준, 무차원 | < 1e-12 |
-| `Rack.SteadyStateBalance` | 3.41e-12 | 발열 15000 W 기준, 무차원 | < 1e-9 |
+| `Rack.EnergyConservation` | 1.41e-12 | 총 유입 9.0e6 J 기준, 무차원 | < 1e-10 |
+| `Rack.ZeroFlowNoSingularity` | 4.98e-13 | 기대 축적 4.5e6 J 기준, 무차원 | < 1e-12 |
+| `Rack.SteadyStateBalance` | 2.42e-12 | 발열 15000 W 기준, 무차원 | < 1e-9 |
+| `Rack.SerialAirPathOrdering` | 1.42e-10 W | 부품 발열 100 W 기준 | < 1e-6 (정규화) |
+| `Rack.AirPathEnergyBalance` | 1.14e-14 | 공기 반출열 2338 W 기준, 무차원 | < 1e-12 |
 | `Network.SinglePipeAnalytic` | 압력 3.54e-11 / 유량 8.85e-11 | 공급압 4.0e5 Pa, 수요 0.2 m³/s | < 1e-9 |
 | `Network.SeriesAnalytic` | 1.24e-14 | 해석해 유량 0.2828 m³/s 기준 | < 1e-10 |
 | `Network.ParallelAnalytic` | 압력 3.54e-11 | 공급압 4.0e5 Pa 기준 | < 1e-9 |
@@ -187,8 +189,18 @@ Newton이 멈추기 때문에 남는 값이다. 그래서 이 두 테스트의 �
 따라서 이 수치는 "물리가 맞다"가 아니라 "열수지 장부가 어긋나지 않는다"는 뜻이다.
 물리 정확도는 해석해 비교 두 건이 담당한다.
 
-S1 정상 상태 참고값 (기본 파라미터, 발열 15 kW):
-칩 47.25 °C, 냉각수 출구 32.60 °C, 공기 반출 3280 W + 냉각수 반출 11720 W.
+S1 정상 상태 참고값 (다노드 확장 이후, 기본 파라미터, 발열 15 kW):
+캐비닛 1대 = 서버 유닛 12대, 유닛 1대 = 1250 W (CPU 350 / GPU 700 / RAM 120 / VRM 80).
+유닛 0 기준 CPU 39.33 °C, GPU 40.60 °C, RAM 48.11 °C, VRM 51.31 °C.
+냉각수 출구 30.65 °C(ΔT 3.65 K), 캐비닛 배기 25.94 °C.
+반출 분담: 냉각수 12523 W (83.5%) + 공기 2338 W (15.6%) + 자연대류 138 W (0.9%).
+
+**다노드 확장으로 바뀐 것.** S1은 칩 노드 1개가 액랭·공랭을 동시에 가졌고
+(`ChipToCoolantUAWK` 800 / `ChipToAirUAWK` 150), 그래서 공기 반출이 3280 W였다.
+지금은 하이브리드 서버 실기 구성을 따라 **콜드플레이트 = CPU·GPU**,
+**공기 = RAM·VRM**으로 나눠 CPU/GPU의 `ToAirUAWK`가 0이다. 공랭 체인 순서는
+허용 온도가 낮은 쪽이 앞이라 RAM(85 °C) → VRM(125 °C)다.
+부품별 기본 발열·UA·열용량의 근거는 `RackThermalModel.cpp`의 `DefaultComponents()` 주석에 있다.
 
 S2 참고값 (인로우 냉각 루프, 랙 6대, `AHydraulicNetworkDebugActor` 기본값):
 펌프 유량 4.87 L/s, 양정 210.3 kPa, 전기 입력 1.46 kW, Newton 7회 수렴.
