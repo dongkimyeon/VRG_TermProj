@@ -49,6 +49,22 @@ enum class EAirSliceAxis : uint8
 	Z
 };
 
+// 온도장을 어떻게 그릴지.
+UENUM(BlueprintType)
+enum class EAirDrawMode : uint8
+{
+	// 단면 한 장만 그린다. 안쪽까지 들여다보기 좋다.
+	SlicePlane,
+
+	// 격자 전체를 그린다. 공간이 셀로 꽉 찬다.
+	// 셀이 많으면 무겁고, 찬 셀까지 다 그리면 안개처럼 덮여 아무것도 안 보인다.
+	// MinVisibleFraction을 올려 뜨거운 부분만 남기는 게 보통이다.
+	Volume,
+
+	// 둘 다.
+	Both
+};
+
 UCLASS()
 class VRG_TERMPROJ_API AAirFieldDebugActor : public AActor
 {
@@ -103,6 +119,10 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Visualization")
 	bool bDrawSlice = true;
 
+	// 단면 한 장인지, 격자 전체인지.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Visualization")
+	EAirDrawMode DrawMode = EAirDrawMode::SlicePlane;
+
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Visualization")
 	EAirSliceAxis SliceAxis = EAirSliceAxis::Y;
 
@@ -136,6 +156,12 @@ public:
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Visualization", meta = (ClampMin = "0.0", ClampMax = "1.0"))
 	double HotOpacity = 0.85;
+
+	// 한 프레임에 그릴 셀 수 상한. 디버그 상자 하나가 곧 드로우 호출이라
+	// 격자 전체를 1:1로 그리면 D10의 30fps 최저선을 못 지킨다.
+	// 넘으면 DrawStride를 자동으로 키우고 실제로 쓴 값을 화면에 적는다.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Visualization", meta = (ClampMin = "100"))
+	int32 MaxDrawnCells = 12000;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Visualization")
 	bool bDrawDomainBounds = true;
@@ -192,6 +218,9 @@ private:
 
 	bool bSimRunning = false;
 	bool bNeedsReset = true;
+
+	// MaxDrawnCells 때문에 실제로 쓴 간격. 화면 요약에 적는다.
+	mutable int32 EffectiveDrawStride = 1;
 
 	// 상자 열원들을 셀별 W 배열로 펼친다. D1: 셀 하나에 겹치면 합산한다.
 	void BuildCellHeat();

@@ -329,7 +329,31 @@ void AAirFieldDebugActor::DrawSlice() const
 	const double MaxTempK = SimUnits::CelsiusToKelvin(ColorMaxCelsius);
 	const double SpanK = FMath::Max(MaxTempK - MinTempK, UE_DOUBLE_SMALL_NUMBER);
 
-	const int32 Stride = FMath::Max(1, DrawStride);
+	// 그릴 셀 수를 먼저 세어 상한을 넘으면 간격을 키운다.
+	// 디버그 상자 하나가 곧 드로우 호출이라, 격자 전체를 1:1로 그리면
+	// D10의 30fps 최저선을 못 지킨다. 조용히 느려지는 것보다 간격을 키우고
+	// 실제로 쓴 값을 화면에 적는 편이 낫다.
+	const bool bDrawVolumeCells = (DrawMode != EAirDrawMode::SlicePlane);
+	const bool bDrawSliceCells = (DrawMode != EAirDrawMode::Volume);
+
+	int32 Stride = FMath::Max(1, DrawStride);
+	if (bDrawVolumeCells)
+	{
+		const int32 CellLimit = FMath::Max(100, MaxDrawnCells);
+		while (Stride < 64)
+		{
+			const int64 Drawn =
+				static_cast<int64>(FMath::DivideAndRoundUp(Grid.GetNumCellsX(), Stride))
+				* FMath::DivideAndRoundUp(Grid.GetNumCellsY(), Stride)
+				* FMath::DivideAndRoundUp(Grid.GetNumCellsZ(), Stride);
+			if (Drawn <= CellLimit)
+			{
+				break;
+			}
+			++Stride;
+		}
+	}
+	EffectiveDrawStride = Stride;
 
 	// 슬라이스 축에 따라 훑을 범위를 정한다.
 	int32 FixedIndex = 0;
@@ -349,11 +373,14 @@ void AAirFieldDebugActor::DrawSlice() const
 		break;
 	}
 
-	// 슬라이스 면에 맞춰 납작한 상자를 그린다. 두께는 한 셀의 1/6로 둔다.
-	const FVector ThicknessCm(
+	// 단면은 납작한 상자로, 볼륨은 셀 크기 그대로 그린다.
+	const FVector SliceThicknessCm(
 		SliceAxis == EAirSliceAxis::X ? HalfCellCm / 3.0 : HalfCellCm,
 		SliceAxis == EAirSliceAxis::Y ? HalfCellCm / 3.0 : HalfCellCm,
 		SliceAxis == EAirSliceAxis::Z ? HalfCellCm / 3.0 : HalfCellCm);
+
+	// 볼륨은 셀을 살짝 줄여 그린다. 딱 맞추면 면이 겹쳐 z-파이팅이 생긴다.
+	const FVector VolumeExtentCm(HalfCellCm * 0.92);
 
 	for (int32 Z = 0; Z < Grid.GetNumCellsZ(); Z += Stride)
 	{
@@ -365,7 +392,9 @@ void AAirFieldDebugActor::DrawSlice() const
 					(SliceAxis == EAirSliceAxis::X && X == FixedIndex)
 					|| (SliceAxis == EAirSliceAxis::Y && Y == FixedIndex)
 					|| (SliceAxis == EAirSliceAxis::Z && Z == FixedIndex);
-				if (!bOnSlice)
+
+				const bool bDrawThisCell = (bDrawVolumeCells || (bDrawSliceCells && bOnSlice));
+				if (!bDrawThisCell)
 				{
 					continue;
 				}
@@ -385,8 +414,12 @@ void AAirFieldDebugActor::DrawSlice() const
 				const float Shaped = FMath::Pow(FMath::Clamp(static_cast<float>(Normalized), 0.0f, 1.0f), 1.5f);
 				Color.A = FMath::Lerp(static_cast<float>(ColdOpacity), static_cast<float>(HotOpacity), Shaped);
 
+				// 단면 위의 셀은 볼륨 모드에서도 납작하게 그려 위치를 알아보게 한다.
+				const bool bUseSliceShape = bDrawSliceCells && bOnSlice;
+				const FVector ExtentCm = bUseSliceShape ? SliceThicknessCm : VolumeExtentCm;
+
 				const FVector CenterCm = ActorLocationCm + SimUnits::MetersToUnreal(Grid.CellCenterM(X, Y, Z));
-				DrawDebugSolidBox(World, CenterCm, ThicknessCm, Color.ToFColor(false), false, -1.0f, 0);
+				DrawDebugSolidBox(World, CenterCm, ExtentCm, Color.ToFColor(false), false, -1.0f, 0);
 			}
 		}
 	}
@@ -470,6 +503,14 @@ void AAirFieldDebugActor::DrawSummaryText() const
 			Snapshot.NormalizedDivergence,
 			Solver.GetEnergyInJ(), Solver.GetEnergyStoredJ(), Snapshot.NormalizedEnergyResidual));
 
+	const TCHAR* DrawModeText =
+		(DrawMode == EAirDrawMode::SlicePlane) ? TEXT("단면 한 장")
+		: (DrawMode == EAirDrawMode::Volume) ? TEXT("격자 전체")
+		: TEXT("단면 + 격자 전체");
+
 	GEngine->AddOnScreenDebugMessage(BaseKey + 3, 0.0f, FColor(150, 150, 150),
-		TEXT("공기 색 = 온도 (파랑 낮음 -> 빨강 높음). 막힌 상자이며 급배기는 S4에서 붙인다."));
+		FString::Printf(
+			TEXT("공기 색 = 온도 (파랑 낮음 -> 빨강 높음). 표시 %s, 간격 %d%s. 막힌 상자이며 급배기는 S4에서 붙인다."),
+			DrawModeText, EffectiveDrawStride,
+			EffectiveDrawStride > FMath::Max(1, DrawStride) ? TEXT(" (셀 수 상한으로 자동 조정)") : TEXT("")));
 }
