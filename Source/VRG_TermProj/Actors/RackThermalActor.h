@@ -150,8 +150,9 @@ private:
 	void UpdateSledSlide(float DeltaTime);
 	void UpdateMeshColors() const;
 
-	// 유닛 하나가 차지하는 칸의 중심 Z와 높이 [m].
-	void GetSledBayM(int32 SledIndex, double& OutCenterZM, double& OutHeightM) const;
+	// 유닛 하나가 차지하는 칸의 바닥 Z와 칸 높이 [m].
+	// 섬시 트레이와 부품은 이 칸 안에 들어가야 한다 (위 칸을 침범하면 안 된다).
+	void GetSledRowM(int32 SledIndex, double& OutBottomZM, double& OutRowHeightM) const;
 
 	void DrawReadout() const;
 };

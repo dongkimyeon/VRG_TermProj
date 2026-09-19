@@ -120,17 +120,16 @@ int32 ARackThermalActor::GetNumDockedSleds() const
 	return NumDocked;
 }
 
-void ARackThermalActor::GetSledBayM(int32 SledIndex, double& OutCenterZM, double& OutHeightM) const
+void ARackThermalActor::GetSledRowM(int32 SledIndex, double& OutBottomZM, double& OutRowHeightM) const
 {
 	const int32 NumSleds = FMath::Max(1, Params.NumSleds);
 
 	// 위아래에 캐비닛 패널이 들어갈 자리를 남긴다.
 	const double BayBottomZM = PanelThicknessM;
 	const double BayTopZM = RackSizeM.Z - PanelThicknessM;
-	const double RowHeightM = (BayTopZM - BayBottomZM) / NumSleds;
 
-	OutHeightM = RowHeightM * 0.8;
-	OutCenterZM = BayBottomZM + RowHeightM * (SledIndex + 0.5);
+	OutRowHeightM = (BayTopZM - BayBottomZM) / NumSleds;
+	OutBottomZM = BayBottomZM + OutRowHeightM * SledIndex;
 }
 
 void ARackThermalActor::RebuildMeshes()
@@ -198,34 +197,41 @@ void ARackThermalActor::RebuildMeshes()
 
 	for (int32 SledIndex = 0; SledIndex < NumSleds; ++SledIndex)
 	{
-		double CenterZM = 0.0;
-		double HeightM = 0.0;
-		GetSledBayM(SledIndex, CenterZM, HeightM);
+		double RowBottomZM = 0.0;
+		double RowHeightM = 0.0;
+		GetSledRowM(SledIndex, RowBottomZM, RowHeightM);
+
+		const double RowBottomZCm = SimUnits::MetersToCentimeters(RowBottomZM);
+		const double RowHeightCm = SimUnits::MetersToCentimeters(RowHeightM);
 
 		const double SledDepthCm = SizeCm.X * 0.85;
 		const double SledWidthCm = SizeCm.Y - 2.0 * ThicknessCm - 2.0;
-		const double SledHeightCm = SimUnits::MetersToCentimeters(HeightM);
-		const double CenterZCm = SimUnits::MetersToCentimeters(CenterZM);
+
+		// 유닛은 꽉 찬 박스가 아니라 바닥 트레이다. 그래야 위에 얹힌 부품이 가려지지
+		// 않으면서 트레이 + 부품을 합쳐도 칸 높이 안에 들어간다 (0.15 + 0.55 = 0.70).
+		// 전에는 꽉 찬 유닛(칸의 0.8) 위에 부품(유닛의 0.55)을 또 얹어서 위 칸을
+		// 침범했고, 맨 위 유닛은 부품이 캐비닛 천장판을 뚫고 나왔다.
+		const double TrayHeightCm = RowHeightCm * 0.15;
+		const double PartHeightCm = RowHeightCm * 0.55;
 
 		UStaticMeshComponent* Sled = SimMeshBuilder::CreateMeshComponent(this, CubeMesh, Material, TEXT("Sled"));
-		SimMeshBuilder::SetBox(Sled, FVector(0.0, 0.0, CenterZCm),
-			FVector(SledDepthCm, SledWidthCm, SledHeightCm));
+		SimMeshBuilder::SetBox(Sled, FVector(0.0, 0.0, RowBottomZCm + 0.5 * TrayHeightCm),
+			FVector(SledDepthCm, SledWidthCm, TrayHeightCm));
 		SledMeshes.Add(Sled);
 
-		// 부품은 유닛 위에 공랭 체인 순서대로 얹는다. 앞(+X)이 공기 입구다.
+		// 부품은 트레이 위에 공랭 체인 순서대로 얹는다. 앞(+X)이 공기 입구다.
 		// 배열 순서 그대로 앞에서 뒤로 놓으므로, 눈으로 보는 순서가 곧 공기가 지나는 순서다.
 		const double SlotDepthCm = SledDepthCm / (NumRackComponents + 1);
 		const double PartDepthCm = SlotDepthCm * 0.7;
 		const double PartWidthCm = SledWidthCm * 0.55;
-		const double PartHeightCm = SledHeightCm * 0.55;
+		const double PartCenterZCm = RowBottomZCm + TrayHeightCm + 0.5 * PartHeightCm;
 
 		for (int32 ComponentIndex = 0; ComponentIndex < NumRackComponents; ++ComponentIndex)
 		{
 			const double PartXCm = 0.5 * SledDepthCm - SlotDepthCm * (ComponentIndex + 1);
 
 			UStaticMeshComponent* Part = SimMeshBuilder::CreateMeshComponent(this, CubeMesh, Material, TEXT("Part"));
-			SimMeshBuilder::SetBox(Part,
-				FVector(PartXCm, 0.0, CenterZCm + 0.5 * SledHeightCm + 0.5 * PartHeightCm),
+			SimMeshBuilder::SetBox(Part, FVector(PartXCm, 0.0, PartCenterZCm),
 				FVector(PartDepthCm, PartWidthCm, PartHeightCm));
 			ComponentMeshes.Add(Part);
 			ComponentBaseXCm.Add(PartXCm);
@@ -352,9 +358,10 @@ void ARackThermalActor::DrawReadout() const
 	{
 		for (int32 SledIndex = 0; SledIndex < Params.NumSleds; ++SledIndex)
 		{
-			double CenterZM = 0.0;
-			double HeightM = 0.0;
-			GetSledBayM(SledIndex, CenterZM, HeightM);
+			double RowBottomZM = 0.0;
+			double RowHeightM = 0.0;
+			GetSledRowM(SledIndex, RowBottomZM, RowHeightM);
+			const double LabelZM = RowBottomZM + 0.5 * RowHeightM;
 
 			const int32 CpuIndex = FRackThermalModel::NodeIndex(SledIndex, ERackComponent::Cpu);
 			const int32 GpuIndex = FRackThermalModel::NodeIndex(SledIndex, ERackComponent::Gpu);
@@ -368,7 +375,7 @@ void ARackThermalActor::DrawReadout() const
 			const FVector LabelCm = GetActorLocation()
 				+ FVector(SimUnits::MetersToCentimeters(RackSizeM.X * 0.5 + 0.1),
 					SimUnits::MetersToCentimeters(RackSizeM.Y * 0.5 + 0.05),
-					SimUnits::MetersToCentimeters(CenterZM));
+					SimUnits::MetersToCentimeters(LabelZM));
 
 			// 온도 표시는 여기서만 °C로 바꾼다 (규약 2).
 			DrawDebugString(World, LabelCm,
