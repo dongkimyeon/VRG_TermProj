@@ -363,10 +363,22 @@ void ADataCenterSimulationActor::Tick(float DeltaTime)
 	if (bNeedsRebuild)
 	{
 		BuildCoupling();
-		bNeedsRebuild = false;
+
+		// 방 액터는 RebuildRoom()이 플래그만 세우고 실제 배치 파악은 자기 Tick에서 한다.
+		// 이 액터가 먼저 돌면 GetRoutedRacks()가 비어 있어 랙 0대로 나온다.
+		// 한 번 실패하고 포기하면 영원히 연결되지 않으므로 될 때까지 다시 시도한다.
+		// 실제로 겪었다 - 통합 액터를 배치했는데 화면에 "랙 0대 / IT 발열 0.0 kW"가 뜨고
+		// 공기 액터가 자기 더미 열원으로 계속 돌았다 (시계도 둘로 갈렸다).
+		bNeedsRebuild = (Racks.Num() == 0);
 	}
 
-	if (bSimRunning)
+	// 예약된 예열을 먼저 나눠 소화한다. 다 끝나면 평소 적분으로 돌아간다.
+	if (PendingWarmupSteps > 0)
+	{
+		DrainWarmupSteps();
+	}
+
+	if (bSimRunning && PendingWarmupSteps <= 0)
 	{
 		// 규약 4: 시계가 남은 시간을 버리지 않고 다음 프레임으로 넘긴다.
 		// 다만 공기 압력 풀이가 무거워 프레임당 스텝 수는 따로 제한한다.
@@ -468,5 +480,73 @@ void ADataCenterSimulationActor::DrawSummary() const
 			FString::Printf(TEXT("랙 0 냉각수 %.3f kg/s | 랙 흡기 %.2f ~ %.2f C (공기 격자에서 옴)"),
 				Snapshot.RackCoolantMassFlowKgs[0],
 				MinInletK - 273.15, MaxInletK - 273.15));
+	}
+}
+
+void ADataCenterSimulationActor::QueueWarmupSteps(int32 NumSteps)
+{
+	if (bNeedsRebuild)
+	{
+		BuildCoupling();
+		bNeedsRebuild = (Racks.Num() == 0);
+	}
+	PendingWarmupSteps = FMath::Clamp(NumSteps, 1, 100000);
+	WarmupStepsReported = PendingWarmupSteps;
+	VrgPerf::PendingWarmupSteps() = PendingWarmupSteps;
+	bSimRunning = true;
+	UE_LOG(LogTemp, Display, TEXT("[VrgSim] 예열 %d스텝 예약 (%.2f s 분량)"),
+		PendingWarmupSteps, PendingWarmupSteps * Clock.GetFixedStepS());
+}
+
+void ADataCenterSimulationActor::DrainWarmupSteps()
+{
+	// 연결이 아직 안 됐으면(방 액터가 배치를 파악하기 전) 빈 다리를 돌리게 된다.
+	// 스텝을 쓰지 말고 연결될 때까지 기다린다.
+	if (Racks.Num() == 0)
+	{
+		return;
+	}
+
+	// 한 프레임에 다 돌리면 창이 얼어붙는다. 프레임마다 이만큼만 쓴다.
+	constexpr double WarmupBudgetMs = 120.0;
+	const uint64 StartCycles = FPlatformTime::Cycles64();
+
+	const bool bHydraulicsConverged =
+		(Room == nullptr) || Room->GetLastSolveResult().bConverged;
+
+	while (PendingWarmupSteps > 0)
+	{
+		// 시계에도 같은 시간을 넣는다. CompleteStep만 부르면 누적기가 음수로 내려가
+		// 이후 실시간 프레임이 한참 동안 스텝을 못 만든다 (규약 4).
+		const bool bHydraulicsResolved = (Room != nullptr) && Room->ConsumeRebuiltFlag();
+		Clock.BeginFrame(Clock.GetFixedStepS());
+		Bridge.Step(Clock.GetFixedStepS(), bHydraulicsResolved, bHydraulicsConverged);
+		Clock.CompleteStep();
+		--PendingWarmupSteps;
+
+		if (FPlatformTime::ToMilliseconds64(FPlatformTime::Cycles64() - StartCycles) >= WarmupBudgetMs)
+		{
+			break;
+		}
+	}
+	VrgPerf::PendingWarmupSteps() = PendingWarmupSteps;
+
+	// 표시용 시각을 맞춰 준다. 이 액터의 시계가 유일한 시계다.
+	for (ARackThermalActor* Rack : Racks)
+	{
+		if (Rack != nullptr)
+		{
+			Rack->SetExternalSimTimeS(Clock.GetSimTimeS());
+		}
+	}
+	if (AirField != nullptr)
+	{
+		AirField->SetExternalSimTimeS(Clock.GetSimTimeS());
+	}
+
+	if (PendingWarmupSteps == 0)
+	{
+		UE_LOG(LogTemp, Display, TEXT("[VrgSim] 예열 %d스텝 완료 (%.2f s)"),
+			WarmupStepsReported, WarmupStepsReported * Clock.GetFixedStepS());
 	}
 }

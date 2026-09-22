@@ -54,6 +54,11 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Simulation")
 	FCouplingSnapshot GetSnapshot() const;
 
+	// 화면 확인용으로 N스텝을 앞당긴다. 공기 액터의 같은 기능은 이 액터가 구동할 때
+	// 스스로 취소하므로(규약 4: 같은 구간을 두 번 적분하면 안 된다), 통합 구성에서는
+	// 이쪽을 써야 한다. 한 프레임에 다 돌리지 않고 시간 예산만큼만 소화한다.
+	void QueueWarmupSteps(int32 NumSteps);
+
 	// 고정 시뮬레이션 스텝 [s]. 모든 도메인이 이 값을 쓴다 (규약 4).
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Simulation")
 	double FixedStepS = 0.02;
@@ -117,6 +122,11 @@ private:
 
 	bool bSimRunning = false;
 	bool bNeedsRebuild = true;
+
+	// 남은 예열 스텝. 프레임마다 예산만큼만 소화한다.
+	int32 PendingWarmupSteps = 0;
+	int32 WarmupStepsReported = 0;
+	void DrainWarmupSteps();
 
 	// 연결이 성립했는지. 안 되면 화면에 이유를 띄운다.
 	FString LastSetupMessage;

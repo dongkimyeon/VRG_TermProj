@@ -2,6 +2,7 @@
 
 #include "Actors/AirFieldDebugActor.h"
 
+#include "Actors/DataCenterSimulationActor.h"
 #include "Actors/RackThermalActor.h"
 #include "Simulation/Core/SimUnits.h"
 
@@ -150,6 +151,28 @@ static FAutoConsoleCommand GVrgAirRunStepsCommand(
 	FConsoleCommandWithArgsDelegate::CreateLambda([](const TArray<FString>& Args)
 	{
 		const int32 NumSteps = Args.Num() > 0 ? FCString::Atoi(*Args[0]) : 200;
+
+		// 통합 액터가 있으면 그쪽이 시계를 쥐고 있다 (규약 4). 공기 액터에 직접
+		// 예열을 걸면 스스로 취소하므로, 통합 구성에서는 통합 액터에 건다.
+		bool bQueuedOnSim = false;
+		if (GEngine != nullptr)
+		{
+			for (const FWorldContext& Context : GEngine->GetWorldContexts())
+			{
+				UWorld* World = Context.World();
+				if (World == nullptr || !World->IsGameWorld()) { continue; }
+				for (TActorIterator<ADataCenterSimulationActor> It(World); It; ++It)
+				{
+					It->QueueWarmupSteps(NumSteps);
+					bQueuedOnSim = true;
+				}
+			}
+		}
+		if (bQueuedOnSim)
+		{
+			return;
+		}
+
 		for (AAirFieldDebugActor* Actor : FindAirActors())
 		{
 			Actor->QueueWarmupSteps(NumSteps);
@@ -688,8 +711,13 @@ void AAirFieldDebugActor::DrawSummaryText() const
 
 	// 온도 표시는 여기서만 °C로 바꾼다 (규약 2).
 	GEngine->AddOnScreenDebugMessage(BaseKey + 1, 0.0f, FColor::Cyan,
-		FString::Printf(TEXT("열원 %.0f W | 공기 %.2f ~ %.2f C | 최대 속도 %.3f m/s | CFL %.2f%s"),
-			TotalHeatW,
+		FString::Printf(TEXT("열원 %s | 공기 %.2f ~ %.2f C | 최대 속도 %.3f m/s | CFL %.2f%s"),
+			// 통합 액터가 돌릴 때는 다리(FCouplingBridge)가 자기 입력 구조체를 쓰므로
+			// 이 액터의 Input.CellHeatW는 안 쓰이는 옛날 값이다. 그걸 숫자로 띄우면
+			// "랙이 없는 곳에서 열이 난다"로 읽힌다. 실제로 그 오해가 났다.
+			bDrivenExternally
+				? TEXT("통합 액터가 준다")
+				: *FString::Printf(TEXT("%.0f W"), TotalHeatW),
 			SimUnits::KelvinToCelsius(Snapshot.MinTemperatureK),
 			SimUnits::KelvinToCelsius(Snapshot.MaxTemperatureK),
 			Snapshot.MaxSpeedMs, Snapshot.CourantNumber,

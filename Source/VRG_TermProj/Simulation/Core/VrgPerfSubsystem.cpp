@@ -276,8 +276,10 @@ void UVrgPerfSubsystem::FinishCapture()
 
 	// 같은 라벨로 화면도 한 장 남긴다. 1단계 완료 조건이 "박스 모드와 볼륨 모드가
 	// 같은 그림인가"라서, 숫자만으로는 확인할 수 없다.
+	// UI를 포함해 찍는다. 화면 오버레이에만 뜨는 열수지·수렴 여부를 그림 한 장으로
+	// 같이 남겨야 나중에 "그때 물리가 맞았나"를 확인할 수 있다.
 	FScreenshotRequest::RequestScreenshot(
-		FString::Printf(TEXT("VrgShot-%s"), *CaptureLabel), false, false);
+		FString::Printf(TEXT("VrgShot-%s"), *CaptureLabel), true, false);
 
 	if (bQuitAfterCapture)
 	{
