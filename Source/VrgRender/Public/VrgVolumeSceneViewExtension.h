@@ -32,6 +32,12 @@ public:
 		const FBox& InWorldBoundsCm, float InMinTempK, float InMaxTempK,
 		float InOpacityPerCm, int32 InStepCount);
 
+	// S7-2: 셀 중심 속도장 [m/s]. 길이는 온도와 같아야 한다.
+	// 입자 대신 같은 광선 안에서 흐름 무늬를 그리므로 드로우 호출은 늘지 않는다.
+	// MaxSpeed는 밝기 정규화 기준이고, Strength가 0이면 무늬를 안 그린다.
+	void UpdateVelocity_GameThread(const FIntVector& InSize, TArray<FVector4f>&& InVelocityMs,
+		float InMaxSpeedMs, float InFlowStrength, float InFlowSpeedScale, float InFlowFrequency);
+
 	// 꺼 두면 패스를 아예 추가하지 않는다. 드로우 호출도 0이다.
 	void SetEnabled_GameThread(bool bInEnabled);
 
@@ -51,6 +57,11 @@ private:
 
 	// ---- 렌더 스레드 전용 ----
 	FTextureRHIRef VolumeTexture;
+	FTextureRHIRef VelocityTexture;
+	float MaxSpeedMs = 1.0f;
+	float FlowStrength = 0.0f;
+	float FlowSpeedScale = 0.02f;
+	float FlowFrequency = 0.05f;
 	FIntVector VolumeSize = FIntVector::ZeroValue;
 	FVector3f BoundsMinCm = FVector3f::ZeroVector;
 	FVector3f BoundsMaxCm = FVector3f::ZeroVector;

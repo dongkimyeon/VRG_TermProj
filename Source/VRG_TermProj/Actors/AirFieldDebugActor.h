@@ -202,6 +202,23 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Visualization")
 	bool bShowSummary = true;
 
+	// S7-2: 속도장을 따라 흐르는 무늬를 볼륨 안에 함께 그린다.
+	// Niagara 입자 대신 같은 광선 안에서 처리하므로 드로우 호출이 늘지 않는다.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Visualization|Volume")
+	bool bDrawFlow = false;
+
+	// 무늬의 진하기. 0이면 안 그린다.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Visualization|Volume", meta = (ClampMin = "0.0", ClampMax = "1.0"))
+	double FlowStrength = 0.08;
+
+	// 무늬가 흐르는 속도 배율. 물리가 아니라 연출값이다.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Visualization|Volume", meta = (ClampMin = "0.0", ClampMax = "1.0"))
+	double FlowSpeedScale = 0.05;
+
+	// 무늬 촘촘함 [1/cm]. 키우면 줄이 가늘어진다.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Visualization|Volume", meta = (ClampMin = "0.001", ClampMax = "1.0"))
+	double FlowFrequency = 0.08;
+
 	// 직전 프레임에 볼륨 패스가 추가한 드로우 호출 수. 0 또는 1이어야 한다.
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Visualization|Volume")
 	int32 VolumePassCount = 0;

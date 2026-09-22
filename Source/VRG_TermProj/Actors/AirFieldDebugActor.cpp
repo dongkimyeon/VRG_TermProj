@@ -89,6 +89,16 @@ namespace
 		TEXT("vrg.Volume.Opacity"), GVrgVolumeOpacity,
 		TEXT("볼륨 흡수 계수 [1/cm]. 음수면 액터 설정을 쓴다."));
 
+	static int32 GVrgDrawFlow = -1;
+	static FAutoConsoleVariableRef CVarDrawFlow(
+		TEXT("vrg.Flow.Draw"), GVrgDrawFlow,
+		TEXT("기류 무늬 표시를 강제한다. -1=액터 설정, 0=끔, 1=켬"));
+
+	static float GVrgFlowStrength = -1.0f;
+	static FAutoConsoleVariableRef CVarFlowStrength(
+		TEXT("vrg.Flow.Strength"), GVrgFlowStrength,
+		TEXT("기류 무늬 진하기. 음수면 액터 설정."));
+
 	static int32 GVrgDrawMode = -1;
 	static FAutoConsoleVariableRef CVarDrawMode(
 		TEXT("vrg.Air.DrawMode"), GVrgDrawMode,
@@ -383,6 +393,8 @@ void AAirFieldDebugActor::Tick(float DeltaTime)
 		DrawMode = static_cast<EAirDrawMode>(FMath::Clamp(GVrgDrawMode, 0, 2));
 	}
 	if (GVrgMinVisibleFraction >= 0.0f) { MinVisibleFraction = GVrgMinVisibleFraction; }
+	if (GVrgDrawFlow >= 0) { bDrawFlow = GVrgDrawFlow != 0; }
+	if (GVrgFlowStrength >= 0.0f) { FlowStrength = GVrgFlowStrength; }
 
 	// 규약 4: 통합 액터가 돌릴 때는 여기서 적분하지 않는다.
 	if (bSimRunning && !bDrivenExternally)
@@ -690,11 +702,39 @@ void AAirFieldDebugActor::UpdateVolumeRender()
 	const FVector DomainSizeCm = SimUnits::MetersToUnreal(Grid.GetDomainSizeM());
 	const FBox WorldBoundsCm(OriginCm, OriginCm + DomainSizeCm);
 
-	VolumeExtension->UpdateVolume_GameThread(
-		FIntVector(Grid.GetNumCellsX(), Grid.GetNumCellsY(), Grid.GetNumCellsZ()),
+	const FIntVector GridSize(Grid.GetNumCellsX(), Grid.GetNumCellsY(), Grid.GetNumCellsZ());
+	VolumeExtension->UpdateVolume_GameThread(GridSize,
 		MoveTemp(VoxelsK), WorldBoundsCm,
 		float(ColorMinCelsius + 273.15), float(ColorMaxCelsius + 273.15),
 		float(VolumeOpacityPerCm), VolumeStepCount);
+
+	// S7-2: 속도장. MAC 격자라 면 속도를 셀 중심으로 평균해서 넘긴다.
+	// 렌더는 셀 중심 값만 쓰므로 여기서 한 번만 평균한다.
+	TArray<FVector4f> VelocityMs;
+	VelocityMs.SetNumUninitialized(NumCells);
+	for (int32 Z = 0; Z < GridSize.Z; ++Z)
+	{
+		for (int32 Y = 0; Y < GridSize.Y; ++Y)
+		{
+			for (int32 X = 0; X < GridSize.X; ++X)
+			{
+				const double Vx = 0.5 * (Grid.VelocityXMs[Grid.FaceXIndex(X, Y, Z)]
+					+ Grid.VelocityXMs[Grid.FaceXIndex(X + 1, Y, Z)]);
+				const double Vy = 0.5 * (Grid.VelocityYMs[Grid.FaceYIndex(X, Y, Z)]
+					+ Grid.VelocityYMs[Grid.FaceYIndex(X, Y + 1, Z)]);
+				const double Vz = 0.5 * (Grid.VelocityZMs[Grid.FaceZIndex(X, Y, Z)]
+					+ Grid.VelocityZMs[Grid.FaceZIndex(X, Y, Z + 1)]);
+				VelocityMs[Grid.CellIndex(X, Y, Z)] =
+					FVector4f(float(Vx), float(Vy), float(Vz), 0.0f);
+			}
+		}
+	}
+
+	// 정규화 기준은 지금 장의 최대 속도다. 고정값을 쓰면 느린 구성에서 무늬가 안 보인다.
+	const double MaxSpeedMs = FMath::Max(Grid.MaxAbsVelocityMs(), 0.05);
+	VolumeExtension->UpdateVelocity_GameThread(GridSize, MoveTemp(VelocityMs),
+		float(MaxSpeedMs), bDrawFlow ? float(FlowStrength) : 0.0f,
+		float(FlowSpeedScale), float(FlowFrequency));
 }
 
 void AAirFieldDebugActor::RunStepsImmediate(int32 NumSteps)

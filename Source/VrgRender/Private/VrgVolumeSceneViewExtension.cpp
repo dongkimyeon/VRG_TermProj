@@ -35,12 +35,18 @@ namespace
 			SHADER_PARAMETER_SAMPLER(SamplerState, InputSampler)
 			SHADER_PARAMETER_TEXTURE(Texture3D, VolumeTexture)
 			SHADER_PARAMETER_SAMPLER(SamplerState, VolumeSampler)
+			SHADER_PARAMETER_TEXTURE(Texture3D, VelocityTexture)
+			SHADER_PARAMETER_SAMPLER(SamplerState, VelocitySampler)
 			SHADER_PARAMETER(FVector3f, VolumeBoundsMin)
 			SHADER_PARAMETER(FVector3f, VolumeBoundsMax)
 			SHADER_PARAMETER(FVector2f, TempRangeK)
 			SHADER_PARAMETER(float, OpacityPerCm)
 			SHADER_PARAMETER(int32, StepCount)
 			SHADER_PARAMETER(int32, DebugMode)
+			SHADER_PARAMETER(float, FlowStrength)
+			SHADER_PARAMETER(float, FlowSpeedScale)
+			SHADER_PARAMETER(float, FlowFrequency)
+			SHADER_PARAMETER(float, MaxSpeedMs)
 			RENDER_TARGET_BINDING_SLOTS()
 		END_SHADER_PARAMETER_STRUCT()
 
@@ -113,6 +119,44 @@ void FVrgVolumeSceneViewExtension::UpdateVolume_GameThread(const FIntVector& InS
 		});
 }
 
+void FVrgVolumeSceneViewExtension::UpdateVelocity_GameThread(const FIntVector& InSize,
+	TArray<FVector4f>&& InVelocityMs, float InMaxSpeedMs, float InFlowStrength,
+	float InFlowSpeedScale, float InFlowFrequency)
+{
+	check(IsInGameThread());
+	const int64 Expected = int64(InSize.X) * InSize.Y * InSize.Z;
+	if (InSize.X <= 0 || InSize.Y <= 0 || InSize.Z <= 0 || InVelocityMs.Num() != Expected)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[VrgVolume] 속도 복셀 수(%d)가 격자 %dx%dx%d와 맞지 않는다."),
+			InVelocityMs.Num(), InSize.X, InSize.Y, InSize.Z);
+		return;
+	}
+
+	ENQUEUE_RENDER_COMMAND(VrgVelocityUpload)(
+		[this, InSize, Velocity = MoveTemp(InVelocityMs), InMaxSpeedMs, InFlowStrength,
+			InFlowSpeedScale, InFlowFrequency](FRHICommandListImmediate& RHICmdList)
+		{
+			if (!VelocityTexture.IsValid() || VelocityTexture->GetSizeXYZ() != InSize)
+			{
+				const FRHITextureCreateDesc Desc =
+					FRHITextureCreateDesc::Create3D(TEXT("VrgVolumeVelocity"),
+						InSize.X, InSize.Y, InSize.Z, PF_A32B32G32R32F)
+					.SetFlags(ETextureCreateFlags::ShaderResource);
+				VelocityTexture = RHICmdList.CreateTexture(Desc);
+			}
+
+			const FUpdateTextureRegion3D Region(0, 0, 0, 0, 0, 0, InSize.X, InSize.Y, InSize.Z);
+			RHICmdList.UpdateTexture3D(VelocityTexture, 0, Region,
+				InSize.X * sizeof(FVector4f), InSize.X * InSize.Y * sizeof(FVector4f),
+				reinterpret_cast<const uint8*>(Velocity.GetData()));
+
+			MaxSpeedMs = InMaxSpeedMs;
+			FlowStrength = InFlowStrength;
+			FlowSpeedScale = InFlowSpeedScale;
+			FlowFrequency = InFlowFrequency;
+		});
+}
+
 void FVrgVolumeSceneViewExtension::SubscribeToPostProcessingPass(EPostProcessingPass Pass,
 	const FSceneView& InView, FPostProcessingPassDelegateArray& InOutPassCallbacks, bool bIsPassEnabled)
 {
@@ -166,6 +210,15 @@ FScreenPassTexture FVrgVolumeSceneViewExtension::AddVolumePass_RenderThread(FRDG
 	Parameters->OpacityPerCm = OpacityPerCm;
 	Parameters->StepCount = StepCount;
 	Parameters->DebugMode = CVarVrgVolumeDebug.GetValueOnRenderThread();
+
+	// 속도장이 아직 없으면 온도 텍스처를 꽂고 세기를 0으로 둔다.
+	// 바인딩이 비면 셰이더가 죽으므로 더미라도 넣어야 한다.
+	Parameters->VelocityTexture = VelocityTexture.IsValid() ? VelocityTexture : VolumeTexture;
+	Parameters->VelocitySampler = TStaticSamplerState<SF_Bilinear, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
+	Parameters->FlowStrength = VelocityTexture.IsValid() ? FlowStrength : 0.0f;
+	Parameters->FlowSpeedScale = FlowSpeedScale;
+	Parameters->FlowFrequency = FlowFrequency;
+	Parameters->MaxSpeedMs = MaxSpeedMs;
 	Parameters->RenderTargets[0] = Output.GetRenderTargetBinding();
 
 	const TShaderMapRef<FVrgVolumeRaymarchPS> PixelShader(GetGlobalShaderMap(View.GetFeatureLevel()));

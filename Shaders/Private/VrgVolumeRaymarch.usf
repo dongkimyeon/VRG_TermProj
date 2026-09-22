@@ -16,6 +16,8 @@ Texture2D InputTexture;
 SamplerState InputSampler;
 Texture3D<float> VolumeTexture;
 SamplerState VolumeSampler;
+Texture3D<float4> VelocityTexture;   // 셀 중심 속도 [m/s], w는 안 쓴다
+SamplerState VelocitySampler;
 
 float3 VolumeBoundsMin;   // translated world, cm
 float3 VolumeBoundsMax;
@@ -23,6 +25,33 @@ float2 TempRangeK;        // x = 표시 최소 K, y = 표시 최대 K
 float OpacityPerCm;       // 정규화 온도 1에서의 흡수 계수 [1/cm]
 int StepCount;
 int DebugMode;            // 0=정상, 1=상자 교차 구간, 2=최대 온도, 3=장면 깊이
+float FlowStrength;       // 0이면 기류 무늬를 안 그린다
+float FlowSpeedScale;     // 무늬가 흐르는 속도 배율 (연출값)
+float FlowFrequency;      // 무늬 촘촘함 [1/cm]
+float MaxSpeedMs;         // 속도 정규화 기준 [m/s]
+
+// 해시 기반 값 잡음. 텍스처를 따로 올리지 않으려고 절차적으로 만든다.
+// 무늬 자체는 연출이며 물리량이 아니다.
+float VrgHash(float3 Cell)
+{
+	return frac(sin(dot(Cell, float3(12.9898f, 78.233f, 37.719f))) * 43758.5453f);
+}
+
+float VrgValueNoise(float3 Position)
+{
+	const float3 Base = floor(Position);
+	const float3 Frac = Position - Base;
+	const float3 Smooth = Frac * Frac * (3.0f - 2.0f * Frac);
+
+	float Result = 0.0f;
+	[unroll] for (int Corner = 0; Corner < 8; ++Corner)
+	{
+		const float3 Offset = float3(Corner & 1, (Corner >> 1) & 1, (Corner >> 2) & 1);
+		const float3 Weight = lerp(1.0f - Smooth, Smooth, Offset);
+		Result += VrgHash(Base + Offset) * Weight.x * Weight.y * Weight.z;
+	}
+	return Result;
+}
 
 // 열화상 색상표: 검정 -> 보라 -> 빨강 -> 노랑 -> 흰색.
 float3 HeatLut(float X)
@@ -170,6 +199,28 @@ void MainPS(
 			if (Transmittance < 0.01f && DebugMode == 0)
 			{
 				break;
+			}
+		}
+
+		// 기류 무늬. 속도 반대 방향으로 좌표를 흘려서 무늬가 흐름을 따라가게 한다.
+		// 입자를 따로 띄우지 않고 같은 광선 안에서 처리하므로 드로우 호출은 그대로 1개다.
+		if (FlowStrength > 0.0f && DebugMode == 0)
+		{
+			// 텍스처는 m/s, 좌표는 cm다. 단위 변환은 여기서만 한다 (규약 1).
+			const float3 VelocityCmS = VelocityTexture.SampleLevel(VelocitySampler, Uvw, 0).xyz * 100.0f;
+			const float SpeedCmS = length(VelocityCmS);
+			if (SpeedCmS > 1.0f)
+			{
+				const float3 Seed = (Position - VelocityCmS * View.GameTime * FlowSpeedScale) * FlowFrequency;
+				const float Noise = VrgValueNoise(Seed);
+
+				// 잡음의 윗부분만 남겨 줄무늬로 만든다. 밝기는 속도 크기다.
+				const float Streak = saturate((Noise - 0.55f) * 6.0f)
+					* saturate(SpeedCmS / max(MaxSpeedMs * 100.0f, 1.0f));
+				const float FlowAlpha = 1.0f - exp(-Streak * FlowStrength * StepSize);
+
+				Accum += Transmittance * FlowAlpha * float3(0.55f, 0.85f, 1.00f);
+				Transmittance *= (1.0f - FlowAlpha);
 			}
 		}
 	}
