@@ -223,9 +223,19 @@ public:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Visualization|Volume")
 	int32 VolumePassCount = 0;
 
-	// S7-1 검증용. 솔버를 N스텝 즉시 진행한다. 화면으로 확인해야 하는데
-	// 실시간으로는 1.5 fps라 눈에 보이는 상태까지 가는 데 몇 분이 걸린다.
-	void RunStepsImmediate(int32 NumSteps);
+	// S7-5 성능 측정용. 물리 도메인 크기를 유지한 채 셀 수만 Scale배로 바꾼다.
+	// 셀 폭을 같은 비율로 줄이므로 같은 방을 더 잘게 푼다. 즉시 리셋된다.
+	void RescaleGrid(double Scale);
+
+	// S7-1 검증용. 솔버를 N스텝 앞당긴다. 실시간으로는 눈에 보이는 상태까지
+	// 몇 분이 걸리기 때문이다.
+	//
+	// **한 프레임에 다 돌리지 않는다.** 처음에는 동기로 돌렸는데, 시작 시점에
+	// 400스텝을 통째로 계산하느라 창이 100초 넘게 응답을 멈췄다. 겉보기에
+	// "켜자마자 멈춘" 것처럼 보인다. 지금은 프레임마다 시간 예산만큼만 소화하고
+	// 남은 수를 VrgPerf::PendingWarmupSteps()에 노출한다. 계측은 그게 0이 될 때까지
+	// 수집을 시작하지 않는다.
+	void QueueWarmupSteps(int32 NumSteps);
 
 	// 공기 도메인 전체가 보이도록 시점을 옮긴다. 레벨 PlayerStart는 지오메트리 안이다.
 	void FrameDomainWithView(double DistanceScale);
@@ -288,4 +298,14 @@ private:
 	void UpdateVolumeRender();
 
 	TSharedPtr<class FVrgVolumeSceneViewExtension, ESPMode::ThreadSafe> VolumeExtension;
+
+	// 마지막으로 올린 시점의 SimTime. 장이 안 바뀌었으면 다시 올리지 않는다.
+	// 매 프레임 올리면 큰 격자에서 렌더 스레드가 업로드에 묻힌다
+	// (16만 셀에서 Draw 109 ms 중 대부분이 이것이었다).
+	double LastUploadedSimTimeS = -1.0;
+
+	// 남은 예열 스텝. 프레임마다 아래 예산만큼만 소화한다.
+	int32 PendingWarmupSteps = 0;
+	int32 WarmupStepsReported = 0;
+	void DrainWarmupSteps();
 };

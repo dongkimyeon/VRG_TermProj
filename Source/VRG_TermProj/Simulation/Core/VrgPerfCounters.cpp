@@ -14,6 +14,7 @@ namespace VrgPerf
 		// 규약 5: 게임 스레드 전용이라 잠금이 없다. 워커에서 쓰면 안 된다.
 		FFrameCosts GAccumulator;
 		FFrameCosts GLastFrame;
+		int32 GPendingWarmupSteps = 0;
 	}
 
 	FFrameCosts& Accumulator()
@@ -24,6 +25,11 @@ namespace VrgPerf
 	const FFrameCosts& LastFrame()
 	{
 		return GLastFrame;
+	}
+
+	int32& PendingWarmupSteps()
+	{
+		return GPendingWarmupSteps;
 	}
 
 	void EndFrame()

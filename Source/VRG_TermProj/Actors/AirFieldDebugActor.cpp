@@ -138,18 +138,31 @@ namespace
 	}
 }
 
-// 화면을 보고 확인해야 하는 단계라, 시뮬레이션을 눈에 보이는 상태까지
-// 동기적으로 앞당긴다. 실시간으로 기다리면 1.5 fps에서 몇 분이 걸린다.
+// 화면을 보고 확인해야 하는 단계라 시뮬레이션을 눈에 보이는 상태까지 앞당긴다.
 // 물리는 평소와 같은 고정 스텝을 쓴다 (규약 4: 시계가 시간을 버리지 않는다).
+// 한 프레임에 다 돌리면 창이 그대로 얼어붙으므로 프레임마다 나눠 소화한다.
 static FAutoConsoleCommand GVrgAirRunStepsCommand(
 	TEXT("vrg.Air.RunSteps"),
-	TEXT("공기 솔버를 N스텝 즉시 진행한다. vrg.Air.RunSteps <스텝 수>"),
+	TEXT("공기 솔버 N스텝을 예약한다. 프레임마다 나눠 소화해 창이 멈추지 않는다."),
 	FConsoleCommandWithArgsDelegate::CreateLambda([](const TArray<FString>& Args)
 	{
 		const int32 NumSteps = Args.Num() > 0 ? FCString::Atoi(*Args[0]) : 200;
 		for (AAirFieldDebugActor* Actor : FindAirActors())
 		{
-			Actor->RunStepsImmediate(NumSteps);
+			Actor->QueueWarmupSteps(NumSteps);
+		}
+	}));
+
+// 격자를 키우며 한계를 찾기 위한 명령. 물리 도메인은 그대로 두고 해상도만 바꾼다.
+static FAutoConsoleCommand GVrgAirResizeCommand(
+	TEXT("vrg.Air.Rescale"),
+	TEXT("도메인 크기를 유지한 채 셀 수를 Scale배로 바꾼다. vrg.Air.Rescale <배수>"),
+	FConsoleCommandWithArgsDelegate::CreateLambda([](const TArray<FString>& Args)
+	{
+		const double Scale = Args.Num() > 0 ? FCString::Atod(*Args[0]) : 1.0;
+		for (AAirFieldDebugActor* Actor : FindAirActors())
+		{
+			Actor->RescaleGrid(Scale);
 		}
 	}));
 
@@ -425,8 +438,15 @@ void AAirFieldDebugActor::Tick(float DeltaTime)
 	if (GVrgFlowStrength >= 0.0f) { FlowStrength = GVrgFlowStrength; }
 	Solver.SetUseGpuPressure(GVrgUseGpuPressure != 0);
 
+	// 예약된 예열을 먼저 나눠 소화한다. 다 끝나면 평소 적분으로 돌아간다.
+	if (PendingWarmupSteps > 0)
+	{
+		VRG_SCOPE_COST(STAT_VrgAirSolverStep, SolverMs);
+		DrainWarmupSteps();
+	}
+
 	// 규약 4: 통합 액터가 돌릴 때는 여기서 적분하지 않는다.
-	if (bSimRunning && !bDrivenExternally)
+	if (bSimRunning && !bDrivenExternally && PendingWarmupSteps <= 0)
 	{
 		// 규약 4: 시계가 남은 시간을 버리지 않고 다음 프레임으로 넘긴다.
 		// 다만 공기 해석은 무거워서 한 프레임에 돌릴 스텝 수를 따로 제한한다.
@@ -716,6 +736,15 @@ void AAirFieldDebugActor::UpdateVolumeRender()
 		return;
 	}
 
+	// 장이 안 바뀌었으면 다시 올리지 않는다. 시뮬 스텝보다 프레임이 잦으면
+	// 같은 값을 여러 번 올리게 되고, 큰 격자에서는 그 업로드가 렌더 스레드를 지배한다.
+	const double SimTimeS = bDrivenExternally ? ExternalSimTimeS : Clock.GetSimTimeS();
+	if (SimTimeS == LastUploadedSimTimeS)
+	{
+		return;
+	}
+	LastUploadedSimTimeS = SimTimeS;
+
 	// 실제 절대온도 K를 그대로 담는다 (규약 2). 고체 셀은 음수로 표시해
 	// 셰이더가 건너뛰게 한다. 정규화해서 담으면 표시 범위를 바꿀 때마다 다시 올려야 한다.
 	TArray<float> VoxelsK;
@@ -739,6 +768,11 @@ void AAirFieldDebugActor::UpdateVolumeRender()
 
 	// S7-2: 속도장. MAC 격자라 면 속도를 셀 중심으로 평균해서 넘긴다.
 	// 렌더는 셀 중심 값만 쓰므로 여기서 한 번만 평균한다.
+	// 무늬를 안 그릴 때는 만들지도 올리지도 않는다 (복셀당 16바이트라 온도의 4배다).
+	if (!bDrawFlow)
+	{
+		return;
+	}
 	TArray<FVector4f> VelocityMs;
 	VelocityMs.SetNumUninitialized(NumCells);
 	for (int32 Z = 0; Z < GridSize.Z; ++Z)
@@ -766,7 +800,7 @@ void AAirFieldDebugActor::UpdateVolumeRender()
 		float(FlowSpeedScale), float(FlowFrequency));
 }
 
-void AAirFieldDebugActor::RunStepsImmediate(int32 NumSteps)
+void AAirFieldDebugActor::QueueWarmupSteps(int32 NumSteps)
 {
 	if (bNeedsReset)
 	{
@@ -780,9 +814,37 @@ void AAirFieldDebugActor::RunStepsImmediate(int32 NumSteps)
 		return;
 	}
 
-	const int32 Clamped = FMath::Clamp(NumSteps, 1, 100000);
+	PendingWarmupSteps = FMath::Clamp(NumSteps, 1, 100000);
+	WarmupStepsReported = PendingWarmupSteps;
+	VrgPerf::PendingWarmupSteps() = PendingWarmupSteps;
+	bSimRunning = true;
+	UE_LOG(LogTemp, Display, TEXT("[VrgAir] 예열 %d스텝 예약 (%.2f s 분량)"),
+		PendingWarmupSteps, PendingWarmupSteps * Clock.GetFixedStepS());
+}
+
+void AAirFieldDebugActor::DrainWarmupSteps()
+{
+	if (PendingWarmupSteps <= 0)
+	{
+		return;
+	}
+	if (bDrivenExternally)
+	{
+		// 통합 액터가 돌리는 구성에서 여기서 적분하면 같은 구간을 두 번 적분한다 (규약 4).
+		UE_LOG(LogTemp, Warning,
+			TEXT("[VrgAir] %s는 외부에서 구동되므로 예열을 취소한다."), *GetName());
+		PendingWarmupSteps = 0;
+		VrgPerf::PendingWarmupSteps() = 0;
+		return;
+	}
+
+	// 프레임마다 이만큼만 쓴다. 창이 응답을 유지할 정도로 잡았다.
+	// 큰 격자에서는 스텝 하나가 이 예산을 넘지만, 그래도 프레임마다 한 장은 그린다.
+	constexpr double WarmupBudgetMs = 120.0;
 	const double StepS = Clock.GetFixedStepS();
-	for (int32 Index = 0; Index < Clamped; ++Index)
+	const uint64 StartCycles = FPlatformTime::Cycles64();
+
+	while (PendingWarmupSteps > 0)
 	{
 		// 시계에 같은 양의 시간을 먼저 넣는다. CompleteStep만 부르면 누적기가
 		// 스텝 수 x 스텝 크기만큼 음수로 내려가고, 그 뒤 실시간 프레임이
@@ -791,14 +853,24 @@ void AAirFieldDebugActor::RunStepsImmediate(int32 NumSteps)
 		Clock.BeginFrame(StepS);
 		Solver.Step(Input, StepS);
 		Clock.CompleteStep();
-	}
-	bSimRunning = true;
+		--PendingWarmupSteps;
 
-	UE_LOG(LogTemp, Display, TEXT("[VrgAir] %d스텝 진행 (%.2f s). 공기 %.2f ~ %.2f C, 최대 속도 %.4f m/s"),
-		Clamped, Clamped * StepS,
-		Solver.MakeSnapshot(0.0).MinTemperatureK - 273.15,
-		Solver.MakeSnapshot(0.0).MaxTemperatureK - 273.15,
-		Solver.MakeSnapshot(0.0).MaxSpeedMs);
+		if (FPlatformTime::ToMilliseconds64(FPlatformTime::Cycles64() - StartCycles) >= WarmupBudgetMs)
+		{
+			break;
+		}
+	}
+	VrgPerf::PendingWarmupSteps() = PendingWarmupSteps;
+
+	if (PendingWarmupSteps == 0)
+	{
+		const FAirSolverSnapshot Snapshot = Solver.MakeSnapshot(0.0);
+		UE_LOG(LogTemp, Display,
+			TEXT("[VrgAir] 예열 %d스텝 완료 (%.2f s). 공기 %.2f ~ %.2f C, 최대 속도 %.4f m/s"),
+			WarmupStepsReported, WarmupStepsReported * StepS,
+			Snapshot.MinTemperatureK - 273.15, Snapshot.MaxTemperatureK - 273.15,
+			Snapshot.MaxSpeedMs);
+	}
 }
 
 void AAirFieldDebugActor::FrameDomainWithView(double DistanceScale)
@@ -827,4 +899,36 @@ void AAirFieldDebugActor::FrameDomainWithView(double DistanceScale)
 
 	UE_LOG(LogTemp, Display, TEXT("[VrgAir] 시점 %s -> 도메인 중심 %s (거리 %.0f cm)"),
 		*EyeCm.ToCompactString(), *CenterCm.ToCompactString(), DistanceCm);
+}
+
+void AAirFieldDebugActor::RescaleGrid(double Scale)
+{
+	if (!FMath::IsFinite(Scale) || Scale <= 0.0)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[VrgAir] 배수는 양수여야 한다."));
+		return;
+	}
+
+	// 도메인 = 셀 수 x 셀 폭이다. 둘을 반대로 움직여 물리 크기를 유지한다.
+	// 그래야 "같은 방을 더 잘게 푼다"가 되고 셀 수만의 효과를 볼 수 있다.
+	const FVector DomainBeforeM = FVector(GridParams.NumCellsX, GridParams.NumCellsY,
+		GridParams.NumCellsZ) * GridParams.CellSizeM;
+
+	GridParams.NumCellsX = FMath::Clamp(FMath::RoundToInt32(GridParams.NumCellsX * Scale), 1, 256);
+	GridParams.NumCellsY = FMath::Clamp(FMath::RoundToInt32(GridParams.NumCellsY * Scale), 1, 256);
+	GridParams.NumCellsZ = FMath::Clamp(FMath::RoundToInt32(GridParams.NumCellsZ * Scale), 1, 256);
+
+	// 축마다 반올림이 달라질 수 있으므로 X 기준으로 셀 폭을 다시 잡는다.
+	GridParams.CellSizeM = DomainBeforeM.X / GridParams.NumCellsX;
+
+	bNeedsReset = true;
+	ResetSim();
+
+	const FVector DomainAfterM = FVector(GridParams.NumCellsX, GridParams.NumCellsY,
+		GridParams.NumCellsZ) * GridParams.CellSizeM;
+	UE_LOG(LogTemp, Display,
+		TEXT("[VrgAir] 격자 %dx%dx%d = %d셀, 셀 폭 %.4f m | 도메인 %s -> %s m"),
+		GridParams.NumCellsX, GridParams.NumCellsY, GridParams.NumCellsZ,
+		GridParams.NumCellsX * GridParams.NumCellsY * GridParams.NumCellsZ,
+		GridParams.CellSizeM, *DomainBeforeM.ToCompactString(), *DomainAfterM.ToCompactString());
 }

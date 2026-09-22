@@ -55,6 +55,10 @@ namespace VrgPerf
 	// 누산기를 확정값으로 넘기고 비운다. 프레임 끝에 한 번만 부른다.
 	VRG_TERMPROJ_API void EndFrame();
 
+	// 아직 남은 예열 스텝 수. 예열 중에 수집을 시작하면 표본이 전부
+	// 과도 상태라 대표값이 되지 않으므로, 수집이 이 값을 보고 기다린다.
+	VRG_TERMPROJ_API int32& PendingWarmupSteps();
+
 	// 스코프 동안 흐른 시간을 FFrameCosts의 한 필드에 더한다.
 	// 중첩되면 바깥과 안쪽에 둘 다 더해지므로, 포함 관계를 주석으로 밝혀 둔다.
 	class VRG_TERMPROJ_API FScopeTimer

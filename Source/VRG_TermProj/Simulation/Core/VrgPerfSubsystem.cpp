@@ -135,6 +135,13 @@ bool UVrgPerfSubsystem::Tick(float DeltaTime)
 		DrawOverlay(Sample);
 	}
 
+	// 예열이 남아 있으면 수집을 시작하지 않는다. 과도 상태 표본만 모으면
+	// 정상 상태 수치와 섞여 비교가 성립하지 않는다.
+	if (bCapturing && VrgPerf::PendingWarmupSteps() > 0)
+	{
+		return true;
+	}
+
 	if (bCapturing)
 	{
 		Samples.Add(Sample);
