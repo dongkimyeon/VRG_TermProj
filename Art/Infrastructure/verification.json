@@ -1,0 +1,45 @@
+{
+  "source_scene": "VRG_Infrastructure",
+  "fbx_objects": 763,
+  "fbx_reimported_objects": 763,
+  "bounds_expected_m": [
+    [
+      -1.768220067024231,
+      -3.1059999465942383,
+      0.0020000000949949026
+    ],
+    [
+      3.325000047683716,
+      3.1059999465942383,
+      3.239000082015991
+    ]
+  ],
+  "bounds_reimported_m": [
+    [
+      -1.768220067024231,
+      -3.1059999465942383,
+      0.0020000000949949026
+    ],
+    [
+      3.325000286102295,
+      3.1060001850128174,
+      3.239000082015991
+    ]
+  ],
+  "bounds_max_error_m": 2.384185791015625e-07,
+  "glb_mesh_objects": 832,
+  "glb_triangles": 604908,
+  "source_curve_count": 714,
+  "unit_scale_m": 1,
+  "files": {
+    "VRG_Infrastructure.fbx": 8232956,
+    "VRG_Connections.glb": 21851896
+  },
+  "limitations": [
+    "No Unreal import or runtime performance test",
+    "No solver or Unreal SplineComponent binding",
+    "Solid visualization surfaces, not CFD fluid volumes",
+    "No full scene collision clearance test",
+    "PBR solid colors, no texture UV authoring; add LOD/collision/lightmap UVs as needed"
+  ]
+}
