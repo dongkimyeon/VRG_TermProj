@@ -1,0 +1,1 @@
+{"FileVersion":3,"Version":1,"VersionName":"0.1-preview","FriendlyName":"GB200 Connection Preview","Description":"Standalone editable visual connections; no simulation binding.","Category":"Visualization","CanContainContent":false,"Modules":[{"Name":"GB200Connections","Type":"Runtime","LoadingPhase":"Default"}]}

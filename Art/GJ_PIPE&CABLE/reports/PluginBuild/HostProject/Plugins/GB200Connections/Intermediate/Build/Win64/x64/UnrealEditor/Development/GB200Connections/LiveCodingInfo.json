@@ -1,0 +1,12 @@
+{
+	"RemapUnityFiles": 
+	{
+		"Module.GB200Connections.cpp.obj": [
+			"GB200Connections.init.gen.cpp.obj",
+			"GB200PatchCable.gen.cpp.obj",
+			"PerModuleInline.gen.cpp.obj",
+			"GB200Connections.cpp.obj",
+			"GB200PatchCable.cpp.obj"
+		]
+	}
+}

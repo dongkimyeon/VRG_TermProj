@@ -1,0 +1,56 @@
+{
+  "status": "PASS",
+  "meshes": {
+    "SM_Connection_Data": {
+      "bounds_error_cm": 8.743256330490112e-06
+    },
+    "SM_Connection_Hose": {
+      "bounds_error_cm": 8.806586265563965e-06
+    },
+    "SM_Connection_Power": {
+      "bounds_error_cm": 8.791685104370117e-06
+    },
+    "SM_Connection_Riser": {
+      "bounds_error_cm": 8.746981620788574e-06
+    },
+    "SM_Connection_Header": {
+      "bounds_error_cm": 8.64267349243164e-06
+    },
+    "SM_QD_Supply": {
+      "bounds_error_cm": 1.1920928955078125e-07
+    },
+    "SM_QD_Return": {
+      "bounds_error_cm": 1.1920928955078125e-07
+    },
+    "SM_Plug_Compute": {
+      "bounds_error_cm": 2.1275165806855512e-07
+    },
+    "SM_Plug_Switch": {
+      "bounds_error_cm": 1.9089596747789983e-07
+    },
+    "SM_CDU_Adapter": {
+      "bounds_error_cm": 4.172325134277344e-07
+    },
+    "SM_Manifold_Tee": {
+      "bounds_error_cm": 1.043081283569336e-07
+    },
+    "SM_IsolationValve": {
+      "bounds_error_cm": 5.364418029785156e-07
+    },
+    "auto_patch": {
+      "initial_length_cm": 168.8795928955078,
+      "extended_length_cm": 240.63729858398438,
+      "segments": 15,
+      "endpoint_error_cm": 9.536742595628311e-08,
+      "note": "Explicit rebuild after move tested; editor tick/live viewport not measured.",
+      "shortened_length_cm": 107.12444305419922,
+      "sag_point_z_cm": 85.0
+    },
+    "map_reload": {
+      "restored_connections": 121,
+      "all_have_mesh_segments": true
+    }
+  },
+  "authored_spline_routes": 120,
+  "limits": "NullRHI import/construction checks; no VR performance, physical cable dynamics, collision routing or hydraulic binding."
+}

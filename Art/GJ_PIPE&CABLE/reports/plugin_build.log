@@ -1,0 +1,32 @@
+Running AutomationTool...
+Using bundled DotNet SDK version: 10.0 win-x64
+Starting AutomationTool...
+Parsing command line: BuildPlugin -Plugin=C:/Users/경준/Documents/GB200_Connections_20260923/UnrealSample/Plugins/GB200Connections/GB200Connections.uplugin -Package=C:/Users/경준/Documents/GB200_Connections_20260923/reports/PluginBuild -TargetPlatforms=Win64 -NoTargetPlatforms
+Initializing script modules...
+Total script module initialization time: 1.00 s.
+Using C:\Program Files\Microsoft Visual Studio\2022\Community\MSBuild\Current\Bin\MSBuild.exe
+Executing commands...
+Copying 6 file(s) using max 64 thread(s)
+Reading plugin from C:\Users\경준\Documents\GB200_Connections_20260923\reports\PluginBuild\HostProject\Plugins\GB200Connections\GB200Connections.uplugin...
+Building plugin for host platforms: Win64
+Running: E:\UE_5.8\Engine\Binaries\ThirdParty\DotNet\10.0\win-x64\dotnet.exe "E:\UE_5.8\Engine\Binaries\DotNET\UnrealBuildTool\UnrealBuildTool.dll" UnrealEditor Win64 Development -Project="C:\Users\경준\Documents\GB200_Connections_20260923\reports\PluginBuild\HostProject\HostProject.uproject" -plugin="C:\Users\경준\Documents\GB200_Connections_20260923\reports\PluginBuild\HostProject\Plugins\GB200Connections\GB200Connections.uplugin" -noubtmakefiles -manifest="C:\Users\경준\Documents\GB200_Connections_20260923\reports\PluginBuild\HostProject\Saved\Manifest-UnrealEditor-Win64-Development.xml" -nohotreload -log="C:\Users\경준\AppData\Roaming\Unreal Engine\AutomationTool\Logs\E+UE_5.8\UBA-UnrealEditor-Win64-Development.txt"
+Log file: C:\Users\����\AppData\Roaming\Unreal Engine\AutomationTool\Logs\E+UE_5.8\UBA-UnrealEditor-Win64-Development.txt
+Determining max actions to execute in parallel (8 physical cores, 16 logical cores)
+  Executing up to 8 processes, one per physical core
+  Requested 1.5 GB memory per action, 2.9 GB available: limiting max parallel actions to 1
+UbaServer - Listening on 0.0.0.0:1345
+Creating makefile for UnrealEditor (no existing makefile)
+UHT compiled-in object format Default
+Writing manifest to C:\Users\����\Documents\GB200_Connections_20260923\reports\PluginBuild\HostProject\Saved\Manifest-UnrealEditor-Win64-Development.xml
+C:\Users\����\Documents\GB200_Connections_20260923\reports\PluginBuild\HostProject\Plugins\GB200Connections\Source\GB200Connections\Public\GB200PatchCable.h(43): Error: An explicit Category specifier is required for any property exposed to the editor or Blueprints in an Engine module.
+C:\Users\����\Documents\GB200_Connections_20260923\reports\PluginBuild\HostProject\Plugins\GB200Connections\Source\GB200Connections\Public\GB200PatchCable.h(44): Error: An explicit Category specifier is required for any property exposed to the editor or Blueprints in an Engine module.
+Unhandled 1 aggregate exceptions
+
+Result: Failed (OtherCompilationError)
+Total execution time: 38.11 seconds
+Trace written to file C:\Users\
+Took 38.95s to run dotnet.exe, ExitCode=6
+UnrealBuildTool failed. See log for more details. (C:\Users\경준\AppData\Roaming\Unreal Engine\AutomationTool\Logs\E+UE_5.8\UBA-UnrealEditor-Win64-Development.txt)
+AutomationTool executed for 0h 0m 46s
+AutomationTool exiting with ExitCode=6 (6)
+BUILD FAILED

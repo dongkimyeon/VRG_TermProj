@@ -1,0 +1,28 @@
+Using bundled DotNet SDK version: 10.0 win-x64
+Running UnrealBuildTool: dotnet "..\..\Engine\Binaries\DotNET\UnrealBuildTool\UnrealBuildTool.dll" UnrealEditor Win64 Development -Project=C:/Users/경준/Documents/GB200_Connections_20260923/reports/PluginBuild/HostProject/HostProject.uproject -plugin=C:/Users/경준/Documents/GB200_Connections_20260923/reports/PluginBuild/HostProject/Plugins/GB200Connections/GB200Connections.uplugin -NoHotReload
+Log file: C:\Users\경준\AppData\Local\UnrealBuildTool\Log.txt
+Determining max actions to execute in parallel (8 physical cores, 16 logical cores)
+  Executing up to 8 processes, one per physical core
+  Requested 1.5 GB memory per action, 2.9 GB available: limiting max parallel actions to 1
+UbaServer - Listening on 0.0.0.0:1345
+Creating makefile for UnrealEditor (command line arguments changed)
+UHT compiled-in object format Default
+Building UnrealEditor...
+===== Toolchain Information =====
+Using ISPC compiler (E:\UE_5.8\Engine\Source\ThirdParty\Intel\ISPC\bin\Windows\ispc.exe)
+  Intel(r) Implicit SPMD Program Compiler (Intel(r) ISPC), 1.24.0 (build commit  @ 20250404, LLVM 18.1.2) 
+Using Visual Studio 14.44.35221 toolchain (C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.44.35207) and Windows 10.0.22621.0 SDK (C:\Program Files (x86)\Windows Kits\10).
+[Adaptive Build] Excluded from GB200Connections unity file: GB200Connections.cpp, GB200PatchCable.cpp
+=================================
+Using Unreal Build Accelerator local executor to run 8 action(s)
+  CPU 8 physical cores, 16 logical cores
+  Memory 15.25 GB physical, 21.73 GB/26.77 GB committed
+  UBA Storage capacity 40 GB
+[1/8] Compile [x64] SharedPCH.UnrealEd.Cpp20.cpp
+c1xx: fatal error C1083: 컴파일러 중간 파일 파일을 열 수 없습니다. 'C:/Users/寃쎌?/Documents/GB200_Connections_20260923/reports/PluginBuild/HostProject/Intermediate/Build/Win64/x64/UnrealEditor/Development/UnrealEd/SharedPCH.UnrealEd.Cpp20.h.pch': No such file or directory
+[2/8] Compile Resource [x64] Default.rc2
+Total time in Unreal Build Accelerator local executor: 0.74 seconds
+
+Result: Failed (OtherCompilationError)
+Total execution time: 6.43 seconds
+Trace written to file C:\Users\

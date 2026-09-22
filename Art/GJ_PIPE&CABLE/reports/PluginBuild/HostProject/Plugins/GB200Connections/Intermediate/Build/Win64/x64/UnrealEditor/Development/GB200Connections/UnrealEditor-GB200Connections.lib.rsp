@@ -1,0 +1,14 @@
+/NOLOGO
+/errorReport:prompt
+/MACHINE:x64
+/SUBSYSTEM:WINDOWS
+/experimental:deterministic
+/DEF
+/NAME:"UnrealEditor-GB200Connections.dll"
+/IGNORE:4221
+/NODEFAULTLIB
+"C:/Users/경준/Documents/GB200_Connections_20260923/reports/PluginBuild/HostProject/Intermediate/Build/Win64/x64/UnrealEditor/Development/UnrealEd/SharedPCH.UnrealEd.Cpp20.h.obj"
+"C:/Users/경준/Documents/GB200_Connections_20260923/reports/PluginBuild/HostProject/Plugins/GB200Connections/Intermediate/Build/Win64/x64/UnrealEditor/Development/GB200Connections/Module.GB200Connections.cpp.obj"
+"C:/Users/경준/Documents/GB200_Connections_20260923/reports/PluginBuild/HostProject/Plugins/GB200Connections/Intermediate/Build/Win64/x64/UnrealEditor/Development/GB200Connections/GB200Connections.cpp.obj"
+"C:/Users/경준/Documents/GB200_Connections_20260923/reports/PluginBuild/HostProject/Plugins/GB200Connections/Intermediate/Build/Win64/x64/UnrealEditor/Development/GB200Connections/GB200PatchCable.cpp.obj"
+/OUT:"C:/Users/경준/Documents/GB200_Connections_20260923/reports/PluginBuild/HostProject/Plugins/GB200Connections/Intermediate/Build/Win64/x64/UnrealEditor/Development/GB200Connections/UnrealEditor-GB200Connections.lib"

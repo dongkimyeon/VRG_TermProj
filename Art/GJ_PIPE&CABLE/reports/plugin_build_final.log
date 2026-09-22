@@ -1,0 +1,33 @@
+Using bundled DotNet SDK version: 10.0 win-x64
+Running UnrealBuildTool: dotnet "..\..\Engine\Binaries\DotNET\UnrealBuildTool\UnrealBuildTool.dll" UnrealEditor Win64 Development -Project=C:/Users/Public/Documents/GB200ConnectionBuild_20260923/ConnectionsPreview.uproject -plugin=C:/Users/Public/Documents/GB200ConnectionBuild_20260923/Plugins/GB200Connections/GB200Connections.uplugin -NoHotReload
+Log file: C:\Users\경준\AppData\Local\UnrealBuildTool\Log.txt
+Determining max actions to execute in parallel (8 physical cores, 16 logical cores)
+  Executing up to 8 processes, one per physical core
+  Requested 1.5 GB memory per action, 5.03 GB available: limiting max parallel actions to 3
+UbaServer - Listening on 0.0.0.0:1345
+UHT compiled-in object format Default
+UHT processed UnrealEditor in 15.9675719 seconds (0 generated files written)
+Building UnrealEditor...
+===== Toolchain Information =====
+Using ISPC compiler (E:\UE_5.8\Engine\Source\ThirdParty\Intel\ISPC\bin\Windows\ispc.exe)
+  Intel(r) Implicit SPMD Program Compiler (Intel(r) ISPC), 1.24.0 (build commit  @ 20250404, LLVM 18.1.2) 
+Using Visual Studio 14.44.35221 toolchain (C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.44.35207) and Windows 10.0.22621.0 SDK (C:\Program Files (x86)\Windows Kits\10).
+[Adaptive Build] Excluded from GB200Connections unity file: GB200Connections.cpp, GB200PatchCable.cpp
+=================================
+Using Unreal Build Accelerator local executor to run 5 action(s)
+  CPU 8 physical cores, 16 logical cores
+  Memory 15.25 GB physical, 21.94 GB/26.77 GB committed
+  UBA Storage capacity 40 GB
+[1/5] Compile [x64] GB200PatchCable.cpp
+[2/5] Compile [x64] Module.GB200Connections.cpp
+[3/5] Link [x64] UnrealEditor-GB200Connections.lib
+   C:/Users/Public/Documents/GB200ConnectionBuild_20260923/Plugins/GB200Connections/Intermediate/Build/Win64/x64/UnrealEditor/Development/GB200Connections/UnrealEditor-GB200Connections.lib 라이브러리 및 C:/Users/Public/Documents/GB200ConnectionBuild_20260923/Plugins/GB200Connections/Intermediate/Build/Win64/x64/UnrealEditor/Development/GB200Connections/UnrealEditor-GB200Connections.exp 개체를 생성하고 있습니다.
+[4/5] Link [x64] UnrealEditor-GB200Connections.dll
+[5/5] WriteMetadata UnrealEditor.target [NoUba]
+
+Total time in Unreal Build Accelerator local executor: 9.13 seconds
+Output binary: E:\UE_5.8\Engine\Binaries\Win64\UnrealEditor.exe
+
+Result: Succeeded
+Total execution time: 26.79 seconds
+Trace written to file C:\Users\

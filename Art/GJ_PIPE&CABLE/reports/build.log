@@ -1,0 +1,140 @@
+C:\Users\경준\Documents\GB200_Connections_20260923\scripts\build_connections.py:25: DeprecationWarning: 'Material.use_nodes' is expected to be removed in Blender 6.0
+  m=bpy.data.materials.new('MC_'+name); m.diffuse_color=(*rgb,1); m.use_nodes=True
+Warning: No mesh data to join
+INFO Draco is available, use library at C:\Program Files\Blender Foundation\Blender 5.2\5.2\scripts\addons_core\io_scene_gltf2\bf_intern_draco_bridge.dll
+INFO MeshOptimizer is available, use library at C:\Program Files\Blender Foundation\Blender 5.2\5.2\scripts\addons_core\io_scene_gltf2\bf_intern_meshopt_bridge.dll
+01:11:43 | INFO: Starting glTF 2.0 export
+01:11:43 | INFO: Extracting primitive: Cube.006
+01:11:43 | INFO: Primitives created: 1
+01:11:43 | INFO: Extracting primitive: Data.001
+01:11:43 | INFO: Primitives created: 1
+01:11:43 | INFO: Finished glTF 2.0 export in 0.06204080581665039 s
+
+
+FBX export starting... 'C:\\Users\\경준\\Documents\\GB200_Connections_20260923\\exports\\SM_Connection_Data.fbx'
+export finished in 0.0051 sec.
+Warning: No mesh data to join
+01:11:43 | INFO: Starting glTF 2.0 export
+01:11:43 | INFO: Extracting primitive: Cube.006
+01:11:43 | INFO: Primitives created: 1
+01:11:43 | INFO: Extracting primitive: Hose.001
+01:11:43 | INFO: Primitives created: 1
+01:11:43 | INFO: Finished glTF 2.0 export in 0.009866714477539062 s
+
+
+FBX export starting... 'C:\\Users\\경준\\Documents\\GB200_Connections_20260923\\exports\\SM_Connection_Hose.fbx'
+export finished in 0.0048 sec.
+Warning: No mesh data to join
+01:11:43 | INFO: Starting glTF 2.0 export
+01:11:43 | INFO: Extracting primitive: Cube.006
+01:11:43 | INFO: Primitives created: 1
+01:11:43 | INFO: Extracting primitive: Power.001
+01:11:43 | INFO: Primitives created: 1
+01:11:43 | INFO: Finished glTF 2.0 export in 0.010678768157958984 s
+
+
+FBX export starting... 'C:\\Users\\경준\\Documents\\GB200_Connections_20260923\\exports\\SM_Connection_Power.fbx'
+export finished in 0.0059 sec.
+Warning: No mesh data to join
+01:11:43 | INFO: Starting glTF 2.0 export
+01:11:43 | INFO: Extracting primitive: Cube.006
+01:11:43 | INFO: Primitives created: 1
+01:11:43 | INFO: Extracting primitive: Riser.001
+01:11:43 | INFO: Primitives created: 1
+01:11:43 | INFO: Finished glTF 2.0 export in 0.009514808654785156 s
+
+
+FBX export starting... 'C:\\Users\\경준\\Documents\\GB200_Connections_20260923\\exports\\SM_Connection_Riser.fbx'
+export finished in 0.0049 sec.
+Warning: No mesh data to join
+01:11:43 | INFO: Starting glTF 2.0 export
+01:11:43 | INFO: Extracting primitive: Cube.006
+01:11:43 | INFO: Primitives created: 1
+01:11:43 | INFO: Extracting primitive: Header.001
+01:11:43 | INFO: Primitives created: 1
+01:11:43 | INFO: Finished glTF 2.0 export in 0.009627819061279297 s
+
+
+FBX export starting... 'C:\\Users\\경준\\Documents\\GB200_Connections_20260923\\exports\\SM_Connection_Header.fbx'
+export finished in 0.0060 sec.
+01:11:43 | INFO: Starting glTF 2.0 export
+01:11:43 | INFO: Extracting primitive: Cube.006
+01:11:43 | INFO: Primitives created: 1
+01:11:43 | INFO: Extracting primitive: Cylinder.039
+01:11:43 | INFO: Primitives created: 4
+01:11:43 | INFO: Finished glTF 2.0 export in 0.014868497848510742 s
+
+
+FBX export starting... 'C:\\Users\\경준\\Documents\\GB200_Connections_20260923\\exports\\SM_QD_Supply.fbx'
+export finished in 0.0064 sec.
+01:11:43 | INFO: Starting glTF 2.0 export
+01:11:43 | INFO: Extracting primitive: Cube.006
+01:11:43 | INFO: Primitives created: 1
+01:11:43 | INFO: Extracting primitive: Cylinder.048
+01:11:43 | INFO: Primitives created: 4
+01:11:43 | INFO: Finished glTF 2.0 export in 0.01297307014465332 s
+
+
+FBX export starting... 'C:\\Users\\경준\\Documents\\GB200_Connections_20260923\\exports\\SM_QD_Return.fbx'
+export finished in 0.0061 sec.
+01:11:43 | INFO: Starting glTF 2.0 export
+01:11:43 | INFO: Extracting primitive: Cube.006
+01:11:43 | INFO: Primitives created: 1
+01:11:43 | INFO: Extracting primitive: Cube.007
+01:11:43 | INFO: Primitives created: 4
+01:11:43 | INFO: Finished glTF 2.0 export in 0.012667417526245117 s
+
+
+FBX export starting... 'C:\\Users\\경준\\Documents\\GB200_Connections_20260923\\exports\\SM_Plug_Compute.fbx'
+export finished in 0.0059 sec.
+01:11:43 | INFO: Starting glTF 2.0 export
+01:11:43 | INFO: Extracting primitive: Cube.006
+01:11:43 | INFO: Primitives created: 1
+01:11:43 | INFO: Extracting primitive: Cube.010
+01:11:43 | INFO: Primitives created: 4
+01:11:43 | INFO: Finished glTF 2.0 export in 0.012029647827148438 s
+
+
+FBX export starting... 'C:\\Users\\경준\\Documents\\GB200_Connections_20260923\\exports\\SM_Plug_Switch.fbx'
+export finished in 0.0052 sec.
+01:11:43 | INFO: Starting glTF 2.0 export
+01:11:43 | INFO: Extracting primitive: Cube.006
+01:11:43 | INFO: Primitives created: 1
+01:11:43 | INFO: Extracting primitive: Cylinder.067
+01:11:43 | INFO: Primitives created: 2
+01:11:43 | INFO: Finished glTF 2.0 export in 0.011038064956665039 s
+
+
+FBX export starting... 'C:\\Users\\경준\\Documents\\GB200_Connections_20260923\\exports\\SM_CDU_Adapter.fbx'
+export finished in 0.0050 sec.
+01:11:43 | INFO: Starting glTF 2.0 export
+01:11:43 | INFO: Extracting primitive: Cube.006
+01:11:43 | INFO: Primitives created: 1
+01:11:43 | INFO: Extracting primitive: Cylinder.071
+01:11:43 | INFO: Primitives created: 1
+01:11:43 | INFO: Finished glTF 2.0 export in 0.008590936660766602 s
+
+
+FBX export starting... 'C:\\Users\\경준\\Documents\\GB200_Connections_20260923\\exports\\SM_Manifold_Tee.fbx'
+export finished in 0.0040 sec.
+01:11:43 | INFO: Starting glTF 2.0 export
+01:11:43 | INFO: Extracting primitive: Cube.006
+01:11:43 | INFO: Primitives created: 1
+01:11:43 | INFO: Extracting primitive: Cylinder.074
+01:11:43 | INFO: Primitives created: 3
+01:11:43 | INFO: Finished glTF 2.0 export in 0.010962963104248047 s
+C:\Users\경준\Documents\GB200_Connections_20260923\scripts\build_connections.py:227: DeprecationWarning: 'World.use_nodes' is expected to be removed in Blender 6.0
+  sc.world=bpy.data.worlds.new('Studio'); sc.world.use_nodes=True
+00:37.969  render           | Saved: 'C:\Users\경준\Documents\GB200_Connections_20260923\previews\01_front_connections.png'
+01:07.719  render           | Saved: 'C:\Users\경준\Documents\GB200_Connections_20260923\previews\02_rear_cooling.png'
+01:55.750  render           | Saved: 'C:\Users\경준\Documents\GB200_Connections_20260923\previews\03_hose_connectors.png'
+02:35.547  render           | Saved: 'C:\Users\경준\Documents\GB200_Connections_20260923\previews\04_switch_patches.png'
+
+
+FBX export starting... 'C:\\Users\\경준\\Documents\\GB200_Connections_20260923\\exports\\SM_IsolationValve.fbx'
+export finished in 0.0051 sec.
+Info: Saved as "GB200_Connections.blend"
+CONNECTION_KIT_COMPLETE 12 120 226
+Blender 5.2.2 LTS (hash d13f752e3b9c built 2026-09-15 01:37:04)
+
+Blender quit

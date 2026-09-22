@@ -1,0 +1,55 @@
+Using bundled DotNet SDK version: 10.0 win-x64
+Running UnrealBuildTool: dotnet "..\..\Engine\Binaries\DotNET\UnrealBuildTool\UnrealBuildTool.dll" UnrealEditor Win64 Development -Project=C:/Users/Public/Documents/GB200ConnectionBuild_20260923/ConnectionsPreview.uproject -plugin=C:/Users/Public/Documents/GB200ConnectionBuild_20260923/Plugins/GB200Connections/GB200Connections.uplugin -NoHotReload
+Log file: C:\Users\경준\AppData\Local\UnrealBuildTool\Log.txt
+Determining max actions to execute in parallel (8 physical cores, 16 logical cores)
+  Executing up to 8 processes, one per physical core
+  Requested 1.5 GB memory per action, 2.29 GB available: limiting max parallel actions to 1
+Creating makefile for UnrealEditor (no existing makefile)
+UbaServer - Listening on 0.0.0.0:1345
+UHT compiled-in object format Default
+Building UnrealEditor...
+===== Toolchain Information =====
+Using ISPC compiler (E:\UE_5.8\Engine\Source\ThirdParty\Intel\ISPC\bin\Windows\ispc.exe)
+  Intel(r) Implicit SPMD Program Compiler (Intel(r) ISPC), 1.24.0 (build commit  @ 20250404, LLVM 18.1.2) 
+Using Visual Studio 14.44.35221 toolchain (C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.44.35207) and Windows 10.0.22621.0 SDK (C:\Program Files (x86)\Windows Kits\10).
+[Adaptive Build] Excluded from GB200Connections unity file: GB200Connections.cpp, GB200PatchCable.cpp
+=================================
+Using Unreal Build Accelerator local executor to run 8 action(s)
+  CPU 8 physical cores, 16 logical cores
+  Memory 15.25 GB physical, 22.73 GB/26.77 GB committed
+  UBA Storage capacity 40 GB
+[1/8] Compile [x64] SharedPCH.UnrealEd.Cpp20.cpp
+[2/8] Compile [x64] GB200Connections.cpp
+[3/8] Compile [x64] GB200PatchCable.cpp
+C:\Users\Public\Documents\GB200ConnectionBuild_20260923\Plugins\GB200Connections\Source\GB200Connections\Private\GB200PatchCable.cpp(41,32): error C3535: 'auto *'의 형식을 'ElementType'에서 추론할 수 없습니다.
+        with
+        [
+            ElementType=TObjectPtr<USplineMeshComponent>
+        ]
+    for (auto* Segment:Segments) if (IsValid(Segment)) Segment->DestroyComponent();
+                               ^
+C:\Users\Public\Documents\GB200ConnectionBuild_20260923\Plugins\GB200Connections\Source\GB200Connections\Private\GB200PatchCable.cpp(41,32): error C2440: '초기화 중': 'ElementType'에서 '<error type> *'(으)로 변환할 수 없습니다.
+        with
+        [
+            ElementType=TObjectPtr<USplineMeshComponent>
+        ]
+C:\Users\Public\Documents\GB200ConnectionBuild_20260923\Plugins\GB200Connections\Source\GB200Connections\Private\GB200PatchCable.cpp(41,32): note: 이 변환을 수행할 수 있는 사용 가능한 사용자 정의 변환 연산자가 없거나 연산자를 호출할 수 없습니다.
+C:\Users\Public\Documents\GB200ConnectionBuild_20260923\Plugins\GB200Connections\Source\GB200Connections\Private\GB200PatchCable.cpp(41,38): error C2664: 'bool IsValid(const UObject *)': 인수 1을(를) '<error type> *'에서 'const UObject *'(으)로 변환할 수 없습니다.
+    for (auto* Segment:Segments) if (IsValid(Segment)) Segment->DestroyComponent();
+                                     ^
+C:\Users\Public\Documents\GB200ConnectionBuild_20260923\Plugins\GB200Connections\Source\GB200Connections\Private\GB200PatchCable.cpp(41,46): note: 가리킨 형식이 관련이 없습니다. 변환하려면 reinterpret_cast, C 스타일 캐스트 또는 괄호가 있는 함수 스타일 캐스트가 필요합니다.
+    for (auto* Segment:Segments) if (IsValid(Segment)) Segment->DestroyComponent();
+                                             ^
+E:\UE_5.8\Engine\Source\Runtime\CoreUObject\Public\UObject\Object.h(1886,26): note: 'IsValid' 선언을 참조하십시오.
+UE_FORCEINLINE_HINT bool IsValid(const UObject *Test)
+                         ^
+C:\Users\Public\Documents\GB200ConnectionBuild_20260923\Plugins\GB200Connections\Source\GB200Connections\Private\GB200PatchCable.cpp(41,38): note: 인수 목록 '(<error type> *)'을(를) 일치시키는 동안
+    for (auto* Segment:Segments) if (IsValid(Segment)) Segment->DestroyComponent();
+                                     ^
+[4/8] Compile [x64] Module.GB200Connections.cpp
+[5/8] Compile Resource [x64] Default.rc2
+Total time in Unreal Build Accelerator local executor: 82.36 seconds
+
+Result: Failed (OtherCompilationError)
+Total execution time: 112.74 seconds
+Trace written to file C:\Users\

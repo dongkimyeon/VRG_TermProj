@@ -1,0 +1,62 @@
+{
+  "SM_Connection_Data": {
+    "max_bounds_error_m": 8.731149137020111e-08,
+    "triangles": 1600,
+    "uv_channels": 1
+  },
+  "SM_Connection_Hose": {
+    "max_bounds_error_m": 8.754432201385498e-08,
+    "triangles": 1600,
+    "uv_channels": 1
+  },
+  "SM_Connection_Power": {
+    "max_bounds_error_m": 8.754432201385498e-08,
+    "triangles": 1600,
+    "uv_channels": 1
+  },
+  "SM_Connection_Riser": {
+    "max_bounds_error_m": 8.568167686462402e-08,
+    "triangles": 1600,
+    "uv_channels": 1
+  },
+  "SM_Connection_Header": {
+    "max_bounds_error_m": 8.568167686462402e-08,
+    "triangles": 1600,
+    "uv_channels": 1
+  },
+  "SM_QD_Supply": {
+    "max_bounds_error_m": 2.7939677238464355e-09,
+    "triangles": 828,
+    "uv_channels": 1
+  },
+  "SM_QD_Return": {
+    "max_bounds_error_m": 2.7939677238464355e-09,
+    "triangles": 828,
+    "uv_channels": 1
+  },
+  "SM_Plug_Compute": {
+    "max_bounds_error_m": 1.862645149230957e-09,
+    "triangles": 784,
+    "uv_channels": 1
+  },
+  "SM_Plug_Switch": {
+    "max_bounds_error_m": 2.7939677238464355e-09,
+    "triangles": 784,
+    "uv_channels": 1
+  },
+  "SM_CDU_Adapter": {
+    "max_bounds_error_m": 2.541082455564947e-09,
+    "triangles": 368,
+    "uv_channels": 1
+  },
+  "SM_Manifold_Tee": {
+    "max_bounds_error_m": 1.862645149230957e-09,
+    "triangles": 276,
+    "uv_channels": 1
+  },
+  "SM_IsolationValve": {
+    "max_bounds_error_m": 7.450580596923828e-09,
+    "triangles": 476,
+    "uv_channels": 1
+  }
+}

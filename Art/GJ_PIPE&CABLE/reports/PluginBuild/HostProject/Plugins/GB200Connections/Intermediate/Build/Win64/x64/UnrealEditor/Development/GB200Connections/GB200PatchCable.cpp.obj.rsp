@@ -1,0 +1,14 @@
+"C:/Users/경준/Documents/GB200_Connections_20260923/reports/PluginBuild/HostProject/Plugins/GB200Connections/Source/GB200Connections/Private/GB200PatchCable.cpp"
+@"C:/Users/경준/Documents/GB200_Connections_20260923/reports/PluginBuild/HostProject/Plugins/GB200Connections/Intermediate/Build/Win64/x64/UnrealEditor/Development/GB200Connections/GB200Connections.Shared.rsp"
+/FI"C:/Users/경준/Documents/GB200_Connections_20260923/reports/PluginBuild/HostProject/Intermediate/Build/Win64/x64/UnrealEditor/Development/UnrealEd/SharedPCH.UnrealEd.Cpp20.h"
+/FI"C:/Users/경준/Documents/GB200_Connections_20260923/reports/PluginBuild/HostProject/Plugins/GB200Connections/Intermediate/Build/Win64/x64/UnrealEditor/Development/GB200Connections/Definitions.GB200Connections.h"
+/Yu"C:/Users/경준/Documents/GB200_Connections_20260923/reports/PluginBuild/HostProject/Intermediate/Build/Win64/x64/UnrealEditor/Development/UnrealEd/SharedPCH.UnrealEd.Cpp20.h"
+/Fp"C:/Users/경준/Documents/GB200_Connections_20260923/reports/PluginBuild/HostProject/Intermediate/Build/Win64/x64/UnrealEditor/Development/UnrealEd/SharedPCH.UnrealEd.Cpp20.h.pch"
+/Fo"C:/Users/경준/Documents/GB200_Connections_20260923/reports/PluginBuild/HostProject/Plugins/GB200Connections/Intermediate/Build/Win64/x64/UnrealEditor/Development/GB200Connections/GB200PatchCable.cpp.obj"
+/experimental:log "C:/Users/경준/Documents/GB200_Connections_20260923/reports/PluginBuild/HostProject/Plugins/GB200Connections/Intermediate/Build/Win64/x64/UnrealEditor/Development/GB200Connections/GB200PatchCable.cpp.sarif"
+/sourceDependencies "C:/Users/경준/Documents/GB200_Connections_20260923/reports/PluginBuild/HostProject/Plugins/GB200Connections/Intermediate/Build/Win64/x64/UnrealEditor/Development/GB200Connections/GB200PatchCable.cpp.dep.json"
+/nologo
+/TP
+/GR-
+/std:c++20
+/wd5054
