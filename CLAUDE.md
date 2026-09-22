@@ -9,7 +9,9 @@ S0(실행 기반), S1(랙 1대 과도 열모델), S2(배관 수력 네트워크)
 S3(균일 격자 공기 해석), **S4(도메인 통합 = MVP)** 완료.
 그 사이에 단계 순서 밖으로 시각화·랙 내부 확장·방 배치를 했다 (아래 "끝난 작업" 참고).
 
-**다음은 S5 옥트리다.** 원래 순서의 S2b(냉각수·누수·장애)는 팀 결정으로
+**S5-A 고정 토폴로지·열장 전송 검증 완료 (2026-09-22), 다음은 S5-B다.**
+S5 전체는 진행 중이며 비균일 격자의 유동 계산은 아직 구현하지 않았다.
+원래 순서의 S2b(냉각수·누수·장애)는 팀 결정으로
 **맨 마지막**으로 미뤘다. 누수·장애는 도메인이 다 이어진 뒤에 얹는 편이
 D4(영향 범위를 재계산으로 판정)를 지키기도 쉽다.
 
@@ -160,13 +162,71 @@ D:\UE_5.8\Engine\Binaries\Win64\UnrealEditor-Cmd.exe "D:\VRG_TermProj\VRG_TermPr
 `Test Completed. Result={Success}`를 확인한다. 테스트가 찍는 측정값은
 `BeginEvents`/`EndEvents` 사이에 나온다.
 
-## 측정된 오차 기준 (S0·S1·S2)
+## S5-A 구현·실행·검증 (2026-09-22)
+
+`FFixedOctreeGrid`는 기존 균일 셀 각각을 루트로 하는 옥트리 묶음이다.
+직육면체 도메인을 그대로 덮고, 랙 영역과 양의 체적으로 겹치는 셀만 8분할한다.
+노드·부모·자식·리프는 선형 인덱스, 리프 순서는 Morton 코드로 구성한다.
+온도 K와 고체 마스크는 SoA이며 균일 격자에서 읽기 전용으로 복사한다.
+되돌릴 때는 체적 가중 평균을 쓴다. 열량은 고체를 제외한 ρ·cp·V·(T−기준온도)다.
+
+**이번 완료 범위는 고정 격자 구성과 보존 전송이다.** 복사는 세부 온도 정보를
+새로 만들지 않고, 고체 판정도 원래 균일 셀을 상속한다. 압력·속도·이류의 옥트리
+시간 적분은 없다. 2:1 밸런스, 이웃·면 인덱스와 비균일 압력 연산자는 S5-B,
+실행 중 분할·병합과 재투영은 S5-C에서 구현한다. 기존 균일 솔버와 통합 시계는 유지한다.
+
+깊이는 0~6, 기본 리프 예산은 60,000개(상한 1,000,000개)다.
+예산 초과 시 부분 트리를 내보내지 않고 실패를 표시한다.
+국소 정밀화 테스트는 루트 6개에서 리프 20개, 최소 셀 폭 0.075 m다
+(같은 최소 폭으로 전역 정밀화하면 384개). 이 수치는 성능 보장값이 아니다.
+
+디버그 사용법:
+
+1. 레벨에 `FixedOctreeDebugActor`를 추가하고 `AirField`에 기존 공기 액터를 지정한다.
+   공기 액터가 정확히 하나면 자동 선택한다. 편집 뷰포트는 실시간 갱신을 켠다.
+2. `RefinementDepth`와 `RackPaddingM`으로 랙 주변 범위를 정한다. 랙의 회전·스케일을
+   포함한 월드 AABB를 공기 도메인 상대 m 좌표로 변환한다.
+3. 깊이별 색상의 와이어프레임을 확인한다. `bDrawCoarseCells`는 기본 꺼짐,
+   `MaxDrawnLeaves`는 기본 3,000개이며 표시만 제한한다.
+4. 랙 이동·공기 격자 변경 뒤 `RebuildOctree`를 누르면 다음 틱에 재구축한다.
+   `ActiveLeafCount`와 `BuildStatus`에서 전체 리프 수·오류를 확인한다.
+   PIE에서는 재구축 시점의 균일 온도 스냅샷과 열량 차이(J)를 표시한다.
+
+자동화 8건 (`VRG.Air.Octree.Fixed`): 도메인 빈틈·중복/부모자식/Morton,
+국소 정밀화, 깊이 0 동일성, 열량·체적 가중 복원, 정지 열원 해석해,
+잘못된 설정·예산 거부, 호환되지 않는 전송 거부, 실제 액터 재구축.
+정지 열원은 균일 솔버의 열원 주입 결과를 전송하여 138.38 J 해석해와 비교한다.
+**독립적인 옥트리 CFD 해와의 비교는 아니다.** 액터 테스트는 이동·90도 회전된 랙,
+표시 상한과 토폴로지 예산 분리, 원본 필드·외부 시계 설정 보존을 확인한다.
+
+이번 PC의 UE 5.8.2 (`E:\UE_5.8`)에서 아래 명령을 실행했다.
+위의 `D:\UE_5.8` 명령은 원 작성자 환경이며 변경하지 않는다.
+
+```powershell
+& 'E:\UE_5.8\Engine\Build\BatchFiles\Build.bat' VRG_TermProjEditor Win64 Development '-Project=C:\GitGit\VRG_TermProj\VRG_TermProj.uproject' -WaitMutex -MaxParallelActions=2
+& 'E:\UE_5.8\Engine\Binaries\Win64\UnrealEditor-Cmd.exe' 'C:\GitGit\VRG_TermProj\VRG_TermProj.uproject' '-ExecCmds=Automation RunTests VRG;Quit' -unattended -nopause -nosplash -NullRHI -log '-ReportExportPath=C:\GitGit\VRG_TermProj\Saved\Automation\S5A-Full'
+```
+
+빌드 성공, 전체 **63건 성공 / 실패 0 / 미실행 0**, 종료 코드 0.
+리포트는 성공 61건 + 경고 동반 성공 2건이다. 기존 `Air.Energy.ClosedBoxConservation`과
+`Air.Solid.EnergyConservation` 실행 중 엔진의 외부 HTTP 연결 확인이 시간 초과했다.
+신규 8건은 경고 없이 성공했다. 결과는 `Saved/Automation/S5A-Full/index.json`과
+`Saved/Logs/VRG_TermProj.log`에 있으며 생성물은 커밋하지 않는다.
+NullRHI로 액터 표시 코드 경로까지 실행했지만 화면 품질·실제 렌더 성능은 미검증이다.
+
+## 측정된 오차 기준 (S0~S5-A)
 
 미리 정한 값이 아니라 실제 측정값에 여유를 둬서 정한 기준이다.
 모델이나 적분 방식을 바꾸면 다시 측정해서 갱신한다.
 
 | 테스트 | 측정값 | 정규화 기준 | 기준 |
 |---|---|---|---|
+| `Air.Octree.Fixed.PartitionAndMorton` 체적 | 1.71e-16 | 도메인 0.162 m³ 기준, 무차원 | < 1e-14 |
+| `Air.Octree.Fixed.ThermalTransferConservation` 열량 | 1.57e-15 | 균일 원본 7551.648792 J 기준, 무차원 | < 1e-12 |
+| 같은 테스트의 온도 복원 | 2.90e-12 K | 최대 절대 오차 (K) | < 1e-10 K |
+| `Air.Octree.Fixed.StationaryHeatReference` 열량 | 옥트리 7.27e-14 / 균일 7.29e-14 | 열원 220 W × 0.629 s = 138.38 J 기준, 무차원 | 각각 < 1e-11 |
+| 같은 테스트의 최대 온도 | 3.98e-13 K | 해석해 대비 절대 오차 (K) | < 1e-10 K |
+| `Air.Octree.Fixed.UniformIdentity` | 0 K | 깊이 0 전송·복원 절대 오차 (K) | == 0 |
 | `Air.Poisson.DiscreteEigenmodeExact` | 9.03e-15 | 기대 Laplacian 최대 2.065 1/m² 기준, 무차원 | < 1e-14 |
 | `Air.Poisson.CosineModeAnalytic` | 9.12e-09 | 해 최대 크기 0.986 기준, 무차원 | < 1e-6 |
 | `Coupling.GlobalEnergyBalance` | 1.07e-14 | 유입 1.895e7 J 기준, 무차원 | < 1e-9 |

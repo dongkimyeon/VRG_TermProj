@@ -39,7 +39,7 @@ AI 코딩 에이전트(Codex, Claude Code 등)가 이 저장소에서 작업할 
 ```
 에디터가 열려 있으면 Live Coding 때문에 막힌다. 에디터를 닫거나 Ctrl+Alt+F11.
 
-테스트 (현재 55개 전부 통과):
+테스트 (현재 건수·결과는 `CLAUDE.md`와 `남은작업.md` 참고):
 ```
 <UE>\Engine\Binaries\Win64\UnrealEditor-Cmd.exe "<repo>\VRG_TermProj.uproject" -ExecCmds="Automation RunTests VRG;Quit" -unattended -nopause -nosplash -NullRHI -log
 ```
