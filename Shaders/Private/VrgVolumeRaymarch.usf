@@ -1,0 +1,185 @@
+// Fill out your copyright notice in the Description page of Project Settings.
+//
+// S7-1: 온도장 3D 텍스처를 레이마칭으로 그린다.
+//
+// 디버그 솔리드 박스는 셀 하나가 드로우 호출 하나라서 셀 수에 비례해 Draw 스레드가
+// 죽는다. 여기서는 전체 화면 패스 하나로 끝난다 — 셀이 몇 개든 드로우 호출은 1이다.
+//
+// 값은 실제 절대온도 K다. 고체 셀은 음수로 표시해 두고 건너뛴다.
+// 그래야 표시 범위(MinK/MaxK)를 바꿀 때 텍스처를 다시 올리지 않아도 된다.
+
+#include "/Engine/Private/Common.ush"
+#include "/Engine/Private/ScreenPass.ush"
+#include "/Engine/Private/SceneTexturesCommon.ush"
+
+Texture2D InputTexture;
+SamplerState InputSampler;
+Texture3D<float> VolumeTexture;
+SamplerState VolumeSampler;
+
+float3 VolumeBoundsMin;   // translated world, cm
+float3 VolumeBoundsMax;
+float2 TempRangeK;        // x = 표시 최소 K, y = 표시 최대 K
+float OpacityPerCm;       // 정규화 온도 1에서의 흡수 계수 [1/cm]
+int StepCount;
+int DebugMode;            // 0=정상, 1=상자 교차 구간, 2=최대 온도, 3=장면 깊이
+
+// 열화상 색상표: 검정 -> 보라 -> 빨강 -> 노랑 -> 흰색.
+float3 HeatLut(float X)
+{
+	const float3 C0 = float3(0.00, 0.00, 0.00);
+	const float3 C1 = float3(0.30, 0.00, 0.45);
+	const float3 C2 = float3(0.85, 0.10, 0.10);
+	const float3 C3 = float3(1.00, 0.80, 0.10);
+	const float3 C4 = float3(1.00, 1.00, 1.00);
+
+	float S = saturate(X) * 4.0f;
+	float3 Color = lerp(C0, C1, saturate(S));
+	Color = lerp(Color, C2, saturate(S - 1.0f));
+	Color = lerp(Color, C3, saturate(S - 2.0f));
+	Color = lerp(Color, C4, saturate(S - 3.0f));
+	return Color;
+}
+
+// 시그니처는 엔진 ScreenPassVS의 출력과 정확히 같아야 한다.
+// SV_POSITION만 받도록 줄였더니 D3D12가 파이프라인 상태를 만들지 못했다
+// (E_INVALIDARG, "Shader compilation failures are Fatal").
+// DrawRectangle이 채워 주는 UVAndScreenPos에는 뷰포트가 이미 반영돼 있어
+// 별도로 화면 크기를 넘길 필요도 없다.
+void MainPS(
+	noperspective float4 UVAndScreenPos : TEXCOORD0,
+	float4 SvPosition : SV_POSITION,
+	out float4 OutColor : SV_Target0)
+{
+	const float2 UV = UVAndScreenPos.xy;
+	const float2 ScreenPos = UVAndScreenPos.zw;
+	const float4 Scene = Texture2DSample(InputTexture, InputSampler, UV);
+
+	// 화면 좌표에서 광선을 만든다. 전부 translated world에서 계산한다.
+	//
+	// ScreenToTranslatedWorld에 DeviceZ를 0에 가깝게 넣어 "먼 점"을 만드는 방법은
+	// 쓰지 않는다. reversed-Z와 무한 원거리 평면 조합에서 그 점이 카메라 근처로
+	// 무너져 광선이 화면 중심을 향한 방사형이 됐다 (진단 모드 4에서 확인).
+	//
+	// 대신 뷰 공간에서 만든다. UE 뷰 공간은 +Z가 앞이고
+	// ViewToClip[0][0] = 1/tan(수평 시야각/2)이므로 나누면 그대로 광선이 된다.
+	// 투영 행렬 규약에 기대지 않는다.
+	const float3 ViewRay = float3(
+		ScreenPos.x / View.ViewToClip[0][0],
+		ScreenPos.y / View.ViewToClip[1][1],
+		1.0f);
+	const float3 RayOrigin = View.TranslatedWorldCameraOrigin;
+	const float3 RayDir = normalize(mul(float4(ViewRay, 0.0f), View.ViewToTranslatedWorld).xyz);
+
+	// 장면 깊이까지만 행진한다. 그래야 랙 뒤의 공기가 랙을 뚫고 보이지 않는다.
+	// CalcSceneDepth는 뷰 Z 방향 거리이므로 광선 길이로 바꾼다.
+	const float SceneDepth = CalcSceneDepth(UV);
+	const float MaxDistance = SceneDepth / max(dot(RayDir, View.ViewForward), 1e-4f);
+
+	// 축 정렬 상자와의 교차. RayDir 성분이 0이면 1/0 = inf가 되지만
+	// 그 축의 min/max가 (-inf, +inf)가 되어 구간 계산에서 자연히 빠진다.
+	const float3 InvDir = 1.0f / RayDir;
+	const float3 T0 = (VolumeBoundsMin - RayOrigin) * InvDir;
+	const float3 T1 = (VolumeBoundsMax - RayOrigin) * InvDir;
+	const float3 TSmall = min(T0, T1);
+	const float3 TLarge = max(T0, T1);
+
+	float TEnter = max(max(TSmall.x, TSmall.y), TSmall.z);
+	float TExit = min(min(TLarge.x, TLarge.y), TLarge.z);
+	TEnter = max(TEnter, 0.0f);          // 카메라가 상자 안에 있으면 0부터
+	TExit = min(TExit, MaxDistance);
+
+	if (DebugMode == 4)
+	{
+		// 광선 방향. 화면 전체가 한 색이면 화면 좌표 -> 월드 변환이 죽은 것이다.
+		OutColor = float4(abs(RayDir), Scene.a);
+		return;
+	}
+	if (DebugMode == 5)
+	{
+		// 상자 경계가 셰이더까지 왔는지. 검정이면 0으로 들어온 것이다.
+		OutColor = float4(saturate(abs(VolumeBoundsMin) / 2000.0f), Scene.a);
+		return;
+	}
+	if (DebugMode == 6)
+	{
+		OutColor = float4(saturate(abs(VolumeBoundsMax) / 2000.0f), Scene.a);
+		return;
+	}
+	if (DebugMode == 7)
+	{
+		// 카메라 위치(translated world). 0에 가까워야 정상이다.
+		OutColor = float4(saturate(abs(RayOrigin) / 2000.0f), Scene.a);
+		return;
+	}
+
+	if (DebugMode == 3)
+	{
+		// 장면 깊이가 0이면 MaxDistance가 0이 되어 아무것도 안 그려진다.
+		// 깊이가 제대로 들어오는지부터 본다.
+		OutColor = float4(saturate(SceneDepth / 5000.0f).xxx, Scene.a);
+		return;
+	}
+
+	if (TExit <= TEnter)
+	{
+		if (DebugMode == 1)
+		{
+			OutColor = float4(0.2f, 0.0f, 0.0f, Scene.a);   // 상자를 못 만났다
+			return;
+		}
+		OutColor = Scene;
+		return;
+	}
+
+	if (DebugMode == 1)
+	{
+		// 상자를 지나는 길이. 광선과 경계 계산이 맞는지 본다.
+		OutColor = float4(0.0f, saturate((TExit - TEnter) / 2000.0f), 0.0f, Scene.a);
+		return;
+	}
+
+	const float3 Extent = max(VolumeBoundsMax - VolumeBoundsMin, 1e-3f);
+	const int Steps = clamp(StepCount, 8, 512);
+	const float StepSize = (TExit - TEnter) / Steps;
+	const float RangeK = max(TempRangeK.y - TempRangeK.x, 1e-3f);
+
+	// 앞에서 뒤로 누적한다. 알파가 차면 일찍 끊는다.
+	float3 Accum = 0.0f;
+	float Transmittance = 1.0f;
+	float MaxNormalized = 0.0f;
+
+	for (int Index = 0; Index < Steps; ++Index)
+	{
+		const float T = TEnter + (Index + 0.5f) * StepSize;
+		const float3 Position = RayOrigin + RayDir * T;
+		const float3 Uvw = (Position - VolumeBoundsMin) / Extent;
+
+		const float TempK = VolumeTexture.SampleLevel(VolumeSampler, Uvw, 0);
+		if (TempK > 0.0f)
+		{
+			// 고체 셀은 음수로 올라오므로 위 조건에서 걸러진다.
+			const float Normalized = saturate((TempK - TempRangeK.x) / RangeK);
+			MaxNormalized = max(MaxNormalized, Normalized);
+
+			// 흡수-방출. 단계 크기에 지수로 넣어야 StepCount를 바꿔도 밝기가 같다.
+			const float Alpha = 1.0f - exp(-Normalized * OpacityPerCm * StepSize);
+			Accum += Transmittance * Alpha * HeatLut(Normalized);
+			Transmittance *= (1.0f - Alpha);
+
+			if (Transmittance < 0.01f && DebugMode == 0)
+			{
+				break;
+			}
+		}
+	}
+
+	if (DebugMode == 2)
+	{
+		// 구간에서 만난 최대 정규화 온도. 텍스처 내용과 좌표 매핑을 본다.
+		OutColor = float4(HeatLut(MaxNormalized), Scene.a);
+		return;
+	}
+
+	OutColor = float4(Scene.rgb * Transmittance + Accum, Scene.a);
+}

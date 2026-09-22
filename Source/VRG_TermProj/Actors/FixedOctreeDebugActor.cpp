@@ -8,10 +8,22 @@
 #include "Simulation/Core/SimUnits.h"
 #include "Components/SceneComponent.h"
 #include "DrawDebugHelpers.h"
+#include "HAL/IConsoleManager.h"
 #include "Simulation/Core/VrgPerfCounters.h"
 #include "Engine/Engine.h"
 #include "Engine/World.h"
 #include "EngineUtils.h"
+
+namespace
+{
+	// S7-1 비교용. 옥트리 와이어프레임이 화면을 덮으면 연속장 표시를 볼 수 없다.
+	// 레벨 에셋을 고치지 않고 끌 수 있어야 같은 장면을 두 방식으로 찍을 수 있다.
+	static int32 GVrgForceOctreeWireframe = -1;
+	static FAutoConsoleVariableRef CVarForceOctreeWireframe(
+		TEXT("vrg.Octree.DrawWireframe"),
+		GVrgForceOctreeWireframe,
+		TEXT("옥트리 와이어프레임 표시를 강제한다. -1=액터 설정, 0=끔, 1=켬"));
+}
 
 AFixedOctreeDebugActor::AFixedOctreeDebugActor()
 {
@@ -189,7 +201,10 @@ void AFixedOctreeDebugActor::Tick(float DeltaTime)
 	int32 Drawn = 0;
 	int32 Eligible = 0;
 	const TArray<FFixedOctreeNode>& Nodes = Octree.GetNodes();
-	if (bDrawWireframe)
+	const bool bWireframeOn = GVrgForceOctreeWireframe < 0
+		? bDrawWireframe
+		: (GVrgForceOctreeWireframe != 0);
+	if (bWireframeOn)
 	{
 		for (int32 NodeIndex : Octree.GetLeafNodeIndices())
 		{
@@ -206,7 +221,7 @@ void AFixedOctreeDebugActor::Tick(float DeltaTime)
 			++VrgPerf::Accumulator().DrawnPrimitives;
 		}
 	}
-	if (bDrawHangingFaces)
+	if (bDrawHangingFaces && bWireframeOn)
 	{
 		// 비정합 면의 중심에 점을 찍는다. 잘은 쪽 면적이라 한 굵은 면에 네 점이 찍힌다.
 		int32 DrawnFaces = 0;

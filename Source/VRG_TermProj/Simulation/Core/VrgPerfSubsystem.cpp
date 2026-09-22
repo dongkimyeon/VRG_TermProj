@@ -8,6 +8,7 @@
 #include "HAL/PlatformTime.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
+#include "UnrealClient.h"
 #include "RenderCore.h"
 
 namespace
@@ -137,11 +138,18 @@ bool UVrgPerfSubsystem::Tick(float DeltaTime)
 	if (bCapturing)
 	{
 		Samples.Add(Sample);
-		CaptureRemainingS -= DeltaTime;
+		// 한 프레임이 통째로 수집 창을 먹지 않게 한다. vrg.Air.RunSteps 같은
+		// 동기 작업이 끼면 그 프레임의 델타가 수십 초가 되어 표본이 한 개만 남는다.
+		CaptureRemainingS -= FMath::Min(double(DeltaTime), 1.0);
 		if (CaptureRemainingS <= 0.0)
 		{
 			FinishCapture();
 		}
+	}
+
+	if (PendingQuitFrames > 0 && --PendingQuitFrames == 0)
+	{
+		FPlatformMisc::RequestExit(false);
 	}
 	return true;
 }
@@ -240,8 +248,14 @@ void UVrgPerfSubsystem::FinishCapture()
 	UE_LOG(LogTemp, Display, TEXT("%s"), *Summary);
 	UE_LOG(LogTemp, Display, TEXT("[VrgPerf] 기록: %s.csv / %s.txt"), *Stem, *Stem);
 
+	// 같은 라벨로 화면도 한 장 남긴다. 1단계 완료 조건이 "박스 모드와 볼륨 모드가
+	// 같은 그림인가"라서, 숫자만으로는 확인할 수 없다.
+	FScreenshotRequest::RequestScreenshot(
+		FString::Printf(TEXT("VrgShot-%s"), *CaptureLabel), false, false);
+
 	if (bQuitAfterCapture)
 	{
-		FPlatformMisc::RequestExit(false);
+		// 스크린샷이 디스크에 떨어질 시간을 준다.
+		PendingQuitFrames = 8;
 	}
 }

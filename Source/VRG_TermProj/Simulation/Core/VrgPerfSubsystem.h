@@ -62,6 +62,9 @@ private:
 	bool bOverlayEnabled = true;
 	bool bCapturing = false;
 	bool bQuitAfterCapture = false;
+
+	// 스크린샷은 요청한 프레임에 바로 저장되지 않는다. 몇 프레임 기다렸다 종료한다.
+	int32 PendingQuitFrames = 0;
 	double CaptureRemainingS = 0.0;
 	double ElapsedS = 0.0;
 	FString CaptureLabel;

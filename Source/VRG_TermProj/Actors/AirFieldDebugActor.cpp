@@ -6,10 +6,14 @@
 #include "Simulation/Core/SimUnits.h"
 
 #include "EngineUtils.h"
+#include "GameFramework/PlayerController.h"
 
 #include "Components/SceneComponent.h"
 #include "DrawDebugHelpers.h"
 #include "Simulation/Core/VrgPerfCounters.h"
+#include "HAL/IConsoleManager.h"
+#include "SceneViewExtension.h"
+#include "VrgVolumeSceneViewExtension.h"
 #include "Engine/Engine.h"
 
 namespace
@@ -50,6 +54,103 @@ AAirFieldDebugActor::AAirFieldDebugActor()
 
 	HeatSources.Add(FAirHeatSourceBox());
 }
+
+namespace
+{
+	// S7-1 비교용. -1이면 액터 설정을 따르고, 0/1이면 강제한다.
+	// 레벨 에셋을 고치지 않고도 같은 장면을 박스 모드와 볼륨 모드로 찍을 수 있어야
+	// "두 방식이 같은 그림인가"를 자동으로 확인할 수 있다.
+	static int32 GVrgForceDrawSlice = -1;
+	static FAutoConsoleVariableRef CVarForceDrawSlice(
+		TEXT("vrg.Air.DrawSlice"),
+		GVrgForceDrawSlice,
+		TEXT("디버그 박스 슬라이스 표시를 강제한다. -1=액터 설정, 0=끔, 1=켬"));
+
+	static int32 GVrgForceDrawVolume = -1;
+	static FAutoConsoleVariableRef CVarForceDrawVolume(
+		TEXT("vrg.Air.DrawVolume"),
+		GVrgForceDrawVolume,
+		TEXT("볼륨 레이마칭 표시를 강제한다. -1=액터 설정, 0=끔, 1=켬"));
+
+	// 표시 범위와 농도도 강제할 수 있어야 한다. 박스 모드와 볼륨 모드가 **같은 범위**를
+	// 쓸 때만 "같은 그림인가"를 비교할 수 있고, 레벨 에셋을 고치지 않고 맞춰야 한다.
+	static float GVrgColorMinC = -1000.0f;
+	static FAutoConsoleVariableRef CVarColorMinC(
+		TEXT("vrg.Air.ColorMinC"), GVrgColorMinC,
+		TEXT("온도 색상표 하한 [C]. -1000이면 액터 설정을 쓴다."));
+
+	static float GVrgColorMaxC = -1000.0f;
+	static FAutoConsoleVariableRef CVarColorMaxC(
+		TEXT("vrg.Air.ColorMaxC"), GVrgColorMaxC,
+		TEXT("온도 색상표 상한 [C]. -1000이면 액터 설정을 쓴다."));
+
+	static float GVrgVolumeOpacity = -1.0f;
+	static FAutoConsoleVariableRef CVarVolumeOpacity(
+		TEXT("vrg.Volume.Opacity"), GVrgVolumeOpacity,
+		TEXT("볼륨 흡수 계수 [1/cm]. 음수면 액터 설정을 쓴다."));
+
+	static int32 GVrgDrawMode = -1;
+	static FAutoConsoleVariableRef CVarDrawMode(
+		TEXT("vrg.Air.DrawMode"), GVrgDrawMode,
+		TEXT("박스 표시 방식. -1=액터 설정, 0=단면, 1=격자 전체, 2=둘 다"));
+
+	static float GVrgMinVisibleFraction = -1.0f;
+	static FAutoConsoleVariableRef CVarMinVisible(
+		TEXT("vrg.Air.MinVisibleFraction"), GVrgMinVisibleFraction,
+		TEXT("이 정규화 온도 미만은 박스를 안 그린다. 음수면 액터 설정."));
+
+	bool ResolveDrawFlag(int32 Override, bool bActorSetting)
+	{
+		return Override < 0 ? bActorSetting : (Override != 0);
+	}
+
+	// 레벨에 놓인 공기 액터를 전부 찾는다. 콘솔 명령 전용이다.
+	TArray<AAirFieldDebugActor*> FindAirActors()
+	{
+		TArray<AAirFieldDebugActor*> Found;
+		if (GEngine == nullptr) { return Found; }
+		for (const FWorldContext& Context : GEngine->GetWorldContexts())
+		{
+			UWorld* World = Context.World();
+			if (World == nullptr || !World->IsGameWorld()) { continue; }
+			for (TActorIterator<AAirFieldDebugActor> It(World); It; ++It)
+			{
+				Found.Add(*It);
+			}
+		}
+		return Found;
+	}
+}
+
+// 화면을 보고 확인해야 하는 단계라, 시뮬레이션을 눈에 보이는 상태까지
+// 동기적으로 앞당긴다. 실시간으로 기다리면 1.5 fps에서 몇 분이 걸린다.
+// 물리는 평소와 같은 고정 스텝을 쓴다 (규약 4: 시계가 시간을 버리지 않는다).
+static FAutoConsoleCommand GVrgAirRunStepsCommand(
+	TEXT("vrg.Air.RunSteps"),
+	TEXT("공기 솔버를 N스텝 즉시 진행한다. vrg.Air.RunSteps <스텝 수>"),
+	FConsoleCommandWithArgsDelegate::CreateLambda([](const TArray<FString>& Args)
+	{
+		const int32 NumSteps = Args.Num() > 0 ? FCString::Atoi(*Args[0]) : 200;
+		for (AAirFieldDebugActor* Actor : FindAirActors())
+		{
+			Actor->RunStepsImmediate(NumSteps);
+		}
+	}));
+
+// 공기 도메인 전체가 보이도록 시점을 옮긴다.
+// 레벨의 PlayerStart가 지오메트리 안에 있어서 연속장이 화면에 안 잡힌다.
+static FAutoConsoleCommand GVrgAirFrameDomainCommand(
+	TEXT("vrg.Air.FrameDomain"),
+	TEXT("공기 도메인이 다 보이도록 시점을 옮긴다. vrg.Air.FrameDomain [거리배수]"),
+	FConsoleCommandWithArgsDelegate::CreateLambda([](const TArray<FString>& Args)
+	{
+		const double DistanceScale = Args.Num() > 0 ? FCString::Atod(*Args[0]) : 1.4;
+		for (AAirFieldDebugActor* Actor : FindAirActors())
+		{
+			Actor->FrameDomainWithView(DistanceScale);
+			break;
+		}
+	}));
 
 void AAirFieldDebugActor::BeginPlay()
 {
@@ -273,6 +374,16 @@ void AAirFieldDebugActor::Tick(float DeltaTime)
 		ResetSim();
 	}
 
+	// 표시 파라미터 강제. 계산에는 쓰이지 않는 값들이다.
+	if (GVrgColorMinC > -999.0f) { ColorMinCelsius = GVrgColorMinC; }
+	if (GVrgColorMaxC > -999.0f) { ColorMaxCelsius = GVrgColorMaxC; }
+	if (GVrgVolumeOpacity > 0.0f) { VolumeOpacityPerCm = GVrgVolumeOpacity; }
+	if (GVrgDrawMode >= 0)
+	{
+		DrawMode = static_cast<EAirDrawMode>(FMath::Clamp(GVrgDrawMode, 0, 2));
+	}
+	if (GVrgMinVisibleFraction >= 0.0f) { MinVisibleFraction = GVrgMinVisibleFraction; }
+
 	// 규약 4: 통합 액터가 돌릴 때는 여기서 적분하지 않는다.
 	if (bSimRunning && !bDrivenExternally)
 	{
@@ -293,10 +404,16 @@ void AAirFieldDebugActor::Tick(float DeltaTime)
 		}
 	}
 
-	if (bDrawSlice)
+	if (ResolveDrawFlag(GVrgForceDrawSlice, bDrawSlice))
 	{
 		VRG_SCOPE_COST(STAT_VrgDebugDraw, DebugDrawMs);
 		DrawSlice();
+	}
+
+	{
+		// 업로드도 표시 비용이므로 같은 항목에 넣는다.
+		VRG_SCOPE_COST(STAT_VrgDebugDraw, DebugDrawMs);
+		UpdateVolumeRender();
 	}
 
 	if (bShowSummary)
@@ -529,4 +646,116 @@ void AAirFieldDebugActor::DrawSummaryText() const
 			TEXT("공기 색 = 온도 (파랑 낮음 -> 빨강 높음). 표시 %s, 간격 %d%s. 막힌 상자이며 급배기는 S4에서 붙인다."),
 			DrawModeText, EffectiveDrawStride,
 			EffectiveDrawStride > FMath::Max(1, DrawStride) ? TEXT(" (셀 수 상한으로 자동 조정)") : TEXT("")));
+}
+
+void AAirFieldDebugActor::UpdateVolumeRender()
+{
+	const bool bVolumeOn = ResolveDrawFlag(GVrgForceDrawVolume, bDrawVolume);
+	if (!VolumeExtension.IsValid())
+	{
+		if (!bVolumeOn)
+		{
+			// 켜기 전에는 만들지 않는다. 뷰 확장은 등록되는 순간 모든 뷰를 훑는다.
+			return;
+		}
+		VolumeExtension = FSceneViewExtensions::NewExtension<FVrgVolumeSceneViewExtension>();
+	}
+
+	VolumeExtension->SetEnabled_GameThread(bVolumeOn);
+	VolumePassCount = VolumeExtension->GetLastPassCount();
+	if (!bVolumeOn)
+	{
+		return;
+	}
+
+	const FUniformAirGrid& Grid = Solver.GetGrid();
+	const int32 NumCells = Grid.GetNumCells();
+	if (NumCells <= 0 || Grid.TemperatureK.Num() != NumCells)
+	{
+		return;
+	}
+
+	// 실제 절대온도 K를 그대로 담는다 (규약 2). 고체 셀은 음수로 표시해
+	// 셰이더가 건너뛰게 한다. 정규화해서 담으면 표시 범위를 바꿀 때마다 다시 올려야 한다.
+	TArray<float> VoxelsK;
+	VoxelsK.SetNumUninitialized(NumCells);
+	for (int32 Index = 0; Index < NumCells; ++Index)
+	{
+		VoxelsK[Index] = Grid.bSolidCell.IsValidIndex(Index) && Grid.bSolidCell[Index]
+			? -1.0f
+			: float(Grid.TemperatureK[Index]);
+	}
+
+	const FVector OriginCm = GetActorLocation();
+	const FVector DomainSizeCm = SimUnits::MetersToUnreal(Grid.GetDomainSizeM());
+	const FBox WorldBoundsCm(OriginCm, OriginCm + DomainSizeCm);
+
+	VolumeExtension->UpdateVolume_GameThread(
+		FIntVector(Grid.GetNumCellsX(), Grid.GetNumCellsY(), Grid.GetNumCellsZ()),
+		MoveTemp(VoxelsK), WorldBoundsCm,
+		float(ColorMinCelsius + 273.15), float(ColorMaxCelsius + 273.15),
+		float(VolumeOpacityPerCm), VolumeStepCount);
+}
+
+void AAirFieldDebugActor::RunStepsImmediate(int32 NumSteps)
+{
+	if (bNeedsReset)
+	{
+		ResetSim();
+	}
+	// 통합 액터가 돌리는 구성에서는 여기서 적분하면 같은 구간을 두 번 적분한다 (규약 4).
+	if (bDrivenExternally)
+	{
+		UE_LOG(LogTemp, Warning,
+			TEXT("[VrgAir] %s는 외부에서 구동되므로 여기서 스텝을 돌리지 않는다."), *GetName());
+		return;
+	}
+
+	const int32 Clamped = FMath::Clamp(NumSteps, 1, 100000);
+	const double StepS = Clock.GetFixedStepS();
+	for (int32 Index = 0; Index < Clamped; ++Index)
+	{
+		// 시계에 같은 양의 시간을 먼저 넣는다. CompleteStep만 부르면 누적기가
+		// 스텝 수 x 스텝 크기만큼 음수로 내려가고, 그 뒤 실시간 프레임이
+		// 그만큼의 실제 시간을 다 채울 때까지 한 스텝도 안 돈다 (규약 4).
+		// 실제로 겪었다 - 900스텝을 앞당긴 뒤 18초 동안 솔버가 멈춰 있었다.
+		Clock.BeginFrame(StepS);
+		Solver.Step(Input, StepS);
+		Clock.CompleteStep();
+	}
+	bSimRunning = true;
+
+	UE_LOG(LogTemp, Display, TEXT("[VrgAir] %d스텝 진행 (%.2f s). 공기 %.2f ~ %.2f C, 최대 속도 %.4f m/s"),
+		Clamped, Clamped * StepS,
+		Solver.MakeSnapshot(0.0).MinTemperatureK - 273.15,
+		Solver.MakeSnapshot(0.0).MaxTemperatureK - 273.15,
+		Solver.MakeSnapshot(0.0).MaxSpeedMs);
+}
+
+void AAirFieldDebugActor::FrameDomainWithView(double DistanceScale)
+{
+	UWorld* World = GetWorld();
+	APlayerController* Controller = World != nullptr ? World->GetFirstPlayerController() : nullptr;
+	AActor* ViewTarget = Controller != nullptr ? Controller->GetViewTarget() : nullptr;
+	if (ViewTarget == nullptr)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[VrgAir] 시점을 옮길 대상이 없다."));
+		return;
+	}
+
+	const FVector DomainSizeCm = SimUnits::MetersToUnreal(Solver.GetGrid().GetDomainSizeM());
+	const FVector CenterCm = GetActorLocation() + DomainSizeCm * 0.5;
+
+	// 대각선 길이만큼 떨어져서 살짝 위에서 내려다본다. 한 면만 보면 안쪽 분포를 못 본다.
+	const double DistanceCm = DomainSizeCm.Size() * FMath::Max(0.2, DistanceScale);
+	// 옆에서, 살짝 위에서 내려다본다. 부호를 잘못 두면 바닥 밑으로 들어가 화면이 막힌다.
+	const FVector EyeCm = CenterCm + FVector(-0.75, -0.55, 0.45).GetSafeNormal() * DistanceCm;
+
+	ViewTarget->SetActorLocation(EyeCm, false, nullptr, ETeleportType::TeleportPhysics);
+	const FRotator Look = (CenterCm - EyeCm).Rotation();
+	ViewTarget->SetActorRotation(Look);
+	Controller->SetControlRotation(Look);
+
+	UE_LOG(LogTemp, Display, TEXT("[VrgAir] 시점 %s -> 도메인 중심 %s (거리 %.0f cm)"),
+		*EyeCm.ToCompactString(), *CenterCm.ToCompactString(), DistanceCm);
 }
