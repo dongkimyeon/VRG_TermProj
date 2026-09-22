@@ -126,8 +126,9 @@ public:
 	int32 MaxStepsPerFrame = 4;
 
 	// ---- 표시 ----
+	// 기본은 볼륨 렌더링이다. 이 박스 경로는 비교 기준으로 남겨 둔 것이라 기본 꺼짐이다.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Visualization")
-	bool bDrawSlice = true;
+	bool bDrawSlice = false;
 
 	// 단면 한 장인지, 격자 전체인지.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Visualization")
@@ -183,12 +184,36 @@ public:
 	// 디버그 솔리드 박스는 셀 하나가 드로우 호출 하나지만 이쪽은 화면 패스 하나다.
 	// 둘 다 남겨 둔 이유는 같은 온도장을 두 방식으로 그려 비교하기 위해서다.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Visualization|Volume")
-	bool bDrawVolume = false;
+	bool bDrawVolume = true;
 
 	// 정규화 온도 1에서의 흡수 계수 [1/cm]. 키우면 진해진다.
 	// 도메인을 가로지르는 거리가 수백 cm라 0.001~0.02 정도가 쓸 만하다.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Visualization|Volume", meta = (ClampMin = "0.0001", ClampMax = "0.1"))
-	double VolumeOpacityPerCm = 0.004;
+	// 기본값은 도메인 대각선(약 1400 cm)을 가로질렀을 때
+	// 찬 공기가 알파 0.3, 뜨거운 공기가 0.99쯤 되도록 역산한 값이다.
+	// 0.02로 뒀더니 지수가 9.8이 되어 화면이 통째로 파란 벽이 됐다.
+	double VolumeOpacityPerCm = 0.0035;
+
+	// 표시 범위를 장의 실제 최소/최대 온도에 매 갱신 맞춘다.
+	// 고정 범위를 쓰면 공기가 24~34 C인데 범위가 24~45면 정규화가 0.5를 못 넘어
+	// 화면이 거의 투명해진다. "볼륨이 안 보인다"의 대부분이 이것이었다.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Visualization|Volume")
+	bool bAutoColorRange = true;
+
+	// 자동 범위를 쓸 때 상한을 (최소 + 이 비율 x 폭)으로 좁힌다.
+	// 1.0이면 가장 뜨거운 셀 하나만 빨강이 되어 방 전체가 파랗게 보인다.
+	// 표시용 대비 조정이며 계산에 쓰이지 않는다.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Visualization|Volume", meta = (ClampMin = "0.2", ClampMax = "1.0"))
+	double AutoColorSpanFraction = 0.6;
+
+	// 찬 공기도 옅게 보이게 하는 최소 밀도 비율. 0이면 뜨거운 곳만 보인다.
+	// 참고로 삼은 상용 도구는 찬 영역도 파랗게 채운다.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Visualization|Volume", meta = (ClampMin = "0.0", ClampMax = "1.0"))
+	double VolumeFloorDensity = 0.07;
+
+	// 0 = CFD 무지개 (파랑 -> 청록 -> 초록 -> 노랑 -> 빨강), 1 = 열화상 (검정 -> 보라 -> 흰색).
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Visualization|Volume", meta = (ClampMin = "0", ClampMax = "1"))
+	int32 VolumeColorMap = 0;
 
 	// 광선 하나가 밟는 표본 수. 흡수를 지수로 넣으므로 이 값을 바꿔도 밝기는 같고
 	// 얇은 층의 해상도만 달라진다.
@@ -205,11 +230,13 @@ public:
 	// S7-2: 속도장을 따라 흐르는 무늬를 볼륨 안에 함께 그린다.
 	// Niagara 입자 대신 같은 광선 안에서 처리하므로 드로우 호출이 늘지 않는다.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Visualization|Volume")
-	bool bDrawFlow = false;
+	bool bDrawFlow = true;
 
 	// 무늬의 진하기. 0이면 안 그린다.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Visualization|Volume", meta = (ClampMin = "0.0", ClampMax = "1.0"))
-	double FlowStrength = 0.08;
+	// 0.08로 뒀더니 무늬가 온도 색을 덮어 화면이 통째로 하늘색이 됐다.
+	// 주인공은 온도이고 무늬는 "여기 공기가 움직인다"만 알려주면 된다.
+	double FlowStrength = 0.025;
 
 	// 무늬가 흐르는 속도 배율. 물리가 아니라 연출값이다.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Visualization|Volume", meta = (ClampMin = "0.0", ClampMax = "1.0"))

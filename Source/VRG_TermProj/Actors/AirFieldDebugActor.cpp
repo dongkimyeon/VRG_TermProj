@@ -90,7 +90,10 @@ namespace
 		TEXT("볼륨 흡수 계수 [1/cm]. 음수면 액터 설정을 쓴다."));
 
 	// S7-4: 압력 스윕을 컴퓨트 셰이더로 돌릴지. 켜면 솔버가 게임 스레드 전용이 된다.
-	static int32 GVrgUseGpuPressure = 0;
+	// 기본값을 1로 둔다. 뷰포트에서 Play만 눌러도 GPU 경로가 돌아야 의미가 있다.
+	// 자동화 테스트는 액터를 거치지 않고 솔버를 직접 부르므로 영향을 받지 않는다
+	// (FAirSolver::bUseGpuPressure의 기본값은 여전히 false다).
+	static int32 GVrgUseGpuPressure = 1;
 	static FAutoConsoleVariableRef CVarUseGpuPressure(
 		TEXT("vrg.Pressure.Gpu"), GVrgUseGpuPressure,
 		TEXT("압력 Jacobi를 컴퓨트 셰이더로 돌린다. 0=CPU FP64(기준), 1=GPU FP32"));
@@ -760,11 +763,26 @@ void AAirFieldDebugActor::UpdateVolumeRender()
 	const FVector DomainSizeCm = SimUnits::MetersToUnreal(Grid.GetDomainSizeM());
 	const FBox WorldBoundsCm(OriginCm, OriginCm + DomainSizeCm);
 
+	// 표시 범위를 장의 실제 온도 폭에 맞춘다. 고정 범위를 쓰면 공기 온도 폭이
+	// 범위보다 훨씬 좁을 때 정규화가 0 근처에 몰려 화면이 거의 투명해진다.
+	double DisplayMinK = ColorMinCelsius + 273.15;
+	double DisplayMaxK = ColorMaxCelsius + 273.15;
+	if (bAutoColorRange)
+	{
+		const FAirSolverSnapshot Snapshot = Solver.MakeSnapshot(0.0);
+		DisplayMinK = Snapshot.MinTemperatureK;
+		// 가장 뜨거운 셀에 상한을 맞추면 그 한 셀만 빨강이고 나머지는 파랗다.
+		// 폭을 좁혀 중간 온도가 초록~노랑으로 올라오게 한다 (표시용 대비 조정).
+		const double SpanK = FMath::Max(Snapshot.MaxTemperatureK - DisplayMinK, 0.5);
+		DisplayMaxK = DisplayMinK + SpanK * FMath::Clamp(AutoColorSpanFraction, 0.2, 1.0);
+	}
+
 	const FIntVector GridSize(Grid.GetNumCellsX(), Grid.GetNumCellsY(), Grid.GetNumCellsZ());
 	VolumeExtension->UpdateVolume_GameThread(GridSize,
 		MoveTemp(VoxelsK), WorldBoundsCm,
-		float(ColorMinCelsius + 273.15), float(ColorMaxCelsius + 273.15),
-		float(VolumeOpacityPerCm), VolumeStepCount);
+		float(DisplayMinK), float(DisplayMaxK),
+		float(VolumeOpacityPerCm), VolumeStepCount,
+		float(VolumeFloorDensity), FMath::Clamp(VolumeColorMap, 0, 1));
 
 	// S7-2: 속도장. MAC 격자라 면 속도를 셀 중심으로 평균해서 넘긴다.
 	// 렌더는 셀 중심 값만 쓰므로 여기서 한 번만 평균한다.

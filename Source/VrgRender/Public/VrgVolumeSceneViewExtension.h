@@ -30,7 +30,7 @@ public:
 	// 고체 셀은 음수 K로 넣는다. 렌더 스레드로 넘겨 복사하므로 호출 뒤 원본을 재사용해도 된다.
 	void UpdateVolume_GameThread(const FIntVector& InSize, TArray<float>&& InVoxelsK,
 		const FBox& InWorldBoundsCm, float InMinTempK, float InMaxTempK,
-		float InOpacityPerCm, int32 InStepCount);
+		float InOpacityPerCm, int32 InStepCount, float InFloorDensity, int32 InColorMapMode);
 
 	// S7-2: 셀 중심 속도장 [m/s]. 길이는 온도와 같아야 한다.
 	// 입자 대신 같은 광선 안에서 흐름 무늬를 그리므로 드로우 호출은 늘지 않는다.
@@ -69,6 +69,8 @@ private:
 	float MaxTempK = 320.0f;
 	float OpacityPerCm = 0.004f;
 	int32 StepCount = 128;
+	float FloorDensity = 0.35f;
+	int32 ColorMapMode = 0;
 	bool bRenderEnabled = false;
 
 	// 게임 스레드가 쓰고 아무 스레드나 읽는다.

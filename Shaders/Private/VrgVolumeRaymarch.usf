@@ -29,6 +29,8 @@ float FlowStrength;       // 0이면 기류 무늬를 안 그린다
 float FlowSpeedScale;     // 무늬가 흐르는 속도 배율 (연출값)
 float FlowFrequency;      // 무늬 촘촘함 [1/cm]
 float MaxSpeedMs;         // 속도 정규화 기준 [m/s]
+float FloorDensity;       // 찬 공기의 최소 밀도 비율 (0이면 뜨거운 곳만 보인다)
+int ColorMapMode;         // 0 = CFD 무지개, 1 = 열화상
 
 // 해시 기반 값 잡음. 텍스처를 따로 올리지 않으려고 절차적으로 만든다.
 // 무늬 자체는 연출이며 물리량이 아니다.
@@ -53,8 +55,26 @@ float VrgValueNoise(float3 Position)
 	return Result;
 }
 
+// CFD 결과 평면에서 흔히 쓰는 무지개: 파랑 -> 청록 -> 초록 -> 노랑 -> 빨강.
+// 찬 영역도 색이 있어서 방 전체의 분포가 한눈에 들어온다.
+float3 RainbowLut(float X)
+{
+	const float3 C0 = float3(0.00, 0.10, 0.85);
+	const float3 C1 = float3(0.00, 0.75, 0.90);
+	const float3 C2 = float3(0.10, 0.85, 0.20);
+	const float3 C3 = float3(0.98, 0.90, 0.10);
+	const float3 C4 = float3(0.95, 0.10, 0.05);
+
+	float S = saturate(X) * 4.0f;
+	float3 Color = lerp(C0, C1, saturate(S));
+	Color = lerp(Color, C2, saturate(S - 1.0f));
+	Color = lerp(Color, C3, saturate(S - 2.0f));
+	Color = lerp(Color, C4, saturate(S - 3.0f));
+	return Color;
+}
+
 // 열화상 색상표: 검정 -> 보라 -> 빨강 -> 노랑 -> 흰색.
-float3 HeatLut(float X)
+float3 ThermalLut(float X)
 {
 	const float3 C0 = float3(0.00, 0.00, 0.00);
 	const float3 C1 = float3(0.30, 0.00, 0.45);
@@ -75,6 +95,12 @@ float3 HeatLut(float X)
 // (E_INVALIDARG, "Shader compilation failures are Fatal").
 // DrawRectangle이 채워 주는 UVAndScreenPos에는 뷰포트가 이미 반영돼 있어
 // 별도로 화면 크기를 넘길 필요도 없다.
+// 둘 중 하나를 고른다. 색상표는 표시용이며 계산에 쓰이지 않는다.
+float3 HeatLut(float X)
+{
+	return ColorMapMode == 0 ? RainbowLut(X) : ThermalLut(X);
+}
+
 void MainPS(
 	noperspective float4 UVAndScreenPos : TEXCOORD0,
 	float4 SvPosition : SV_POSITION,
@@ -192,7 +218,11 @@ void MainPS(
 			MaxNormalized = max(MaxNormalized, Normalized);
 
 			// 흡수-방출. 단계 크기에 지수로 넣어야 StepCount를 바꿔도 밝기가 같다.
-			const float Alpha = 1.0f - exp(-Normalized * OpacityPerCm * StepSize);
+			// 밀도에 바닥(FloorDensity)을 깔아야 찬 공기도 옅게 보인다.
+			// 밀도를 온도에 그대로 비례시키면 정규화 0 근처가 완전히 투명해져
+			// 방 전체 분포가 아니라 뜨거운 기둥만 떠 있는 그림이 된다.
+			const float Density = lerp(FloorDensity, 1.0f, Normalized);
+			const float Alpha = 1.0f - exp(-Density * OpacityPerCm * StepSize);
 			Accum += Transmittance * Alpha * HeatLut(Normalized);
 			Transmittance *= (1.0f - Alpha);
 

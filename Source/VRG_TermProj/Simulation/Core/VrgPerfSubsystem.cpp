@@ -76,6 +76,7 @@ void UVrgPerfSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 	Super::Initialize(Collection);
 	TickHandle = FTSTicker::GetCoreTicker().AddTicker(
 		FTickerDelegate::CreateUObject(this, &UVrgPerfSubsystem::Tick));
+	BeginFrameHandle = FCoreDelegates::OnBeginFrame.AddUObject(this, &UVrgPerfSubsystem::OnBeginFrame);
 	EndFrameHandle = FCoreDelegates::OnEndFrame.AddUObject(this, &UVrgPerfSubsystem::OnEndFrame);
 }
 
@@ -87,12 +88,22 @@ void UVrgPerfSubsystem::Deinitialize()
 		FinishCapture();
 	}
 	FTSTicker::GetCoreTicker().RemoveTicker(TickHandle);
+	FCoreDelegates::OnBeginFrame.Remove(BeginFrameHandle);
 	FCoreDelegates::OnEndFrame.Remove(EndFrameHandle);
 	Super::Deinitialize();
 }
 
+void UVrgPerfSubsystem::OnBeginFrame()
+{
+	FrameStartCycles = FPlatformTime::Cycles64();
+}
+
 void UVrgPerfSubsystem::OnEndFrame()
 {
+	if (FrameStartCycles != 0)
+	{
+		LastGameThreadMs = FPlatformTime::ToMilliseconds64(FPlatformTime::Cycles64() - FrameStartCycles);
+	}
 	// 프레임이 끝났으니 누산기를 확정값으로 넘긴다. Tick은 이 확정값을 읽는다.
 	VrgPerf::EndFrame();
 }
@@ -119,9 +130,13 @@ bool UVrgPerfSubsystem::Tick(float DeltaTime)
 	FVrgPerfSample Sample;
 	Sample.TimeS = ElapsedS;
 	Sample.FrameMs = DeltaTime * 1000.0;
-	// 엔진이 이미 재고 있는 스레드별 시간. 사이클이므로 ms로 바꾼다.
-	Sample.GameMs = FPlatformTime::ToMilliseconds(GGameThreadTime);
-	Sample.DrawMs = FPlatformTime::ToMilliseconds(GRenderThreadTime);
+	// 게임 스레드는 우리가 직접 잰 값을 쓴다 (위 주석 참고).
+	Sample.GameMs = LastGameThreadMs;
+
+	// 렌더 스레드는 엔진 전역을 읽되, 에디터 PIE에서는 갱신되지 않아 0이나
+	// 말도 안 되는 값이 나온다. 그럴 때는 0으로 두고 오버레이에 "-"로 적는다.
+	const double RawDrawMs = FPlatformTime::ToMilliseconds(GRenderThreadTime);
+	Sample.DrawMs = (RawDrawMs > 0.0 && RawDrawMs < Sample.FrameMs * 5.0 + 50.0) ? RawDrawMs : 0.0;
 	uint64 GpuCycles = 0;
 	if (GpuHistoryState.PopFrameCycles(GpuCycles) != FRHIGPUFrameTimeHistory::EResult::Empty)
 	{
@@ -168,15 +183,19 @@ void UVrgPerfSubsystem::DrawOverlay(const FVrgPerfSample& Sample) const
 		return;
 	}
 	// D10: 이건 측정값이다. 목표치나 보장값이 아니다.
-	const double SolverShare = Sample.GameMs > 0.0 ? 100.0 * Sample.Costs.SolverMs / Sample.GameMs : 0.0;
+	// 게임 스레드 대비가 아니라 프레임 대비로 적는다. 에디터 PIE에서는 게임 스레드
+	// 값이 신뢰할 수 없어 "게임의 3%" 같은 오해를 부르는 수치가 나왔다.
+	const double SolverShare = Sample.FrameMs > 0.0 ? 100.0 * Sample.Costs.SolverMs / Sample.FrameMs : 0.0;
 	GEngine->AddOnScreenDebugMessage(0x56524750, 0.0f, FColor::Yellow,
 		FString::Printf(
-			TEXT("[VrgPerf] Frame %.2f ms (%.1f fps) | Game %.2f | Draw %.2f | GPU %.2f"),
+			TEXT("[VrgPerf] Frame %.2f ms (%.1f fps) | Game %.2f | Draw %s | GPU %s"),
 			Sample.FrameMs, Sample.FrameMs > 0.0 ? 1000.0 / Sample.FrameMs : 0.0,
-			Sample.GameMs, Sample.DrawMs, Sample.GpuMs));
+			Sample.GameMs,
+			Sample.DrawMs > 0.0 ? *FString::Printf(TEXT("%.2f"), Sample.DrawMs) : TEXT("-"),
+			Sample.GpuMs > 0.0 ? *FString::Printf(TEXT("%.2f"), Sample.GpuMs) : TEXT("-")));
 	GEngine->AddOnScreenDebugMessage(0x56524751, 0.0f, FColor::Yellow,
 		FString::Printf(
-			TEXT("[VrgPerf] 솔버 %.2f ms (게임의 %.0f%%, 스텝 %d, 압력 %.2f ms / %d회) | 디버그 드로우 %.2f ms / %d개"),
+			TEXT("[VrgPerf] 솔버 %.2f ms (프레임의 %.0f%%, 스텝 %d, 압력 %.2f ms / %d회) | 디버그 드로우 %.2f ms / %d개"),
 			Sample.Costs.SolverMs, SolverShare, Sample.Costs.SolverSteps,
 			Sample.Costs.PressureMs, Sample.Costs.PressureIterations,
 			Sample.Costs.DebugDrawMs, Sample.Costs.DrawnPrimitives));

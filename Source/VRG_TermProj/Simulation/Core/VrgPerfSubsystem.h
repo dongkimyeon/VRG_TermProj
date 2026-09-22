@@ -47,6 +47,7 @@ public:
 
 private:
 	bool Tick(float DeltaTime);
+	void OnBeginFrame();
 	void OnEndFrame();
 	void DrawOverlay(const FVrgPerfSample& Sample) const;
 	void FinishCapture();
@@ -56,7 +57,13 @@ private:
 	FRHIGPUFrameTimeHistory::FState GpuHistoryState;
 	double LastGpuMs = 0.0;
 
+	// 게임 스레드 시간은 직접 잰다. 에디터 PIE에서 GGameThreadTime이 갱신되지 않아
+	// 23000 ms 같은 쓰레기 값이 나왔다. 프레임 시작~끝을 우리가 재면 항상 맞는다.
+	uint64 FrameStartCycles = 0;
+	double LastGameThreadMs = 0.0;
+
 	FTSTicker::FDelegateHandle TickHandle;
+	FDelegateHandle BeginFrameHandle;
 	FDelegateHandle EndFrameHandle;
 
 	bool bOverlayEnabled = true;

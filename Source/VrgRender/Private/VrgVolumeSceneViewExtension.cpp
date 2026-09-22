@@ -47,6 +47,8 @@ namespace
 			SHADER_PARAMETER(float, FlowSpeedScale)
 			SHADER_PARAMETER(float, FlowFrequency)
 			SHADER_PARAMETER(float, MaxSpeedMs)
+			SHADER_PARAMETER(float, FloorDensity)
+			SHADER_PARAMETER(int32, ColorMapMode)
 			RENDER_TARGET_BINDING_SLOTS()
 		END_SHADER_PARAMETER_STRUCT()
 
@@ -76,7 +78,7 @@ void FVrgVolumeSceneViewExtension::SetEnabled_GameThread(bool bInEnabled)
 
 void FVrgVolumeSceneViewExtension::UpdateVolume_GameThread(const FIntVector& InSize,
 	TArray<float>&& InVoxelsK, const FBox& InWorldBoundsCm, float InMinTempK, float InMaxTempK,
-	float InOpacityPerCm, int32 InStepCount)
+	float InOpacityPerCm, int32 InStepCount, float InFloorDensity, int32 InColorMapMode)
 {
 	check(IsInGameThread());
 	const int64 Expected = int64(InSize.X) * InSize.Y * InSize.Z;
@@ -91,7 +93,7 @@ void FVrgVolumeSceneViewExtension::UpdateVolume_GameThread(const FIntVector& InS
 	// 규약 5: 게임 스레드가 만든 복사본만 넘긴다. 렌더 스레드는 액터를 보지 않는다.
 	ENQUEUE_RENDER_COMMAND(VrgVolumeUpload)(
 		[this, InSize, Voxels = MoveTemp(InVoxelsK), InWorldBoundsCm, InMinTempK, InMaxTempK,
-			InOpacityPerCm, InStepCount](FRHICommandListImmediate& RHICmdList)
+			InOpacityPerCm, InStepCount, InFloorDensity, InColorMapMode](FRHICommandListImmediate& RHICmdList)
 		{
 			if (!VolumeTexture.IsValid() || VolumeSize != InSize)
 			{
@@ -116,6 +118,8 @@ void FVrgVolumeSceneViewExtension::UpdateVolume_GameThread(const FIntVector& InS
 			MaxTempK = InMaxTempK;
 			OpacityPerCm = InOpacityPerCm;
 			StepCount = InStepCount;
+			FloorDensity = InFloorDensity;
+			ColorMapMode = InColorMapMode;
 		});
 }
 
@@ -219,6 +223,8 @@ FScreenPassTexture FVrgVolumeSceneViewExtension::AddVolumePass_RenderThread(FRDG
 	Parameters->FlowSpeedScale = FlowSpeedScale;
 	Parameters->FlowFrequency = FlowFrequency;
 	Parameters->MaxSpeedMs = MaxSpeedMs;
+	Parameters->FloorDensity = FloorDensity;
+	Parameters->ColorMapMode = ColorMapMode;
 	Parameters->RenderTargets[0] = Output.GetRenderTargetBinding();
 
 	const TShaderMapRef<FVrgVolumeRaymarchPS> PixelShader(GetGlobalShaderMap(View.GetFeatureLevel()));
