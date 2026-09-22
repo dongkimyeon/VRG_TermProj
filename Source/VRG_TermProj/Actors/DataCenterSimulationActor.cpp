@@ -1,6 +1,7 @@
 // Fill out your copyright notice in the Description page of Project Settings.
 
 #include "Actors/DataCenterSimulationActor.h"
+#include "Simulation/Core/VrgPerfCounters.h"
 
 #include "Actors/AirFieldDebugActor.h"
 #include "Actors/DataCenterRoomActor.h"
@@ -379,8 +380,20 @@ void ADataCenterSimulationActor::Tick(float DeltaTime)
 
 		for (int32 StepIndex = 0; StepIndex < NumSteps; ++StepIndex)
 		{
-			Bridge.Step(Clock.GetFixedStepS(), bHydraulicsResolved && StepIndex == 0, bHydraulicsConverged);
+			{
+				// S7-0 계측. 통합 스텝 안에 랙·수력·공기가 모두 들어 있다.
+				VRG_SCOPE_COST(STAT_VrgCouplingStep, CouplingMs);
+				Bridge.Step(Clock.GetFixedStepS(), bHydraulicsResolved && StepIndex == 0, bHydraulicsConverged);
+			}
 			Clock.CompleteStep();
+			VrgPerf::Accumulator().SolverSteps += 1;
+			VrgPerf::Accumulator().SolverMs += Bridge.GetLastAirSolverMs();
+			if (AirField != nullptr)
+			{
+				VrgPerf::Accumulator().PressureMs += AirField->GetMutableSolver().GetLastPressureSolveMs();
+				VrgPerf::Accumulator().PressureIterations +=
+					AirField->GetMutableSolver().GetLastPressureResult().IterationsUsed;
+			}
 		}
 
 		// 표시용 시각을 맞춰 준다. 이 액터의 시계가 유일한 시계다.

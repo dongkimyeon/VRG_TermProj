@@ -8,6 +8,7 @@
 #include "Simulation/Core/SimUnits.h"
 #include "Components/SceneComponent.h"
 #include "DrawDebugHelpers.h"
+#include "Simulation/Core/VrgPerfCounters.h"
 #include "Engine/Engine.h"
 #include "Engine/World.h"
 #include "EngineUtils.h"
@@ -183,6 +184,8 @@ void AFixedOctreeDebugActor::Tick(float DeltaTime)
 		BuildPreview();
 		bNeedsBuild = false;
 	}
+	// S7-0 계측. 와이어프레임 상자 하나가 곧 드로우 제출이다.
+	VRG_SCOPE_COST(STAT_VrgDebugDraw, DebugDrawMs);
 	int32 Drawn = 0;
 	int32 Eligible = 0;
 	const TArray<FFixedOctreeNode>& Nodes = Octree.GetNodes();
@@ -200,6 +203,7 @@ void AFixedOctreeDebugActor::Tick(float DeltaTime)
 			DrawDebugBox(GetWorld(), BuiltOriginCm + SimUnits::MetersToUnreal(BoxM.GetCenter()),
 				SimUnits::MetersToUnreal(BoxM.GetExtent()), Color, false, -1.0f, 0, 0.5f);
 			++Drawn;
+			++VrgPerf::Accumulator().DrawnPrimitives;
 		}
 	}
 	if (bDrawHangingFaces)
@@ -222,6 +226,7 @@ void AFixedOctreeDebugActor::Tick(float DeltaTime)
 			DrawDebugPoint(GetWorld(), BuiltOriginCm + SimUnits::MetersToUnreal(CenterM),
 				6.0f, FColor(255, 80, 200), false, -1.0f, 0);
 			++DrawnFaces;
+			++VrgPerf::Accumulator().DrawnPrimitives;
 		}
 	}
 	if (GEngine)

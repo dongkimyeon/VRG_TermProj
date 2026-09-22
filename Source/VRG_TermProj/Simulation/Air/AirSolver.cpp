@@ -1,6 +1,7 @@
 // Fill out your copyright notice in the Description page of Project Settings.
 
 #include "Simulation/Air/AirSolver.h"
+#include "Simulation/Core/VrgPerfCounters.h"
 
 void FAirSolver::Initialize(const FAirGridParams& InGridParams, double InitialTempK)
 {
@@ -250,8 +251,15 @@ void FAirSolver::ProjectToDivergenceFree(double DeltaTimeS)
 	// 고체 셀은 방정식에 없으므로 평균에서 뺀다.
 	JacobiPoissonSolver::RemoveFluidMean(Grid, DivergencePerS);
 
-	LastPressureResult = JacobiPoissonSolver::Solve(Grid, DivergencePerS, Grid.PressurePa,
-		PressureScratch, PressureSettings);
+	{
+		// SCOPE_CYCLE_COUNTER는 스레드 안전하므로 솔버 안에 둬도 규약 5를 어기지 않는다.
+		// 지역 타이머도 전역을 건드리지 않는다.
+		SCOPE_CYCLE_COUNTER(STAT_VrgPressureSolve);
+		const uint64 StartCycles = FPlatformTime::Cycles64();
+		LastPressureResult = JacobiPoissonSolver::Solve(Grid, DivergencePerS, Grid.PressurePa,
+			PressureScratch, PressureSettings);
+		LastPressureSolveMs = FPlatformTime::ToMilliseconds64(FPlatformTime::Cycles64() - StartCycles);
+	}
 
 	// u -= dt/rho * grad(p). 압력은 셀 중심, 속도는 면이라 한 칸 차분으로 떨어진다.
 	const double DtOverRho = DeltaTimeS / Params.DensityKgM3;

@@ -175,6 +175,12 @@ public:
 	FPoissonSolveSettings& GetMutablePressureSettings() { return PressureSettings; }
 	const FPoissonSolveResult& GetLastPressureResult() const { return LastPressureResult; }
 
+	// 직전 스텝에서 압력 Poisson에 쓴 시간 [ms]. 계측용이다 (D10: 측정값).
+	// 전역 누산기 대신 멤버에 담는 이유는 규약 5다 — 이 클래스는 워커 스레드에서
+	// 돌 수 있어야 하므로 게임 스레드 전용 전역을 건드리면 안 된다.
+	// 게임 스레드 쪽(액터)이 이 값을 읽어 프레임 누산기에 더한다.
+	double GetLastPressureSolveMs() const { return LastPressureSolveMs; }
+
 	// 고체 셀 표시를 갱신한 뒤 부른다. 압력 해와 버퍼를 다시 맞춘다.
 	void OnSolidCellsChanged();
 
@@ -199,6 +205,7 @@ private:
 	FUniformAirGrid Grid;
 	FPoissonSolveSettings PressureSettings;
 	FPoissonSolveResult LastPressureResult;
+	double LastPressureSolveMs = 0.0;
 
 	double InitialTemperatureK = 297.15;
 	double EnergyInJ = 0.0;

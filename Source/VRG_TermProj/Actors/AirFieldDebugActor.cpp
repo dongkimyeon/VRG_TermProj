@@ -9,6 +9,7 @@
 
 #include "Components/SceneComponent.h"
 #include "DrawDebugHelpers.h"
+#include "Simulation/Core/VrgPerfCounters.h"
 #include "Engine/Engine.h"
 
 namespace
@@ -280,15 +281,21 @@ void AAirFieldDebugActor::Tick(float DeltaTime)
 		const int32 RequestedSteps = Clock.BeginFrame(DeltaTime);
 		const int32 NumSteps = FMath::Min(RequestedSteps, MaxStepsPerFrame);
 
+		// S7-0 계측. 압력 시간은 솔버가 멤버에 담아 둔 값을 읽어 더한다 (규약 5).
+		VRG_SCOPE_COST(STAT_VrgAirSolverStep, SolverMs);
 		for (int32 StepIndex = 0; StepIndex < NumSteps; ++StepIndex)
 		{
 			Solver.Step(Input, Clock.GetFixedStepS());
 			Clock.CompleteStep();
+			VrgPerf::Accumulator().SolverSteps += 1;
+			VrgPerf::Accumulator().PressureMs += Solver.GetLastPressureSolveMs();
+			VrgPerf::Accumulator().PressureIterations += Solver.GetLastPressureResult().IterationsUsed;
 		}
 	}
 
 	if (bDrawSlice)
 	{
+		VRG_SCOPE_COST(STAT_VrgDebugDraw, DebugDrawMs);
 		DrawSlice();
 	}
 
@@ -427,6 +434,7 @@ void AAirFieldDebugActor::DrawSlice() const
 
 				const FVector CenterCm = ActorLocationCm + SimUnits::MetersToUnreal(Grid.CellCenterM(X, Y, Z));
 				DrawDebugSolidBox(World, CenterCm, ExtentCm, Color.ToFColor(false), false, -1.0f, 0);
+				++VrgPerf::Accumulator().DrawnPrimitives;
 			}
 		}
 	}
@@ -462,6 +470,7 @@ void AAirFieldDebugActor::DrawSlice() const
 					const FVector StartCm = ActorLocationCm + SimUnits::MetersToUnreal(Grid.CellCenterM(X, Y, Z));
 					const FVector OffsetCm = SimUnits::MetersToUnreal(
 						VelocityMs.GetClampedToMaxSize(1.0) * CellSizeM * 0.8);
+					++VrgPerf::Accumulator().DrawnPrimitives;
 					DrawDebugDirectionalArrow(World, StartCm, StartCm + OffsetCm, 6.0f,
 						FColor(230, 230, 230), false, -1.0f, 0, 1.0f);
 				}

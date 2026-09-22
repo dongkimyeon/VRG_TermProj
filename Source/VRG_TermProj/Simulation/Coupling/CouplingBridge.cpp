@@ -3,6 +3,7 @@
 #include "Simulation/Coupling/CouplingBridge.h"
 
 #include "Simulation/Air/AirSolver.h"
+#include "Simulation/Core/VrgPerfCounters.h"
 #include "Simulation/Hydraulics/HydraulicNetwork.h"
 #include "Simulation/Thermal/RackThermalModel.h"
 
@@ -230,7 +231,14 @@ void FCouplingBridge::Step(double DeltaTimeS, bool bHydraulicsResolved, bool bHy
 		AirInput.CellHeatW = ScratchCellHeatW;
 
 		const double CoolingBeforeJ = AirSolver->GetEnergyOutJ();
-		AirSolver->Step(AirInput, DeltaTimeS);
+		{
+			// S7-0 계측. 통합 경로에서도 공기 솔버 몫을 따로 뗀다.
+			// SCOPE_CYCLE_COUNTER만 스레드 안전하므로 누산기 갱신은 아래에서 한 번에 한다.
+			SCOPE_CYCLE_COUNTER(STAT_VrgAirSolverStep);
+			const uint64 StartCycles = FPlatformTime::Cycles64();
+			AirSolver->Step(AirInput, DeltaTimeS);
+			LastAirSolverMs = FPlatformTime::ToMilliseconds64(FPlatformTime::Cycles64() - StartCycles);
+		}
 		LastAirCoolingRemovedW = (AirSolver->GetEnergyOutJ() - CoolingBeforeJ) / DeltaTimeS;
 	}
 	else

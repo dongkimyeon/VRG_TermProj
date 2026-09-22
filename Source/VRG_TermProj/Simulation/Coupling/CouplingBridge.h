@@ -169,6 +169,9 @@ public:
 	// 랙마다 붙은 라디에이터가 지금 버리는 열의 합 [W].
 	double GetTotalRadiatorRejectedW() const { return LastRadiatorRejectedW; }
 
+	// S7-0 계측. 직전 스텝의 공기 솔버 시간 [ms]. 게임 스레드 쪽이 읽어 누산한다.
+	double GetLastAirSolverMs() const { return LastAirSolverMs; }
+
 private:
 	TArray<FRackCouplingTarget> Targets;
 	TArray<FRackCouplingLink> Links;
@@ -192,6 +195,9 @@ private:
 	double LastItHeatW = 0.0;
 	double LastRadiatorRejectedW = 0.0;
 	double LastAirCoolingRemovedW = 0.0;
+
+	// 규약 5대로 전역 누산기를 건드리지 않고 멤버에 담는다.
+	double LastAirSolverMs = 0.0;
 	bool bLastHydraulicsResolved = false;
 	bool bLastHydraulicsConverged = true;
 

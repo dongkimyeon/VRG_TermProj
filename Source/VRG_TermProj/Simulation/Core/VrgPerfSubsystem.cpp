@@ -1,0 +1,247 @@
+// Fill out your copyright notice in the Description page of Project Settings.
+
+#include "Simulation/Core/VrgPerfSubsystem.h"
+
+#include "Engine/Engine.h"
+#include "Engine/GameInstance.h"
+#include "HAL/FileManager.h"
+#include "HAL/PlatformTime.h"
+#include "Misc/FileHelper.h"
+#include "Misc/Paths.h"
+#include "RenderCore.h"
+
+namespace
+{
+	// 백분위. 평균만 보면 가끔 튀는 프레임이 묻힌다.
+	double PercentileMs(TArray<double>& Values, double Fraction)
+	{
+		if (Values.Num() == 0) { return 0.0; }
+		Values.Sort();
+		const int32 Index = FMath::Clamp(
+			FMath::RoundToInt32(Fraction * (Values.Num() - 1)), 0, Values.Num() - 1);
+		return Values[Index];
+	}
+
+	UVrgPerfSubsystem* FindSubsystem()
+	{
+		if (GEngine == nullptr) { return nullptr; }
+		for (const FWorldContext& Context : GEngine->GetWorldContexts())
+		{
+			if (Context.OwningGameInstance != nullptr)
+			{
+				if (UVrgPerfSubsystem* Found = Context.OwningGameInstance->GetSubsystem<UVrgPerfSubsystem>())
+				{
+					return Found;
+				}
+			}
+		}
+		return nullptr;
+	}
+}
+
+static FAutoConsoleCommand GVrgPerfOverlayCommand(
+	TEXT("vrg.Perf.Overlay"),
+	TEXT("화면 성능 오버레이를 켜고 끈다. vrg.Perf.Overlay 0|1"),
+	FConsoleCommandWithArgsDelegate::CreateLambda([](const TArray<FString>& Args)
+	{
+		if (UVrgPerfSubsystem* Perf = FindSubsystem())
+		{
+			const bool bEnable = Args.Num() == 0 ? !Perf->IsOverlayEnabled() : (FCString::Atoi(*Args[0]) != 0);
+			Perf->SetOverlayEnabled(bEnable);
+			UE_LOG(LogTemp, Display, TEXT("[VrgPerf] 오버레이 %s"), bEnable ? TEXT("켬") : TEXT("끔"));
+		}
+	}));
+
+static FAutoConsoleCommand GVrgPerfCaptureCommand(
+	TEXT("vrg.Perf.Capture"),
+	TEXT("N초 동안 프레임 비용을 모아 Saved/Profiling에 CSV로 쓴다. vrg.Perf.Capture <초> [라벨] [quit]"),
+	FConsoleCommandWithArgsDelegate::CreateLambda([](const TArray<FString>& Args)
+	{
+		if (UVrgPerfSubsystem* Perf = FindSubsystem())
+		{
+			const double DurationS = Args.Num() > 0 ? FCString::Atod(*Args[0]) : 10.0;
+			const FString Label = Args.Num() > 1 ? Args[1] : TEXT("baseline");
+			const bool bQuit = Args.Num() > 2 && Args[2].Equals(TEXT("quit"), ESearchCase::IgnoreCase);
+			Perf->BeginCapture(DurationS, Label, bQuit);
+		}
+		else
+		{
+			UE_LOG(LogTemp, Warning, TEXT("[VrgPerf] GameInstance가 없어 수집을 시작할 수 없다."));
+		}
+	}));
+
+void UVrgPerfSubsystem::Initialize(FSubsystemCollectionBase& Collection)
+{
+	Super::Initialize(Collection);
+	TickHandle = FTSTicker::GetCoreTicker().AddTicker(
+		FTickerDelegate::CreateUObject(this, &UVrgPerfSubsystem::Tick));
+	EndFrameHandle = FCoreDelegates::OnEndFrame.AddUObject(this, &UVrgPerfSubsystem::OnEndFrame);
+}
+
+void UVrgPerfSubsystem::Deinitialize()
+{
+	if (bCapturing)
+	{
+		// 수집 중에 PIE가 끝나도 모은 것까지는 남긴다.
+		FinishCapture();
+	}
+	FTSTicker::GetCoreTicker().RemoveTicker(TickHandle);
+	FCoreDelegates::OnEndFrame.Remove(EndFrameHandle);
+	Super::Deinitialize();
+}
+
+void UVrgPerfSubsystem::OnEndFrame()
+{
+	// 프레임이 끝났으니 누산기를 확정값으로 넘긴다. Tick은 이 확정값을 읽는다.
+	VrgPerf::EndFrame();
+}
+
+void UVrgPerfSubsystem::BeginCapture(double DurationS, const FString& Label, bool bQuitWhenDone)
+{
+	if (bCapturing)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[VrgPerf] 이미 수집 중이다."));
+		return;
+	}
+	bCapturing = true;
+	bQuitAfterCapture = bQuitWhenDone;
+	CaptureRemainingS = FMath::Max(0.1, DurationS);
+	CaptureLabel = Label;
+	Samples.Reset();
+	UE_LOG(LogTemp, Display, TEXT("[VrgPerf] '%s' %.1f초 수집 시작"), *CaptureLabel, CaptureRemainingS);
+}
+
+bool UVrgPerfSubsystem::Tick(float DeltaTime)
+{
+	ElapsedS += DeltaTime;
+
+	FVrgPerfSample Sample;
+	Sample.TimeS = ElapsedS;
+	Sample.FrameMs = DeltaTime * 1000.0;
+	// 엔진이 이미 재고 있는 스레드별 시간. 사이클이므로 ms로 바꾼다.
+	Sample.GameMs = FPlatformTime::ToMilliseconds(GGameThreadTime);
+	Sample.DrawMs = FPlatformTime::ToMilliseconds(GRenderThreadTime);
+	uint64 GpuCycles = 0;
+	if (GpuHistoryState.PopFrameCycles(GpuCycles) != FRHIGPUFrameTimeHistory::EResult::Empty)
+	{
+		LastGpuMs = FPlatformTime::ToMilliseconds64(GpuCycles);
+	}
+	Sample.GpuMs = LastGpuMs;
+	Sample.Costs = VrgPerf::LastFrame();
+
+	if (bOverlayEnabled)
+	{
+		DrawOverlay(Sample);
+	}
+
+	if (bCapturing)
+	{
+		Samples.Add(Sample);
+		CaptureRemainingS -= DeltaTime;
+		if (CaptureRemainingS <= 0.0)
+		{
+			FinishCapture();
+		}
+	}
+	return true;
+}
+
+void UVrgPerfSubsystem::DrawOverlay(const FVrgPerfSample& Sample) const
+{
+	if (GEngine == nullptr)
+	{
+		return;
+	}
+	// D10: 이건 측정값이다. 목표치나 보장값이 아니다.
+	const double SolverShare = Sample.GameMs > 0.0 ? 100.0 * Sample.Costs.SolverMs / Sample.GameMs : 0.0;
+	GEngine->AddOnScreenDebugMessage(0x56524750, 0.0f, FColor::Yellow,
+		FString::Printf(
+			TEXT("[VrgPerf] Frame %.2f ms (%.1f fps) | Game %.2f | Draw %.2f | GPU %.2f"),
+			Sample.FrameMs, Sample.FrameMs > 0.0 ? 1000.0 / Sample.FrameMs : 0.0,
+			Sample.GameMs, Sample.DrawMs, Sample.GpuMs));
+	GEngine->AddOnScreenDebugMessage(0x56524751, 0.0f, FColor::Yellow,
+		FString::Printf(
+			TEXT("[VrgPerf] 솔버 %.2f ms (게임의 %.0f%%, 스텝 %d, 압력 %.2f ms / %d회) | 디버그 드로우 %.2f ms / %d개"),
+			Sample.Costs.SolverMs, SolverShare, Sample.Costs.SolverSteps,
+			Sample.Costs.PressureMs, Sample.Costs.PressureIterations,
+			Sample.Costs.DebugDrawMs, Sample.Costs.DrawnPrimitives));
+}
+
+void UVrgPerfSubsystem::FinishCapture()
+{
+	bCapturing = false;
+	if (Samples.Num() == 0)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[VrgPerf] 모은 프레임이 없다."));
+		return;
+	}
+
+	// 첫 몇 프레임은 레벨 로드와 셰이더 컴파일이 섞여 대표값이 아니다.
+	const int32 WarmupFrames = FMath::Min(Samples.Num() / 4, 30);
+
+	FString Csv = TEXT("TimeS,FrameMs,GameMs,DrawMs,GpuMs,SolverMs,PressureMs,CouplingMs,DebugDrawMs,SolverSteps,PressureIterations,DrawnPrimitives\n");
+	TArray<double> FrameMs;
+	TArray<double> GameMs;
+	TArray<double> DrawMs;
+	TArray<double> GpuMs;
+	TArray<double> SolverMs;
+	TArray<double> PressureMs;
+	TArray<double> DebugDrawMs;
+	double DrawnSum = 0.0;
+	double IterationSum = 0.0;
+	for (int32 Index = 0; Index < Samples.Num(); ++Index)
+	{
+		const FVrgPerfSample& S = Samples[Index];
+		Csv += FString::Printf(TEXT("%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%d,%d,%d\n"),
+			S.TimeS, S.FrameMs, S.GameMs, S.DrawMs, S.GpuMs,
+			S.Costs.SolverMs, S.Costs.PressureMs, S.Costs.CouplingMs, S.Costs.DebugDrawMs,
+			S.Costs.SolverSteps, S.Costs.PressureIterations, S.Costs.DrawnPrimitives);
+		if (Index < WarmupFrames)
+		{
+			continue;
+		}
+		FrameMs.Add(S.FrameMs);
+		GameMs.Add(S.GameMs);
+		DrawMs.Add(S.DrawMs);
+		GpuMs.Add(S.GpuMs);
+		SolverMs.Add(S.Costs.SolverMs);
+		PressureMs.Add(S.Costs.PressureMs);
+		DebugDrawMs.Add(S.Costs.DebugDrawMs);
+		DrawnSum += S.Costs.DrawnPrimitives;
+		IterationSum += S.Costs.PressureIterations;
+	}
+
+	const int32 Counted = FMath::Max(1, FrameMs.Num());
+	const FString Summary = FString::Printf(
+		TEXT("[VrgPerf] '%s' 프레임 %d개 (워밍업 %d개 제외 %d개)\n")
+		TEXT("  중앙값 ms  Frame %.2f | Game %.2f | Draw %.2f | GPU %.2f\n")
+		TEXT("  95%% ms     Frame %.2f | Game %.2f | Draw %.2f | GPU %.2f\n")
+		TEXT("  중앙값 ms  솔버 %.2f | 압력 %.2f | 디버그 드로우 %.2f\n")
+		TEXT("  프레임당 평균 압력 반복 %.1f회 | 디버그 프리미티브 %.0f개\n")
+		TEXT("  측정값이다. 보장값이 아니다 (D10)."),
+		*CaptureLabel, Samples.Num(), WarmupFrames, FrameMs.Num(),
+		PercentileMs(FrameMs, 0.5), PercentileMs(GameMs, 0.5),
+		PercentileMs(DrawMs, 0.5), PercentileMs(GpuMs, 0.5),
+		PercentileMs(FrameMs, 0.95), PercentileMs(GameMs, 0.95),
+		PercentileMs(DrawMs, 0.95), PercentileMs(GpuMs, 0.95),
+		PercentileMs(SolverMs, 0.5), PercentileMs(PressureMs, 0.5), PercentileMs(DebugDrawMs, 0.5),
+		IterationSum / Counted, DrawnSum / Counted);
+
+	const FString Directory = FPaths::ProjectSavedDir() / TEXT("Profiling");
+	IFileManager::Get().MakeDirectory(*Directory, true);
+	const FString Stem = Directory / FString::Printf(TEXT("VrgPerf-%s"), *CaptureLabel);
+	// UTF-8로 못 박는다. 기본값은 한글이 섞이면 UTF-16으로 저장해서
+	// 단계 간 비교를 위해 파일을 열어 볼 때 읽기 어렵다.
+	FFileHelper::SaveStringToFile(Csv, *(Stem + TEXT(".csv")),
+		FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM);
+	FFileHelper::SaveStringToFile(Summary, *(Stem + TEXT(".txt")),
+		FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM);
+
+	UE_LOG(LogTemp, Display, TEXT("%s"), *Summary);
+	UE_LOG(LogTemp, Display, TEXT("[VrgPerf] 기록: %s.csv / %s.txt"), *Stem, *Stem);
+
+	if (bQuitAfterCapture)
+	{
+		FPlatformMisc::RequestExit(false);
+	}
+}

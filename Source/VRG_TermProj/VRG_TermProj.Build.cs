@@ -12,9 +12,12 @@ public class VRG_TermProj : ModuleRules
 		// (의존 모듈 추가가 아니라 include 경로 설정이다.)
 		PublicIncludePaths.Add(ModuleDirectory);
 
-		// EnhancedInput은 디버그 키를 실제로 쓰기 시작한 지금 추가했다.
-		// UMG, Niagara, RenderCore, RHI는 아직 쓰지 않으므로 넣지 않는다.
-		PublicDependencyModuleNames.AddRange(new string[] { "Core", "CoreUObject", "Engine", "InputCore", "EnhancedInput" });
+		// EnhancedInput은 디버그 키를 실제로 쓰기 시작한 시점에 추가했다.
+		// RenderCore는 S7-0 계측에서 GGameThreadTime/GRenderThreadTime을 읽으려고 추가했다.
+		// RHI는 GPU 프레임 시간 때문이다 — UE 5.8에는 GGPUFrameTime 전역이 없고
+		// GRHIGPUFrameTimeHistory에서 꺼내야 한다.
+		// UMG와 Niagara는 아직 쓰지 않으므로 넣지 않는다.
+		PublicDependencyModuleNames.AddRange(new string[] { "Core", "CoreUObject", "Engine", "InputCore", "EnhancedInput", "RenderCore", "RHI" });
 
 		PrivateDependencyModuleNames.AddRange(new string[] {  });
 
