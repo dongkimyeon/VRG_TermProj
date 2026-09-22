@@ -89,6 +89,12 @@ namespace
 		TEXT("vrg.Volume.Opacity"), GVrgVolumeOpacity,
 		TEXT("볼륨 흡수 계수 [1/cm]. 음수면 액터 설정을 쓴다."));
 
+	// S7-4: 압력 스윕을 컴퓨트 셰이더로 돌릴지. 켜면 솔버가 게임 스레드 전용이 된다.
+	static int32 GVrgUseGpuPressure = 0;
+	static FAutoConsoleVariableRef CVarUseGpuPressure(
+		TEXT("vrg.Pressure.Gpu"), GVrgUseGpuPressure,
+		TEXT("압력 Jacobi를 컴퓨트 셰이더로 돌린다. 0=CPU FP64(기준), 1=GPU FP32"));
+
 	static int32 GVrgDrawFlow = -1;
 	static FAutoConsoleVariableRef CVarDrawFlow(
 		TEXT("vrg.Flow.Draw"), GVrgDrawFlow,
@@ -144,6 +150,28 @@ static FAutoConsoleCommand GVrgAirRunStepsCommand(
 		for (AAirFieldDebugActor* Actor : FindAirActors())
 		{
 			Actor->RunStepsImmediate(NumSteps);
+		}
+	}));
+
+// CPU FP64 해와 GPU FP32 해를 같은 입력에서 따로 구해 비교한다.
+// 비트 동일성은 검증이 아니므로 허용 오차로 본다 (검증 규칙).
+static FAutoConsoleCommand GVrgPressureValidateCommand(
+	TEXT("vrg.Pressure.Validate"),
+	TEXT("같은 입력에 CPU FP64 해와 GPU FP32 해를 비교해 로그에 남긴다."),
+	FConsoleCommandWithArgsDelegate::CreateLambda([](const TArray<FString>&)
+	{
+		for (AAirFieldDebugActor* Actor : FindAirActors())
+		{
+			double Normalized = 0.0;
+			FString Summary;
+			if (Actor->GetMutableSolver().CompareGpuAndCpuPressure(Normalized, Summary))
+			{
+				UE_LOG(LogTemp, Display, TEXT("[VrgPressure] %s"), *Summary);
+			}
+			else
+			{
+				UE_LOG(LogTemp, Warning, TEXT("[VrgPressure] %s"), *Summary);
+			}
 		}
 	}));
 
@@ -395,6 +423,7 @@ void AAirFieldDebugActor::Tick(float DeltaTime)
 	if (GVrgMinVisibleFraction >= 0.0f) { MinVisibleFraction = GVrgMinVisibleFraction; }
 	if (GVrgDrawFlow >= 0) { bDrawFlow = GVrgDrawFlow != 0; }
 	if (GVrgFlowStrength >= 0.0f) { FlowStrength = GVrgFlowStrength; }
+	Solver.SetUseGpuPressure(GVrgUseGpuPressure != 0);
 
 	// 규약 4: 통합 액터가 돌릴 때는 여기서 적분하지 않는다.
 	if (bSimRunning && !bDrivenExternally)

@@ -181,6 +181,22 @@ public:
 	// 게임 스레드 쪽(액터)이 이 값을 읽어 프레임 누산기에 더한다.
 	double GetLastPressureSolveMs() const { return LastPressureSolveMs; }
 
+	// S7-4: 압력 스윕을 컴퓨트 셰이더로 돌린다.
+	//
+	// **켜면 이 솔버는 게임 스레드 전용이 된다.** GPU 경로가 렌더 명령을 밀고
+	// 결과를 기다리기 때문이다. 워커 스레드에서 돌리려면 꺼야 한다.
+	// 끄면 기존 CPU FP64 경로 그대로이며, 그쪽이 검증 기준이자 폴백이다.
+	void SetUseGpuPressure(bool bInUse) { bUseGpuPressure = bInUse; }
+	bool IsUsingGpuPressure() const { return bUseGpuPressure; }
+
+	// 직전 압력 풀이가 실제로 GPU에서 돌았는지. GPU를 켜도 실패하면 CPU로 떨어진다.
+	bool DidLastPressureRunOnGpu() const { return bLastPressureRanOnGpu; }
+
+	// 지금 상태에서 CPU FP64 해와 GPU FP32 해를 따로 구해 비교한다.
+	// 검증 규칙대로 비트 동일성이 아니라 허용 오차로 본다. 결과는 로그에 남긴다.
+	// 원래 압력장을 건드리지 않는다.
+	bool CompareGpuAndCpuPressure(double& OutNormalizedDifference, FString& OutSummary);
+
 	// 고체 셀 표시를 갱신한 뒤 부른다. 압력 해와 버퍼를 다시 맞춘다.
 	void OnSolidCellsChanged();
 
@@ -206,6 +222,17 @@ private:
 	FPoissonSolveSettings PressureSettings;
 	FPoissonSolveResult LastPressureResult;
 	double LastPressureSolveMs = 0.0;
+	bool bUseGpuPressure = false;
+	bool bLastPressureRanOnGpu = false;
+
+	// GPU 경로용 임시 버퍼. 매 스텝 재할당하지 않으려고 멤버로 둔다.
+	TArray<float> GpuRightHandSide;
+	TArray<float> GpuField;
+	TArray<uint32> GpuFluidMask;
+
+	// 압력 Poisson을 푼다. GPU 경로와 CPU 경로를 여기서 가른다.
+	void SolvePressure();
+	bool SolvePressureOnGpu();
 
 	double InitialTemperatureK = 297.15;
 	double EnergyInJ = 0.0;

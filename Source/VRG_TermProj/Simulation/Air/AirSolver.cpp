@@ -2,6 +2,7 @@
 
 #include "Simulation/Air/AirSolver.h"
 #include "Simulation/Core/VrgPerfCounters.h"
+#include "VrgPressureGpuSolver.h"
 
 void FAirSolver::Initialize(const FAirGridParams& InGridParams, double InitialTempK)
 {
@@ -256,8 +257,7 @@ void FAirSolver::ProjectToDivergenceFree(double DeltaTimeS)
 		// 지역 타이머도 전역을 건드리지 않는다.
 		SCOPE_CYCLE_COUNTER(STAT_VrgPressureSolve);
 		const uint64 StartCycles = FPlatformTime::Cycles64();
-		LastPressureResult = JacobiPoissonSolver::Solve(Grid, DivergencePerS, Grid.PressurePa,
-			PressureScratch, PressureSettings);
+		SolvePressure();
 		LastPressureSolveMs = FPlatformTime::ToMilliseconds64(FPlatformTime::Cycles64() - StartCycles);
 	}
 
@@ -622,4 +622,177 @@ FAirSolverSnapshot FAirSolver::MakeSnapshot(double SimTimeS) const
 	Snapshot.CourantNumber = LastCourantNumber;
 
 	return Snapshot;
+}
+
+void FAirSolver::SolvePressure()
+{
+	bLastPressureRanOnGpu = false;
+	if (bUseGpuPressure && SolvePressureOnGpu())
+	{
+		bLastPressureRanOnGpu = true;
+		return;
+	}
+	// GPU를 껐거나 실패했다. 기준이자 폴백인 CPU FP64 경로다.
+	LastPressureResult = JacobiPoissonSolver::Solve(Grid, DivergencePerS, Grid.PressurePa,
+		PressureScratch, PressureSettings);
+}
+
+bool FAirSolver::SolvePressureOnGpu()
+{
+	const int32 NumCells = Grid.GetNumCells();
+	if (NumCells <= 0 || DivergencePerS.Num() != NumCells || !VrgPressureGpu::IsAvailable())
+	{
+		return false;
+	}
+
+	FPoissonSolveResult Result;
+
+	// 정규화 기준과 적합성은 CPU 경로와 같은 방식으로 잰다 (D5).
+	double ReferenceScale = 0.0;
+	double SumRightHandSide = 0.0;
+	int32 NumFluidCells = 0;
+	GpuRightHandSide.SetNumUninitialized(NumCells);
+	GpuFluidMask.SetNumUninitialized(NumCells);
+	GpuField.SetNumUninitialized(NumCells);
+	for (int32 Z = 0; Z < Grid.GetNumCellsZ(); ++Z)
+	{
+		for (int32 Y = 0; Y < Grid.GetNumCellsY(); ++Y)
+		{
+			for (int32 X = 0; X < Grid.GetNumCellsX(); ++X)
+			{
+				const int32 Index = Grid.CellIndex(X, Y, Z);
+				const bool bFluid = Grid.IsFluidCell(X, Y, Z);
+				GpuFluidMask[Index] = bFluid ? 1u : 0u;
+				GpuRightHandSide[Index] = float(DivergencePerS[Index]);
+				GpuField[Index] = float(Grid.PressurePa[Index]);
+				if (bFluid)
+				{
+					ReferenceScale = FMath::Max(ReferenceScale, FMath::Abs(DivergencePerS[Index]));
+					SumRightHandSide += DivergencePerS[Index];
+					++NumFluidCells;
+				}
+			}
+		}
+	}
+	Result.ReferenceScale = ReferenceScale;
+	Result.MeanRightHandSide = NumFluidCells > 0 ? SumRightHandSide / NumFluidCells : 0.0;
+
+	if (ReferenceScale <= UE_DOUBLE_SMALL_NUMBER)
+	{
+		for (double& Value : Grid.PressurePa) { Value = 0.0; }
+		Result.bConverged = true;
+		LastPressureResult = Result;
+		return true;
+	}
+	Result.bIncompatibleRightHandSide =
+		FMath::Abs(Result.MeanRightHandSide) > 1.0e-10 * ReferenceScale;
+
+	FVrgPressureGpuRequest Request;
+	Request.GridSize = FIntVector(Grid.GetNumCellsX(), Grid.GetNumCellsY(), Grid.GetNumCellsZ());
+	Request.CellSizeM = float(Grid.GetCellSizeM());
+	Request.Omega = float(FMath::Clamp(PressureSettings.Relaxation, 0.05, 1.0));
+
+	// 한 번에 다 돌리지 않고 덩어리로 나눈다. 매 반복 내려받으면 왕복 비용이 계산을 넘고,
+	// 한 번에 상한까지 돌리면 이미 수렴한 뒤에도 계속 돈다.
+	// 덩어리마다 CPU에서 평균을 빼고 잔차를 재서 D5대로 판정한다.
+	const int32 ChunkSize = FMath::Max(8, PressureSettings.ResidualCheckInterval * 4);
+	const int32 MaxIterations = FMath::Max(1, PressureSettings.MaxIterations);
+
+	for (int32 Done = 0; Done < MaxIterations; Done += ChunkSize)
+	{
+		Request.Iterations = FMath::Min(ChunkSize, MaxIterations - Done);
+		if (!VrgPressureGpu::RunJacobiSweeps(Request, GpuRightHandSide, GpuFluidMask, GpuField))
+		{
+			// 여기서 실패하면 압력장을 건드리지 않은 상태다. 호출자가 CPU로 간다.
+			return false;
+		}
+		for (int32 Index = 0; Index < NumCells; ++Index)
+		{
+			Grid.PressurePa[Index] = double(GpuField[Index]);
+		}
+		// CPU 경로는 매 반복 뺐지만 여기서는 덩어리마다 뺀다.
+		// 상수를 더해도 Laplacian이 0이라 잔차가 변하지 않으므로 수렴에는 영향이 없다.
+		JacobiPoissonSolver::RemoveFluidMean(Grid, Grid.PressurePa);
+
+		Result.IterationsUsed = Done + Request.Iterations;
+		Result.NormalizedResidual =
+			JacobiPoissonSolver::MaxAbsResidual(Grid, Grid.PressurePa, DivergencePerS) / ReferenceScale;
+		if (Result.NormalizedResidual <= PressureSettings.NormalizedResidualTarget)
+		{
+			Result.bConverged = true;
+			LastPressureResult = Result;
+			return true;
+		}
+		for (int32 Index = 0; Index < NumCells; ++Index)
+		{
+			GpuField[Index] = float(Grid.PressurePa[Index]);
+		}
+	}
+
+	// D5: 목표에 못 미친 채 상한에 걸렸다. 숨기지 않는다.
+	Result.bConverged = false;
+	LastPressureResult = Result;
+	return true;
+}
+
+bool FAirSolver::CompareGpuAndCpuPressure(double& OutNormalizedDifference, FString& OutSummary)
+{
+	OutNormalizedDifference = 0.0;
+	const int32 NumCells = Grid.GetNumCells();
+	if (NumCells <= 0 || DivergencePerS.Num() != NumCells)
+	{
+		OutSummary = TEXT("발산 우변이 없다. 스텝을 한 번 돌린 뒤에 비교해야 한다.");
+		return false;
+	}
+	if (!VrgPressureGpu::IsAvailable())
+	{
+		OutSummary = TEXT("이 실행에서는 컴퓨트 경로를 쓸 수 없다.");
+		return false;
+	}
+
+	// 원래 압력장을 건드리지 않는다.
+	const TArray<double> SavedPressure = Grid.PressurePa;
+	const bool bSavedUseGpu = bUseGpuPressure;
+
+	// 같은 초기 추정값(0)에서 출발해야 둘을 비교할 수 있다.
+	for (double& Value : Grid.PressurePa) { Value = 0.0; }
+	bUseGpuPressure = false;
+	SolvePressure();
+	const FPoissonSolveResult CpuResult = LastPressureResult;
+	const TArray<double> CpuSolution = Grid.PressurePa;
+
+	for (double& Value : Grid.PressurePa) { Value = 0.0; }
+	bUseGpuPressure = true;
+	SolvePressure();
+	const FPoissonSolveResult GpuResult = LastPressureResult;
+	const bool bRanOnGpu = bLastPressureRanOnGpu;
+	const TArray<double> GpuSolution = Grid.PressurePa;
+
+	Grid.PressurePa = SavedPressure;
+	bUseGpuPressure = bSavedUseGpu;
+
+	if (!bRanOnGpu)
+	{
+		OutSummary = TEXT("GPU 경로가 실패해 CPU로 떨어졌다. 비교할 수 없다.");
+		return false;
+	}
+
+	double MaxAbsDifference = 0.0;
+	double MaxAbsCpu = 0.0;
+	for (int32 Index = 0; Index < NumCells; ++Index)
+	{
+		MaxAbsDifference = FMath::Max(MaxAbsDifference, FMath::Abs(GpuSolution[Index] - CpuSolution[Index]));
+		MaxAbsCpu = FMath::Max(MaxAbsCpu, FMath::Abs(CpuSolution[Index]));
+	}
+	OutNormalizedDifference = MaxAbsCpu > 0.0 ? MaxAbsDifference / MaxAbsCpu : 0.0;
+
+	// 검증 규칙: 비트 동일성이 아니라 허용 오차로 본다. 정규화 기준을 함께 적는다.
+	OutSummary = FString::Printf(
+		TEXT("셀 %d | CPU FP64 %s %d회 잔차 %.3e | GPU FP32 %s %d회 잔차 %.3e | ")
+		TEXT("최대 차이 %.3e / CPU 해 최대 크기 %.6f 기준 정규화 %.3e"),
+		NumCells,
+		CpuResult.bConverged ? TEXT("수렴") : TEXT("수렴실패"), CpuResult.IterationsUsed, CpuResult.NormalizedResidual,
+		GpuResult.bConverged ? TEXT("수렴") : TEXT("수렴실패"), GpuResult.IterationsUsed, GpuResult.NormalizedResidual,
+		MaxAbsDifference, MaxAbsCpu, OutNormalizedDifference);
+	return true;
 }

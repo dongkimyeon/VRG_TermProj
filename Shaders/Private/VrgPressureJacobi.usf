@@ -1,0 +1,85 @@
+// Fill out your copyright notice in the Description page of Project Settings.
+//
+// S7-4: 균일 격자 압력 Poisson의 완화 Jacobi 한 스윕.
+//
+// CPU FP64 경로(JacobiPoissonSolver)와 **같은 식**을 푼다:
+//   (sum(이웃) - 이웃개수 * 중심) / h^2 = B
+// 를 중심에 대해 풀고 omega만큼만 옮긴다.
+//
+// D6: Jacobi다. 읽기 버퍼(XIn)와 쓰기 버퍼(XOut)가 완전히 분리돼 있어
+// 스레드 실행 순서가 결과에 영향을 주지 않는다. GPU에서는 이게 선택이 아니라 필수다.
+//
+// 고체 셀과 도메인 밖은 이웃으로 치지 않는다. 벽 바깥과 똑같이 다뤄야
+// 그 면으로 압력 기울기가 생기지 않는다 (CPU 경로와 같은 처리).
+//
+// 평균 빼기는 여기서 하지 않는다. 이유는 VrgPressureGpuSolver.h에 적었다.
+
+#include "/Engine/Public/Platform.ush"
+
+StructuredBuffer<float> RhsBuffer;      // B [1/s^2 등, X의 단위 / m^2]
+StructuredBuffer<uint> FluidBuffer;     // 1이면 공기, 0이면 고체
+StructuredBuffer<float> XIn;
+RWStructuredBuffer<float> XOut;
+
+int3 GridSize;
+int NumCells;
+float CellSizeSquared;
+float Omega;
+
+[numthreads(64, 1, 1)]
+void MainJacobiCS(uint3 DispatchId : SV_DispatchThreadID)
+{
+	const int Index = int(DispatchId.x);
+	if (Index >= NumCells)
+	{
+		return;
+	}
+
+	// 고체 셀은 풀지 않고 그대로 둔다.
+	if (FluidBuffer[Index] == 0)
+	{
+		XOut[Index] = XIn[Index];
+		return;
+	}
+
+	// 선형 인덱스 규칙은 CPU의 FUniformAirGrid::CellIndex와 같아야 한다.
+	//   Index = X + NumX * (Y + NumY * Z)
+	const int X = Index % GridSize.x;
+	const int Y = (Index / GridSize.x) % GridSize.y;
+	const int Z = Index / (GridSize.x * GridSize.y);
+
+	float NeighborSum = 0.0f;
+	int NeighborCount = 0;
+
+	// 여섯 방향. 도메인 밖이거나 고체면 항이 통째로 빠진다 (Neumann).
+	[unroll] for (int Axis = 0; Axis < 3; ++Axis)
+	{
+		[unroll] for (int Side = 0; Side < 2; ++Side)
+		{
+			int3 Neighbor = int3(X, Y, Z);
+			Neighbor[Axis] += (Side == 0) ? -1 : 1;
+
+			if (Neighbor[Axis] < 0 || Neighbor[Axis] >= GridSize[Axis])
+			{
+				continue;
+			}
+			const int NeighborIndex = Neighbor.x + GridSize.x * (Neighbor.y + GridSize.y * Neighbor.z);
+			if (FluidBuffer[NeighborIndex] == 0)
+			{
+				continue;
+			}
+			NeighborSum += XIn[NeighborIndex];
+			++NeighborCount;
+		}
+	}
+
+	// 이웃이 없는 셀(1x1x1 격자, 고체에 둘러싸인 셀)은 풀 것이 없다.
+	if (NeighborCount == 0)
+	{
+		XOut[Index] = XIn[Index];
+		return;
+	}
+
+	const float JacobiUpdate = (NeighborSum - CellSizeSquared * RhsBuffer[Index]) / float(NeighborCount);
+	XOut[Index] = lerp(XIn[Index], JacobiUpdate, Omega);
+}
