@@ -291,7 +291,9 @@ void ADataCenterRoomActor::BuildNetwork()
 		// 위상은 InRowLoopBuilder가 만든다. 이 액터는 거기에 좌표만 붙인다.
 		FInRowLoopSpec Spec;
 		Spec.NumRacks = Row.Racks.Num();
-		Spec.SledsPerRack = FMath::Max(1, SledsPerRack);
+		// Branch resistance scales with the liquid-cooled devices that are docked (compute and NVLink
+		// switch trays on the GB200 preset; every unit on the legacy uniform rack).
+		Spec.SledsPerRack = Row.Racks.Num() > 0 && Row.Racks[0] ? FMath::Max(1, Row.Racks[0]->GetNumLiquidSlots()) : FMath::Max(1, SledsPerRack);
 		Spec.HeaderSegmentResistancePaS2M6 = HeaderSegmentResistancePaS2M6;
 		Spec.RackBranchResistancePaS2M6 = RackBranchResistancePaS2M6;
 		Spec.ReturnToCduResistancePaS2M6 = ReturnToCduResistancePaS2M6;
@@ -317,7 +319,7 @@ void ADataCenterRoomActor::BuildNetwork()
 		Spec.DockedSledsPerRack.Reset();
 		for (const TObjectPtr<ARackThermalActor>& Rack : Row.Racks)
 		{
-			Spec.DockedSledsPerRack.Add(Rack != nullptr ? Rack->GetNumDockedSleds() : Spec.SledsPerRack);
+			Spec.DockedSledsPerRack.Add(Rack != nullptr ? Rack->GetNumDockedLiquidSlots() : Spec.SledsPerRack);
 		}
 
 		const FInRowLoopHandles Handles = InRowLoopBuilder::AddLoop(Network, Spec);
@@ -633,13 +635,8 @@ void ADataCenterRoomActor::SpawnRackGrid()
 			// GB200 NVL72 프리셋. 컴퓨트 트레이 18장, 트레이당 Grace 2 + Blackwell 4.
 			Rack->RackSizeM = RackSizeM;
 			Rack->bUseGjModels = bUseGjConnections;
-			Rack->Params = FRackThermalModel::MakeGb200Nvl72Params();
-			Rack->Input.ComponentHeatW = FRackThermalModel::MakeGb200Nvl72HeatW();
-			Rack->Input.SledDocked.Init(true, Rack->Params.NumSleds);
-
 			// 유량과 라디에이터도 같은 운전점에서 역산한 값으로 맞춘다.
-			Rack->Input.CoolantMassFlowKgs = 2.3;
-			Rack->Input.TotalAirMassFlowKgs = 0.6;
+			Rack->ApplyGb200Nvl72Preset();
 			Rack->Radiator.UAWK = 1.1e4;
 
 			// 방 전체에서는 유닛 라벨이 너무 많아진다. 랙 하나를 볼 때만 켠다.
@@ -809,7 +806,7 @@ void ADataCenterRoomActor::BuildGjDecorMeshes()
 			D.ToWorld=FTransform(Rack->GetActorQuat(),SimUnits::UnrealToMeters(Rack->GetActorLocation()));
 			D.HalfExtentM=Rack->RackSizeM*.5; D.HeightM=Rack->RackSizeM.Z; D.Outward=-Rack->GetActorForwardVector();
 			for (int32 Col=1;Col<=GjRackLayout::PortsPerSwitchRow;++Col)
-				D.PortM.Add(SimUnits::UnrealToMeters(Rack->GjPointWorldCm(GjRackLayout::SwitchPortM(GjRackLayout::SwitchZM,Col,true))));
+				D.PortM.Add(SimUnits::UnrealToMeters(Rack->GjPointWorldCm(GjRackLayout::SwitchPortM(Rack->GetUplinkSwitchZM(),Col,true))));
 			// Upper-row cages centred on the switch; the lower row belongs to the node harness.
 			for (int32 J=0;J<Uplinks;++J) D.UplinkPorts.Add(GjRackLayout::PortsPerSwitchRow/2-Uplinks/2+J);
 			In.Devices.Add(MoveTemp(D));

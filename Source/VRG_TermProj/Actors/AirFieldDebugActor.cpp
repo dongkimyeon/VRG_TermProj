@@ -45,13 +45,12 @@ AAirFieldDebugActor::AAirFieldDebugActor()
 	GridParams.NumCellsZ = 16;
 	GridParams.CellSizeM = 0.25;
 
-	// 공기 해석은 압력 풀이가 무겁다. 목표를 너무 조이면 프레임이 죽는다.
-	// D5대로 목표와 상한을 함께 두고, 못 미치면 화면에 수렴 실패를 띄운다.
-	// 실시간용이라 테스트(1e-8, 수천 회)보다 훨씬 느슨하다. 프레임 안에 끝나야 한다.
-	// 1e-5 / 300회로 뒀더니 잔차 1.04e-5로 목표를 아슬아슬하게 못 넘겨 매번
-	// 수렴 실패가 떴다. 목표를 현실적인 값으로 맞췄다.
-	PressureSettings.NormalizedResidualTarget = 2.0e-5;
-	PressureSettings.MaxIterations = 400;
+	// D5: 목표와 상한을 함께 두고, 못 미치면 화면에 수렴 실패를 띄운다.
+	// 2-1 이전(완화 Jacobi)에는 2e-5 / 400회로 느슨하게 둬도 L_Test에서 매 스텝 상한에 걸렸다.
+	// 멀티그리드 전처리 CG는 L_Test(20250셀, 랙 고체)에서 1e-6까지 스텝당 10회 안팎이라 목표를 조였다.
+	// 상한은 MG-PCG 반복 수다. 테스트에서 격자 8배에도 20~22회였으므로 100회면 넉넉하다.
+	PressureSettings.NormalizedResidualTarget = 1.0e-6;
+	PressureSettings.MaxIterations = 100;
 
 	HeatSources.Add(FAirHeatSourceBox());
 }
@@ -98,6 +97,13 @@ namespace
 	static FAutoConsoleVariableRef CVarUseGpuPressure(
 		TEXT("vrg.Pressure.Gpu"), GVrgUseGpuPressure,
 		TEXT("압력 Jacobi를 컴퓨트 셰이더로 돌린다. 0=CPU FP64(기준), 1=GPU FP32"));
+
+	// 2-1: pressure by multigrid-preconditioned CG (CPU FP64). 1 = default; 0 falls back to Jacobi
+	// (then vrg.Pressure.Gpu picks the GPU or CPU Jacobi reference).
+	static int32 GVrgMultigridPressure = 1;
+	static FAutoConsoleVariableRef CVarMultigridPressure(
+		TEXT("vrg.Pressure.Multigrid"), GVrgMultigridPressure,
+		TEXT("압력을 멀티그리드 전처리 CG로 푼다. 1=기본, 0=Jacobi 기준 경로"));
 
 	static int32 GVrgDrawFlow = -1;
 	static FAutoConsoleVariableRef CVarDrawFlow(
@@ -463,6 +469,7 @@ void AAirFieldDebugActor::Tick(float DeltaTime)
 	if (GVrgDrawFlow >= 0) { bDrawFlow = GVrgDrawFlow != 0; }
 	if (GVrgFlowStrength >= 0.0f) { FlowStrength = GVrgFlowStrength; }
 	Solver.SetUseGpuPressure(GVrgUseGpuPressure != 0);
+	Solver.SetUseMultigridPressure(GVrgMultigridPressure != 0);
 
 	// 예약된 예열을 먼저 나눠 소화한다. 다 끝나면 평소 적분으로 돌아간다.
 	if (PendingWarmupSteps > 0)

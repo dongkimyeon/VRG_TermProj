@@ -73,6 +73,12 @@ struct FRackCouplingLink
 	// 수력에 안 붙어 있을 때 쓸 냉각수 질량유량 [kg/s].
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Coupling")
 	double FallbackCoolantMassFlowKgs = 2.3;
+
+	// Per-slot air coupling (optional). Slot s uses cells [Start[s], Start[s+1]) of the flat lists: the
+	// inlet / exhaust cells whose height overlaps that slot. When these are sized NumSlots + 1 the bridge
+	// gives every slot its own inlet temperature and injects every slot's air-side heat at its own height
+	// instead of lumping the rack. A slot with no cells falls back to the rack-wide lists above.
+	TArray<int32> SlotInletStart, SlotInletCells, SlotExhaustStart, SlotExhaustCells;
 };
 
 // 한 스텝에 실제로 오간 값. 화면에 그대로 띄워 어디서 끊겼는지 볼 수 있게 한다.
@@ -142,7 +148,7 @@ public:
 
 	// 수력망과 공기 격자를 붙인다. nullptr이면 그 도메인은 쓰지 않는다.
 	void SetHydraulicNetwork(FHydraulicNetwork* InNetwork) { HydraulicNetwork = InNetwork; }
-	void SetAirSolver(FAirSolver* InAirSolver) { AirSolver = InAirSolver; }
+	void SetAirSolver(FAirSolver* InAirSolver) { if (AirSolver != InAirSolver) bLedgerBaselineTaken = false; AirSolver = InAirSolver; }
 
 	// 물의 밀도 [kg/m^3]. 체적유량을 질량유량으로 바꿀 때만 쓴다.
 	void SetCoolantDensityKgM3(double InDensityKgM3) { CoolantDensityKgM3 = InDensityKgM3; }
@@ -165,6 +171,9 @@ public:
 	double GetEnergyStoredJ() const;
 	double GetEnergyResidualJ() const;
 	double GetNormalizedEnergyResidual() const;
+	// Where a global residual comes from [J]: sum of rack-model residuals, air-solver residual, heat handed
+	// to the air but dropped because the target cell was solid or outside the grid, and the rest (coupling).
+	FString DescribeEnergyLedger() const;
 
 	// 랙마다 붙은 라디에이터가 지금 버리는 열의 합 [W].
 	double GetTotalRadiatorRejectedW() const { return LastRadiatorRejectedW; }
@@ -203,6 +212,14 @@ private:
 
 	// 공기 격자에 넣을 셀별 열원 [W]. 매 스텝 재할당하지 않으려고 멤버로 들고 있다.
 	TArray<double> ScratchCellHeatW;
+	double DroppedAirHeatJ = 0.0;
+	double RackCoolantOutJ = 0.0, RackAirOutJ = 0.0;
+	// The rack models and the air solver may have run before this bridge took over (the integrated actor
+	// retries until the room has found its racks). The global ledger counts only what happened since the
+	// first coupled step, so those earlier standalone steps cannot show up as a constant residual.
+	bool bLedgerBaselineTaken = false;
+	double BaselineModelInJ = 0.0, BaselineStoredJ = 0.0, BaselineAirOutJ = 0.0;
+	double GetRawEnergyStoredJ() const;
 
 	// 수력에서 랙별 냉각수 질량유량을 읽는다. 없으면 예비값을 쓴다.
 	void PullCoolantFlow();

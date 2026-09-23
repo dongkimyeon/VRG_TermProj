@@ -171,13 +171,13 @@ void ADataCenterDebugController::InitializeKnobsFromTargets()
 		Knob.bMultiplicative = false;
 	};
 
-	const int32 CpuIndex = FRackThermalModel::NodeIndex(0, ERackComponent::Cpu);
-	const int32 GpuIndex = FRackThermalModel::NodeIndex(0, ERackComponent::Gpu);
-	if (Rack->Input.ComponentHeatW.IsValidIndex(GpuIndex))
-	{
-		SetupHeatKnob(CpuHeatKnob, Rack->Input.ComponentHeatW[CpuIndex]);
-		SetupHeatKnob(GpuHeatKnob, Rack->Input.ComponentHeatW[GpuIndex]);
-	}
+	// Knobs are per chip: the first CPU / GPU node of the rack sets the range, every node of that kind follows.
+	TArray<FRackComponentParams> Nodes; TArray<int32> Starts;
+	FRackThermalModel::ResolveLayout(Rack->Params, Nodes, Starts);
+	const int32 CpuIndex = Nodes.IndexOfByPredicate([](const FRackComponentParams& P) { return P.Kind == ERackPartKind::Cpu; });
+	const int32 GpuIndex = Nodes.IndexOfByPredicate([](const FRackComponentParams& P) { return P.Kind == ERackPartKind::Gpu; });
+	if (Rack->Input.ComponentHeatW.IsValidIndex(CpuIndex)) SetupHeatKnob(CpuHeatKnob, Rack->Input.ComponentHeatW[CpuIndex]);
+	if (Rack->Input.ComponentHeatW.IsValidIndex(GpuIndex)) SetupHeatKnob(GpuHeatKnob, Rack->Input.ComponentHeatW[GpuIndex]);
 
 	// 라디에이터는 현재 UA를 가운데 두고 위아래로 16배씩 훑는다.
 	// 곱셈 증분 1.25배이므로 한쪽 끝까지 약 13번이다.
@@ -267,16 +267,17 @@ void ADataCenterDebugController::ApplyHeatKnobs()
 			continue;
 		}
 
-		const int32 NumSleds = FMath::Max(1, Rack->Params.NumSleds);
-		if (Rack->Input.ComponentHeatW.Num() != NumSleds * NumRackComponents)
+		TArray<FRackComponentParams> Nodes; TArray<int32> Starts;
+		FRackThermalModel::ResolveLayout(Rack->Params, Nodes, Starts);
+		if (Rack->Input.ComponentHeatW.Num() != Nodes.Num())
 		{
 			continue;
 		}
 
-		for (int32 SledIndex = 0; SledIndex < NumSleds; ++SledIndex)
+		for (int32 Node = 0; Node < Nodes.Num(); ++Node)
 		{
-			Rack->Input.ComponentHeatW[FRackThermalModel::NodeIndex(SledIndex, ERackComponent::Cpu)] = CpuHeatKnob.Value;
-			Rack->Input.ComponentHeatW[FRackThermalModel::NodeIndex(SledIndex, ERackComponent::Gpu)] = GpuHeatKnob.Value;
+			if (Nodes[Node].Kind == ERackPartKind::Cpu) Rack->Input.ComponentHeatW[Node] = CpuHeatKnob.Value;
+			if (Nodes[Node].Kind == ERackPartKind::Gpu) Rack->Input.ComponentHeatW[Node] = GpuHeatKnob.Value;
 		}
 	}
 }

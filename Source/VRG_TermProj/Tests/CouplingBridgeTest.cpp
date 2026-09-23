@@ -62,7 +62,7 @@ namespace
 			{
 				FInRowLoopSpec Spec;
 				Spec.NumRacks = NumRacks;
-				Spec.SledsPerRack = FRackThermalModel::Gb200Nvl72ComputeTrays;
+				Spec.SledsPerRack = FRackThermalModel::CountLiquidSlots(FRackThermalModel::MakeGb200Nvl72Params());
 				Spec.HeaderSegmentResistancePaS2M6 = 6.0e6;
 				Spec.RackBranchResistancePaS2M6 = 1.7e10;
 				Spec.ReturnToCduResistancePaS2M6 = 1.5e7;

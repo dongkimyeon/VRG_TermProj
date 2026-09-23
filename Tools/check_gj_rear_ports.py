@@ -32,8 +32,12 @@ for r in data:
     for c, cs in cool_s:
         gap = min(math.dist(p, q) for p in samples[r['name']][::2] for q in cs) - (r['diameter_m'] + c['diameter_m']) / 2
         if gap < worst[0]: worst = (gap, r['name'], c['name'])
-# Solid bodies per rack (rack-local x, y half-width, z range): switch after the 180 deg yaw, node stack.
-boxes = [((-.476, .206), .241, (1.91, 1.954)), ((.055 - .42, .055 + .4575), .2415, (.392, .392 + 17 * .04445 + .0435))]
+# Solid bodies per rack (rack-local x, y half-width, z range), from the shared NVL72 layout: every mounted
+# device (trays and shelves), and both management switches after their 180 deg yaw.
+sys.path.insert(0, str(ROOT / 'Art/GJ_PIPE&CABLE/scripts'))
+import rear_data_layout as L
+boxes = [((.055 - .42, .055 + .4575), .2415, (z, z + .0435)) for z in L.COMPUTE_Z + L.SWITCHTRAY_Z + L.SHELF_Z]
+boxes += [((L.SWITCH_POS[0] - .342, L.SWITCH_POS[0] + .34), .241, (z, z + .0437)) for z in L.MGMT_Z]
 inside = []
 for n, s in samples.items():
     for p in s:

@@ -118,9 +118,10 @@ D3D12 에디터 스크린샷: `Art/GJ_PIPE&CABLE/previews/UE_GJ_Front.png`, `UE_
 | 패치·블랭크·스파인 끔 | 132.04 | 132.01 | 68.07 | 20.40 |
 | 켬 | 133.31 | 133.28 | 70.65 | 21.30 |
 
-이번 추가분은 Draw 약 +2.6 ms다(같은 바이너리 반복 편차 약 1 ms). **Draw 68 ms는 이번 변경 전부터 있던 값**이며
-그것만으로 30 fps 선(33.3 ms)을 넘는다. S7-3 기록(Draw 4.58 ms) 이후 GJ 모델 통합에서 늘어난 것으로 보이며
-(곡선 구간마다 동적 머티리얼 인스턴스를 만든다), 원인 분리는 하지 않았다. Frame은 여전히 압력 반복 상한(1600회/프레임)에 묶인 Game이 정한다.
+이번 추가분은 Draw 약 +2.6 ms다(같은 바이너리 반복 편차 약 1 ms).
+**정정 (같은 날 2-1 작업에서 확인):** Draw 68 ms의 원인은 GJ 메시가 아니라 **GPU 압력 Jacobi 경로**였다.
+그 경로는 덩어리마다 `BlockUntilGPUIdle`로 렌더 스레드를 붙잡고, 프레임당 1600회를 돌았다. 같은 장면에서
+GPU Jacobi Draw 67.62 ms / CPU Jacobi 16.23 ms / 멀티그리드 3.81 ms로 확인했다 (CLAUDE.md "2-1" 절).
 
 ## 재생성
 
@@ -157,25 +158,8 @@ CDU에는 냉각수 공급·회수관을 연결한다. 데이터선을 CDU 냉�
 온도별 부품 색 덮어쓰기는 GJ 모델에서 생략하고 기존 수치 표시를 사용한다.
 실제 HMD 프레임률과 패키징 결과는 별도 검증이 필요하다.
 
-## 미해결: L_Test 공기장 압력 수렴 실패
+## 해결: L_Test 공기장 압력 수렴 실패 (2026-09-23)
 
-2026-09-23 UE 5.8.2 / D3D12 실제 실행의 HUD에서 t=1.1 s에
-압력 반복 상한 400회, 정규화 잔차 약 1.01e-4와
-"압력 수렴 실패 - 속도장 믿지 말 것" 표시를 확인했다. **해결되지 않았다.**
-71개 Automation Test 성공은 이 레벨의 장시간 압력 수렴을 보장하지 않는다.
-모델 교체 전후 동일 조건 비교를 하지 않아 이번 교체가 원인인지는 확인되지 않았다.
-
-관측 실행 명령(프로젝트 루트 PowerShell, 엔진 경로는 설치 위치에 맞춤):
-
-```powershell
-& 'E:/UE_5.8/Engine/Binaries/Win64/UnrealEditor-Cmd.exe' "$PWD/VRG_TermProj.uproject" /Game/Maps/L_Test -game -RenderOffscreen -windowed -ResX=1280 -ResY=720 -unattended -nosplash '-ExecCmds=vrg.Air.DrawSlice 0,vrg.Air.DrawVolume 0,vrg.Octree.DrawWireframe 0,vrg.Air.FrameDomain 0.7,vrg.Perf.Capture 6 GJModels quit' "-abslog=$PWD/Saved/GJ_Visual.log"
-```
-
-로컬 관측 자료는 `Saved/GJ_Visual.log`, `Saved/Profiling/VrgPerf-GJModels.*`,
-`Saved/Screenshots/WindowsEditor/VrgShot-GJModels.png`에 있다.
-`Saved/`는 팀 규약에 따라 커밋하지 않으므로 다른 PC에서는 위 명령으로 다시 수집한다.
-화면 메시지를 숨긴 `GJModelsClean` 이미지는 수렴 진단 자료로 사용하지 않는다.
-
-다음 담당자는 같은 초기조건·격자·압력 경로(CPU/GPU)·시간 간격에서 잔차 이력을 수집하고,
-새 랙 AABB에 따른 고체 셀/흡배기 연결 변화와 초기 과도 상태를 분리해 비교해야 한다.
-수렴 목표를 느슨하게 하거나 경고를 숨겨 완료 처리하지 않는다.
+원인은 모델 교체가 아니라 압력 해법이었다. 랙을 고체로 막은 불규칙한 영역에서 완화 Jacobi는 400회 상한 안에
+1e-5 근처도 못 간다(같은 문제의 테스트에서 4000회에 1.9e-6). 멀티그리드 전처리 CG로 바꾼 뒤
+목표 1e-6에서 1500스텝 예열 + 8초 측정 동안 **수렴 실패 0회**다. 자세한 수치는 CLAUDE.md "2-1" 절.

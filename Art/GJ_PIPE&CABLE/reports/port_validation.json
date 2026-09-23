@@ -1,6 +1,6 @@
 {
   "status": "PASS",
-  "connector_tail_joins": 226,
-  "max_gap_m": 5.984638788894586e-08,
+  "connector_tail_joins": 298,
+  "max_gap_m": 5.868896936744663e-08,
   "scope": "Centreline endpoint-to-connector-tail alignment only. Not an obstacle or minimum bend-radius test."
 }

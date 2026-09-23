@@ -89,10 +89,28 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Cooling")
 	double CoilBottomZM = 2.6;
 
-	// 코일 전체 전도도 [W/K]. 운전점에서 역산해 넣어야 한다.
-	// 랙 N대의 공랭 부하를 접근온도 약 10 K로 빼려면 UA = 부하 / 10이다.
+	// 2-2: coil UA sized from the design point instead of a fixed number.
+	//   UA = air-side IT load / CoilDesignApproachK
+	// The air-side load is each rack's component heat that leaves through air (air-cooled parts, and the
+	// air share of any part cooled both ways). A fixed 3000 W/K removed 28 kW against a ~133 kW air load
+	// in L_Test, so the room heated without bound.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Cooling")
+	bool bAutoSizeCoil = true;
+
+	// Design difference between the air at the coil and the coil supply temperature [K].
+	// 10 K with an 18 C supply means ceiling air settles near 28 C at design load.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Cooling", meta = (ClampMin = "1.0"))
+	double CoilDesignApproachK = 10.0;
+
+	// Coil conductance [W/K] when bAutoSizeCoil is off.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Cooling")
 	double CoilTotalUAWK = 3000.0;
+
+	// UA actually used after the last rebuild (auto-sized or CoilTotalUAWK), and the air load it was sized for.
+	UFUNCTION(BlueprintCallable, Category = "Cooling")
+	double GetEffectiveCoilUAWK() const { return EffectiveCoilUAWK; }
+	UFUNCTION(BlueprintCallable, Category = "Cooling")
+	double GetDesignAirLoadW() const { return DesignAirLoadW; }
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Cooling")
 	double CoilSupplyTempK = 291.15;
@@ -121,6 +139,8 @@ private:
 	TArray<TObjectPtr<ARackThermalActor>> Racks;
 
 	bool bSimRunning = false;
+	double EffectiveCoilUAWK = 0.0;
+	double DesignAirLoadW = 0.0;
 	bool bNeedsRebuild = true;
 
 	// 남은 예열 스텝. 프레임마다 예산만큼만 소화한다.

@@ -1,41 +1,64 @@
-"""Rear data-port layout shared by build_connections.py and migrate_rear_data.py.
+"""GB200 NVL72 rack layout shared by build_connections.py, migrate_*.py and the harness bake.
 Blender metres, rack-local except yc (rack centre Y). +X is the intake face / sled pull direction.
 Data lives on the rear (-X) with the coolant. The rack itself is never rotated.
 """
-NODE_X = .055                       # compute node pivot in the rack
-NODE_Z0, NODE_PITCH = .392, .04445
-SWITCH_POS = (-.134, 1.91)          # switch pivot (x, z); yawed 180 deg so its port panel faces -X
+NODE_X = .055                       # tray pivot in the rack (compute and NVLink switch trays)
+UNIT = .04445                       # 1U
+Z0 = .392 - 7 * UNIT                # U0 bottom; U7 was the first compute tray before the NVL72 layout
+
+# GB200 NVL72 U map, bottom-up. MUST match LayoutU in Source/.../RackThermalModel.cpp (the thermal model
+# decides where heat is released; the art must sit in the same place). 0 compute tray, 1 NVLink switch tray,
+# 2 power shelf, 3 management switch, -1 blank.
+LAYOUT_U = [-1, -1] + [2] * 4 + [0] * 8 + [1] * 9 + [0] * 10 + [2] * 4 + [3] * 2
+def slots_of(kind): return [Z0 + u * UNIT for u, t in enumerate(LAYOUT_U) if t == kind]
+COMPUTE_Z = slots_of(0)             # 18, bottom-up = compute ordinal / harness index
+SWITCHTRAY_Z = slots_of(1)          # 9
+SHELF_Z = slots_of(2)               # 8
+MGMT_Z = slots_of(3)                # 2; the top one takes the node data harness and the uplinks
+SWITCH_POS = (-.134, MGMT_Z[-1])    # switch pivot (x, z); yawed 180 deg so its port panel faces -X
 SWITCH_YAW_DEG = 180.0
 NODE_IO_Y = [-.1155 + k * .033 for k in range(8)]   # rear IO cages, clear of the QD couplers at |y|=.197
 NODE_IO_Z = .023
 NODE_PORT_X = NODE_X - .42          # rear cross-member face
 SWITCH_PORT_X = SWITCH_POS[0] - .342  # cage outer face after the 180 deg yaw
+LOWER_PORT_Z, UPPER_PORT_Z = SWITCH_POS[1] + .012, SWITCH_POS[1] + .031
 PLUG_TAIL = .044                    # SM_Plug_Compute / SM_Plug_Switch tail length
 OUT = (-1.0, 0.0, 0.0)
 
-def node_z(n): return NODE_Z0 + n * NODE_PITCH
+def node_z(n): return COMPUTE_Z[n]
 
 def switch_port_y(column):
     """1-based cage column. Unrotated cage y is -.197 + (column-1)*.022; the yaw mirrors it."""
     return .197 - (column - 1) * .022
 
 def node_data_port(yc, n): return (NODE_PORT_X, yc + NODE_IO_Y[0], node_z(n) + NODE_IO_Z)
-def switch_lower_port(yc, column): return (SWITCH_PORT_X, yc + switch_port_y(column), 1.922)
-def switch_upper_port(yc, column): return (SWITCH_PORT_X, yc + switch_port_y(column), 1.941)
+def switch_lower_port(yc, column): return (SWITCH_PORT_X, yc + switch_port_y(column), LOWER_PORT_Z)
+def switch_upper_port(yc, column): return (SWITCH_PORT_X, yc + switch_port_y(column), UPPER_PORT_Z)
 
 def trunk_x(n):
     # Lower nodes sit further out so a higher node's lead stops before crossing their risers.
     return -.545 - (17 - n) * .005
 
 def patch_points(yc, n):
-    """Node n (0-based) Data01 -> switch Lower(n+1). Vertical ribbon in the rear centre channel."""
-    a = node_data_port(yc, n); b = switch_lower_port(yc, n + 1); x = trunk_x(n)
-    return [(a[0] - PLUG_TAIL, a[1], a[2]), (x, a[1], a[2]), (x, a[1], 1.82),
-            (x, b[1], 1.82), (x, b[1], b[2]), (b[0] - PLUG_TAIL, b[1], b[2])]
+    """Node n (0-based) Data01 -> switch Lower(n+1). Vertical ribbon in the rear centre channel; the fan-out
+    to the switch columns runs 0.1 m below the ports, above the top compute tray."""
+    a = node_data_port(yc, n); b = switch_lower_port(yc, n + 1); x = trunk_x(n); zl = LOWER_PORT_Z - .10
+    return [(a[0] - PLUG_TAIL, a[1], a[2]), (x, a[1], a[2]), (x, a[1], zl),
+            (x, b[1], zl), (x, b[1], b[2]), (b[0] - PLUG_TAIL, b[1], b[2])]
 
-def inter_rack_points(ya, yb, j, z=1.941):
+def inter_rack_points(ya, yb, j, z=None):
+    z = UPPER_PORT_Z if z is None else z
     x = -(.71 + j * .012); top = 2.48 + j * .012; t = SWITCH_PORT_X - PLUG_TAIL
     return [(t, ya, z), (x, ya, z), (x, ya, top), (x, yb, top), (x, yb, z), (t, yb, z)]
+
+# Coolant: every liquid-cooled tray (compute and NVLink switch) has the same rear QD pair as the compute
+# node and one manifold tee pair at its height.
+QD_X, MANIFOLD_QD_X, MANIFOLD_X = -.365, -.591, -.65
+QD_DY, MANIFOLD_DY = .197, .245
+def liquid_trays():
+    """(name, z) bottom-up for every liquid-cooled tray; manifold tee index = position in this list + 1."""
+    out = [(f'Node{n + 1:02}', z) for n, z in enumerate(COMPUTE_Z)] + [(f'NVSwitch{k + 1:02}', z) for k, z in enumerate(SWITCHTRAY_Z)]
+    return sorted(out, key=lambda t: t[1])
 
 def move_node_io_to_rear(co):
     """Edit the shared ASSET_ComputeNode collection in place: yaw each IO cage 180 deg onto the rear

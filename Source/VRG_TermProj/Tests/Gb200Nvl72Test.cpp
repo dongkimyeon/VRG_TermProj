@@ -17,14 +17,26 @@ namespace
 	// ADataCenterRoomActor가 띄우는 랙과 같은 운전점이어야 한다.
 	// 이 값이 바뀌면 여기도 같이 바꿔야 테스트가 실제 구성을 검증한다.
 	constexpr double CoolantMassFlowKgs = 2.3;
-	constexpr double TotalAirMassFlowKgs = 0.6;
+	constexpr double TotalAirMassFlowKgs = 1.2;   // FRackThermalInput default (rack fan total)
 	constexpr double RadiatorUAWK = 1.1e4;
+
+	// Design liquid-side heat of the preset [W]: each part's heat times its coolant share.
+	double LiquidDesignHeatW(const FRackThermalParams& Params)
+	{
+		TArray<FRackComponentParams> Nodes; TArray<int32> Starts;
+		FRackThermalModel::ResolveLayout(Params, Nodes, Starts);
+		double W = 0.0;
+		for (const FRackComponentParams& N : Nodes)
+			if (N.ToCoolantUAWK > 0.0) W += N.DefaultHeatW * N.ToCoolantUAWK / (N.ToCoolantUAWK + N.ToAirUAWK);
+		return W;
+	}
 }
 
-// GB200 NVL72 프리셋의 정상 상태가 타당한 범위에 있어야 한다.
+// GB200 NVL72 프리셋(장비·칩 단위)의 정상 상태가 타당한 범위에 있어야 한다.
 //
 // 보존 검사는 장부가 맞는지만 본다. 파라미터가 1000배 틀려도 통과한다.
 // 그래서 물리 법칙이 아니라 상식 범위를 따로 건다 (CLAUDE.md의 S2 교훈).
+// 범위의 근거는 RackThermalModel.cpp의 프리셋 주석(NVIDIA / Lenovo / SemiAnalysis 공개 자료)이다.
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FGb200Nvl72SteadyStateTest,
 	"VRG.Thermal.Gb200Nvl72.SteadyStatePlausible", VrgGb200TestFlags)
 
@@ -32,9 +44,26 @@ bool FGb200Nvl72SteadyStateTest::RunTest(const FString& Parameters)
 {
 	const FRackThermalParams Params = FRackThermalModel::MakeGb200Nvl72Params();
 
+	// Layout: 37 devices, 1U each, inside the 48U mounting range, no two in the same U.
+	int32 Counts[4] = {0, 0, 0, 0};
+	TSet<int32> UsedU;
+	bool bInside = true;
+	for (const FRackSlot& Slot : Params.Slots)
+	{
+		++Counts[Slot.DeviceType];
+		UsedU.Add(FMath::RoundToInt32((Slot.BottomZM - FRackThermalModel::Gb200SlotZ0M) / FRackThermalModel::Gb200UnitM));
+		bInside &= Slot.BottomZM >= .081 - 1e-3 && Slot.BottomZM + Slot.HeightM <= 2.186 + 1e-3;
+	}
+	TestEqual(TEXT("18 compute trays"), Counts[0], 18);
+	TestEqual(TEXT("9 NVLink switch trays"), Counts[1], 9);
+	TestEqual(TEXT("8 power shelves"), Counts[2], 8);
+	TestEqual(TEXT("2 management switches"), Counts[3], 2);
+	TestEqual(TEXT("One device per U"), UsedU.Num(), Params.Slots.Num());
+	TestTrue(TEXT("Every device inside the mounting range"), bInside);
+
 	FRackThermalInput Input;
 	Input.ComponentHeatW = FRackThermalModel::MakeGb200Nvl72HeatW();
-	Input.SledDocked.Init(true, Params.NumSleds);
+	Input.SledDocked.Init(true, Params.Slots.Num());
 	Input.CoolantMassFlowKgs = CoolantMassFlowKgs;
 	Input.TotalAirMassFlowKgs = TotalAirMassFlowKgs;
 
@@ -58,45 +87,68 @@ bool FGb200Nvl72SteadyStateTest::RunTest(const FString& Parameters)
 
 	const FRackThermalSnapshot Snapshot = Model.MakeSnapshot(DeltaTimeS * NumSteps);
 
-	const double CpuC = Model.GetComponentTempK(0, ERackComponent::Cpu) - 273.15;
-	const double GpuC = Model.GetComponentTempK(0, ERackComponent::Gpu) - 273.15;
-	const double RamC = Model.GetComponentTempK(0, ERackComponent::Ram) - 273.15;
-	const double VrmC = Model.GetComponentTempK(0, ERackComponent::Vrm) - 273.15;
-
+	// Hottest part of each kind, and the DC load / PSU loss split.
+	TMap<ERackPartKind, double> MaxC;
+	double DcW = 0.0, PsuW = 0.0;
+	TArray<double> E1sC;
+	for (int32 Slot = 0; Slot < Params.Slots.Num(); ++Slot)
+		for (int32 N = Model.GetSlotNodeStart(Slot); N < Model.GetSlotNodeStart(Slot) + Model.GetSlotNodeCount(Slot); ++N)
+		{
+			const FRackComponentParams& P = Model.GetNodeParams(N);
+			const double C = Snapshot.ComponentTempK[N] - 273.15;
+			MaxC.FindOrAdd(P.Kind, -1e9) = FMath::Max(MaxC.FindOrAdd(P.Kind, -1e9), C);
+			if (P.LossFractionOfRackLoad > 0.0) PsuW += P.LossFractionOfRackLoad; else DcW += Input.ComponentHeatW[N];
+			if (Slot == 6 && P.Kind == ERackPartKind::Storage && P.Name.ToString().StartsWith(TEXT("E1.S"))) E1sC.Add(C);
+		}
+	const double PsuLossW = PsuW * DcW;  // sum of loss fractions times the DC load
 	const double CoolantDeltaTK = Snapshot.CoolantOutletTempK - Input.CoolantInletTempK;
 	const double LiquidFraction = Snapshot.TotalHeatToCoolantW / Snapshot.TotalHeatW;
+	const double AirFraction = (Snapshot.TotalHeatToAirW + Snapshot.TotalHeatToAmbientW) / Snapshot.TotalHeatW;
 
-	AddInfo(FString::Printf(TEXT("컴퓨트 트레이 %d장 / 노드 %d개 / 랙 발열 %.1f kW"),
-		Params.NumSleds, Model.GetNumNodes(), Snapshot.TotalHeatW / 1000.0));
-	AddInfo(FString::Printf(TEXT("트레이 0: Grace %.1f C / Blackwell %.1f C / RAM-NIC %.1f C / VRM %.1f C"),
-		CpuC, GpuC, RamC, VrmC));
+	AddInfo(FString::Printf(TEXT("장비 %d대 / 노드 %d개 / 랙 %.2f kW = DC %.2f kW + PSU 손실 %.3f kW"),
+		Params.Slots.Num(), Model.GetNumNodes(), Snapshot.TotalHeatW / 1000.0, DcW / 1000.0, PsuLossW / 1000.0));
+	AddInfo(FString::Printf(TEXT("최고 온도 C: Blackwell %.1f / Grace %.1f / LPDDR5X %.1f / NVSwitch %.1f / NIC %.1f / DPU %.1f / E1.S %.1f / 전원 %.1f / 팬 %.1f"),
+		MaxC[ERackPartKind::Gpu], MaxC[ERackPartKind::Cpu], MaxC[ERackPartKind::Memory], MaxC[ERackPartKind::Switch],
+		MaxC[ERackPartKind::Nic], MaxC[ERackPartKind::Dpu], MaxC[ERackPartKind::Storage], MaxC[ERackPartKind::Power], MaxC[ERackPartKind::Fan]));
 	AddInfo(FString::Printf(TEXT("냉각수 %.2f -> %.2f C (ΔT %.2f K, 유량 %.2f kg/s) / 캐비닛 배기 %.2f C"),
 		Input.CoolantInletTempK - 273.15, Snapshot.CoolantOutletTempK - 273.15,
 		CoolantDeltaTK, Input.CoolantMassFlowKgs, Snapshot.MixedAirOutletTempK - 273.15));
-	AddInfo(FString::Printf(TEXT("반출: 냉각수 %.1f kW (%.1f%%) / 공기 %.1f kW / 자연대류 %.2f kW"),
+	AddInfo(FString::Printf(TEXT("반출: 냉각수 %.1f kW (%.1f%%) / 공기 %.1f kW + 자연대류 %.2f kW (%.1f%%)"),
 		Snapshot.HeatRemovedByCoolantW / 1000.0, LiquidFraction * 100.0,
-		Snapshot.TotalHeatToAirW / 1000.0, Snapshot.TotalHeatToAmbientW / 1000.0));
+		Snapshot.TotalHeatToAirW / 1000.0, Snapshot.TotalHeatToAmbientW / 1000.0, AirFraction * 100.0));
 
 	const double RemovedW = Snapshot.TotalHeatToAirW + Snapshot.TotalHeatToAmbientW + Snapshot.HeatRemovedByCoolantW;
 	const double NormalizedImbalance = FMath::Abs(RemovedW - Snapshot.TotalHeatW) / Snapshot.TotalHeatW;
-	AddInfo(FString::Printf(TEXT("발열 기준 정규화 불균형 %.3e (무차원)"), NormalizedImbalance));
+	double SlotAirSumW = 0.0;
+	for (const double W : Snapshot.SlotHeatToAirW) SlotAirSumW += W;
+	const double SlotAirError = FMath::Abs(SlotAirSumW - Snapshot.TotalHeatToAirW - Snapshot.TotalHeatToAmbientW) / Snapshot.TotalHeatW;
+	const double PsuError = FMath::Abs(Snapshot.TotalHeatW - DcW - DcW * (1.0 / .975 - 1.0)) / Snapshot.TotalHeatW;
+	AddInfo(FString::Printf(TEXT("정상 상태 불균형 %.3e / 슬롯별 공기 열 합 오차 %.3e / PSU 손실 = DC x (1/0.975-1) 오차 %.3e (발열 기준, 무차원)"),
+		NormalizedImbalance, SlotAirError, PsuError));
 
 	TestTrue(TEXT("스텝이 안정 조건을 만족해야 한다"), Snapshot.bStepStable);
 	TestTrue(TEXT("정상 상태에서 발열과 반출열이 균형을 이뤄야 한다"), NormalizedImbalance < 1.0e-6);
+	TestTrue(TEXT("슬롯별 공기 열의 합이 랙 공기 열과 같아야 한다"), SlotAirError < 1.0e-12);
+	TestTrue(TEXT("전원 셸프 열 = DC 부하의 변환 손실"), PsuError < 1.0e-12);
 
-	// --- 타당성 안전망 (물리 법칙이 아니라 상식 범위다) ---
-	TestTrue(TEXT("랙 발열이 90~120 kW 범위여야 한다 (컴퓨트 트레이 18장분)"),
-		Snapshot.TotalHeatW > 9.0e4 && Snapshot.TotalHeatW < 1.2e5);
-	TestTrue(TEXT("NVL72는 액랭이 발열의 85% 이상을 맡아야 한다"), LiquidFraction > 0.85);
+	// --- 타당성 안전망 (물리 법칙이 아니라 공개 자료 범위다) ---
+	TestTrue(TEXT("랙 발열이 NVIDIA 공개치(약 120 kW)의 ±5% 안이어야 한다"),
+		Snapshot.TotalHeatW > 1.14e5 && Snapshot.TotalHeatW < 1.26e5);
+	TestTrue(TEXT("공기 몫이 공개 범위(랙 약 10% ~ 트레이 약 15%) 근처여야 한다 (8~17%)"), AirFraction > .08 && AirFraction < .17);
 	TestTrue(TEXT("냉각수 ΔT가 5~15 K 범위여야 한다"), CoolantDeltaTK > 5.0 && CoolantDeltaTK < 15.0);
+	TestTrue(TEXT("Blackwell < 90 C"), MaxC[ERackPartKind::Gpu] < 90.0);
+	TestTrue(TEXT("Grace < 90 C"), MaxC[ERackPartKind::Cpu] < 90.0);
+	TestTrue(TEXT("NVSwitch < 90 C"), MaxC[ERackPartKind::Switch] < 90.0);
+	TestTrue(TEXT("NIC / DPU < 95 C"), MaxC[ERackPartKind::Nic] < 95.0 && MaxC[ERackPartKind::Dpu] < 95.0);
+	TestTrue(TEXT("E1.S NVMe < 70 C (throttle region)"), MaxC[ERackPartKind::Storage] < 70.0);
+	TestTrue(TEXT("PSU / PDB < 100 C"), MaxC[ERackPartKind::Power] < 100.0);
 
-	TestTrue(TEXT("Blackwell이 허용 온도 90 C 아래여야 한다"), GpuC < 90.0);
-	TestTrue(TEXT("Grace가 허용 온도 90 C 아래여야 한다"), CpuC < 90.0);
-	TestTrue(TEXT("RAM/NIC이 허용 온도 85 C 아래여야 한다"), RamC < 85.0);
-	TestTrue(TEXT("VRM이 허용 온도 125 C 아래여야 한다"), VrmC < 125.0);
-
-	// 공랭 직렬 순서가 유지되는지. 뒤쪽(VRM)이 더 뜨거워야 한다.
-	TestTrue(TEXT("공랭 체인 뒤쪽 부품이 더 뜨거워야 한다"), VrmC > RamC);
+	// Parallel air stage: the four identical front drives see the same inlet air, so they are equal.
+	// In a series chain each would be hotter than the one before it.
+	double E1sSpread = 0.0;
+	for (const double C : E1sC) E1sSpread = FMath::Max(E1sSpread, FMath::Abs(C - E1sC[0]));
+	AddInfo(FString::Printf(TEXT("첫 컴퓨트 트레이 E1.S 4개 온도 차 %.3e K (병렬 공기 경로)"), E1sSpread));
+	TestTrue(TEXT("Parallel drives share one inlet"), E1sC.Num() == 4 && E1sSpread < 1e-9);
 
 	return true;
 }
@@ -112,7 +164,7 @@ bool FGb200Nvl72RowHydraulicsTest::RunTest(const FString& Parameters)
 	const int32 RacksPerRow = 8;
 	FInRowLoopSpec Spec;
 	Spec.NumRacks = RacksPerRow;
-	Spec.SledsPerRack = FRackThermalModel::Gb200Nvl72ComputeTrays;
+	Spec.SledsPerRack = FRackThermalModel::CountLiquidSlots(FRackThermalModel::MakeGb200Nvl72Params());
 	Spec.HeaderSegmentResistancePaS2M6 = 6.0e6;
 	Spec.RackBranchResistancePaS2M6 = 1.7e10;
 	Spec.ReturnToCduResistancePaS2M6 = 1.5e7;
@@ -145,10 +197,7 @@ bool FGb200Nvl72RowHydraulicsTest::RunTest(const FString& Parameters)
 	}
 
 	// 랙 1대의 액랭 부하와 그 유량이 내는 냉각수 ΔT.
-	const TArray<double> TrayHeatW = FRackThermalModel::Gb200Nvl72TrayHeatW();
-	const double LiquidPerTrayW = TrayHeatW[static_cast<int32>(ERackComponent::Cpu)]
-		+ TrayHeatW[static_cast<int32>(ERackComponent::Gpu)];
-	const double LiquidPerRackW = LiquidPerTrayW * FRackThermalModel::Gb200Nvl72ComputeTrays;
+	const double LiquidPerRackW = LiquidDesignHeatW(FRackThermalModel::MakeGb200Nvl72Params());
 
 	// 물 밀도 1000 kg/m^3, 비열 4182 J/(kg*K).
 	const double MinBranchDeltaTK = LiquidPerRackW / (MaxBranchM3s * 1000.0 * 4182.0);

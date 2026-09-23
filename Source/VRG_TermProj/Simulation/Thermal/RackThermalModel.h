@@ -53,7 +53,25 @@ public:
 	const FRackThermalParams& GetParams() const { return Params; }
 
 	int32 GetNumSleds() const { return Params.NumSleds; }
-	int32 GetNumNodes() const { return Params.NumSleds * NumRackComponents; }
+	int32 GetNumNodes() const { return NodeParams.Num() > 0 ? NodeParams.Num() : CountNodes(Params); }
+
+	// ---- Slot / node layout (heterogeneous racks) ----
+	// Node n belongs to slot s when SlotNodeStart[s] <= n < SlotNodeStart[s+1]. Valid after Initialize.
+	int32 GetSlotNodeStart(int32 Slot) const { return SlotNodeStart.IsValidIndex(Slot) ? SlotNodeStart[Slot] : INDEX_NONE; }
+	int32 GetSlotNodeCount(int32 Slot) const
+	{
+		return SlotNodeStart.IsValidIndex(Slot + 1) ? SlotNodeStart[Slot + 1] - SlotNodeStart[Slot] : 0;
+	}
+	const FRackComponentParams& GetNodeParams(int32 Node) const { return NodeParams[Node]; }
+
+	// Usable before Initialize (actors size their inputs from Params).
+	static int32 NumSlotsOf(const FRackThermalParams& InParams);
+	static int32 CountNodes(const FRackThermalParams& InParams);
+	// Per-node parameters in node order and SlotNodeStart (NumSlots + 1 entries).
+	static void ResolveLayout(const FRackThermalParams& InParams, TArray<FRackComponentParams>& OutNodeParams,
+		TArray<int32>& OutSlotNodeStart);
+	// ComponentHeatW filled from every component's DefaultHeatW.
+	static TArray<double> MakeDefaultHeatW(const FRackThermalParams& InParams);
 
 	// 평탄 인덱스 규칙. 이 함수 밖에서 직접 곱셈하지 않는다.
 	static int32 NodeIndex(int32 SledIndex, ERackComponent Component)
@@ -72,21 +90,37 @@ public:
 	// NumSleds * NumRackComponents 길이로 펼친 기본 발열 배열.
 	static TArray<double> MakeUniformHeatW(int32 NumSleds);
 
-	// ---- NVIDIA GB200 NVL72 프리셋 ----
-	// 컴퓨트 트레이 18장, 트레이당 Grace CPU 2 + Blackwell GPU 4, MGX 액랭.
-	// 기본 구성(1소켓 + 가속기 1장, 15 kW)과 다른 장비이므로 따로 둔다.
-	// NVLink 스위치 트레이 9장은 아직 모델에 없다 (별도 유닛 종류가 필요하다).
-	// 근거는 cpp 주석 참고.
+	// Design-point heat that leaves through air [W]: docked components' heat times their air share
+	// ToAirUAWK / (ToAirUAWK + ToCoolantUAWK). Used to size the room's air cooling (2-2), not by Step().
+	static double DesignHeatToAirW(const FRackThermalParams& Params, const FRackThermalInput& Input);
+
+	// ---- NVIDIA GB200 NVL72 preset (device- and chip-level, sources in the .cpp) ----
+	// 48U: 18 compute trays (Grace x2, LPDDR5X x2, Blackwell x4, NICs, DPUs, drives, PDB, 8 fans each),
+	// 9 NVLink switch trays (NVSwitch x2, fully liquid-cooled), 8 power shelves (6 PSUs each, heat =
+	// conversion loss of the live DC load), 2 management switches. About 120 kW per rack.
 	static constexpr int32 Gb200Nvl72ComputeTrays = 18;
+	static constexpr int32 Gb200Nvl72SwitchTrays = 9;
+	static constexpr int32 Gb200Nvl72PowerShelves = 8;
+	static constexpr double Gb200UnitM = .04445;
+	// U0 bottom (rack-local). Keeps the S5 compute-tray grid: U7 is the old first-node height 0.392 m.
+	static constexpr double Gb200SlotZ0M = .392 - 7 * .04445;
+	enum EGb200DeviceType : int32 { Gb200DevCompute = 0, Gb200DevNvSwitch = 1, Gb200DevPowerShelf = 2, Gb200DevManagement = 3 };
 
-	static TArray<FRackComponentParams> Gb200Nvl72Components();
-	static TArray<double> Gb200Nvl72TrayHeatW();
+	static FRackDeviceType Gb200ComputeTray();
+	static FRackDeviceType Gb200NvLinkSwitchTray();
+	static FRackDeviceType Gb200PowerShelf(int32 NumShelves);
+	static FRackDeviceType ManagementSwitch();
+	static FRackDeviceType QuantumSpineSwitch();
 
-	// 위 둘을 묶은 파라미터. NumSleds와 냉각수 열용량까지 채워 준다.
 	static FRackThermalParams MakeGb200Nvl72Params();
-
-	// 18장 분량으로 펼친 발열 배열.
 	static TArray<double> MakeGb200Nvl72HeatW();
+
+	// Row-end spine cabinet: one air-cooled Quantum switch per given slot height.
+	static FRackThermalParams MakeQuantumSpineParams(const TArray<double>& SlotBottomZM);
+
+	// Slots whose device is on the rack coolant loop (all slots for the legacy uniform rack).
+	// With Docked, only docked ones. Hydraulic branch resistance scales with this.
+	static int32 CountLiquidSlots(const FRackThermalParams& InParams, const TArray<bool>* Docked = nullptr);
 
 	// 슬롯별 공기 질량유량 [kg/s]. 총 유량을 1/sqrt(R) 가중으로 나눈다.
 	// SledDocked 길이가 NumSleds와 다르면 전부 도킹으로 본다. 합은 총 유량과 같다.
@@ -123,6 +157,11 @@ private:
 
 	double EnergyInJ = 0.0;
 	double EnergyOutJ = 0.0;
+
+	// Flattened layout, resolved once at Initialize (rule 7: linear indices, no pointer graph).
+	TArray<FRackComponentParams> NodeParams;
+	TArray<int32> SlotNodeStart;
+	TArray<double> LastSlotHeatToAirW;
 
 	// 마지막 스텝의 열유속. 스냅샷 표시용이며 다시 계산하지 않는다.
 	TArray<double> LastHeatToCoolantW;

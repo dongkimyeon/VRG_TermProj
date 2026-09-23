@@ -10,6 +10,7 @@ void FAirSolver::Initialize(const FAirGridParams& InGridParams, double InitialTe
 	Grid.ResetToUniform(InitialTempK);
 
 	InitialTemperatureK = InitialTempK;
+	NumPressureSolves = NumPressureFailures = 0;
 	EnergyInJ = 0.0;
 	EnergyOutJ = 0.0;
 	LastCoolingRemovedW = 0.0;
@@ -259,6 +260,14 @@ void FAirSolver::ProjectToDivergenceFree(double DeltaTimeS)
 		const uint64 StartCycles = FPlatformTime::Cycles64();
 		SolvePressure();
 		LastPressureSolveMs = FPlatformTime::ToMilliseconds64(FPlatformTime::Cycles64() - StartCycles);
+	}
+	// D5: a failed solve is also written to the log (the HUD alone is invisible in unattended runs).
+	// Rate-limited: first failure, then every 100th. UE_LOG is thread safe (rule 5).
+	++NumPressureSolves;
+	if (!LastPressureResult.bConverged && (++NumPressureFailures == 1 || NumPressureFailures % 100 == 0))
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[Air] 압력 수렴 실패 %lld/%lld 스텝 | 반복 %d | 정규화 잔차 %.3e"),
+			NumPressureFailures, NumPressureSolves, LastPressureResult.IterationsUsed, LastPressureResult.NormalizedResidual);
 	}
 
 	// u -= dt/rho * grad(p). 압력은 셀 중심, 속도는 면이라 한 칸 차분으로 떨어진다.
@@ -627,6 +636,12 @@ FAirSolverSnapshot FAirSolver::MakeSnapshot(double SimTimeS) const
 void FAirSolver::SolvePressure()
 {
 	bLastPressureRanOnGpu = false;
+	if (bUseMultigridPressure)
+	{
+		LastPressureResult = MultigridPoissonSolver::Solve(Grid, DivergencePerS, Grid.PressurePa, MultigridCache,
+			PressureSettings);
+		return;
+	}
 	if (bUseGpuPressure && SolvePressureOnGpu())
 	{
 		bLastPressureRanOnGpu = true;

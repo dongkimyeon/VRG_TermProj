@@ -46,11 +46,14 @@ void ARackThermalActor::PostEditChangeProperty(FPropertyChangedEvent& PropertyCh
 
 void ARackThermalActor::ConformInputArrays()
 {
-	const int32 NumSleds = FMath::Max(1, Params.NumSleds);
+	const int32 NumSleds = FRackThermalModel::NumSlotsOf(Params);
+	if (Params.Slots.Num() > 0) Params.NumSleds = NumSleds;
 
-	if (Input.ComponentHeatW.Num() != NumSleds * NumRackComponents)
+	if (Input.ComponentHeatW.Num() != FRackThermalModel::CountNodes(Params))
 	{
-		Input.ComponentHeatW = FRackThermalModel::MakeUniformHeatW(NumSleds);
+		// Legacy uniform parts carry no DefaultHeatW; keep the S1 per-sled defaults for them.
+		Input.ComponentHeatW = Params.Slots.Num() > 0
+			? FRackThermalModel::MakeDefaultHeatW(Params) : FRackThermalModel::MakeUniformHeatW(NumSleds);
 	}
 
 	if (Input.SledDocked.Num() != NumSleds)
@@ -124,12 +127,35 @@ int32 ARackThermalActor::GetNumDockedSleds() const
 	return NumDocked;
 }
 
+void ARackThermalActor::ApplyGb200Nvl72Preset()
+{
+	Params = FRackThermalModel::MakeGb200Nvl72Params();
+	Input.ComponentHeatW = FRackThermalModel::MakeGb200Nvl72HeatW();
+	Input.SledDocked.Init(true, Params.Slots.Num());
+	Input.SlotAirInletTempK.Reset();
+	Input.CoolantMassFlowKgs = 2.3;     // NVL72 branch design flow (S4 room hydraulics)
+	Input.TotalAirMassFlowKgs = 1.2;
+	ResetSim();
+}
+
+double ARackThermalActor::GetUplinkSwitchZM() const
+{
+	double Z = -1.0;
+	for (const FRackSlot& Slot : Params.Slots)
+		if (Params.DeviceTypes.IsValidIndex(Slot.DeviceType)
+			&& Params.DeviceTypes[Slot.DeviceType].Name == FRackThermalModel::ManagementSwitch().Name)
+			Z = FMath::Max(Z, Slot.BottomZM);
+	return Z >= 0.0 ? Z : 1.91;
+}
+
 void ARackThermalActor::GetSledRowM(int32 SledIndex, double& OutBottomZM, double& OutRowHeightM) const
 {
-	if (bUsingGjMeshes)
+	if (Params.Slots.IsValidIndex(SledIndex))
 	{
-		OutRowHeightM = .04445 * RackSizeM.Z / 2.236;
-		OutBottomZM = (.392 + SledIndex * .04445) * RackSizeM.Z / 2.236;
+		// Heterogeneous rack: the slot says where the device is.
+		const double ScaleZ = RackSizeM.Z / 2.236;
+		OutBottomZM = Params.Slots[SledIndex].BottomZM * ScaleZ;
+		OutRowHeightM = Params.Slots[SledIndex].HeightM * ScaleZ;
 		return;
 	}
 	const int32 NumSleds = FMath::Max(1, Params.NumSleds);
@@ -158,15 +184,30 @@ void ARackThermalActor::RefreshVisuals()
 
 bool ARackThermalActor::BuildGjMeshes()
 {
-	// The authored kit has eighteen slots. Do not silently skin a different rack specification.
-	if (Params.NumSleds != 18) return false;
+	// The authored kit is the GB200 NVL72 device layout. Do not silently skin a different rack.
+	const FName ComputeName = FRackThermalModel::Gb200ComputeTray().Name, SwitchTrayName = FRackThermalModel::Gb200NvLinkSwitchTray().Name;
+	const FName ShelfName = FRackThermalModel::Gb200PowerShelf(1).Name, MgmtName = FRackThermalModel::ManagementSwitch().Name;
+	if (Params.Slots.Num() == 0) return false;
+	int32 NumCompute = 0, NumSwitchTrays = 0;
+	for (const FRackSlot& Slot : Params.Slots)
+	{
+		if (!Params.DeviceTypes.IsValidIndex(Slot.DeviceType)) return false;
+		const FName N = Params.DeviceTypes[Slot.DeviceType].Name;
+		if (N != ComputeName && N != SwitchTrayName && N != ShelfName && N != MgmtName) return false;
+		NumCompute += N == ComputeName; NumSwitchTrays += N == SwitchTrayName;
+	}
+	if (NumCompute != 18 || NumSwitchTrays != 9) return false;  // harnesses are baked per tray position
+
 	UStaticMesh* Frame = GjConnectionMesh::Mesh(TEXT("SM_GB200_RackFrame"), true);
 	UStaticMesh* Node = GjConnectionMesh::Mesh(TEXT("SM_GB200_ComputeNode"), true);
 	UStaticMesh* Switch = GjConnectionMesh::Mesh(TEXT("SM_QuantumIB_Switch_Photo"), true);
+	UStaticMesh* SwitchTray = GjConnectionMesh::Mesh(TEXT("SM_GJ_NVSwitchTray"), true);
+	UStaticMesh* Shelf = GjConnectionMesh::Mesh(TEXT("SM_GJ_PowerShelf"), true);
 	UStaticMesh* Manifolds = GjConnectionMesh::Mesh(TEXT("SM_GJ_Manifolds"));
-	TArray<UStaticMesh*> Harnesses;
+	TArray<UStaticMesh*> Harnesses, SwitchHarnesses;
 	for (int32 I=0; I<18; ++I) Harnesses.Add(GjConnectionMesh::Mesh(*FString::Printf(TEXT("SM_GJ_Harness_%02d"),I)));
-	if (!Frame || !Node || !Switch || !Manifolds || Harnesses.Contains(nullptr))
+	for (int32 I=0; I<9; ++I) SwitchHarnesses.Add(GjConnectionMesh::Mesh(*FString::Printf(TEXT("SM_GJ_SwitchHarness_%02d"),I)));
+	if (!Frame || !Node || !Switch || !SwitchTray || !Shelf || !Manifolds || Harnesses.Contains(nullptr) || SwitchHarnesses.Contains(nullptr))
 	{
 		UE_LOG(LogTemp, Error, TEXT("GJ rack assets are incomplete. Run Tools/install_gj_models.py; using original visuals."));
 		return false;
@@ -180,21 +221,42 @@ bool ARackThermalActor::BuildGjMeshes()
 		return C;
 	};
 	CabinetMeshes.Add(Add(Frame,FVector::ZeroVector,TEXT("GJ_RackFrame")));
-	// Mounted reversed so its ports face the rear (-X) with the coolant. Only the switch yaws; the rack does not.
-	UStaticMeshComponent* SwitchMesh = Add(Switch,FVector(-.134,0,1.91),TEXT("GJ_QuantumSwitch"));
-	SwitchMesh->SetRelativeRotation(FRotator(0,180,0));
-	CabinetMeshes.Add(SwitchMesh);
 	CabinetMeshes.Add(Add(Manifolds,FVector::ZeroVector,TEXT("GJ_Manifolds")));
+	// One mesh per slot, exactly where the thermal model puts the device ("what you see is what is solved").
+	TArray<TPair<double, double>> Occupied;
+	int32 ComputeOrdinal = 0, SwitchOrdinal = 0;
+	for (int32 S = 0; S < Params.Slots.Num(); ++S)
+	{
+		const FRackSlot& Slot = Params.Slots[S];
+		const FName N = Params.DeviceTypes[Slot.DeviceType].Name;
+		Occupied.Add({Slot.BottomZM, Slot.BottomZM + Slot.HeightM});
+		UStaticMeshComponent* Mesh = nullptr; UStaticMeshComponent* Harness = nullptr; double BaseX = .055; bool bFixed = false;
+		if (N == ComputeName)
+		{
+			Mesh = Add(Node,FVector(BaseX,0,Slot.BottomZM),TEXT("GJ_ComputeNode"));
+			Harness = Add(Harnesses[ComputeOrdinal++],FVector::ZeroVector,TEXT("GJ_SledHarness"));
+		}
+		else if (N == SwitchTrayName)
+		{
+			Mesh = Add(SwitchTray,FVector(BaseX,0,Slot.BottomZM),TEXT("GJ_NVSwitchTray"));
+			Harness = Add(SwitchHarnesses[SwitchOrdinal++],FVector::ZeroVector,TEXT("GJ_SwitchHarness"));
+		}
+		else if (N == ShelfName) Mesh = Add(Shelf,FVector(BaseX,0,Slot.BottomZM),TEXT("GJ_PowerShelf"));
+		else
+		{
+			// Mounted reversed so its ports face the rear (-X) with the coolant. Only the switch yaws.
+			BaseX = GjRackLayout::SwitchXM; bFixed = true;
+			Mesh = Add(Switch,FVector(BaseX,0,Slot.BottomZM),TEXT("GJ_ManagementSwitch"));
+			Mesh->SetRelativeRotation(FRotator(0,180,0));
+		}
+		SledMeshes.Add(Mesh); SledHarnessMeshes.Add(Harness);
+		SledBaseXCm.Add(SimUnits::MetersToCentimeters(BaseX * Scale.X)); bSledFixed.Add(bFixed);
+	}
 	// Empty U positions get 1U blank plates on the front rail (visual only; the air grid already treats
 	// the rack body as solid, so this does not change any recirculation result).
 	TArray<TPair<double, double>> Blanks;
-	for (const GjRackLayout::FBlankSlot& Slot : GjRackLayout::ComputeRackBlankSlots()) Blanks.Add({Slot.BottomM, Slot.HeightM});
+	for (const GjRackLayout::FBlankSlot& Slot : GjRackLayout::BlankSlots(Occupied)) Blanks.Add({Slot.BottomM, Slot.HeightM});
 	if (UInstancedStaticMeshComponent* Panels = GjConnectionMesh::AddBlankPanels(this, Blanks, Scale)) CabinetMeshes.Add(Panels);
-	for (int32 I=0; I<18; ++I)
-	{
-		SledMeshes.Add(Add(Node,FVector(.055,0,.392+I*.04445),TEXT("GJ_ComputeNode")));
-		SledHarnessMeshes.Add(Add(Harnesses[I],FVector::ZeroVector,TEXT("GJ_SledHarness")));
-	}
 	return true;
 }
 
@@ -225,6 +287,7 @@ void ARackThermalActor::RebuildMeshes()
 	SledMeshes.Reset();
 	ComponentMeshes.Reset();
 	ComponentBaseXCm.Reset();
+	ComponentSlot.Reset(); ComponentNodes.Reset(); SledBaseXCm.Reset(); bSledFixed.Reset();
 	for (UStaticMeshComponent* Mesh : SledHarnessMeshes) if (Mesh) Mesh->DestroyComponent();
 	SledHarnessMeshes.Reset();
 	bUsingGjMeshes = false;
@@ -277,7 +340,8 @@ void ARackThermalActor::RebuildMeshes()
 
 	// 유닛과 부품
 	SledMeshes.Reserve(NumSleds);
-	ComponentMeshes.Reserve(NumSleds * NumRackComponents);
+	TArray<FRackComponentParams> NodeParams; TArray<int32> SlotNodeStart;
+	FRackThermalModel::ResolveLayout(Params, NodeParams, SlotNodeStart);
 
 	for (int32 SledIndex = 0; SledIndex < NumSleds; ++SledIndex)
 	{
@@ -302,23 +366,39 @@ void ARackThermalActor::RebuildMeshes()
 		SimMeshBuilder::SetBox(Sled, FVector(0.0, 0.0, RowBottomZCm + 0.5 * TrayHeightCm),
 			FVector(SledDepthCm, SledWidthCm, TrayHeightCm));
 		SledMeshes.Add(Sled);
+		SledBaseXCm.Add(0.0); bSledFixed.Add(false);
 
-		// 부품은 트레이 위에 공랭 체인 순서대로 얹는다. 앞(+X)이 공기 입구다.
-		// 배열 순서 그대로 앞에서 뒤로 놓으므로, 눈으로 보는 순서가 곧 공기가 지나는 순서다.
-		const double SlotDepthCm = SledDepthCm / (NumRackComponents + 1);
+		// One box per part for small devices (the S1 4-part unit), else one box per part kind so a
+		// 29-part compute tray stays readable. Front (+X) is the air inlet, list order = air path order.
+		TArray<TArray<int32>> Groups;
+		const int32 First = SlotNodeStart[SledIndex], End = SlotNodeStart[SledIndex + 1];
+		if (End - First <= 6) { for (int32 N = First; N < End; ++N) Groups.Add({N}); }
+		else
+		{
+			TArray<ERackPartKind> Kinds;
+			for (int32 N = First; N < End; ++N)
+			{
+				const int32 G = Kinds.AddUnique(NodeParams[N].Kind);
+				if (G == Groups.Num()) Groups.AddDefaulted();
+				Groups[G].Add(N);
+			}
+		}
+		const double SlotDepthCm = SledDepthCm / (Groups.Num() + 1);
 		const double PartDepthCm = SlotDepthCm * 0.7;
 		const double PartWidthCm = SledWidthCm * 0.55;
 		const double PartCenterZCm = RowBottomZCm + TrayHeightCm + 0.5 * PartHeightCm;
 
-		for (int32 ComponentIndex = 0; ComponentIndex < NumRackComponents; ++ComponentIndex)
+		for (int32 G = 0; G < Groups.Num(); ++G)
 		{
-			const double PartXCm = 0.5 * SledDepthCm - SlotDepthCm * (ComponentIndex + 1);
+			const double PartXCm = 0.5 * SledDepthCm - SlotDepthCm * (G + 1);
 
 			UStaticMeshComponent* Part = SimMeshBuilder::CreateMeshComponent(this, CubeMesh, Material, TEXT("Part"));
 			SimMeshBuilder::SetBox(Part, FVector(PartXCm, 0.0, PartCenterZCm),
 				FVector(PartDepthCm, PartWidthCm, PartHeightCm));
 			ComponentMeshes.Add(Part);
 			ComponentBaseXCm.Add(PartXCm);
+			ComponentSlot.Add(SledIndex);
+			ComponentNodes.Add(Groups[G]);
 		}
 	}
 }
@@ -337,10 +417,10 @@ void ARackThermalActor::UpdateSledSlide(float DeltaTime)
 		const double OffsetCm = PullOutCm * SledSlideAlpha[SledIndex];
 
 		UStaticMeshComponent* Sled = SledMeshes[SledIndex];
-		if (Sled != nullptr)
+		if (Sled != nullptr && !(bSledFixed.IsValidIndex(SledIndex) && bSledFixed[SledIndex]))
 		{
 			FVector Location = Sled->GetRelativeLocation();
-			Location.X = OffsetCm + (bUsingGjMeshes ? 5.5 * RackSizeM.X / 1.068 : 0.0);
+			Location.X = OffsetCm + (SledBaseXCm.IsValidIndex(SledIndex) ? SledBaseXCm[SledIndex] : 0.0);
 			Sled->SetRelativeLocation(Location);
 		}
 		if (SledHarnessMeshes.IsValidIndex(SledIndex) && SledHarnessMeshes[SledIndex])
@@ -349,21 +429,19 @@ void ARackThermalActor::UpdateSledSlide(float DeltaTime)
 			SledHarnessMeshes[SledIndex]->SetVisibility(IsSledDocked(SledIndex));
 		}
 
-		// 부품은 유닛을 따라 함께 나온다. 꽂힌 상태의 X를 따로 들고 있다가 오프셋만 더한다.
-		for (int32 ComponentIndex = 0; ComponentIndex < NumRackComponents; ++ComponentIndex)
+	}
+	// 부품은 유닛을 따라 함께 나온다. 꽂힌 상태의 X를 따로 들고 있다가 오프셋만 더한다.
+	for (int32 FlatIndex = 0; FlatIndex < ComponentMeshes.Num(); ++FlatIndex)
+	{
+		if (!ComponentMeshes[FlatIndex] || !ComponentBaseXCm.IsValidIndex(FlatIndex) || !ComponentSlot.IsValidIndex(FlatIndex)
+			|| !SledSlideAlpha.IsValidIndex(ComponentSlot[FlatIndex]))
 		{
-			const int32 FlatIndex = SledIndex * NumRackComponents + ComponentIndex;
-			if (!ComponentMeshes.IsValidIndex(FlatIndex) || ComponentMeshes[FlatIndex] == nullptr
-				|| !ComponentBaseXCm.IsValidIndex(FlatIndex))
-			{
-				continue;
-			}
-
-			UStaticMeshComponent* Part = ComponentMeshes[FlatIndex];
-			FVector Location = Part->GetRelativeLocation();
-			Location.X = ComponentBaseXCm[FlatIndex] + OffsetCm;
-			Part->SetRelativeLocation(Location);
+			continue;
 		}
+		UStaticMeshComponent* Part = ComponentMeshes[FlatIndex];
+		FVector Location = Part->GetRelativeLocation();
+		Location.X = ComponentBaseXCm[FlatIndex] + PullOutCm * SledSlideAlpha[ComponentSlot[FlatIndex]];
+		Part->SetRelativeLocation(Location);
 	}
 }
 
@@ -381,14 +459,13 @@ void ARackThermalActor::UpdateMeshColors() const
 			IsSledDocked(SledIndex) ? DockedSledColor : UndockedSledColor);
 	}
 
-	for (int32 FlatIndex = 0; FlatIndex < ComponentMeshes.Num(); ++FlatIndex)
+	for (int32 FlatIndex = 0; FlatIndex < ComponentMeshes.Num() && FlatIndex < ComponentNodes.Num(); ++FlatIndex)
 	{
-		if (!Snapshot.ComponentTempK.IsValidIndex(FlatIndex))
-		{
-			continue;
-		}
-		SimMeshBuilder::SetMeshColor(ComponentMeshes[FlatIndex],
-			SimMeshBuilder::TemperatureToColor(Snapshot.ComponentTempK[FlatIndex], MinTempK, MaxTempK));
+		double HottestK = -1.0;
+		for (const int32 Node : ComponentNodes[FlatIndex])
+			if (Snapshot.ComponentTempK.IsValidIndex(Node)) HottestK = FMath::Max(HottestK, Snapshot.ComponentTempK[Node]);
+		if (HottestK < 0.0) continue;
+		SimMeshBuilder::SetMeshColor(ComponentMeshes[FlatIndex], SimMeshBuilder::TemperatureToColor(HottestK, MinTempK, MaxTempK));
 	}
 }
 
@@ -398,7 +475,7 @@ void ARackThermalActor::Tick(float DeltaTime)
 
 	// 에디터 리스너에서는 BeginPlay 없이 틱이 돌아간다.
 	// 모델이 아직 Params에 맞게 초기화되지 않았으면 먼저 맞춘다.
-	if (Model.GetState().ComponentTempK.Num() != FMath::Max(1, Params.NumSleds) * NumRackComponents)
+	if (Model.GetState().ComponentTempK.Num() != FRackThermalModel::CountNodes(Params))
 	{
 		ResetSim();
 	}
@@ -456,14 +533,16 @@ void ARackThermalActor::DrawReadout() const
 			GetSledRowM(SledIndex, RowBottomZM, RowHeightM);
 			const double LabelZM = RowBottomZM + 0.5 * RowHeightM;
 
-			const int32 CpuIndex = FRackThermalModel::NodeIndex(SledIndex, ERackComponent::Cpu);
-			const int32 GpuIndex = FRackThermalModel::NodeIndex(SledIndex, ERackComponent::Gpu);
-			const int32 RamIndex = FRackThermalModel::NodeIndex(SledIndex, ERackComponent::Ram);
-			const int32 VrmIndex = FRackThermalModel::NodeIndex(SledIndex, ERackComponent::Vrm);
-			if (!Snapshot.ComponentTempK.IsValidIndex(VrmIndex))
+			// Hottest part of the device in this slot.
+			int32 Hot = INDEX_NONE;
+			for (int32 N = Model.GetSlotNodeStart(SledIndex); N >= 0 && N < Model.GetSlotNodeStart(SledIndex) + Model.GetSlotNodeCount(SledIndex); ++N)
+				if (Snapshot.ComponentTempK.IsValidIndex(N) && (Hot == INDEX_NONE || Snapshot.ComponentTempK[N] > Snapshot.ComponentTempK[Hot])) Hot = N;
+			if (Hot == INDEX_NONE)
 			{
 				continue;
 			}
+			const FString Device = Params.Slots.IsValidIndex(SledIndex) && Params.DeviceTypes.IsValidIndex(Params.Slots[SledIndex].DeviceType)
+				? Params.DeviceTypes[Params.Slots[SledIndex].DeviceType].Name.ToString() : TEXT("Unit");
 
 			const FVector LabelCm = GetActorLocation()
 				+ FVector(SimUnits::MetersToCentimeters(RackSizeM.X * 0.5 + 0.1),
@@ -472,14 +551,13 @@ void ARackThermalActor::DrawReadout() const
 
 			// 온도 표시는 여기서만 °C로 바꾼다 (규약 2).
 			DrawDebugString(World, LabelCm,
-				FString::Printf(TEXT("U%02d %s C%.0f G%.0f R%.0f V%.0f | 공기 %.3f kg/s"),
+				FString::Printf(TEXT("S%02d %s %s | 최고 %s %.1f C | 공기 %.3f kg/s, %.0f W"),
 					SledIndex,
 					IsSledDocked(SledIndex) ? TEXT("[꽂힘]") : TEXT("[뽑힘]"),
-					SimUnits::KelvinToCelsius(Snapshot.ComponentTempK[CpuIndex]),
-					SimUnits::KelvinToCelsius(Snapshot.ComponentTempK[GpuIndex]),
-					SimUnits::KelvinToCelsius(Snapshot.ComponentTempK[RamIndex]),
-					SimUnits::KelvinToCelsius(Snapshot.ComponentTempK[VrmIndex]),
-					Snapshot.SlotAirMassFlowKgs.IsValidIndex(SledIndex) ? Snapshot.SlotAirMassFlowKgs[SledIndex] : 0.0),
+					*Device, *Model.GetNodeParams(Hot).Name.ToString(),
+					SimUnits::KelvinToCelsius(Snapshot.ComponentTempK[Hot]),
+					Snapshot.SlotAirMassFlowKgs.IsValidIndex(SledIndex) ? Snapshot.SlotAirMassFlowKgs[SledIndex] : 0.0,
+					Snapshot.SlotHeatToAirW.IsValidIndex(SledIndex) ? Snapshot.SlotHeatToAirW[SledIndex] : 0.0),
 				nullptr,
 				IsSledDocked(SledIndex) ? FColor(200, 220, 255) : FColor(255, 150, 150),
 				0.0f, true, 0.9f);
@@ -506,11 +584,11 @@ void ARackThermalActor::DrawReadout() const
 	FString HottestLabel = TEXT("-");
 	if (HottestIndex != INDEX_NONE)
 	{
-		const int32 SledIndex = HottestIndex / NumRackComponents;
-		const int32 ComponentIndex = HottestIndex % NumRackComponents;
-		HottestLabel = FString::Printf(TEXT("U%d %s %.1f C"),
+		int32 SledIndex = 0;
+		while (SledIndex + 1 < Params.NumSleds && Model.GetSlotNodeStart(SledIndex + 1) <= HottestIndex) ++SledIndex;
+		HottestLabel = FString::Printf(TEXT("S%d %s %.1f C"),
 			SledIndex,
-			*Model.GetParams().Components[ComponentIndex].Name.ToString(),
+			*Model.GetNodeParams(HottestIndex).Name.ToString(),
 			SimUnits::KelvinToCelsius(HottestTempK));
 	}
 

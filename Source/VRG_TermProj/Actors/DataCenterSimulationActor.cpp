@@ -200,8 +200,17 @@ void ADataCenterSimulationActor::BuildCoolingCoil()
 		return;
 	}
 
+	// Design air load: component heat that leaves through air (per-part UA split for mixed parts).
+	DesignAirLoadW = 0.0;
+	for (const ARackThermalActor* Rack : Racks)
+	{
+		if (!Rack) continue;
+		DesignAirLoadW += Rack->GetDesignHeatToAirW();
+	}
+	EffectiveCoilUAWK = bAutoSizeCoil && DesignAirLoadW > 0.0 ? DesignAirLoadW / CoilDesignApproachK : CoilTotalUAWK;
+
 	// 전체 UA를 코일 셀에 고르게 나눈다.
-	const double PerCellUAWK = CoilTotalUAWK / CoilCells.Num();
+	const double PerCellUAWK = EffectiveCoilUAWK / CoilCells.Num();
 	for (const int32 Index : CoilCells)
 	{
 		Bridge.AirSolverInput.CellCoolingUAWK[Index] = PerCellUAWK;
@@ -277,7 +286,8 @@ void ADataCenterSimulationActor::BuildCoupling()
 		if (bHasAir)
 		{
 			// 랙 앞뒤로 한 덩어리씩 셀을 잡는다.
-			// 앞(+X 로컬)이 흡기, 뒤가 배기다.
+			// 앞(+X 로컬)이 흡기, 뒤가 배기다. 셀 높이는 슬롯별로 다시 나눌 때 쓴다.
+			TArray<double> InletCellZ, ExhaustCellZ;
 			const FVector RackM = SimUnits::UnrealToMeters(Rack->GetActorLocation());
 			const FVector Forward = Rack->GetActorForwardVector().GetSafeNormal2D();
 			const FVector Right = Rack->GetActorRightVector().GetSafeNormal2D();
@@ -310,11 +320,13 @@ void ADataCenterSimulationActor::BuildCoupling()
 						if (AlongM > HalfDepthM && AlongM <= HalfDepthM + InletSampleDepthM)
 						{
 							Link.InletCellIndices.Add(Grid->CellIndex(X, Y, Z));
+							InletCellZ.Add(OffsetM.Z);
 						}
 						// 뒤쪽: 랙 뒷면 바깥 ExhaustDepthM 안.
 						else if (AlongM < -HalfDepthM && AlongM >= -HalfDepthM - ExhaustDepthM)
 						{
 							Link.ExhaustCellIndices.Add(Grid->CellIndex(X, Y, Z));
+							ExhaustCellZ.Add(OffsetM.Z);
 						}
 					}
 				}
@@ -324,6 +336,25 @@ void ADataCenterSimulationActor::BuildCoupling()
 			{
 				++NumRacksWithAir;
 			}
+
+			// Per-slot cells: a cell serves every slot whose height range it overlaps. With 0.25 m cells
+			// and 1U devices several slots share one cell layer; the air grid resolves height to its cell size.
+			const double HalfCellM = .5 * Grid->GetCellSizeM();
+			auto BuildSlotLists = [&](const TArray<int32>& Cells, const TArray<double>& CellZ, TArray<int32>& Start, TArray<int32>& Out)
+			{
+				Start.Reset(); Out.Reset();
+				for (int32 Slot = 0; Slot < Rack->Params.NumSleds; ++Slot)
+				{
+					double BottomM = 0.0, HeightM = 0.0;
+					Rack->GetSlotHeightRangeM(Slot, BottomM, HeightM);
+					Start.Add(Out.Num());
+					for (int32 K = 0; K < Cells.Num(); ++K)
+						if (CellZ[K] + HalfCellM > BottomM && CellZ[K] - HalfCellM < BottomM + HeightM) Out.Add(Cells[K]);
+				}
+				Start.Add(Out.Num());
+			};
+			BuildSlotLists(Link.InletCellIndices, InletCellZ, Link.SlotInletStart, Link.SlotInletCells);
+			BuildSlotLists(Link.ExhaustCellIndices, ExhaustCellZ, Link.SlotExhaustStart, Link.SlotExhaustCells);
 		}
 
 		Links.Add(Link);
@@ -546,7 +577,14 @@ void ADataCenterSimulationActor::DrainWarmupSteps()
 
 	if (PendingWarmupSteps == 0)
 	{
-		UE_LOG(LogTemp, Display, TEXT("[VrgSim] 예열 %d스텝 완료 (%.2f s)"),
-			WarmupStepsReported, WarmupStepsReported * Clock.GetFixedStepS());
+		const FCouplingSnapshot Snap = GetSnapshot();
+		double MinInK = TNumericLimits<double>::Max(), MaxInK = 0.0;
+		for (const double K : Snap.RackAirInletTempK) { MinInK = FMath::Min(MinInK, K); MaxInK = FMath::Max(MaxInK, K); }
+		UE_LOG(LogTemp, Display, TEXT("[VrgSim] 예열 %d스텝 완료 (%.2f s) | t=%.1f s | IT %.1f kW = 라디에이터 %.1f kW + CRAH %.1f kW + 축적 | ")
+			TEXT("코일 UA %.0f W/K (공기 부하 %.1f kW) | 랙 흡기 %.2f ~ %.2f C | 열수지 잔차 %.2e"),
+			WarmupStepsReported, WarmupStepsReported * Clock.GetFixedStepS(), Snap.SimTimeS, Snap.TotalItHeatW / 1000.0,
+			Snap.TotalRadiatorRejectedW / 1000.0, Snap.TotalAirCoolingRemovedW / 1000.0, EffectiveCoilUAWK, DesignAirLoadW / 1000.0,
+			MinInK - 273.15, MaxInK - 273.15, Snap.NormalizedEnergyResidual);
+		UE_LOG(LogTemp, Display, TEXT("[VrgSim] %s"), *Bridge.DescribeEnergyLedger());
 	}
 }

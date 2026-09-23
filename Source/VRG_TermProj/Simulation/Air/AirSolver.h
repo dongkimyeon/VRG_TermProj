@@ -4,6 +4,7 @@
 
 #include "CoreMinimal.h"
 #include "Simulation/Air/JacobiPoissonSolver.h"
+#include "Simulation/Air/MultigridPoissonSolver.h"
 #include "Simulation/Air/UniformAirGrid.h"
 #include "AirSolver.generated.h"
 
@@ -187,6 +188,14 @@ public:
 	// 결과를 기다리기 때문이다. 워커 스레드에서 돌리려면 꺼야 한다.
 	// 끄면 기존 CPU FP64 경로 그대로이며, 그쪽이 검증 기준이자 폴백이다.
 	void SetUseGpuPressure(bool bInUse) { bUseGpuPressure = bInUse; }
+
+	// 2-1: multigrid-preconditioned CG (CPU FP64, damped-Jacobi smoother). Default on.
+	// When on it takes precedence over the GPU Jacobi path. Off = the S3 damped-Jacobi reference.
+	void SetUseMultigridPressure(bool bInUse) { bUseMultigridPressure = bInUse; }
+	bool IsUsingMultigridPressure() const { return bUseMultigridPressure; }
+	// Pressure solves since Initialize and how many of them missed the target (D5).
+	int64 GetNumPressureSolves() const { return NumPressureSolves; }
+	int64 GetNumPressureFailures() const { return NumPressureFailures; }
 	bool IsUsingGpuPressure() const { return bUseGpuPressure; }
 
 	// 직전 압력 풀이가 실제로 GPU에서 돌았는지. GPU를 켜도 실패하면 CPU로 떨어진다.
@@ -223,6 +232,9 @@ private:
 	FPoissonSolveResult LastPressureResult;
 	double LastPressureSolveMs = 0.0;
 	bool bUseGpuPressure = false;
+	bool bUseMultigridPressure = true;
+	int64 NumPressureSolves = 0, NumPressureFailures = 0;
+	MultigridPoissonSolver::FUniformCache MultigridCache;
 	bool bLastPressureRanOnGpu = false;
 
 	// GPU 경로용 임시 버퍼. 매 스텝 재할당하지 않으려고 멤버로 둔다.

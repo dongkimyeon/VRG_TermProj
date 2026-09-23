@@ -58,6 +58,20 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Rack")
 	int32 GetNumDockedSleds() const;
 
+	// Docked slots whose device is on the rack coolant loop (the hydraulic branch scales with this).
+	UFUNCTION(BlueprintCallable, Category = "Rack")
+	int32 GetNumDockedLiquidSlots() const { return FRackThermalModel::CountLiquidSlots(Params, &Input.SledDocked); }
+	int32 GetNumLiquidSlots() const { return FRackThermalModel::CountLiquidSlots(Params); }
+
+	// Replace Params/Input with the device- and chip-level GB200 NVL72 preset (18 compute trays,
+	// 9 NVLink switch trays, 8 power shelves, 2 management switches) and restart the model.
+	UFUNCTION(BlueprintCallable, CallInEditor, Category = "Rack")
+	void ApplyGb200Nvl72Preset();
+
+	// Rack-local height [m] of the management switch the node harness and uplinks plug into
+	// (the top Management slot). Falls back to the pre-preset GJ height when there is none.
+	double GetUplinkSwitchZM() const;
+
 	// 켜면 이 액터가 스스로 적분하지 않는다. 바깥(통합 액터)이 같은 시계로 돌린다.
 	// 규약 4: 도메인이 여럿이면 시계가 하나여야 한다. 액터마다 따로 돌리면
 	// 같은 시간 구간을 두 번 적분하거나 서로 어긋난 시각을 보게 된다.
@@ -66,8 +80,14 @@ public:
 
 	// 통합 액터가 빌려 가는 내부 모델과 입력. 수명은 이 액터가 쥔다.
 	FRackThermalModel& GetMutableModel() { return Model; }
+
+	// Design-point air-side heat of this rack [W] (sizes the room's CRAH coil, 2-2).
+	double GetDesignHeatToAirW() const { return FRackThermalModel::DesignHeatToAirW(Params, Input); }
 	FRackThermalInput& GetMutableInput() { return Input; }
 	const FRadiatorParams& GetRadiatorParams() const { return Radiator; }
+
+	// Rack-local height range [m] of a slot (scaled with RackSizeM). Coupling uses it for per-slot air cells.
+	void GetSlotHeightRangeM(int32 Slot, double& OutBottomZM, double& OutHeightM) const { GetSledRowM(Slot, OutBottomZM, OutHeightM); }
 
 	// 바깥이 적분한 뒤 시각을 맞춰 준다. 표시에만 쓴다.
 	void SetExternalSimTimeS(double InSimTimeS) { ExternalSimTimeS = InSimTimeS; }
@@ -173,12 +193,20 @@ private:
 
 	// 부품이 꽂힌 상태일 때의 X [cm]. 슬라이드 오프셋을 여기에 더해 쓴다.
 	TArray<double> ComponentBaseXCm;
+	// Per component box: its slot and the model nodes it shows (one node, or every node of one kind
+	// in a many-part device). Colour = hottest of those nodes.
+	TArray<int32> ComponentSlot;
+	TArray<TArray<int32>> ComponentNodes;
+	// Docked X [cm] of each slot's chassis mesh (GJ meshes have different pivots).
+	TArray<double> SledBaseXCm;
+	// Slots whose GJ mesh never slides (e.g. rear-mounted management switch).
+	TArray<bool> bSledFixed;
 
 	// 유닛이 뽑혀 나온 정도. 0 = 완전히 꽂힘, 1 = 완전히 뽑힘.
 	// 물리 상태(Input.SledDocked)와 달리 연출용이라 서서히 따라간다.
 	TArray<float> SledSlideAlpha;
 
-	// Input의 TArray 길이를 Params.NumSleds에 맞춘다. 비어 있으면 기본값으로 채운다.
+	// Input의 TArray 길이를 슬롯·노드 수에 맞춘다. 비어 있으면 기본값으로 채운다.
 	void ConformInputArrays();
 
 	void RebuildMeshes();

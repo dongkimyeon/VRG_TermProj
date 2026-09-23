@@ -37,6 +37,14 @@ enum class ERackComponent : uint8
 
 static constexpr int32 NumRackComponents = 4;
 
+// What a component is, independent of where it sits in a device's list. Debug knobs and the UI find
+// "every GPU" by kind; the legacy ERackComponent index only means something for the uniform 4-part layout.
+UENUM(BlueprintType)
+enum class ERackPartKind : uint8
+{
+	Cpu, Gpu, Memory, Nic, Dpu, Storage, Power, Fan, Switch, Management, Other
+};
+
 // 부품 하나의 고정 물성. 모든 유닛이 같은 구성이라고 보고 유닛 간에 공유한다.
 USTRUCT(BlueprintType)
 struct FRackComponentParams
@@ -62,6 +70,63 @@ struct FRackComponentParams
 	// 유닛을 뽑아 강제 공랭이 끊겨도 이 경로로 식는다.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Component")
 	double ToAmbientUAWK = 1.0;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Component")
+	ERackPartKind Kind = ERackPartKind::Other;
+
+	// Nominal heat [W] used to fill FRackThermalInput::ComponentHeatW (MakeDefaultHeatW).
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Component")
+	double DefaultHeatW = 0.0;
+
+	// Conversion-loss part (e.g. a power shelf): its heat is not an input but this fraction of the rack's
+	// DC load, i.e. the heat of every other docked component this step. 0 = ordinary part.
+	// A shelf of N shelves sharing a load at efficiency eta carries (1/eta - 1) / N.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Component")
+	double LossFractionOfRackLoad = 0.0;
+
+	// Air path topology inside a device. Consecutive components with the same AirStage >= 0 sit side by
+	// side (parallel): each sees the stage inlet air and the air-cooled ones split the slot flow equally.
+	// -1 = a stage of its own in list order (series), which is the S1 behaviour.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Component")
+	int32 AirStage = -1;
+};
+
+// One kind of rack-mounted device (compute tray, switch tray, power shelf, ...). Components are listed
+// in air-path order: air passes through them one after another (front to rear).
+USTRUCT(BlueprintType)
+struct FRackDeviceType
+{
+	GENERATED_BODY()
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Device")
+	FName Name = NAME_None;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Device")
+	TArray<FRackComponentParams> Components;
+
+	// Air-path resistance when docked [Pa*s^2/kg^2]. <= 0 uses the rack's DockedSlotResistancePaS2Kg2.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Device")
+	double DockedResistancePaS2Kg2 = 0.0;
+
+	// True when the device has cold-plate parts on the rack coolant loop (counts for the branch resistance).
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Device")
+	bool bLiquidCooled = false;
+};
+
+// A mounted device: which type and where (rack-local, from the rack floor).
+USTRUCT(BlueprintType)
+struct FRackSlot
+{
+	GENERATED_BODY()
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Slot")
+	int32 DeviceType = 0;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Slot")
+	double BottomZM = 0.0;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Slot")
+	double HeightM = 0.04445;
 };
 
 // 랙(캐비닛) 1대의 고정 설정값. 시뮬레이션 중에는 바뀌지 않는다.
@@ -103,6 +168,16 @@ struct FRackThermalParams
 	// 실제로 blanking panel을 끼우는 이유가 이것이다 (패널을 끼우면 이 값이 커진다).
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Rack")
 	double EmptySlotResistancePaS2Kg2 = 4.0e2;
+
+	// ---- Heterogeneous layout ----
+	// When Slots is empty the rack is the uniform legacy layout: NumSleds identical slots using Components
+	// (bit-identical to the S1 model). Otherwise NumSleds is set to Slots.Num() at Initialize and every
+	// slot uses DeviceTypes[Slot.DeviceType].Components.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Rack")
+	TArray<FRackDeviceType> DeviceTypes;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Rack")
+	TArray<FRackSlot> Slots;
 };
 
 // 매 스텝 바깥에서 주어지는 경계 조건.
@@ -130,6 +205,11 @@ struct FRackThermalInput
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Rack")
 	double AirInletTempK = 297.15;
+
+	// Optional inlet temperature per slot [K] (the room air in front of that slot's height).
+	// Length != number of slots -> every slot uses AirInletTempK.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Rack")
+	TArray<double> SlotAirInletTempK;
 
 	// 캐비닛 전체를 지나는 공기 질량유량 [kg/s]. 팬이 정하며 슬롯 사이에 배분된다.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Rack")
@@ -176,6 +256,11 @@ struct FRackThermalSnapshot
 	// 유닛을 빠져나온 공기 온도 [K]. 빈 슬롯은 입구 온도 그대로다.
 	UPROPERTY(BlueprintReadOnly, Category = "Rack")
 	TArray<double> SledAirOutletTempK;
+
+	// Heat each slot hands to the room air [W]: forced air + case natural convection of its parts.
+	// The coupling injects this at the slot's own height behind the rack.
+	UPROPERTY(BlueprintReadOnly, Category = "Rack")
+	TArray<double> SlotHeatToAirW;
 
 	UPROPERTY(BlueprintReadOnly, Category = "Rack")
 	double CoolantTempK = 0.0;

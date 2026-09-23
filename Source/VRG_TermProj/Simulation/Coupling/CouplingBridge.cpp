@@ -21,6 +21,8 @@ void FCouplingBridge::Initialize(const TArray<FRackCouplingTarget>& InTargets,
 	EnergyInJ = 0.0;
 	EnergyOutJ = 0.0;
 	RadiatorRejectedJ = 0.0;
+	RackCoolantOutJ = RackAirOutJ = DroppedAirHeatJ = 0.0;
+	bLedgerBaselineTaken = false;
 	LastItHeatW = 0.0;
 	LastRadiatorRejectedW = 0.0;
 	LastAirCoolingRemovedW = 0.0;
@@ -99,6 +101,25 @@ void FCouplingBridge::PullAirInletTemperature()
 			Input->AirInletTempK = SumTempK / Count;
 		}
 		LastAirInletTempK[RackIndex] = Input->AirInletTempK;
+
+		// Per-slot inlet: the room air at that device's height, not the rack average.
+		const FRackCouplingLink& Link = Links[RackIndex];
+		const int32 NumSlots = Link.SlotInletStart.Num() - 1;
+		if (NumSlots > 0 && Targets[RackIndex].Model && NumSlots == Targets[RackIndex].Model->GetNumSleds())
+		{
+			Input->SlotAirInletTempK.SetNum(NumSlots);
+			for (int32 Slot = 0; Slot < NumSlots; ++Slot)
+			{
+				double Sum = 0.0; int32 N = 0;
+				for (int32 K = Link.SlotInletStart[Slot]; K < Link.SlotInletStart[Slot + 1]; ++K)
+					if (Grid.TemperatureK.IsValidIndex(Link.SlotInletCells[K])) { Sum += Grid.TemperatureK[Link.SlotInletCells[K]]; ++N; }
+				Input->SlotAirInletTempK[Slot] = N > 0 ? Sum / N : Input->AirInletTempK;
+			}
+		}
+		else
+		{
+			Input->SlotAirInletTempK.Reset();
+		}
 	}
 }
 
@@ -174,16 +195,29 @@ void FCouplingBridge::PushHeatToAir()
 		{
 			continue;
 		}
-
-		// 배기 셀에 고르게 나눈다. 겹치면 더한다 - 덮어쓰면 열이 사라진다.
-		const double PerCellW = LastHeatToAirW[RackIndex] / ExhaustCells.Num();
-		for (const int32 CellIndex : ExhaustCells)
+		auto Spread = [&](double HeatW, const int32* Cells, int32 Num)
 		{
-			if (ScratchCellHeatW.IsValidIndex(CellIndex))
+			// 배기 셀에 고르게 나눈다. 겹치면 더한다 - 덮어쓰면 열이 사라진다.
+			for (int32 K = 0; K < Num; ++K)
+				if (ScratchCellHeatW.IsValidIndex(Cells[K])) ScratchCellHeatW[Cells[K]] += HeatW / Num;
+		};
+
+		// Per-slot injection: every device's air-side heat enters behind it at its own height.
+		const FRackCouplingLink& Link = Links[RackIndex];
+		const FRackThermalModel* Model = Targets[RackIndex].Model;
+		const int32 NumSlots = Link.SlotExhaustStart.Num() - 1;
+		const FRackThermalSnapshot Snap = Model ? Model->MakeSnapshot(0.0) : FRackThermalSnapshot();
+		if (NumSlots > 0 && Snap.SlotHeatToAirW.Num() == NumSlots)
+		{
+			for (int32 Slot = 0; Slot < NumSlots; ++Slot)
 			{
-				ScratchCellHeatW[CellIndex] += PerCellW;
+				const int32 Num = Link.SlotExhaustStart[Slot + 1] - Link.SlotExhaustStart[Slot];
+				if (Num > 0) Spread(Snap.SlotHeatToAirW[Slot], Link.SlotExhaustCells.GetData() + Link.SlotExhaustStart[Slot], Num);
+				else Spread(Snap.SlotHeatToAirW[Slot], ExhaustCells.GetData(), ExhaustCells.Num());
 			}
+			continue;
 		}
+		Spread(LastHeatToAirW[RackIndex], ExhaustCells.GetData(), ExhaustCells.Num());
 	}
 }
 
@@ -196,6 +230,16 @@ void FCouplingBridge::Step(double DeltaTimeS, bool bHydraulicsResolved, bool bHy
 
 	bLastHydraulicsResolved = bHydraulicsResolved;
 	bLastHydraulicsConverged = bHydraulicsConverged;
+
+	if (!bLedgerBaselineTaken)
+	{
+		BaselineModelInJ = 0.0;
+		for (const FRackCouplingTarget& Target : Targets) if (Target.Model) BaselineModelInJ += Target.Model->GetEnergyInJ();
+		BaselineStoredJ = GetRawEnergyStoredJ();
+		BaselineAirOutJ = AirSolver ? AirSolver->GetEnergyOutJ() : 0.0;
+		RadiatorRejectedJ = RackCoolantOutJ = RackAirOutJ = DroppedAirHeatJ = 0.0;
+		bLedgerBaselineTaken = true;
+	}
 
 	// 1) 수력 -> 열: 랙 분기 유량을 냉각수 질량유량으로 넘긴다.
 	PullCoolantFlow();
@@ -217,7 +261,10 @@ void FCouplingBridge::Step(double DeltaTimeS, bool bHydraulicsResolved, bool bHy
 		}
 
 		Target.Model->Step(*Target.Input, DeltaTimeS);
-		ItHeatW += Target.Model->MakeSnapshot(0.0).TotalHeatW;
+		const FRackThermalSnapshot RackSnap = Target.Model->MakeSnapshot(0.0);
+		ItHeatW += RackSnap.TotalHeatW;
+		RackCoolantOutJ += RackSnap.HeatRemovedByCoolantW * DeltaTimeS;
+		RackAirOutJ += (RackSnap.TotalHeatToAirW + RackSnap.TotalHeatToAmbientW) * DeltaTimeS;
 	}
 	LastItHeatW = ItHeatW;
 
@@ -237,6 +284,9 @@ void FCouplingBridge::Step(double DeltaTimeS, bool bHydraulicsResolved, bool bHy
 			SCOPE_CYCLE_COUNTER(STAT_VrgAirSolverStep);
 			const uint64 StartCycles = FPlatformTime::Cycles64();
 			AirSolver->Step(AirInput, DeltaTimeS);
+			for (int32 I = 0; I < AirInput.CellHeatW.Num(); ++I)
+				if (AirInput.CellHeatW[I] != 0.0 && AirSolver->GetGrid().bSolidCell.IsValidIndex(I) && AirSolver->GetGrid().bSolidCell[I])
+					DroppedAirHeatJ += AirInput.CellHeatW[I] * DeltaTimeS;
 			LastAirSolverMs = FPlatformTime::ToMilliseconds64(FPlatformTime::Cycles64() - StartCycles);
 		}
 		LastAirCoolingRemovedW = (AirSolver->GetEnergyOutJ() - CoolingBeforeJ) / DeltaTimeS;
@@ -247,7 +297,7 @@ void FCouplingBridge::Step(double DeltaTimeS, bool bHydraulicsResolved, bool bHy
 	}
 
 	// 7) 전역 장부. 유입은 랙 모델이 이미 세고 있으므로 합치기만 한다.
-	EnergyInJ = 0.0;
+	EnergyInJ = -BaselineModelInJ;
 	for (const FRackCouplingTarget& Target : Targets)
 	{
 		if (Target.Model != nullptr)
@@ -258,10 +308,15 @@ void FCouplingBridge::Step(double DeltaTimeS, bool bHydraulicsResolved, bool bHy
 
 	// 유출은 계 밖으로 나간 것만이다: 라디에이터(냉각수)와 CRAH 코일(공기).
 	// 랙에서 공기로 넘어간 열은 계 안에서의 이동이라 여기 넣지 않는다.
-	EnergyOutJ = RadiatorRejectedJ + (AirSolver != nullptr ? AirSolver->GetEnergyOutJ() : 0.0);
+	EnergyOutJ = RadiatorRejectedJ + (AirSolver != nullptr ? AirSolver->GetEnergyOutJ() - BaselineAirOutJ : 0.0);
 }
 
 double FCouplingBridge::GetEnergyStoredJ() const
+{
+	return GetRawEnergyStoredJ() - (bLedgerBaselineTaken ? BaselineStoredJ : 0.0);
+}
+
+double FCouplingBridge::GetRawEnergyStoredJ() const
 {
 	double StoredJ = 0.0;
 
@@ -319,3 +374,16 @@ FCouplingSnapshot FCouplingBridge::MakeSnapshot(double SimTimeS) const
 
 	return Snapshot;
 }
+
+FString FCouplingBridge::DescribeEnergyLedger() const
+{
+	double RackResidualJ = 0.0;
+	for (const FRackCouplingTarget& Target : Targets) if (Target.Model) RackResidualJ += Target.Model->GetEnergyResidualJ();
+	const double AirResidualJ = AirSolver ? AirSolver->GetEnergyResidualJ() : 0.0;
+	const double AirInJ = AirSolver ? AirSolver->GetEnergyInJ() : 0.0;
+	return FString::Printf(TEXT("전역 잔차 %.3e J = 랙 %.3e + 공기 %.3e + 결합 %.3e | 결합: 냉각수(랙 반출 %.6e - 라디에이터 %.6e = %.3e), ")
+		TEXT("공기(랙 반출 %.6e - 공기 주입 %.6e = %.3e, 고체 셀 버림 %.3e)"),
+		GetEnergyResidualJ(), RackResidualJ, AirResidualJ, GetEnergyResidualJ() - RackResidualJ - AirResidualJ,
+		RackCoolantOutJ, RadiatorRejectedJ, RackCoolantOutJ - RadiatorRejectedJ, RackAirOutJ, AirInJ, RackAirOutJ - AirInJ, DroppedAirHeatJ);
+}
+
