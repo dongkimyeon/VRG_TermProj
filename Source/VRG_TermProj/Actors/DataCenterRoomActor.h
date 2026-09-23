@@ -5,6 +5,7 @@
 #include "CoreMinimal.h"
 #include "GameFramework/Actor.h"
 #include "Simulation/Hydraulics/HydraulicNetwork.h"
+#include "Visualization/PatchManager.h"
 #include "DataCenterRoomActor.generated.h"
 
 class ARackThermalActor;
@@ -52,6 +53,28 @@ public:
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Visualization|GJ")
 	bool bUseGjConnections = false;
+
+	// ---- Patch manager (GJ only; display plan, not a solver input) ----
+	// Puts one ASpineCabinetActor at the end of every row that has none. Rows share the end with the
+	// larger world coordinate so the overhead trays close into one loop.
+	UFUNCTION(BlueprintCallable, CallInEditor, Category = "Visualization|GJ")
+	void SpawnSpineCabinets();
+
+	// Rear face of the racks to the tray centreline [m]. The tray hangs over the hot aisle at CableTrayHeightM.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Visualization|GJ", meta = (ClampMin = "0.1"))
+	double TrayStandoffM = 0.27;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Visualization|GJ", meta = (ClampMin = "0", ClampMax = "16"))
+	int32 SpineLinksPerRowPair = 4;
+
+	const Patch::FPlan& GetPatchPlan() const { return PatchPlan; }
+
+	// For scripts: the one-line patch status and whether anything is unpatched / double-booked.
+	UFUNCTION(BlueprintCallable, Category = "Visualization|GJ")
+	FString GetPatchSummary() const { return PatchPlan.Summary(); }
+
+	UFUNCTION(BlueprintCallable, Category = "Visualization|GJ")
+	bool IsPatchComplete() const { return PatchPlan.Unconnected.IsEmpty() && PatchPlan.RejectedClaims == 0 && PatchPlan.Cables.Num() > 0; }
 
 	// 랙을 격자로 찍어 낸다. 찍은 뒤에는 개별 액터이므로 자유롭게 옮길 수 있다.
 	// 처음 깔 때만 쓰는 보조 기능이다.
@@ -252,6 +275,7 @@ private:
 	uint32 GjLayoutHash() const;
 	void BuildGjPipeMeshes();
 	void BuildGjDecorMeshes();
+	Patch::FPlan PatchPlan;
 
 	bool bNeedsRebuild = true;
 

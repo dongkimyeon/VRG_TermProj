@@ -19,13 +19,16 @@ for rack in racks:
     assert names.count('SM_GB200_ComputeNode')==18
     assert names.count('SM_QuantumIB_Switch_Photo')==1
     nodes+=names.count('SM_GB200_ComputeNode')
+    blanks=rack.get_components_by_class(unreal.InstancedStaticMeshComponent)
+    assert len(blanks)==1 and blanks[0].get_instance_count()==28,'1U blanks'
 curves=0
 for room in rooms:
     assert room.get_editor_property('use_gj_connections')
     room.refresh_gj_connections()
     assert room.get_num_routed_racks()==16
     curves+=len(room.get_components_by_class(unreal.SplineMeshComponent))
+    assert room.is_patch_complete(),room.get_patch_summary()
 assert curves>0
-report={'status':'PASS','racks':len(racks),'compute_nodes':nodes,'switches':len(racks),'spline_spans':curves,'saved_level':'/Game/Maps/L_Test'}
+report={'status':'PASS','spine_cabinets':len(find('SpineCabinetActor')),'patch':[r.get_patch_summary() for r in rooms],'racks':len(racks),'compute_nodes':nodes,'switches':len(racks),'spline_spans':curves,'saved_level':'/Game/Maps/L_Test'}
 (Path(unreal.Paths.project_saved_dir())/'GJ_Reload.json').write_text(json.dumps(report,indent=2),encoding='utf8')
 unreal.log('GJ_RELOAD_PASS '+json.dumps(report))

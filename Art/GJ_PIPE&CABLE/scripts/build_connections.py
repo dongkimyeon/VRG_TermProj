@@ -46,6 +46,7 @@ def cylinder(name,pos,r,length,mat,co=hardware,axis='X',n=24):
 # Standalone copy of the reference path function, preserving provenance.
 sys.path.insert(0,str(ROOT/"scripts"))
 from reference_route import route
+import rear_data_layout as L
 routes=[]; endpoints={}; assets={}
 def endpoint(name,p,d,role):
     endpoints[name]={'position_blender_m':list(p),'outward_blender':list(d),'role':role}
@@ -148,11 +149,13 @@ original={co.name:co for co in dst.collections}
 for co in original.values():
     for ob in co.objects:
         if ob.parent is None: ob.location=(0,0,0)
-def existing(co,p,label):
+L.move_node_io_to_rear(original['ASSET_ComputeNode'])  # data IO on the rear, with the coolant
+def existing(co,p,label,yaw=0):
     ob=bpy.data.objects.new(label,None); context.objects.link(ob); ob.instance_type='COLLECTION'; ob.instance_collection=original[co]; ob.location=p
+    ob.rotation_euler=(0,0,math.radians(yaw))
 for rack,yc in [('R01',-.43),('R02',.43)]:
     existing('ASSET_RackFrame',(0,yc,0),rack)
-    existing('ASSET_QuantumSwitch',(.134,yc,1.91),rack+'_Switch')
+    existing('ASSET_QuantumSwitch',(L.SWITCH_POS[0],yc,L.SWITCH_POS[1]),rack+'_Switch',L.SWITCH_YAW_DEG)
     for n in range(18):
         z=.392+n*.04445; existing('ASSET_ComputeNode',(.055,yc,z),rack+f'_Node{n+1:02}')
         for sign,color,co in [(-1,'Supply',cold),(1,'Return',hot)]:
@@ -164,12 +167,12 @@ for rack,yc in [('R01',-.43),('R02',.43)]:
             instance_asset('SM_QD_'+color,b)
             # Service loop runs in free rear space, outside body and side panels.
             smooth(e1+'_Hose',[(-.4165,yp,z+.024),(-.46,yp,z+.024),(-.49,yp+sign*.023,z-.010),(-.515,ym,z+.024),(-.5395,ym,z+.024)],.013,'Rubber',co,e1,e2)
-        a=(.476,yc-.185,z+.023); b=(.476,yc-.197+n*.022,1.922)
+        # Data on the rear: vertical ribbon in the centre channel between the two manifolds.
+        a=L.node_data_port(yc,n); b=L.switch_lower_port(yc,n+1)
         e1=f'{rack}.Node{n+1:02}.Data01'; e2=f'{rack}.Switch.Lower{n+1:02}'
-        endpoint(e1,a,(1,0,0),'Data'); endpoint(e2,b,(1,0,0),'Data')
-        instance_asset('SM_Plug_Compute',a); instance_asset('SM_Plug_Switch',b)
-        x=.59+n*.006; side=yc-.275-n*.004
-        path(e1+'_Patch',[(.520,a[1],a[2]),(x,a[1],a[2]),(x,side,a[2]-.04),(x,side,1.82),(x,b[1],1.82),(x,b[1],b[2]),(.520,b[1],b[2])],.0048,'Lime',data,e1,e2,.04)
+        endpoint(e1,a,L.OUT,'Data'); endpoint(e2,b,L.OUT,'Data')
+        instance_asset('SM_Plug_Compute',a,L.OUT); instance_asset('SM_Plug_Switch',b,L.OUT)
+        path(e1+'_Patch',L.patch_points(yc,n),.0048,'Lime',data,e1,e2,.04)
     for sign,color,co in [(-1,'Supply',cold),(1,'Return',hot)]:
         ym=yc+sign*.245; hx=-1.0 if sign<0 else -.82
         riser_points=[(-.65,ym,.34),(-.65,ym,1.34)] if sign<0 else [(hx,ym,.25),(-.65,ym,.25),(-.65,ym,1.34)]
@@ -196,19 +199,18 @@ for color,co,yy,hx in [('Supply',cold,-1.05,-1.0),('Return',hot,-1.35,-.82)]:
     for yy2 in [-.8,0,.8]:
         cylinder('Header coupling',(hx,yy2,.25),.060,.026,'Steel',axis='Y')
         box('Pipe foot',(hx,yy2,.06),(.16,.12,.025),'Dark'); box('Pipe saddle',(hx,yy2,.13),(.04,.03,.13),'Steel')
-# Four independent switch-to-switch links, with slack above the rack roofs.
+# Four independent switch-to-switch links from the rear upper ports, in the hot aisle behind the racks.
 for j in range(4):
-    ya=-.43+.023+j*.022; yb=.43+.023+j*.022; z=1.941
-    a=(.476,ya,z); b=(.476,yb,z)
+    a=L.switch_upper_port(-.43,j+11); b=L.switch_upper_port(.43,j+11)
     ea=f'R01.Switch.Upper{j+11:02}'; eb=f'R02.Switch.Upper{j+11:02}'
-    endpoint(ea,a,(1,0,0),'Data'); endpoint(eb,b,(1,0,0),'Data')
-    instance_asset('SM_Plug_Switch',a); instance_asset('SM_Plug_Switch',b)
-    path('InterRack_'+str(j+1),[(.520,ya,z),(.71+j*.012,ya,z),(.71+j*.012,ya,2.48+j*.012),(.71+j*.012,yb,2.48+j*.012),(.71+j*.012,yb,z),(.520,yb,z)],.0048,'Cyan',data,ea,eb,.10)
-# Neutral support tray, based on teammate's ladder-style carrier.
-for xx in [.58,.85]: box('Tray side',(xx,0,2.43),(.012,1.7,.034),'Steel')
-for j in range(13): box('Tray rung',(.715,-.78+j*.13,2.423),(.27,.016,.014),'Steel')
+    endpoint(ea,a,L.OUT,'Data'); endpoint(eb,b,L.OUT,'Data')
+    instance_asset('SM_Plug_Switch',a,L.OUT); instance_asset('SM_Plug_Switch',b,L.OUT)
+    path('InterRack_'+str(j+1),L.inter_rack_points(a[1],b[1],j),.0048,'Cyan',data,ea,eb,.10)
+# Neutral support tray, based on teammate's ladder-style carrier. Rear, above the data links.
+for xx in [-.58,-.85]: box('Tray side',(xx,0,2.43),(.012,1.7,.034),'Steel')
+for j in range(13): box('Tray rung',(-.715,-.78+j*.13,2.423),(.27,.016,.014),'Steel')
 for yc in [-.43,.43]:
-    for xx in [.58,.85]: box('Tray stand',(xx,yc,2.327),(.014,.02,.19),'Dark')
+    for xx in [-.58,-.85]: box('Tray stand',(xx,yc,2.327),(.014,.02,.19),'Dark')
 box('Platform',(-.42,-.2,-.06),(3.35,3.05,.10),'Floor',stage,.02)
 def label(text,p,size=.08):
     cu=bpy.data.curves.new(text,'FONT'); cu.body=text; cu.size=size; cu.align_x='CENTER'; cu.materials.append(mats['White'])
@@ -221,7 +223,7 @@ def camera(name,p,target,scale):
 cams=[(camera('CAM_Front',(5,-4,3.8),(-.40,-.20,1.14),4.6),'01_front_connections.png'),
  (camera('CAM_Rear',(-5,3,3.0),(-.7,-.2,1.08),4.25),'02_rear_cooling.png'),
  (camera('CAM_Ports',(-2.0,.05,1.28),(-.50,-.43,.95),.95),'03_hose_connectors.png'),
- (camera('CAM_Patch',(2,-1.1,1.9),(.55,-.43,1.8),.8),'04_switch_patches.png')]
+ (camera('CAM_Patch',(-2,-.2,2.0),(-.55,-.43,1.8),.8),'04_switch_patches.png')]
 sc.render.engine='CYCLES'; sc.cycles.samples=32; sc.cycles.use_denoising=True
 sc.render.resolution_x=1600; sc.render.resolution_y=1200; sc.render.resolution_percentage=100
 sc.world=bpy.data.worlds.new('Studio'); sc.world.use_nodes=True

@@ -2,6 +2,8 @@
 #include "Actors/RackThermalActor.h"
 #include "Actors/DataCenterRoomActor.h"
 #include "Actors/CoolingDistributionUnitActor.h"
+#include "Actors/SpineCabinetActor.h"
+#include "Components/InstancedStaticMeshComponent.h"
 #include "Components/StaticMeshComponent.h"
 #include "Components/SplineMeshComponent.h"
 #include "Engine/StaticMesh.h"
@@ -30,7 +32,15 @@ bool FGjVisualIntegrationTest::RunTest(const FString& Parameters)
     for(int32 I=0;I<Room->GetMutableNetwork().GetNumPipes();++I) Flows.Add(Room->GetMutableNetwork().GetPipeFlowM3s(I));
     const auto HeatBefore=A->Input.ComponentHeatW;
     for(auto* Rack:{A,B}) { Rack->bUseGjModels=true; Rack->RefreshVisuals(); }
+    // Row-end spine cabinet, same facing as the row (the patch manager's uplink target).
+    auto* Spine=World->SpawnActor<ASpineCabinetActor>(FVector(262,200,0),FRotator(0,90,0));
     Room->bUseGjConnections=true; Room->RefreshGjConnections();
+    const Patch::FPlan& Plan=Room->GetPatchPlan();
+    TestEqual(TEXT("Patch: every rack uplink goes to the spine"),Plan.NumUplinks(),2*Room->CablesPerRack);
+    TestEqual(TEXT("Patch: nothing unconnected"),Plan.Unconnected.Num(),0);
+    TestEqual(TEXT("Patch: no double-booked port"),Plan.RejectedClaims,0);
+    for(const Patch::FCable& C:Plan.Cables)
+        TestTrue(TEXT("Patch: cable lands on a real spine port"),C.PointsM.Last().Equals(Spine->GetPortWorldM(C.ToPort),1e-6));
     TestEqual(TEXT("Same hydraulic node count"),Room->GetMutableNetwork().GetNumNodes(),Nodes);
     TestEqual(TEXT("Same hydraulic edge count"),Room->GetMutableNetwork().GetNumPipes(),Flows.Num());
     for(int32 I=0;I<Flows.Num();++I) TestEqual(TEXT("Visual replacement leaves solved flow unchanged"),Room->GetMutableNetwork().GetPipeFlowM3s(I),Flows[I]);
@@ -44,6 +54,8 @@ bool FGjVisualIntegrationTest::RunTest(const FString& Parameters)
         if(Name==TEXT("SM_GJ_Harness_00")) FirstHarness=M;
     }
     TestEqual(TEXT("18 authored compute nodes"),Count,18);
+    TArray<UInstancedStaticMeshComponent*> BlankSets; A->GetComponents(BlankSets);
+    TestTrue(TEXT("Every empty U closed by a 1U blank (28 slots)"),BlankSets.Num()==1 && BlankSets[0]->GetInstanceCount()==28);
     if(TestNotNull(TEXT("First node"),FirstNode) && TestNotNull(TEXT("First harness"),FirstHarness))
     {
         TestTrue(TEXT("Docked module pivot"),FirstNode->GetRelativeLocation().Equals(FVector(5.5,0,39.2),.001));
@@ -56,6 +68,34 @@ bool FGjVisualIntegrationTest::RunTest(const FString& Parameters)
     }
     TArray<USplineMeshComponent*> Curves; Room->GetComponents(Curves);
     TestTrue(TEXT("Curved connections created"),Curves.Num()>0);
+    // Data side is the rear (-X): switch mounted reversed, rack actors themselves unrotated.
+    int32 Switches=0;
+    for(auto* M:Meshes) if(M->GetStaticMesh() && M->GetStaticMesh()->GetName()==TEXT("SM_QuantumIB_Switch_Photo"))
+    {
+        ++Switches;
+        TestTrue(TEXT("Switch reversed at rear slot"),M->GetRelativeLocation().Equals(FVector(-13.4,0,191),.001)
+            && FMath::IsNearlyEqual(FMath::Abs(M->GetRelativeRotation().Yaw),180.0,.001));
+    }
+    TestEqual(TEXT("One switch per rack"),Switches,1);
+    TestTrue(TEXT("Rack yaw untouched"),A->GetActorRotation().Equals(FRotator(0,90,0),.001));
+    int32 DataSpans=0;
+    for(auto* C:Curves) if(C->GetStaticMesh() && C->GetStaticMesh()->GetName()==TEXT("SM_Connection_Data"))
+    {
+        ++DataSpans;
+        for(const FVector& L:{C->GetStartPosition(),C->GetEndPosition()})
+        {
+            const FVector W=C->GetComponentTransform().TransformPosition(L);
+            for(ARackThermalActor* R:{A,B})
+            {
+                const FVector P=R->GetActorTransform().InverseTransformPosition(W);
+                TestTrue(TEXT("Inter-rack data line stays behind the rack (local X < 0)"),P.X<0);
+                // Port tails sit just inside the rear rails; above the roof the line must be in the aisle.
+                const bool OverRoof=P.Z>223.6 && FMath::Abs(P.X)<53.4 && FMath::Abs(P.Y)<30;
+                TestFalse(TEXT("Inter-rack data line never passes over a rack roof"),OverRoof);
+            }
+        }
+    }
+    TestTrue(TEXT("Inter-rack data lines created"),DataSpans>0);
     auto HasEndpoint=[&](FVector Wanted)
     {
         for(auto* C:Curves)

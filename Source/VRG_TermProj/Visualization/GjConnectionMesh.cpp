@@ -1,5 +1,7 @@
 #include "Visualization/GjConnectionMesh.h"
 #include "Components/SplineMeshComponent.h"
+#include "Components/InstancedStaticMeshComponent.h"
+#include "Visualization/GjRackLayout.h"
 #include "Engine/StaticMesh.h"
 #include "GameFramework/Actor.h"
 #include "Materials/MaterialInterface.h"
@@ -55,4 +57,22 @@ void GjConnectionMesh::AddPath(AActor* Owner, const TArray<FVector>& Points, USt
         if(Surface) M->CreateDynamicMaterialInstance(0,Surface);
         Out.Add(M);
     }
+}
+
+UInstancedStaticMeshComponent* GjConnectionMesh::AddBlankPanels(AActor* Owner,
+    const TArray<TPair<double, double>>& Slots, const FVector& RackScale)
+{
+    UStaticMesh* Blank=Mesh(TEXT("SM_GJ_Blank1U"));
+    if (!Owner || !Blank || Slots.IsEmpty()) return nullptr;
+    auto* C=NewObject<UInstancedStaticMeshComponent>(Owner,MakeUniqueObjectName(Owner,UInstancedStaticMeshComponent::StaticClass(),TEXT("GJ_BlankPanels")));
+    C->SetupAttachment(Owner->GetRootComponent()); C->SetStaticMesh(Blank); C->SetMobility(EComponentMobility::Movable);
+    C->SetCollisionEnabled(ECollisionEnabled::NoCollision); C->SetCastShadow(false); C->RegisterComponent();
+    for (const TPair<double, double>& S:Slots)
+    {
+        // Metres -> cm here only (rule 1). The mesh is exactly 1U tall, so Z scale stretches a partial gap.
+        const FVector Local(GjRackLayout::BlankFaceXM,0,S.Key);
+        C->AddInstance(FTransform(FRotator::ZeroRotator,Local*RackScale*100.0,
+            FVector(RackScale.X,RackScale.Y,RackScale.Z*S.Value/GjRackLayout::UnitM)));
+    }
+    return C;
 }

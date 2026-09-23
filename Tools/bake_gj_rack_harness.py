@@ -1,7 +1,8 @@
 """Blender batch: bake fixed in-rack harnesses, preserving separate sled visibility.
+Also re-exports the compute node (rear data IO) to runtime_exports/ExistingGB200.
 Curves and editable source stay in Art/GJ_PIPE&CABLE; inter-rack routes remain UE splines.
 """
-import bpy,json,math
+import bpy,bmesh,json,math
 from pathlib import Path
 from mathutils import Matrix,Vector
 ROOT=Path(__file__).resolve().parents[1]
@@ -53,5 +54,31 @@ for sign,color in [(-1,'Supply'),(1,'Return')]:
     bpy.context.window.scene=scene; bpy.context.view_layer.update(); parts.append(evalcopy(ob,Matrix.Identity(4)))
     for n in range(18):parts+=fitting('SM_Manifold_Tee',(-.65,y,.416+n*.04445))
 stats['SM_GJ_Manifolds']=save('SM_GJ_Manifolds',parts)
+# 1U blank filler plate (19-inch, 1.5 mm steel, two captive screws). Origin: rail face, bottom centre.
+# Instanced by the rack / spine cabinet into every empty U; scaled in Z when a gap is not a whole U.
+def blank_part(name,mesh_fn,mat):
+    bm=bmesh.new(); mesh_fn(bm); me=bpy.data.meshes.new(name); bm.to_mesh(me); bm.free()
+    me.materials.append(bpy.data.materials[mat]); ob=bpy.data.objects.new(name,me); export.collection.objects.link(ob); return ob
+def plate(bm):
+    r=bmesh.ops.create_cube(bm,size=1); bmesh.ops.scale(bm,vec=(.0015,.4826,.0439),verts=r['verts'])
+    bmesh.ops.translate(bm,vec=(.00075,0,.0225),verts=r['verts'])
+def screws(bm):
+    for y in (-.2335,.2335):
+        r=bmesh.ops.create_cone(bm,cap_ends=True,segments=16,radius1=.0032,radius2=.0032,depth=.002)
+        bmesh.ops.rotate(bm,verts=r['verts'],cent=(0,0,0),matrix=Matrix.Rotation(math.pi/2,3,'Y'))
+        bmesh.ops.translate(bm,vec=(.0025,y,.0225),verts=r['verts'])
+stats['SM_GJ_Blank1U']=save('SM_GJ_Blank1U',[blank_part('Plate',plate,'MC_Dark'),blank_part('Screws',screws,'MC_Steel')])
+# Compute node: data IO now on the rear cross-member. Keep authored UVs; only bake modifiers and units.
+node=bpy.data.collections['ASSET_ComputeNode']; scene.collection.children.link(node); bpy.context.view_layer.update()
+parts=[evalcopy(o,o.matrix_world.copy()) for o in node.objects if o.type=='MESH']
+scene.collection.children.unlink(node)
+bpy.context.window.scene=export; bpy.ops.object.select_all(action='DESELECT')
+for o in parts:o.select_set(True)
+bpy.context.view_layer.objects.active=parts[0]; bpy.ops.object.join(); o=parts[0]; o.name='SM_GB200_ComputeNode'
+mod=o.modifiers.new('Triangles','TRIANGULATE'); bpy.ops.object.modifier_apply(modifier=mod.name)
+stats[o.name]=len(o.data.polygons); o.data.transform(Matrix.Scale(100,4)); export.unit_settings.scale_length=.01
+(OUT/'ExistingGB200').mkdir(exist_ok=True)
+bpy.ops.export_scene.fbx(filepath=str(OUT/'ExistingGB200/SM_GB200_ComputeNode.fbx'),use_selection=True,object_types={'MESH'},axis_forward='-Y',axis_up='Z',apply_unit_scale=True,apply_scale_options='FBX_SCALE_NONE',bake_space_transform=False,mesh_smooth_type='FACE',bake_anim=False)
+bpy.data.objects.remove(o,do_unlink=True)
 (OUT/'manifest.json').write_text(json.dumps({'triangles':stats,'units':'baked centimetres; source metres','origin':'rack floor centre','source':'../GB200_Connections.blend'},indent=2),encoding='utf8')
 print('RACK_HARNESS_BAKE_PASS',len(stats))

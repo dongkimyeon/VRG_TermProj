@@ -11,19 +11,27 @@ for folder in ['ExistingGB200','Connections']:
         dst=ROOT/'Content'/folder/src.relative_to(ART/'UnrealSample/Content'/folder)
         if not dst.exists(): dst.parent.mkdir(parents=True,exist_ok=True); shutil.copy2(src,dst)
 tools=unreal.AssetToolsHelpers.get_asset_tools(); ml=unreal.MaterialEditingLibrary
-for fbx in sorted((ART/'runtime_exports').glob('*.fbx')):
-    task=unreal.AssetImportTask(); task.filename=str(fbx); task.destination_path='/Game/Connections'
+def import_mesh(fbx,dest):
+    task=unreal.AssetImportTask(); task.filename=str(fbx); task.destination_path=dest
     task.destination_name=fbx.stem; task.automated=True; task.replace_existing=True; task.replace_existing_settings=True; task.save=True
     opt=unreal.FbxImportUI(); opt.import_mesh=True; opt.import_materials=False; opt.import_textures=False
     opt.import_as_skeletal=False; opt.mesh_type_to_import=unreal.FBXImportType.FBXIT_STATIC_MESH; opt.automated_import_should_detect_type=False
     d=opt.static_mesh_import_data; d.combine_meshes=False; d.auto_generate_collision=False
     d.convert_scene=True; d.convert_scene_unit=True; d.force_front_x_axis=False; d.import_uniform_scale=1; d.generate_lightmap_u_vs=True
     task.options=opt; task.factory=unreal.FbxFactory(); tools.import_asset_tasks([task])
-    mesh=unreal.load_asset('/Game/Connections/'+fbx.stem); assert mesh,fbx.stem
+    mesh=unreal.load_asset(dest+'/'+fbx.stem); assert mesh,fbx.stem
     for i,slot in enumerate(mesh.static_materials):
-        mat=unreal.load_asset('/Game/Connections/Materials/'+str(slot.material_slot_name)); assert mat,str(slot.material_slot_name)
+        mat=unreal.load_asset(dest+'/Materials/'+str(slot.material_slot_name)); assert mat,str(slot.material_slot_name)
         mesh.set_material(i,mat)
-    unreal.EditorAssetLibrary.save_loaded_asset(mesh)
+    unreal.EditorAssetLibrary.save_loaded_asset(mesh); return mesh
+for fbx in sorted((ART/'runtime_exports').glob('*.fbx')): import_mesh(fbx,'/Game/Connections')
+# Compute node with rear data IO. Outer bounds may move only by the 2 mm rear cage lip (-42.0 -> -42.2 cm).
+node_bounds={}
+for fbx in sorted((ART/'runtime_exports/ExistingGB200').glob('*.fbx')):
+    old=unreal.load_asset('/Game/ExistingGB200/'+fbx.stem); before=old.get_bounding_box() if old else None
+    after=import_mesh(fbx,'/Game/ExistingGB200').get_bounding_box()
+    node_bounds[fbx.stem]={'before_cm':str(before),'after_cm':str(after)}
+    if before: assert all(abs(a-b)<.25 for a,b in [(before.min.x,after.min.x),(before.min.y,after.min.y),(before.min.z,after.min.z),(before.max.x,after.max.x),(before.max.y,after.max.y),(before.max.z,after.max.z)]),node_bounds[fbx.stem]
 path='/Game/Connections/Materials/MC_FlowBody'
 mat=unreal.load_asset(path) if unreal.EditorAssetLibrary.does_asset_exist(path) else tools.create_asset('MC_FlowBody','/Game/Connections/Materials',unreal.Material,unreal.MaterialFactoryNew())
 ml.delete_all_material_expressions(mat)
@@ -55,12 +63,15 @@ for r in racks:
     assert all(counts.get(f'SM_GJ_Harness_{i:02}')==1 for i in range(18)),counts
     rows.append({'actor':r.get_actor_label(),'position_cm':str(r.get_actor_location()),'rotation':str(r.get_actor_rotation()),'mesh_counts':counts})
 for r in rooms:
-    r.set_editor_property('use_gj_connections',True); r.set_editor_property('rack_size_m',unreal.Vector(1.068,.6,2.236)); r.refresh_gj_connections()
+    r.set_editor_property('use_gj_connections',True); r.set_editor_property('rack_size_m',unreal.Vector(1.068,.6,2.236))
+    r.spawn_spine_cabinets()  # one row-end patch/spine cabinet per row that has none (idempotent)
+    r.refresh_gj_connections()
+    assert r.is_patch_complete(),r.get_patch_summary()
     assert r.get_num_routed_racks()==len(racks)
     assert r.get_components_by_class(unreal.SplineMeshComponent)
 for air in find('AirFieldDebugActor'):air.fit_to_racks()
 for sim in find('DataCenterSimulationActor'):sim.rebuild_coupling()
 assert unreal.EditorLoadingAndSavingUtils.save_dirty_packages(True,True)
-report={'status':'PASS','racks':rows,'room_count':len(rooms),'cdu_count':len(cdus),'thermal_inputs_preserved':True,'actor_transforms_preserved':True,'level':'/Game/Maps/L_Test'}
+report={'status':'PASS','racks':rows,'patch':[r.get_patch_summary() for r in rooms],'spine_cabinets':[str(a.get_actor_location()) for a in unreal.get_editor_subsystem(unreal.EditorActorSubsystem).get_all_level_actors() if a.get_class().get_name()=='SpineCabinetActor'],'reimported_rack_meshes':node_bounds,'room_count':len(rooms),'cdu_count':len(cdus),'thermal_inputs_preserved':True,'actor_transforms_preserved':True,'level':'/Game/Maps/L_Test'}
 (ROOT/'Saved/GJ_Install.json').write_text(json.dumps(report,ensure_ascii=False,indent=2),encoding='utf8')
 unreal.log('GJ_INSTALL_PASS '+str(len(racks))+' racks')

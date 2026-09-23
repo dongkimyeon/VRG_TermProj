@@ -9,9 +9,14 @@
 
 - `GB200_Connections.blend`: Blender 원본. `01_Connected_Racks`에 랙 2대 연결 예시,
   `02_Modular_Parts`에 별도 부품이 있다. 기존 모델도 파일에 포함되어 있다.
-- `previews/01_front_connections.png`: 노드–스위치와 랙 사이 데이터 배선.
+- `previews/01_front_connections.png`: 전면(흡기면). 2026-09-23부터 데이터 배선은 전면에 없다.
+- **데이터는 후면이다 (2026-09-23).** 노드 IO·스위치 포트·노드–스위치 패치·랙 사이 링크를 냉각수와 같은
+  후면(−X)으로 옮겼다. 랙은 돌리지 않았고 스위치만 요 180°로 역방향 장착한다. 좌표는
+  `scripts/rear_data_layout.py`, 기존 파일 수정은 `scripts/migrate_rear_data.py`(Blender 5.2),
+  배치 표는 저장소 `Tools/GJ_모델_적용.md`의 "포트 배치" 절에 있다.
+- `previews/04_switch_patches.png`: 후면 스위치 포트 확대. `UE_GJ_Front.png` / `UE_GJ_Rear.png`는 UE L_Test 화면.
 - `previews/02_rear_cooling.png`: 공급·회수 매니폴드와 CDU 연결.
-- `previews/03_hose_connectors.png`, `04_switch_patches.png`: 연결부 확대.
+- `previews/03_hose_connectors.png`: 냉각 연결부 확대.
 - `UnrealSample/ConnectionsPreview.uproject`: 본 프로젝트와 분리한 UE 5.8.2 확인용 프로젝트.
   `/Game/L_ConnectionsPreview` 맵을 연다. 기본 모델과 연결 메시를 이 프로젝트에만 가져온다.
 

@@ -9,6 +9,8 @@
 #include "Simulation/Thermal/RackThermalModel.h"
 #include "Visualization/SimMeshBuilder.h"
 #include "Visualization/GjConnectionMesh.h"
+#include "Visualization/GjRackLayout.h"
+#include "Actors/SpineCabinetActor.h"
 
 #include "Components/SceneComponent.h"
 #include "Components/StaticMeshComponent.h"
@@ -704,6 +706,12 @@ uint32 ADataCenterRoomActor::GjLayoutHash() const
 		Hash=HashCombine(Hash,GetTypeHash(It->RackSizeM));
 		Hash=HashCombine(Hash,GetTypeHash(It->GetNumDockedSleds()));
 	}
+	for (TActorIterator<ASpineCabinetActor> It(GetWorld()); It; ++It)
+	{
+		Hash=HashCombine(Hash,GetTypeHash(It->GetActorLocation()));
+		Hash=HashCombine(Hash,GetTypeHash(It->GetActorRotation().Euler()));
+		Hash=HashCombine(Hash,GetTypeHash(It->NumSwitches));
+	}
 	for (TActorIterator<ACoolingDistributionUnitActor> It(GetWorld()); It; ++It)
 	{
 		Hash=HashCombine(Hash,GetTypeHash(It->GetSupplyPortWorldM()));
@@ -769,6 +777,7 @@ void ADataCenterRoomActor::BuildGjPipeMeshes()
 
 void ADataCenterRoomActor::BuildGjDecorMeshes()
 {
+	PatchPlan=Patch::FPlan();
 	UStaticMesh* Cable=GjConnectionMesh::Mesh(TEXT("SM_Connection_Data"));
 	UStaticMesh* Plug=GjConnectionMesh::Mesh(TEXT("SM_Plug_Switch"));
 	UStaticMesh* Adapter=GjConnectionMesh::Mesh(TEXT("SM_CDU_Adapter"));
@@ -778,36 +787,110 @@ void ADataCenterRoomActor::BuildGjDecorMeshes()
 		auto* C=SimMeshBuilder::CreateMeshComponent(this,Mesh,nullptr,TEXT("GJ_Fitting"));
 		C->SetWorldLocationAndRotation(WorldCm,Direction.Rotation()); DecorMeshes.Add(C);
 	};
-	auto Path=[&](TArray<FVector> Points)
+	for (const FRackRow& Row:Rows) if(Row.Cdu)
 	{
-		for (FVector& P:Points) P=GetActorTransform().InverseTransformPosition(P);
-		GjConnectionMesh::AddPath(this,Points,Cable,GjConnectionMesh::Material(TEXT("MC_Cyan")),10,DecorMeshes);
-	};
+		Fit(Adapter,SimUnits::MetersToUnreal(Row.Cdu->GetSupplyPortWorldM()),Row.Cdu->GetActorForwardVector());
+		Fit(Adapter,SimUnits::MetersToUnreal(Row.Cdu->GetReturnPortWorldM()),Row.Cdu->GetActorForwardVector());
+	}
+	if(!bShowCableTray) return;
+
+	// Patch manager input: GJ racks and spine cabinets per row, tray centreline over each row's hot aisle.
+	Patch::FInput In; In.SpineLinksPerRowPair=SpineLinksPerRowPair;
+	const int32 Uplinks=FMath::Clamp(CablesPerRack,0,GjRackLayout::PortsPerSwitchRow);
 	for (const FRackRow& Row:Rows)
 	{
-		if(Row.Cdu)
+		if (Row.Racks.IsEmpty() || !Row.Racks[0]) continue;
+		In.Rows.Add({RackRearAnchorM(*Row.Racks[0],Row.RearDir,TrayStandoffM)*FVector(1,1,0)+FVector(0,0,CableTrayHeightM),
+			Row.AlongDir,Row.RearDir});
+		for (ARackThermalActor* Rack:Row.Racks)
 		{
-			Fit(Adapter,SimUnits::MetersToUnreal(Row.Cdu->GetSupplyPortWorldM()),Row.Cdu->GetActorForwardVector());
-			Fit(Adapter,SimUnits::MetersToUnreal(Row.Cdu->GetReturnPortWorldM()),Row.Cdu->GetActorForwardVector());
-		}
-		if(!bShowCableTray) continue;
-		for(int32 I=0;I<Row.Racks.Num()-1;++I)
-		{
-			ARackThermalActor* A=Row.Racks[I]; ARackThermalActor* B=Row.Racks[I+1];
-			if(!A || !B || !A->bUseGjModels || !B->bUseGjModels) continue;
-			for(int32 J=0;J<FMath::Clamp(CablesPerRack,0,4);++J)
-			{
-				// Incoming ports 4..7, outgoing 8..11: adjacent links never double-book a port.
-				const double YA=.197-(8+J)*.022, YB=.197-(4+J)*.022;
-				const FVector PA=A->GjPointWorldCm(FVector(.476,YA,1.941)), PB=B->GjPointWorldCm(FVector(.476,YB,1.941));
-				Fit(Plug,PA,A->GetActorForwardVector()); Fit(Plug,PB,B->GetActorForwardVector());
-				const FVector S=A->GjPointWorldCm(FVector(.520,YA,1.941)), E=B->GjPointWorldCm(FVector(.520,YB,1.941));
-				const FVector LeadA=S+A->GetActorForwardVector()*(20+J*1.2), LeadB=E+B->GetActorForwardVector()*(20+J*1.2);
-				const double Top=FMath::Max3(CableTrayHeightM*100,A->GjPointWorldCm(FVector(0,0,2.4)).Z,B->GjPointWorldCm(FVector(0,0,2.4)).Z)+J*1.2;
-				Path({S,LeadA,FVector(LeadA.X,LeadA.Y,Top),FVector(LeadB.X,LeadB.Y,Top),LeadB,E});
-			}
+			if (!Rack || !Rack->bUseGjModels) continue;
+			Patch::FDevice D; D.Row=In.Rows.Num()-1; D.Label=Rack->GetActorLabel();
+			D.ToWorld=FTransform(Rack->GetActorQuat(),SimUnits::UnrealToMeters(Rack->GetActorLocation()));
+			D.HalfExtentM=Rack->RackSizeM*.5; D.HeightM=Rack->RackSizeM.Z; D.Outward=-Rack->GetActorForwardVector();
+			for (int32 Col=1;Col<=GjRackLayout::PortsPerSwitchRow;++Col)
+				D.PortM.Add(SimUnits::UnrealToMeters(Rack->GjPointWorldCm(GjRackLayout::SwitchPortM(GjRackLayout::SwitchZM,Col,true))));
+			// Upper-row cages centred on the switch; the lower row belongs to the node harness.
+			for (int32 J=0;J<Uplinks;++J) D.UplinkPorts.Add(GjRackLayout::PortsPerSwitchRow/2-Uplinks/2+J);
+			In.Devices.Add(MoveTemp(D));
 		}
 	}
+	for (TActorIterator<ASpineCabinetActor> It(GetWorld()); It; ++It)
+	{
+		Patch::FDevice D; D.bSpine=true; D.Label=It->GetActorLabel();
+		const FVector LocM=SimUnits::UnrealToMeters(It->GetActorLocation());
+		D.ToWorld=FTransform(It->GetActorQuat(),LocM); D.Outward=It->GetPortOutwardWorld();
+		for (int32 P=0;P<It->GetNumPorts();++P) D.PortM.Add(It->GetPortWorldM(P));
+		// Same row = same facing and the same rear line as the row's racks.
+		for (int32 R=0;R<In.Rows.Num();++R)
+		{
+			const Patch::FTrayRow& T=In.Rows[R];
+			const double Off=FVector::DotProduct(LocM-T.OriginM,T.Out)+TrayStandoffM+GjRackLayout::FrameDepthM*.5;
+			if (FVector::DotProduct(D.Outward,T.Out)>.9 && FMath::Abs(Off)<RowGroupToleranceM) { D.Row=R; break; }
+		}
+		In.Devices.Add(MoveTemp(D));
+	}
+	PatchPlan=Patch::PlanPatches(In);
+
+	UMaterialInterface* Uplink=GjConnectionMesh::Material(TEXT("MC_Cyan"));
+	UMaterialInterface* Trunk=GjConnectionMesh::Material(TEXT("MC_White"));
+	for (const Patch::FCable& C:PatchPlan.Cables)
+	{
+		TArray<FVector> Points;
+		for (const FVector& P:C.PointsM) Points.Add(GetActorTransform().InverseTransformPosition(SimUnits::MetersToUnreal(P)));
+		GjConnectionMesh::AddPath(this,Points,Cable,C.bSpineToSpine?Trunk:Uplink,6,DecorMeshes);
+		Fit(Plug,SimUnits::MetersToUnreal(C.PointsM[0]),In.Devices[C.FromDevice].Outward);
+		Fit(Plug,SimUnits::MetersToUnreal(C.PointsM.Last()),In.Devices[C.ToDevice].Outward);
+	}
+	// Ladder tray just under the lowest cable layer: two rails and rungs every 0.5 m.
+	UStaticMesh* Cylinder=SimMeshBuilder::LoadCylinderMesh();
+	UMaterialInterface* Colorable=SimMeshBuilder::LoadColorableMaterial();
+	auto Tube=[&](const FVector& AM,const FVector& BM,double DiameterCm)
+	{
+		auto* T=SimMeshBuilder::CreateMeshComponent(this,Cylinder,Colorable,TEXT("GJ_Tray"));
+		SimMeshBuilder::SetTube(T,GetActorTransform().InverseTransformPosition(SimUnits::MetersToUnreal(AM)),
+			GetActorTransform().InverseTransformPosition(SimUnits::MetersToUnreal(BM)),DiameterCm);
+		SimMeshBuilder::SetMeshColor(T,TrayColor); DecorMeshes.Add(T);
+	};
+	const double HalfWidthM=FMath::Max(1,In.LanesPerLayer)*In.LanePitchM*.5+.03;
+	for (const TPair<FVector,FVector>& Run:PatchPlan.TrayRunsM)
+	{
+		if (!Cylinder) break;
+		const FVector A=Run.Key-FVector(0,0,.02), B=Run.Value-FVector(0,0,.02), Dir=(B-A).GetSafeNormal();
+		const FVector Side=FVector::CrossProduct(FVector::UpVector,Dir)*HalfWidthM;
+		Tube(A-Side-Dir*HalfWidthM,B-Side+Dir*HalfWidthM,3); Tube(A+Side-Dir*HalfWidthM,B+Side+Dir*HalfWidthM,3);
+		for (double X=0;X<=FVector::Distance(A,B);X+=.5) Tube(A+Dir*X-Side,A+Dir*X+Side,1.5);
+	}
+}
+
+void ADataCenterRoomActor::SpawnSpineCabinets()
+{
+	UWorld* World=GetWorld();
+	if (!World) return;
+	DiscoverRows();
+	TArray<FVector> Existing;
+	for (TActorIterator<ASpineCabinetActor> It(World); It; ++It) Existing.Add(SimUnits::UnrealToMeters(It->GetActorLocation()));
+	for (const FRackRow& Row:Rows)
+	{
+		if (Row.Racks.Num()==0 || !Row.Racks[0] || !Row.Racks.Last()) continue;
+		const FVector First=SimUnits::UnrealToMeters(Row.Racks[0]->GetActorLocation());
+		const FVector Last=SimUnits::UnrealToMeters(Row.Racks.Last()->GetActorLocation());
+		// Tightest neighbour spacing: rows may have gaps (L_Test row B), the cabinet goes one slot past the end.
+		double Pitch=Row.Racks[0]->RackSizeM.Y+.06;
+		for (int32 I=1;I<Row.Racks.Num();++I) if (Row.Racks[I] && Row.Racks[I-1])
+			Pitch=FMath::Min(Pitch,FVector::Distance(Row.Racks[I]->GetActorLocation(),Row.Racks[I-1]->GetActorLocation())/100.0);
+		// Row end with the larger world coordinate along the row axis, so parallel rows pick the same side.
+		const FVector Axis=(Row.AlongDir.X+Row.AlongDir.Y)>=0?Row.AlongDir:-Row.AlongDir;
+		const FVector A=First-Row.AlongDir*Pitch, B=Last+Row.AlongDir*Pitch;
+		const FVector Spot=FVector::DotProduct(A,Axis)>FVector::DotProduct(B,Axis)?A:B;
+		bool bTaken=false;  // a row already has a spine if one stands on its rear line
+		for (const FVector& E:Existing) bTaken|=FMath::Abs(FVector::DotProduct(E-First,Row.RearDir))<RowGroupToleranceM;
+		if (bTaken) continue;
+		FActorSpawnParameters Params; Params.SpawnCollisionHandlingOverride=ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+		World->SpawnActor<ASpineCabinetActor>(SimUnits::MetersToUnreal(Spot),Row.Racks[0]->GetActorRotation(),Params);
+		Existing.Add(Spot);
+	}
+	bNeedsRebuild=true;
 }
 
 void ADataCenterRoomActor::DrawSummary() const
@@ -873,4 +956,11 @@ void ADataCenterRoomActor::DrawSummary() const
 
 	GEngine->AddOnScreenDebugMessage(BaseKey + 2, 0.0f, FColor(150, 150, 150),
 		TEXT("배관: 파랑 = 공급, 빨강 = 회수 (색상은 역할, 밝기는 계산된 유량 크기). 온도를 그린 것이 아니다."));
+
+	if (bUseGjConnections && bShowCableTray)
+	{
+		GEngine->AddOnScreenDebugMessage(BaseKey + 3, 0.0f,
+			PatchPlan.Unconnected.IsEmpty() && PatchPlan.RejectedClaims == 0 ? FColor(150, 200, 255) : FColor::Orange,
+			PatchPlan.Summary());
+	}
 }

@@ -4,6 +4,8 @@
 #include "Simulation/Core/SimUnits.h"
 #include "Visualization/SimMeshBuilder.h"
 #include "Visualization/GjConnectionMesh.h"
+#include "Visualization/GjRackLayout.h"
+#include "Components/InstancedStaticMeshComponent.h"
 
 #include "Components/SceneComponent.h"
 #include "Components/StaticMeshComponent.h"
@@ -178,8 +180,16 @@ bool ARackThermalActor::BuildGjMeshes()
 		return C;
 	};
 	CabinetMeshes.Add(Add(Frame,FVector::ZeroVector,TEXT("GJ_RackFrame")));
-	CabinetMeshes.Add(Add(Switch,FVector(.134,0,1.91),TEXT("GJ_QuantumSwitch")));
+	// Mounted reversed so its ports face the rear (-X) with the coolant. Only the switch yaws; the rack does not.
+	UStaticMeshComponent* SwitchMesh = Add(Switch,FVector(-.134,0,1.91),TEXT("GJ_QuantumSwitch"));
+	SwitchMesh->SetRelativeRotation(FRotator(0,180,0));
+	CabinetMeshes.Add(SwitchMesh);
 	CabinetMeshes.Add(Add(Manifolds,FVector::ZeroVector,TEXT("GJ_Manifolds")));
+	// Empty U positions get 1U blank plates on the front rail (visual only; the air grid already treats
+	// the rack body as solid, so this does not change any recirculation result).
+	TArray<TPair<double, double>> Blanks;
+	for (const GjRackLayout::FBlankSlot& Slot : GjRackLayout::ComputeRackBlankSlots()) Blanks.Add({Slot.BottomM, Slot.HeightM});
+	if (UInstancedStaticMeshComponent* Panels = GjConnectionMesh::AddBlankPanels(this, Blanks, Scale)) CabinetMeshes.Add(Panels);
 	for (int32 I=0; I<18; ++I)
 	{
 		SledMeshes.Add(Add(Node,FVector(.055,0,.392+I*.04445),TEXT("GJ_ComputeNode")));
