@@ -6,6 +6,8 @@
 #include "Actors/AirFieldDebugActor.h"
 #include "Actors/DataCenterRoomActor.h"
 #include "Actors/RackThermalActor.h"
+#include "Actors/SpineCabinetActor.h"
+#include "Visualization/GjRackLayout.h"
 #include "Simulation/Air/AirSolver.h"
 #include "Simulation/Core/SimUnits.h"
 
@@ -60,6 +62,7 @@ void ADataCenterSimulationActor::FindTargetActors()
 	Room = nullptr;
 	AirField = nullptr;
 	Racks.Reset();
+	Spines.Reset();
 
 	UWorld* World = GetWorld();
 	if (World == nullptr)
@@ -76,6 +79,12 @@ void ADataCenterSimulationActor::FindTargetActors()
 	{
 		AirField = *It;
 		break;
+	}
+
+	for (TActorIterator<ASpineCabinetActor> It(World); It; ++It)
+	{
+		It->EnsureThermalModel();
+		Spines.Add(*It);
 	}
 
 	// 랙 순서는 방 액터가 줄로 묶은 순서를 쓴다. 분기 파이프 인덱스가 그 순서로 나온다.
@@ -108,20 +117,23 @@ void ADataCenterSimulationActor::MarkRackSolidCells()
 
 	const FVector GridOriginM = SimUnits::UnrealToMeters(AirField->GetActorLocation());
 
-	for (const ARackThermalActor* Rack : Racks)
+	for (int32 I = 0; I < Racks.Num() + Spines.Num(); ++I)
 	{
-		if (Rack == nullptr)
+		const ARackThermalActor* Rack = I < Racks.Num() ? Racks[I].Get() : nullptr;
+		const AActor* Cabinet = I < Racks.Num() ? static_cast<const AActor*>(Rack) : static_cast<const AActor*>(Spines[I - Racks.Num()].Get());
+		const FVector SizeM = Rack ? Rack->RackSizeM : FVector(GjRackLayout::FrameDepthM, GjRackLayout::FrameWidthM, GjRackLayout::FrameHeightM);
+		if (Cabinet == nullptr)
 		{
 			continue;
 		}
 
-		const FVector RackM = SimUnits::UnrealToMeters(Rack->GetActorLocation());
-		const FVector Forward = Rack->GetActorForwardVector().GetSafeNormal2D();
-		const FVector Right = Rack->GetActorRightVector().GetSafeNormal2D();
+		const FVector RackM = SimUnits::UnrealToMeters(Cabinet->GetActorLocation());
+		const FVector Forward = Cabinet->GetActorForwardVector().GetSafeNormal2D();
+		const FVector Right = Cabinet->GetActorRightVector().GetSafeNormal2D();
 
 		// 앞뒤 한 겹은 남긴다. 랙은 공기가 앞으로 들어와 뒤로 나가는 통로라
 		// 통째로 막으면 흡기·배기 셀이 격자에서 끊긴다.
-		const double SolidDepthM = FMath::Max(Rack->RackSizeM.X - 2.0 * Grid.GetCellSizeM(), 0.0);
+		const double SolidDepthM = FMath::Max(SizeM.X - 2.0 * Grid.GetCellSizeM(), 0.0);
 		if (SolidDepthM <= 0.0)
 		{
 			continue;
@@ -141,8 +153,8 @@ void ADataCenterSimulationActor::MarkRackSolidCells()
 					const double AlongWidthM = FMath::Abs(FVector::DotProduct(OffsetM, Right));
 
 					if (AlongDepthM <= SolidDepthM * 0.5
-						&& AlongWidthM <= Rack->RackSizeM.Y * 0.5
-						&& OffsetM.Z >= 0.0 && OffsetM.Z <= Rack->RackSizeM.Z)
+						&& AlongWidthM <= SizeM.Y * 0.5
+						&& OffsetM.Z >= 0.0 && OffsetM.Z <= SizeM.Z)
 					{
 						Grid.bSolidCell[Grid.CellIndex(X, Y, Z)] = true;
 					}
@@ -207,6 +219,7 @@ void ADataCenterSimulationActor::BuildCoolingCoil()
 		if (!Rack) continue;
 		DesignAirLoadW += Rack->GetDesignHeatToAirW();
 	}
+	for (const ASpineCabinetActor* Spine : Spines) DesignAirLoadW += Spine->GetDesignHeatToAirW();
 	EffectiveCoilUAWK = bAutoSizeCoil && DesignAirLoadW > 0.0 ? DesignAirLoadW / CoilDesignApproachK : CoilTotalUAWK;
 
 	// 전체 UA를 코일 셀에 고르게 나눈다.
@@ -265,33 +278,36 @@ void ADataCenterSimulationActor::BuildCoupling()
 
 	int32 NumRacksWithAir = 0;
 
-	for (int32 RackIndex = 0; RackIndex < Racks.Num(); ++RackIndex)
+	for (int32 RackIndex = 0; RackIndex < Racks.Num() + Spines.Num(); ++RackIndex)
 	{
-		ARackThermalActor* Rack = Racks[RackIndex];
-		if (Rack == nullptr)
+		ARackThermalActor* Rack = Racks.IsValidIndex(RackIndex) ? Racks[RackIndex].Get() : nullptr;
+		ASpineCabinetActor* Spine = RackIndex >= Racks.Num() ? Spines[RackIndex - Racks.Num()].Get() : nullptr;
+		AActor* Cabinet = Rack ? static_cast<AActor*>(Rack) : static_cast<AActor*>(Spine);
+		const FVector SizeM = Rack ? Rack->RackSizeM : FVector(GjRackLayout::FrameDepthM, GjRackLayout::FrameWidthM, GjRackLayout::FrameHeightM);
+		if (Cabinet == nullptr)
 		{
 			continue;
 		}
 
 		FRackCouplingTarget Target;
-		Target.Model = &Rack->GetMutableModel();
-		Target.Input = &Rack->GetMutableInput();
-		Target.Radiator = &Rack->GetRadiatorParams();
+		Target.Model = Rack ? &Rack->GetMutableModel() : &Spine->GetMutableModel();
+		Target.Input = Rack ? &Rack->GetMutableInput() : &Spine->GetMutableInput();
+		Target.Radiator = Rack ? &Rack->GetRadiatorParams() : nullptr;
 		Targets.Add(Target);
 
 		FRackCouplingLink Link;
-		Link.BranchPipeIndex = BranchIndices.IsValidIndex(RackIndex) ? BranchIndices[RackIndex] : INDEX_NONE;
-		Link.FallbackCoolantMassFlowKgs = Rack->GetMutableInput().CoolantMassFlowKgs;
+		Link.BranchPipeIndex = Rack && BranchIndices.IsValidIndex(RackIndex) ? BranchIndices[RackIndex] : INDEX_NONE;
+		Link.FallbackCoolantMassFlowKgs = Target.Input->CoolantMassFlowKgs;
 
 		if (bHasAir)
 		{
 			// 랙 앞뒤로 한 덩어리씩 셀을 잡는다.
 			// 앞(+X 로컬)이 흡기, 뒤가 배기다. 셀 높이는 슬롯별로 다시 나눌 때 쓴다.
 			TArray<double> InletCellZ, ExhaustCellZ;
-			const FVector RackM = SimUnits::UnrealToMeters(Rack->GetActorLocation());
-			const FVector Forward = Rack->GetActorForwardVector().GetSafeNormal2D();
-			const FVector Right = Rack->GetActorRightVector().GetSafeNormal2D();
-			const double HalfDepthM = Rack->RackSizeM.X * 0.5;
+			const FVector RackM = SimUnits::UnrealToMeters(Cabinet->GetActorLocation());
+			const FVector Forward = Cabinet->GetActorForwardVector().GetSafeNormal2D();
+			const FVector Right = Cabinet->GetActorRightVector().GetSafeNormal2D();
+			const double HalfDepthM = SizeM.X * 0.5;
 
 			for (int32 Z = 0; Z < Grid->GetNumCellsZ(); ++Z)
 			{
@@ -308,8 +324,8 @@ void ADataCenterSimulationActor::BuildCoupling()
 						const FVector OffsetM = CellWorldM - RackM;
 
 						// 랙 폭과 높이 안쪽이어야 한다.
-						if (FMath::Abs(FVector::DotProduct(OffsetM, Right)) > Rack->RackSizeM.Y * 0.5
-							|| OffsetM.Z < 0.0 || OffsetM.Z > Rack->RackSizeM.Z)
+						if (FMath::Abs(FVector::DotProduct(OffsetM, Right)) > SizeM.Y * 0.5
+							|| OffsetM.Z < 0.0 || OffsetM.Z > SizeM.Z)
 						{
 							continue;
 						}
@@ -343,10 +359,11 @@ void ADataCenterSimulationActor::BuildCoupling()
 			auto BuildSlotLists = [&](const TArray<int32>& Cells, const TArray<double>& CellZ, TArray<int32>& Start, TArray<int32>& Out)
 			{
 				Start.Reset(); Out.Reset();
-				for (int32 Slot = 0; Slot < Rack->Params.NumSleds; ++Slot)
+				for (int32 Slot = 0; Slot < Target.Model->GetNumSleds(); ++Slot)
 				{
 					double BottomM = 0.0, HeightM = 0.0;
-					Rack->GetSlotHeightRangeM(Slot, BottomM, HeightM);
+					if (Rack) Rack->GetSlotHeightRangeM(Slot, BottomM, HeightM);
+					else { BottomM = Spine->GetSwitchZM(Slot); HeightM = GjRackLayout::UnitM; }
 					Start.Add(Out.Num());
 					for (int32 K = 0; K < Cells.Num(); ++K)
 						if (CellZ[K] + HalfCellM > BottomM && CellZ[K] - HalfCellM < BottomM + HeightM) Out.Add(Cells[K]);
@@ -479,7 +496,7 @@ void ADataCenterSimulationActor::DrawSummary() const
 
 	GEngine->AddOnScreenDebugMessage(BaseKey, 0.0f,
 		bAllConverged ? FColor::Green : FColor::Red,
-		FString::Printf(TEXT("[통합] t=%.1f s | 랙 %d대 | 수력 %s | 공기 압력 %s"),
+		FString::Printf(TEXT("[통합] t=%.1f s | 랙/스파인 %d대 | 수력 %s | 공기 압력 %s"),
 			Snapshot.SimTimeS, Snapshot.RackHeatToAirW.Num(),
 			Snapshot.bHydraulicsConverged ? TEXT("수렴") : TEXT("수렴 실패"),
 			Snapshot.bAirPressureConverged ? TEXT("수렴") : TEXT("수렴 실패 - 속도장 믿지 말 것")));

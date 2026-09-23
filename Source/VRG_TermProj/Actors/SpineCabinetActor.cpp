@@ -19,6 +19,25 @@ void ASpineCabinetActor::OnConstruction(const FTransform& Transform)
 	RefreshVisuals();
 }
 
+void ASpineCabinetActor::EnsureThermalModel()
+{
+	if (ThermalSwitchCount == NumSwitches && ThermalFirstSlot == FirstSwitchSlot) return;
+	TArray<double> Heights;
+	for (int32 S = 0; S < FMath::Clamp(NumSwitches, 1, 8); ++S) Heights.Add(GetSwitchZM(S));
+	const FRackThermalParams Params = FRackThermalModel::MakeQuantumSpineParams(Heights);
+	Input = FRackThermalInput();
+	Input.ComponentHeatW = FRackThermalModel::MakeDefaultHeatW(Params);
+	Input.SledDocked.Init(true, Heights.Num());
+	Input.CoolantMassFlowKgs = 0.0;
+	// Engineering estimate: mdot = P/(cp*10 K), not measured fan flow. 10 K is an assumed
+	// design air rise; 747 W/switch is the passive-cable QM9700 reference documented in
+	// QuantumSpineSwitch (https://networking-docs.nvidia.com/qm97x0hw/specifications).
+	Input.TotalAirMassFlowKgs = FRackThermalModel::DesignHeatToAirW(Params, Input) / (Params.AirCpJKgK * 10.0);
+	Model.Initialize(Params, FRackThermalState());
+	ThermalSwitchCount = NumSwitches;
+	ThermalFirstSlot = FirstSwitchSlot;
+}
+
 double ASpineCabinetActor::GetSwitchZM(int32 Switch) const
 {
 	return GjRackLayout::NodeZ(FirstSwitchSlot + Switch);

@@ -4,6 +4,8 @@
 
 #include "Actors/DataCenterSimulationActor.h"
 #include "Actors/RackThermalActor.h"
+#include "Actors/SpineCabinetActor.h"
+#include "Visualization/GjRackLayout.h"
 #include "Simulation/Core/SimUnits.h"
 
 #include "EngineUtils.h"
@@ -372,6 +374,14 @@ void AAirFieldDebugActor::FitToRacks()
 		BoundsM += FBox(
 			RackM - FVector(HalfSpanM, HalfSpanM, 0.0),
 			RackM + FVector(HalfSpanM, HalfSpanM, Rack->RackSizeM.Z));
+	}
+
+	// Row-end spines are heat sources too: include them before adding inlet/exhaust margins.
+	for (TActorIterator<ASpineCabinetActor> It(GetWorld()); It; ++It)
+	{
+		const FVector M = SimUnits::UnrealToMeters(It->GetActorLocation());
+		const double Half = .5 * GjRackLayout::FrameDepthM;
+		BoundsM += FBox(M - FVector(Half, Half, 0), M + FVector(Half, Half, GjRackLayout::FrameHeightM));
 	}
 
 	// 배기 기둥이 랙 뒤와 위로 뻗으므로 넉넉하게 잡는다.

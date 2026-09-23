@@ -511,8 +511,8 @@ FRackThermalSnapshot FRackThermalModel::MakeSnapshot(double SimTimeS) const
 //   - U 배치(아래부터 빈칸 2, 전원 4, 컴퓨트 8, 스위치 9, 컴퓨트 10, 전원 4, 관리 스위치 2, 빈칸 8):
 //     공개 사진의 순서(위 관리 스위치 - 전원 - 트레이 묶음 - 전원)를 따른 배치이며 U 번호는 추정이다.
 //
-// 결과 (MakeGb200Nvl72Params 기본값): DC 부하 117.0 kW + PSU 손실 3.0 kW = 랙 120.0 kW,
-// 공기 약 17.2 kW(14%) / 액체 약 102.8 kW(86%). 테스트가 이 범위를 확인한다.
+// 측정 결과 (MakeGb200Nvl72Params): DC 116.32 kW + PSU 손실 2.983 kW = 119.30 kW,
+// 정상 공기 14.6% / 액체 85.4%. SteadyStatePlausible 테스트가 별도 타당성 범위를 확인한다.
 
 namespace
 {
@@ -616,8 +616,10 @@ FRackDeviceType FRackThermalModel::QuantumSpineSwitch()
 	FRackDeviceType D;
 	D.Name = TEXT("Quantum-2 Spine Switch");
 	D.DockedResistancePaS2Kg2 = 1.0e4;
-	// ~620 W with passive cables (estimated split; datasheet totals vary with optics).
-	D.Components.Add(Part(TEXT("Quantum-2 ASIC"), ERackPartKind::Switch, 400.0, 800.0, 0.0, 15.0, .05, 0));
+	// QM9700 typical passive-cable total = 747 W (ATIS); active-cable maximum = 1720 W.
+	// Source checked 2026-09-23: https://networking-docs.nvidia.com/qm97x0hw/specifications
+	// All component splits, capacities and UA are estimates; photo geometry is not this SKU.
+	D.Components.Add(Part(TEXT("Quantum-2 ASIC"), ERackPartKind::Switch, 527.0, 800.0, 0.0, 15.0, .05, 0));
 	D.Components.Add(Part(TEXT("Control CPU"), ERackPartKind::Cpu, 30.0, 60.0, 0.0, 1.5, .02, 0));
 	for (int32 I = 0; I < 2; ++I) D.Components.Add(Part(*FString::Printf(TEXT("PSU %d"), I), ERackPartKind::Power, 20.0, 200.0, 0.0, 1.5, .02, 1));
 	for (int32 I = 0; I < 6; ++I) D.Components.Add(Part(*FString::Printf(TEXT("Fan %d"), I), ERackPartKind::Fan, 25.0, 60.0, 0.0, 2.0, .01, 2));

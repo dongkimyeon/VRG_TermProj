@@ -761,7 +761,11 @@ IT 발열 1684.8 kW = 라디에이터 1262.8 kW + CRAH 28.43 kW + 축적
 | `Network.SeriesAnalytic` | 1.24e-14 | 해석해 유량 0.2828 m³/s 기준 | < 1e-10 |
 | `Network.ParallelAnalytic` | 압력 3.54e-11 | 공급압 4.0e5 Pa 기준 | < 1e-9 |
 | `Network.PumpOperatingPointAnalytic` | 유량 1.76e-16 / 동력 3.45e-16 | 해석해 운전점 기준 | < 1e-9 |
-| `Gb200Nvl72.SteadyStatePlausible` | 8.65e-13 | 발열 105.3 kW 기준, 무차원 | < 1e-6 |
+| `Gb200Nvl72.SteadyStatePlausible` | 1.006e-12 | 발열 119.30 kW 기준, 무차원 | < 1e-6 |
+| 같은 테스트 슬롯 열 합 / PSU 손실 | 2.864e-16 / 4.955e-17 | 랙 총 발열 119.30 kW 기준, 무차원 | 각각 < 1e-12 |
+| 같은 테스트 병렬 E1.S 온도 차 | 0 K | 4개 드라이브 최대 절대 차 (K) | < 1e-9 K |
+| `Coupling.SlotAirHeatAtSlotHeight` | 5.654e-16 / 1.472e-16 | 슬롯 공기 합 9652.29 W / 0.02 s 주입량 193.046 J 기준, 무차원 | 각각 < 1e-12 |
+| `Coupling.SpineAirOnly` 전역 열수지 | 1.500e-13 | 누적 IT 입력 2988 W × 400 s = 1195200 J 기준, 무차원 | < 1e-11 |
 | `Gb200Nvl72.RowOperatingPointPlausible` | 3.74e-16 | 펌프 유량 18.53 L/s 기준, 무차원 | < 1e-9 |
 | `InRowLoop.MatchesRecordedReference` | 유량/양정/전력 < 5e-3 | 기록된 S2 참고값 대비 상대 | < 5e-3 |
 | `InRowLoop.MultipleRowsAreIndependent` | 0.00e+00 / 6.43e-16 | 한 줄 해 대비 상대 / 펌프 유량 기준 | < 1e-9 |
@@ -1141,7 +1145,7 @@ L_Test: 공기 부하 129.6 kW -> UA 12960 W/K.
 - `FCouplingBridge::DescribeEnergyLedger()`가 전역 잔차를 랙/공기/냉각수 결합/공기 결합/고체 셀 버림으로 쪼갠다.
   예열이 끝나면 로그에 한 줄 남는다. 다음에 잔차가 생기면 이걸 먼저 본다.
 
-## 발열 확장 (진행 중, 2026-09-23 인계)
+## 발열 확장 (2026-09-23 인계 당시 기록)
 
 열모델을 슬롯별 장비 종류로 일반화했고(균일 S1 랙 결과는 비트 단위로 불변), GB200 NVL72 프리셋을
 장비 37대·노드 613개(칩 단위)로 바꿨다. 랙 119.30 kW = DC 116.32 + PSU 변환 손실 2.98 kW, 공기 14.6%.
@@ -1150,3 +1154,43 @@ L_Test: 공기 부하 129.6 kW -> UA 12960 W/K.
 **외형 설치·스파인 발열·문서 정리가 남았다. 현재 상태·남은 순서·이어받기 프롬프트는 `Tools/인계_2026-09-23.md`.**
 전체 Automation 73 성공 / 1 실패 (새 GJ 메시 미설치로 인한 `GJ.ExistingActorsAndHydraulics`).
 
+
+
+## 발열 확장 마무리 (2026-09-23)
+
+NVL72는 37대 장비·613개 열 노드로 구성한다. 컴퓨트 18 / NVLink 9 / 전원 셸프 8 /
+관리 스위치 2대이며, 공기 단 병렬 연결과 PSU 변환 손실을 포함한다. 측정된 기본 부하는
+119.30 kW(DC 116.32 + PSU 2.983), 공기 14.6%, 냉각수 ΔT 10.60 K다.
+15 kW 하이브리드 프리셋과 구분한다. U 배치는 사진 기반 추정이며 Blender와 열모델을 맞춘다.
+
+스파인은 통합 시계의 공랭 전용 열 대상이다. 냉각수 유량 0, 라디에이터 없음.
+설계 공기 부하와 CRAH 자동 UA, 고체 셀, FitToRacks 영역에 포함한다.
+열 기준은 [NVIDIA QM9700 공식 사양](https://networking-docs.nvidia.com/qm97x0hw/specifications)의
+수동 케이블 대표 전기 입력 747 W/대다(광케이블 최대 1720 W와 구분).
+사진형 36케이지 외형은 QM9700의 32 OSFP와 동일 제품이 아니다. 외형 우선 자산에 적용한
+열 대체 모델이며 실제 사진 속 Quantum 제품의 정확한 열 특성이라고 주장하지 않는다.
+기존 620 W는 근거가 불명확하여 교정했다. 부품별 전력 분배·UA·열용량은 추정값이고,
+풍량은 설계 공기 상승 10 K를 가정한 `mdot=P/(cp*10 K)` 추정치다(cp=1005 J/kg/K).
+수동 케이블 조건이므로 광모듈 추가 부하는 포함하지 않는다.
+
+스파인 4대의 독립 결합 테스트(400 s): IT 2988 W, CRAH 2969.973 W, 최고 부품 60.431 °C.
+잔차뿐 아니라 발열 규모, 냉각수 0, CRAH 접근, 부품 온도 범위를 별도로 검사한다.
+설치 후 별도 프로세스 재로드에서 L_Test 16랙의 컴퓨트 288 / NVLink 144 / 셸프 128 /
+관리 스위치 32, 스파인 캐비닛 2, 패치 곡선 908개를 확인했다.
+월드 파티션 외부 액터는 `modify()` 후 프리셋을 적용해야 저장된다.
+UE 5.8.2 Editor 최종 빌드 성공. 전체 Automation 75 성공/0 실패/경고 0 (Saved/Automation/A_Final).
+UE 전면·후면·패치 스크린샷을 Art/GJ_PIPE&CABLE/previews/UE_GJ_*.png에 갱신했다.
+
+
+L_Test 실제 D3D12 실행(1280×720, 20000×0.02 s = 400 s 예열 후 8 s 측정):
+- IT 1923.2 kW, 라디에이터 1630.6 kW, CRAH 291.6 kW, 잔여 축적 약 1 kW.
+- CRAH 설계 공기 부하 289.5 kW, UA 28949 W/K. 정상 분담은 노드 온도와 자연대류 때문에 설계 분할과 소폭 다르다.
+- 흡기 20.76~23.95 °C, 전역 잔차 1.82e-13 (누적 IT 입력 J 기준), 절대 잔차 1.397e-4 J.
+- 고체 셀에 버린 열 0 J. 압력 수렴 실패 로그 0회(실패 첫 회부터 로그에 남기는 경로).
+- Frame 중앙값 18.21 ms / P95 20.72 ms, Game 18.18, Draw 8.98, GPU 14.71 ms.
+  솔버 13.56 / 압력 4.92 ms. 이 PC 측정값이며 60 fps 목표 미달, 30 fps 최저 기준은 충족.
+  HMD 성능 보장이 아니다. Blender 렌더는 예열 중 종료됐고 성능 수집 시에는 실행 중이지 않았다.
+- 로그 `Saved/Logs/LTest_Thermal37.log`, 성능 `Saved/Profiling/VrgPerf-Thermal37.txt`,
+  화면 `Saved/Screenshots/WindowsEditor/VrgShot-Thermal37.png` (Saved는 커밋 제외).
+- 예약 로그 200 s와 완료 로그 400 s가 다른 것은 예약 시 통합 시계가 아직 기본 0.01 s였고
+  연결 완료 시 실제 FixedStepS=0.02로 초기화됐기 때문이다. 적분 누락이 아니라 초기 예약 표시 문제다.

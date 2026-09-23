@@ -11,6 +11,7 @@
 class AAirFieldDebugActor;
 class ADataCenterRoomActor;
 class ARackThermalActor;
+class ASpineCabinetActor;
 
 // S4: 세 도메인을 하나의 시계로 묶는 통합 액터 (MVP).
 //
@@ -137,6 +138,9 @@ private:
 
 	UPROPERTY(Transient)
 	TArray<TObjectPtr<ARackThermalActor>> Racks;
+
+	UPROPERTY(Transient)
+	TArray<TObjectPtr<ASpineCabinetActor>> Spines;
 
 	bool bSimRunning = false;
 	double EffectiveCoilUAWK = 0.0;

@@ -55,15 +55,17 @@ bool FGjVisualIntegrationTest::RunTest(const FString& Parameters)
     }
     TestEqual(TEXT("18 authored compute nodes"),Count,18);
     TArray<UInstancedStaticMeshComponent*> BlankSets; A->GetComponents(BlankSets);
-    TestTrue(TEXT("Every empty U closed by a 1U blank (28 slots)"),BlankSets.Num()==1 && BlankSets[0]->GetInstanceCount()==28);
+    TestTrue(TEXT("Every empty U closed by a 1U blank (10 slots)"),BlankSets.Num()==1 && BlankSets[0]->GetInstanceCount()==10);
+    const int32 FirstComputeSlot=A->Params.Slots.IndexOfByPredicate([](const FRackSlot& Slot) { return Slot.DeviceType==FRackThermalModel::Gb200DevCompute; });
+    TestEqual(TEXT("First compute slot follows four power shelves"),FirstComputeSlot,4);
     if(TestNotNull(TEXT("First node"),FirstNode) && TestNotNull(TEXT("First harness"),FirstHarness))
     {
-        TestTrue(TEXT("Docked module pivot"),FirstNode->GetRelativeLocation().Equals(FVector(5.5,0,39.2),.001));
-        A->SetSledDocked(0,false); A->Tick(.5f);
+        TestTrue(TEXT("Docked module pivot"),FirstNode->GetRelativeLocation().Equals(FVector(5.5,0,34.755),.001));
+        A->SetSledDocked(FirstComputeSlot,false); A->Tick(.5f);
         TestTrue(TEXT("Slide preserves authored base X"),FMath::IsNearlyEqual(FirstNode->GetRelativeLocation().X,95.5,.001));
         TestFalse(TEXT("Undocked quick disconnect harness hidden"),FirstHarness->IsVisible());
         Room->Tick(0); TestTrue(TEXT("Undock rebuild consumed by coupling"),Room->ConsumeRebuiltFlag());
-        A->SetSledDocked(0,true); A->Tick(.5f); Room->Tick(0);
+        A->SetSledDocked(FirstComputeSlot,true); A->Tick(.5f); Room->Tick(0);
         TestTrue(TEXT("Redock harness"),FirstHarness->IsVisible());
     }
     TArray<USplineMeshComponent*> Curves; Room->GetComponents(Curves);
@@ -73,10 +75,10 @@ bool FGjVisualIntegrationTest::RunTest(const FString& Parameters)
     for(auto* M:Meshes) if(M->GetStaticMesh() && M->GetStaticMesh()->GetName()==TEXT("SM_QuantumIB_Switch_Photo"))
     {
         ++Switches;
-        TestTrue(TEXT("Switch reversed at rear slot"),M->GetRelativeLocation().Equals(FVector(-13.4,0,191),.001)
+        TestTrue(TEXT("Switch reversed at rear slot"),(M->GetRelativeLocation().Equals(FVector(-13.4,0,172.55),.001) || M->GetRelativeLocation().Equals(FVector(-13.4,0,176.995),.001))
             && FMath::IsNearlyEqual(FMath::Abs(M->GetRelativeRotation().Yaw),180.0,.001));
     }
-    TestEqual(TEXT("One switch per rack"),Switches,1);
+    TestEqual(TEXT("Two management switches per rack"),Switches,2);
     TestTrue(TEXT("Rack yaw untouched"),A->GetActorRotation().Equals(FRotator(0,90,0),.001));
     int32 DataSpans=0;
     for(auto* C:Curves) if(C->GetStaticMesh() && C->GetStaticMesh()->GetName()==TEXT("SM_Connection_Data"))

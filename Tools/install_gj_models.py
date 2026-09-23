@@ -28,7 +28,9 @@ for fbx in sorted((ART/'runtime_exports').glob('*.fbx')): import_mesh(fbx,'/Game
 # Compute node with rear data IO. Outer bounds may move only by the 2 mm rear cage lip (-42.0 -> -42.2 cm).
 node_bounds={}
 for fbx in sorted((ART/'runtime_exports/ExistingGB200').glob('*.fbx')):
-    old=unreal.load_asset('/Game/ExistingGB200/'+fbx.stem); before=old.get_bounding_box() if old else None
+    asset_path='/Game/ExistingGB200/'+fbx.stem
+    old=unreal.load_asset(asset_path) if unreal.EditorAssetLibrary.does_asset_exist(asset_path) else None
+    before=old.get_bounding_box() if old else None
     after=import_mesh(fbx,'/Game/ExistingGB200').get_bounding_box()
     node_bounds[fbx.stem]={'before_cm':str(before),'after_cm':str(after)}
     if before: assert all(abs(a-b)<.25 for a,b in [(before.min.x,after.min.x),(before.min.y,after.min.y),(before.min.z,after.min.z),(before.max.x,after.max.x),(before.max.y,after.max.y),(before.max.z,after.max.z)]),node_bounds[fbx.stem]
@@ -47,31 +49,36 @@ sub=unreal.get_editor_subsystem(unreal.EditorActorSubsystem); actors=sub.get_all
 find=lambda name:[a for a in actors if a.get_class().get_name()==name]
 racks=find('RackThermalActor'); rooms=find('DataCenterRoomActor'); cdus=find('CoolingDistributionUnitActor')
 assert racks and rooms and cdus,'Expected existing rack / room / CDU actors'
-assert all(r.get_editor_property('params').get_editor_property('num_sleds')==18 for r in racks),'Only the existing GB200 18-slot racks may be converted'
 rows=[]
 for r in racks:
-    heats=list(r.get_editor_property('input').get_editor_property('component_heat_w'))
+    r.modify()  # Mark the World Partition external package dirty before native preset mutations.
     old_transform=str(r.get_actor_transform())
+    r.apply_gb200_nvl72_preset()
     r.set_editor_property('use_gj_models',True); r.set_editor_property('rack_size_m',unreal.Vector(1.068,.6,2.236)); r.refresh_visuals()
-    assert heats==list(r.get_editor_property('input').get_editor_property('component_heat_w')),'Heat input changed'
+    assert r.get_editor_property('params').get_editor_property('num_sleds')==37
+    assert len(r.get_editor_property('input').get_editor_property('component_heat_w'))==613
     assert old_transform==str(r.get_actor_transform()),'Rack moved'
     counts={}
     for c in r.get_components_by_class(unreal.StaticMeshComponent):
         sm=c.get_editor_property('static_mesh')
         if sm:counts[sm.get_name()]=counts.get(sm.get_name(),0)+1
-    assert counts.get('SM_GB200_RackFrame')==1 and counts.get('SM_GB200_ComputeNode')==18 and counts.get('SM_QuantumIB_Switch_Photo')==1,counts
+    assert counts.get('SM_GB200_RackFrame')==1 and counts.get('SM_GB200_ComputeNode')==18 and counts.get('SM_QuantumIB_Switch_Photo')==2,counts
+    assert counts.get('SM_GJ_NVSwitchTray')==9 and counts.get('SM_GJ_PowerShelf')==8,counts
     assert all(counts.get(f'SM_GJ_Harness_{i:02}')==1 for i in range(18)),counts
+    assert all(counts.get(f'SM_GJ_SwitchHarness_{i:02}')==1 for i in range(9)),counts
     rows.append({'actor':r.get_actor_label(),'position_cm':str(r.get_actor_location()),'rotation':str(r.get_actor_rotation()),'mesh_counts':counts})
 for r in rooms:
+    r.modify()
     r.set_editor_property('use_gj_connections',True); r.set_editor_property('rack_size_m',unreal.Vector(1.068,.6,2.236))
     r.spawn_spine_cabinets()  # one row-end patch/spine cabinet per row that has none (idempotent)
     r.refresh_gj_connections()
     assert r.is_patch_complete(),r.get_patch_summary()
     assert r.get_num_routed_racks()==len(racks)
     assert r.get_components_by_class(unreal.SplineMeshComponent)
-for air in find('AirFieldDebugActor'):air.fit_to_racks()
+for air in find('AirFieldDebugActor'):
+    air.modify(); air.fit_to_racks()
 for sim in find('DataCenterSimulationActor'):sim.rebuild_coupling()
 assert unreal.EditorLoadingAndSavingUtils.save_dirty_packages(True,True)
-report={'status':'PASS','racks':rows,'patch':[r.get_patch_summary() for r in rooms],'spine_cabinets':[str(a.get_actor_location()) for a in unreal.get_editor_subsystem(unreal.EditorActorSubsystem).get_all_level_actors() if a.get_class().get_name()=='SpineCabinetActor'],'reimported_rack_meshes':node_bounds,'room_count':len(rooms),'cdu_count':len(cdus),'thermal_inputs_preserved':True,'actor_transforms_preserved':True,'level':'/Game/Maps/L_Test'}
+report={'status':'PASS','racks':rows,'patch':[r.get_patch_summary() for r in rooms],'spine_cabinets':[str(a.get_actor_location()) for a in unreal.get_editor_subsystem(unreal.EditorActorSubsystem).get_all_level_actors() if a.get_class().get_name()=='SpineCabinetActor'],'reimported_rack_meshes':node_bounds,'room_count':len(rooms),'cdu_count':len(cdus),'thermal_preset':'GB200 NVL72: 37 devices / 613 nodes','actor_transforms_preserved':True,'level':'/Game/Maps/L_Test'}
 (ROOT/'Saved/GJ_Install.json').write_text(json.dumps(report,ensure_ascii=False,indent=2),encoding='utf8')
 unreal.log('GJ_INSTALL_PASS '+str(len(racks))+' racks')

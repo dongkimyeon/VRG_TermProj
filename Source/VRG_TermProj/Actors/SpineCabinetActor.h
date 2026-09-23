@@ -2,6 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "GameFramework/Actor.h"
+#include "Simulation/Thermal/RackThermalModel.h"
 #include "SpineCabinetActor.generated.h"
 
 class UStaticMeshComponent;
@@ -9,10 +10,8 @@ class UStaticMeshComponent;
 // Row-end network cabinet: the patch panel / spine switches that rack uplinks terminate on.
 // The room actor's patch manager discovers these, assigns their ports and routes cables to them.
 //
-// --- Display only ---
-// This cabinet is NOT a heat source, is NOT solid in the air grid and has no hydraulic branch.
-// Real spine switches dissipate roughly 1-2 kW each; that is outside the current thermal model
-// (same as the NVLink switch trays and power shelves missing from the GB200 racks).
+// Air-only thermal target, stepped exclusively by DataCenterSimulationActor (one clock).
+// No hydraulic branch; visual port count is photo-based, not the QM9700 thermal reference.
 //
 // Same 48U frame and the same reversed Quantum switch as the GB200 rack, so ports face the rear (-X)
 // and share the hot-aisle cable tray. Empty U positions are closed with 1U blanks.
@@ -42,8 +41,15 @@ public:
 	// Unit vector pointing out of the port (the cabinet's rear, world).
 	FVector GetPortOutwardWorld() const { return -GetActorForwardVector(); }
 	double GetSwitchZM(int32 Switch) const;
+	void EnsureThermalModel();
+	FRackThermalModel& GetMutableModel() { return Model; }
+	FRackThermalInput& GetMutableInput() { return Input; }
+	double GetDesignHeatToAirW() const { return FRackThermalModel::DesignHeatToAirW(Model.GetParams(), Input); }
 
 private:
+	FRackThermalModel Model;
+	FRackThermalInput Input;
+	int32 ThermalSwitchCount = INDEX_NONE, ThermalFirstSlot = INDEX_NONE;
 	UPROPERTY(Transient)
 	TArray<TObjectPtr<UStaticMeshComponent>> Meshes;
 };
