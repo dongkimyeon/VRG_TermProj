@@ -6,6 +6,7 @@
 
 void FAirSolver::Initialize(const FAirGridParams& InGridParams, double InitialTempK)
 {
+	bUseOctree = false;
 	Grid.Initialize(InGridParams);
 	Grid.ResetToUniform(InitialTempK);
 
@@ -130,6 +131,7 @@ void FAirSolver::ApplyBuoyancy(const FAirSolverInput& Input, double DeltaTimeS)
 
 void FAirSolver::OnSolidCellsChanged()
 {
+	if (bUseOctree) bOctreeNeedsImport = true;
 	// 고체 셀 안에 남아 있던 속도와 압력을 지운다.
 	ApplyWallBoundary();
 
@@ -497,6 +499,34 @@ void FAirSolver::Step(const FAirSolverInput& Input, double DeltaTimeS)
 	{
 		return;
 	}
+	if (bUseOctree)
+	{
+		if (bOctreeNeedsImport)
+		{
+			FString Error;
+			if (!OctreeSolver.Initialize(Grid, OctreeSettings, OctreeBoxesM, Error))
+			{
+				LastPressureResult.bConverged = false;
+				UE_LOG(LogTemp, Error, TEXT("Octree import failed: %s"), *Error);
+				return;
+			}
+			bOctreeNeedsImport = false;
+		}
+		OctreeSolver.PressureSettings = PressureSettings;
+		const double BeforeIn = OctreeSolver.EnergyInJ, BeforeOut = OctreeSolver.EnergyOutJ;
+		const int64 BeforeSolves = OctreeSolver.PressureSolves, BeforeFailures = OctreeSolver.PressureFailures;
+		OctreeSolver.Step(Input, DeltaTimeS);
+		OctreeSolver.ExportUniform(Grid);
+		EnergyInJ += OctreeSolver.EnergyInJ - BeforeIn; EnergyOutJ += OctreeSolver.EnergyOutJ - BeforeOut;
+		LastCoolingRemovedW = OctreeSolver.LastCoolingRemovedW; LastCourantNumber = OctreeSolver.LastCourant;
+		LastPressureResult = OctreeSolver.PressureResult; LastPressureSolveMs = OctreeSolver.LastPressureMs;
+		NumPressureSolves += OctreeSolver.PressureSolves - BeforeSolves;
+		NumPressureFailures += OctreeSolver.PressureFailures - BeforeFailures;
+		bLastPressureRanOnGpu = false;
+		if (OctreeSolver.PressureFailures != BeforeFailures)
+			UE_LOG(LogTemp, Warning, TEXT("[OctreeAir] Pressure failure: residual %.3e"), LastPressureResult.NormalizedResidual);
+		return;
+	}
 
 	// CFL을 먼저 재 둔다. 1을 넘으면 반라그랑주가 한 스텝에 한 셀을 건너뛴다.
 	// 반라그랑주는 무조건 안정이라 터지지는 않지만 결과가 뭉개진다.
@@ -629,8 +659,30 @@ FAirSolverSnapshot FAirSolver::MakeSnapshot(double SimTimeS) const
 	Snapshot.PressureIterations = LastPressureResult.IterationsUsed;
 	Snapshot.PressureNormalizedResidual = LastPressureResult.NormalizedResidual;
 	Snapshot.CourantNumber = LastCourantNumber;
+	if (bUseOctree && !bOctreeNeedsImport)
+	{
+		Snapshot.MaxAbsDivergencePerS = OctreeSolver.MaxDivergencePerS();
+		Snapshot.NormalizedDivergence = OctreeSolver.NormalizedDivergence();
+	}
 
 	return Snapshot;
+}
+
+bool FAirSolver::ConfigureOctree(const FFixedOctreeSettings& Settings, const TArray<FBox>& BoxesM, FString& Error)
+{
+	if (!OctreeSolver.Initialize(Grid, Settings, BoxesM, Error)) return false;
+	OctreeSettings = Settings; OctreeBoxesM = BoxesM;
+	bUseOctree = true; bOctreeNeedsImport = false; return true;
+}
+
+bool FAirSolver::AdaptOctree(const TArray<FBox>& BoxesM, double DtS, FString& Error)
+{
+	if (!bUseOctree || bOctreeNeedsImport) { Error = TEXT("Octree must be initialized before adaptation"); return false; }
+	OctreeSolver.PressureSettings = PressureSettings;
+	if (!OctreeSolver.Adapt(BoxesM, DtS, Error)) return false;
+	OctreeBoxesM = BoxesM; OctreeSolver.ExportUniform(Grid);
+	LastPressureResult = OctreeSolver.PressureResult;
+	return true;
 }
 
 void FAirSolver::SolvePressure()

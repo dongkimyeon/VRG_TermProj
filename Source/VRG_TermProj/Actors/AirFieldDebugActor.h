@@ -71,6 +71,21 @@ class VRG_TERMPROJ_API AAirFieldDebugActor : public AActor
 	GENERATED_BODY()
 
 public:
+	// S5-C opt-in backend; root cells still serve coupling and volume rendering.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Air|Octree")
+	bool bUseOctreeSolver = false;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Air|Octree", meta = (ClampMin = "0", ClampMax = "6"))
+	int32 OctreeDepth = 1;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Air|Octree", meta = (ClampMin = "1"))
+	int32 OctreeMaxLeaves = 60000;
+	// Solver-local metre AABBs. Add/remove boxes then ApplyOctreeRefinement during play:
+	// split/merge conserves heat and reprojects velocity without advancing/resetting SimTime.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Air|Octree")
+	TArray<FBox> OctreeRefinementBoxesM;
+	UFUNCTION(BlueprintCallable, CallInEditor, Category = "Air|Octree")
+	void ApplyOctreeRefinement();
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Air|Octree")
+	FString OctreeStatus;
 	AAirFieldDebugActor();
 
 	virtual void Tick(float DeltaTime) override;

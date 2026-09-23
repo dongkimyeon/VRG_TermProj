@@ -77,6 +77,7 @@ public:
 	const TArray<FFixedOctreeNode>& GetNodes() const { return Nodes; }
 	const TArray<int32>& GetLeafNodeIndices() const { return LeafNodeIndices; }
 	const FFixedOctreeFields& GetFields() const { return Fields; }
+	FFixedOctreeFields& GetMutableFields() { return Fields; }
 	const FAirGridParams& GetBaseParams() const { return BaseParams; }
 	int32 GetNumLeaves() const { return LeafNodeIndices.Num(); }
 	int32 GetMaxDepth() const { return Settings.MaxDepth; }

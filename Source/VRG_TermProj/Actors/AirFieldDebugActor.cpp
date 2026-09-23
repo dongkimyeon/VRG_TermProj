@@ -248,6 +248,7 @@ void AAirFieldDebugActor::BeginPlay()
 void AAirFieldDebugActor::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent)
 {
 	Super::PostEditChangeProperty(PropertyChangedEvent);
+	if (PropertyChangedEvent.GetMemberPropertyName() == GET_MEMBER_NAME_CHECKED(AAirFieldDebugActor, OctreeRefinementBoxesM)) return;
 	bNeedsReset = true;
 }
 #endif
@@ -267,6 +268,12 @@ void AAirFieldDebugActor::ResetSim()
 	Clock.Reset(FixedStepS);
 	Solver.Initialize(GridParams, InitialTempK);
 	Solver.GetMutablePressureSettings() = PressureSettings;
+	if (bUseOctreeSolver)
+	{
+		FFixedOctreeSettings Settings; Settings.MaxDepth = OctreeDepth; Settings.MaxLeaves = OctreeMaxLeaves;
+		if (!Solver.ConfigureOctree(Settings, OctreeRefinementBoxesM, OctreeStatus))
+			UE_LOG(LogTemp, Error, TEXT("Octree configuration failed: %s"), *OctreeStatus);
+	}
 
 	Input.GravityZMs2 = GravityZMs2;
 	Input.bEnableBuoyancy = bEnableBuoyancy;
@@ -284,6 +291,14 @@ FAirSolverSnapshot AAirFieldDebugActor::GetSnapshot() const
 {
 	// 바깥이 돌릴 때는 바깥 시계를 쓴다. 이 액터의 시계는 멈춰 있다.
 	return Solver.MakeSnapshot(bDrivenExternally ? ExternalSimTimeS : Clock.GetSimTimeS());
+}
+
+void AAirFieldDebugActor::ApplyOctreeRefinement()
+{
+	if (Solver.AdaptOctree(OctreeRefinementBoxesM, FixedStepS, OctreeStatus))
+		OctreeStatus = FString::Printf(TEXT("S5-C: %d leaves, reprojection %.3e, SimTime preserved"),
+			Solver.GetOctreeSolver().GetGrid().GetNumLeaves(), Solver.GetLastPressureResult().NormalizedResidual);
+	else UE_LOG(LogTemp, Warning, TEXT("Octree adaptation retained old state: %s"), *OctreeStatus);
 }
 
 void AAirFieldDebugActor::BuildCellHeat()
@@ -717,6 +732,13 @@ void AAirFieldDebugActor::DrawSummaryText() const
 	}
 
 	const uint64 BaseKey = static_cast<uint64>(GetUniqueID());
+	if (Solver.IsUsingOctree())
+	{
+		const auto& Tree = Solver.GetOctreeSolver().GetGrid();
+		GEngine->AddOnScreenDebugMessage(BaseKey + 9, 0.0f, FColor::Cyan,
+			FString::Printf(TEXT("[S5-C] %d leaves / %d hanging faces | MG residual %.3e | %s"),
+				Tree.GetNumLeaves(), Tree.GetNumHangingFaces(), Snapshot.PressureNormalizedResidual, *OctreeStatus));
+	}
 
 	GEngine->AddOnScreenDebugMessage(BaseKey, 0.0f,
 		Snapshot.bPressureConverged ? FColor::Green : FColor::Red,

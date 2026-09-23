@@ -6,6 +6,7 @@
 #include "Simulation/Air/JacobiPoissonSolver.h"
 #include "Simulation/Air/MultigridPoissonSolver.h"
 #include "Simulation/Air/UniformAirGrid.h"
+#include "Simulation/Air/OctreeAirSolver.h"
 #include "AirSolver.generated.h"
 
 // S3: 균일 격자 공기 해석.
@@ -158,6 +159,11 @@ public:
 	void Step(const FAirSolverInput& Input, double DeltaTimeS);
 
 	FAirSolverSnapshot MakeSnapshot(double SimTimeS) const;
+	// Uniform root grid remains the coupling/render interface; octree leaves integrate the physics.
+	bool ConfigureOctree(const FFixedOctreeSettings& Settings, const TArray<FBox>& BoxesM, FString& Error);
+	bool AdaptOctree(const TArray<FBox>& BoxesM, double DtS, FString& Error);
+	bool IsUsingOctree() const { return bUseOctree; }
+	const FOctreeAirSolver& GetOctreeSolver() const { return OctreeSolver; }
 
 	// ---- 파이프라인 단계 ----
 	// Step()이 이 순서로 부른다. 단계 하나만 따로 검증하려고 밖에서 부를 수도 있다
@@ -227,6 +233,10 @@ public:
 	double GetCourantNumber() const { return LastCourantNumber; }
 
 private:
+	FOctreeAirSolver OctreeSolver;
+	FFixedOctreeSettings OctreeSettings;
+	TArray<FBox> OctreeBoxesM;
+	bool bUseOctree = false, bOctreeNeedsImport = false;
 	FUniformAirGrid Grid;
 	FPoissonSolveSettings PressureSettings;
 	FPoissonSolveResult LastPressureResult;

@@ -179,15 +179,21 @@ FPoissonSolveResult FMultigridPoisson::Solve(const TArray<double>& B, TArray<dou
 	if (B.Num() != N) return Result;
 	if (X.Num() != N) X.Init(0.0, N);
 
-	double Ref = 0.0, SumB = 0.0;
-	for (int32 I = 0; I < N; ++I) { Ref = FMath::Max(Ref, FMath::Abs(B[I])); SumB += B[I]; }
+	double Ref = 0.0, SumB = 0.0, TotalVolume = 0.0;
+	for (int32 I = 0; I < N; ++I) { Ref = FMath::Max(Ref, FMath::Abs(B[I])); SumB += L0.Volume[I] * B[I]; TotalVolume += L0.Volume[I]; }
 	Result.ReferenceScale = Ref;
-	Result.MeanRightHandSide = N > 0 ? SumB / N : 0.0;
+	// Nonuniform Neumann compatibility is sum(V*B)=0, not sum(B)=0.
+	Result.MeanRightHandSide = TotalVolume > 0 ? SumB / TotalVolume : 0.0;
 	if (Ref <= UE_DOUBLE_SMALL_NUMBER) { for (double& V : X) V = 0.0; Result.bConverged = true; return Result; }
 	Result.bIncompatibleRightHandSide = FMath::Abs(Result.MeanRightHandSide) > 1.0e-10 * Ref;
+	if (Result.bIncompatibleRightHandSide)
+	{
+		Result.NormalizedResidual = FMath::Abs(Result.MeanRightHandSide) / Ref;
+		return Result; // D5: never report a projected, different RHS as the requested solution.
+	}
 
-	// A-form right-hand side f = -V*B, projected onto the range of A (sum f = 0) so an incompatible
-	// B cannot make the Krylov iteration diverge; the incompatibility is still reported above.
+	// A-form right-hand side f = -V*B; remove only the compatible round-off remainder.
+	// Incompatible input was rejected above.
 	TArray<double> F; F.SetNumUninitialized(N);
 	double SumF = 0.0, SumV = 0.0;
 	for (int32 I = 0; I < N; ++I) { F[I] = -L0.Volume[I] * B[I]; SumF += F[I]; SumV += L0.Volume[I]; }
@@ -195,7 +201,7 @@ FPoissonSolveResult FMultigridPoisson::Solve(const TArray<double>& B, TArray<dou
 
 	const double Omega = FMath::Clamp(Settings.Relaxation, .05, 1.0);
 	const int32 MaxIt = FMath::Max(1, Settings.MaxIterations);
-	TArray<double> R, Z, P, Q; R.SetNumUninitialized(N);
+	TArray<double> R, Z, P, AppliedDirection; R.SetNumUninitialized(N);
 	auto Residual = [&]()  // normalized like JacobiPoissonSolver: max |L X - B| / max |B|
 	{
 		double M = 0.0;
@@ -231,17 +237,17 @@ FPoissonSolveResult FMultigridPoisson::Solve(const TArray<double>& B, TArray<dou
 	}
 
 	// Conjugate gradient preconditioned by one symmetric V-cycle (same pre/post Jacobi sweeps).
-	Q.SetNumUninitialized(N);
+	AppliedDirection.SetNumUninitialized(N);
 	Precondition(R, Z);
 	P = Z;
 	double RZ = Dot(R, Z);
 	for (int32 It = 1; It <= MaxIt; ++It)
 	{
-		ApplyA(L0, P, Q);
-		const double PQ = Dot(P, Q);
+		ApplyA(L0, P, AppliedDirection);
+		const double PQ = Dot(P, AppliedDirection);
 		if (PQ <= 0.0) break;  // breakdown (only at round-off): report the current residual
 		const double Alpha = RZ / PQ;
-		for (int32 I = 0; I < N; ++I) { X[I] += Alpha * P[I]; R[I] -= Alpha * Q[I]; }
+		for (int32 I = 0; I < N; ++I) { X[I] += Alpha * P[I]; R[I] -= Alpha * AppliedDirection[I]; }
 		Result.IterationsUsed = It;
 		Result.NormalizedResidual = Residual();
 		if (Result.NormalizedResidual <= Settings.NormalizedResidualTarget) { Result.bConverged = true; break; }
