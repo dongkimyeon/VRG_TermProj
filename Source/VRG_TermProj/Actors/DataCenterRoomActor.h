@@ -46,6 +46,13 @@ public:
 	UFUNCTION(BlueprintCallable, CallInEditor, Category = "Room")
 	void RebuildRoom();
 
+	// Immediate editor/script refresh; the numerical graph still comes from InRowLoopBuilder.
+	UFUNCTION(BlueprintCallable, CallInEditor, Category = "Visualization|GJ")
+	void RefreshGjConnections();
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Visualization|GJ")
+	bool bUseGjConnections = false;
+
 	// 랙을 격자로 찍어 낸다. 찍은 뒤에는 개별 액터이므로 자유롭게 옮길 수 있다.
 	// 처음 깔 때만 쓰는 보조 기능이다.
 	UFUNCTION(BlueprintCallable, CallInEditor, Category = "Room|Setup")
@@ -233,6 +240,18 @@ private:
 
 	UPROPERTY(Transient)
 	TArray<TObjectPtr<UStaticMeshComponent>> DecorMeshes;
+
+	// One visual curve may have several mesh spans. Every hydraulic span retains its edge ID.
+	TArray<int32> PipeMeshFlowIndices; // >=0: pipe; negative: -1-pump index
+	TArray<bool> PipeMeshSupply;
+	TMap<int32, FVector> PipeStartOverrideCm;
+	TMap<int32, FVector> PipeEndOverrideCm;
+	struct FGjPumpRoute { int32 Pump; FVector StartCm, EndCm, Outward; };
+	TArray<FGjPumpRoute> GjPumpRoutes;
+	uint32 LastGjLayoutHash = 0;
+	uint32 GjLayoutHash() const;
+	void BuildGjPipeMeshes();
+	void BuildGjDecorMeshes();
 
 	bool bNeedsRebuild = true;
 

@@ -1,0 +1,26 @@
+{
+  "triangles": {
+    "SM_GJ_Harness_00": 9248,
+    "SM_GJ_Harness_01": 9248,
+    "SM_GJ_Harness_02": 9248,
+    "SM_GJ_Harness_03": 9248,
+    "SM_GJ_Harness_04": 9248,
+    "SM_GJ_Harness_05": 9248,
+    "SM_GJ_Harness_06": 9248,
+    "SM_GJ_Harness_07": 9248,
+    "SM_GJ_Harness_08": 9248,
+    "SM_GJ_Harness_09": 9248,
+    "SM_GJ_Harness_10": 9248,
+    "SM_GJ_Harness_11": 9248,
+    "SM_GJ_Harness_12": 9248,
+    "SM_GJ_Harness_13": 9248,
+    "SM_GJ_Harness_14": 9248,
+    "SM_GJ_Harness_15": 9248,
+    "SM_GJ_Harness_16": 9248,
+    "SM_GJ_Harness_17": 9248,
+    "SM_GJ_Manifolds": 10008
+  },
+  "units": "baked centimetres; source metres",
+  "origin": "rack floor centre",
+  "source": "../GB200_Connections.blend"
+}

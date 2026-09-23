@@ -3,6 +3,7 @@
 #include "Actors/RackThermalActor.h"
 #include "Simulation/Core/SimUnits.h"
 #include "Visualization/SimMeshBuilder.h"
+#include "Visualization/GjConnectionMesh.h"
 
 #include "Components/SceneComponent.h"
 #include "Components/StaticMeshComponent.h"
@@ -123,6 +124,12 @@ int32 ARackThermalActor::GetNumDockedSleds() const
 
 void ARackThermalActor::GetSledRowM(int32 SledIndex, double& OutBottomZM, double& OutRowHeightM) const
 {
+	if (bUsingGjMeshes)
+	{
+		OutRowHeightM = .04445 * RackSizeM.Z / 2.236;
+		OutBottomZM = (.392 + SledIndex * .04445) * RackSizeM.Z / 2.236;
+		return;
+	}
 	const int32 NumSleds = FMath::Max(1, Params.NumSleds);
 
 	// 위아래에 캐비닛 패널이 들어갈 자리를 남긴다.
@@ -131,6 +138,54 @@ void ARackThermalActor::GetSledRowM(int32 SledIndex, double& OutBottomZM, double
 
 	OutRowHeightM = (BayTopZM - BayBottomZM) / NumSleds;
 	OutBottomZM = BayBottomZM + OutRowHeightM * SledIndex;
+}
+
+FVector ARackThermalActor::GjPointWorldCm(const FVector& LocalM) const
+{
+	const FVector Scale(RackSizeM.X / 1.068, RackSizeM.Y / .6, RackSizeM.Z / 2.236);
+	return GetActorTransform().TransformPosition(SimUnits::MetersToUnreal(LocalM * Scale));
+}
+
+void ARackThermalActor::RefreshVisuals()
+{
+	ConformInputArrays();
+	RebuildMeshes();
+	bMeshesDirty = false;
+	UpdateSledSlide(0.0f);
+}
+
+bool ARackThermalActor::BuildGjMeshes()
+{
+	// The authored kit has eighteen slots. Do not silently skin a different rack specification.
+	if (Params.NumSleds != 18) return false;
+	UStaticMesh* Frame = GjConnectionMesh::Mesh(TEXT("SM_GB200_RackFrame"), true);
+	UStaticMesh* Node = GjConnectionMesh::Mesh(TEXT("SM_GB200_ComputeNode"), true);
+	UStaticMesh* Switch = GjConnectionMesh::Mesh(TEXT("SM_QuantumIB_Switch_Photo"), true);
+	UStaticMesh* Manifolds = GjConnectionMesh::Mesh(TEXT("SM_GJ_Manifolds"));
+	TArray<UStaticMesh*> Harnesses;
+	for (int32 I=0; I<18; ++I) Harnesses.Add(GjConnectionMesh::Mesh(*FString::Printf(TEXT("SM_GJ_Harness_%02d"),I)));
+	if (!Frame || !Node || !Switch || !Manifolds || Harnesses.Contains(nullptr))
+	{
+		UE_LOG(LogTemp, Error, TEXT("GJ rack assets are incomplete. Run Tools/install_gj_models.py; using original visuals."));
+		return false;
+	}
+	const FVector Scale(RackSizeM.X / 1.068, RackSizeM.Y / .6, RackSizeM.Z / 2.236);
+	auto Add = [&](UStaticMesh* Mesh, FVector LocalM, const TCHAR* Name)
+	{
+		UStaticMeshComponent* C = SimMeshBuilder::CreateMeshComponent(this,Mesh,nullptr,Name);
+		C->SetRelativeLocation(SimUnits::MetersToUnreal(LocalM * Scale));
+		C->SetRelativeScale3D(Scale);
+		return C;
+	};
+	CabinetMeshes.Add(Add(Frame,FVector::ZeroVector,TEXT("GJ_RackFrame")));
+	CabinetMeshes.Add(Add(Switch,FVector(.134,0,1.91),TEXT("GJ_QuantumSwitch")));
+	CabinetMeshes.Add(Add(Manifolds,FVector::ZeroVector,TEXT("GJ_Manifolds")));
+	for (int32 I=0; I<18; ++I)
+	{
+		SledMeshes.Add(Add(Node,FVector(.055,0,.392+I*.04445),TEXT("GJ_ComputeNode")));
+		SledHarnessMeshes.Add(Add(Harnesses[I],FVector::ZeroVector,TEXT("GJ_SledHarness")));
+	}
+	return true;
 }
 
 void ARackThermalActor::RebuildMeshes()
@@ -160,6 +215,10 @@ void ARackThermalActor::RebuildMeshes()
 	SledMeshes.Reset();
 	ComponentMeshes.Reset();
 	ComponentBaseXCm.Reset();
+	for (UStaticMeshComponent* Mesh : SledHarnessMeshes) if (Mesh) Mesh->DestroyComponent();
+	SledHarnessMeshes.Reset();
+	bUsingGjMeshes = false;
+	if (bUseGjModels && BuildGjMeshes()) { bUsingGjMeshes = true; return; }
 
 	UStaticMesh* CubeMesh = SimMeshBuilder::LoadCubeMesh();
 	if (CubeMesh == nullptr)
@@ -271,8 +330,13 @@ void ARackThermalActor::UpdateSledSlide(float DeltaTime)
 		if (Sled != nullptr)
 		{
 			FVector Location = Sled->GetRelativeLocation();
-			Location.X = OffsetCm;
+			Location.X = OffsetCm + (bUsingGjMeshes ? 5.5 * RackSizeM.X / 1.068 : 0.0);
 			Sled->SetRelativeLocation(Location);
+		}
+		if (SledHarnessMeshes.IsValidIndex(SledIndex) && SledHarnessMeshes[SledIndex])
+		{
+			// Quick-disconnects release immediately; the physical branch also closes immediately.
+			SledHarnessMeshes[SledIndex]->SetVisibility(IsSledDocked(SledIndex));
 		}
 
 		// 부품은 유닛을 따라 함께 나온다. 꽂힌 상태의 X를 따로 들고 있다가 오프셋만 더한다.
@@ -295,6 +359,8 @@ void ARackThermalActor::UpdateSledSlide(float DeltaTime)
 
 void ARackThermalActor::UpdateMeshColors() const
 {
+	// Preserve authored PBR materials. Numerical temperatures remain in the existing readouts.
+	if (bUsingGjMeshes) return;
 	const FRackThermalSnapshot Snapshot = Model.MakeSnapshot(Clock.GetSimTimeS());
 	const double MinTempK = SimUnits::CelsiusToKelvin(ColorMinCelsius);
 	const double MaxTempK = SimUnits::CelsiusToKelvin(ColorMaxCelsius);

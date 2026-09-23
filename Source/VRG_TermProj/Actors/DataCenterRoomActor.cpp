@@ -8,6 +8,7 @@
 #include "Simulation/Hydraulics/InRowLoopBuilder.h"
 #include "Simulation/Thermal/RackThermalModel.h"
 #include "Visualization/SimMeshBuilder.h"
+#include "Visualization/GjConnectionMesh.h"
 
 #include "Components/SceneComponent.h"
 #include "Components/StaticMeshComponent.h"
@@ -274,6 +275,9 @@ void ADataCenterRoomActor::BuildNetwork()
 	NodePositionM.Reset();
 	RackBranchPipeIndices.Reset();
 	bPipeIsSupplySide.Reset();
+	PipeStartOverrideCm.Reset();
+	PipeEndOverrideCm.Reset();
+	GjPumpRoutes.Reset();
 
 	for (FRackRow& Row : Rows)
 	{
@@ -359,6 +363,19 @@ void ADataCenterRoomActor::BuildNetwork()
 			}
 
 			RackBranchPipeIndices.Add(Handles.RackBranchPipeIndices[ColumnIndex]);
+			if (bUseGjConnections && Rack->bUseGjModels && Handles.RackNodeIndices[ColumnIndex] != INDEX_NONE)
+			{
+				// The single lumped rack node has two distinct visual manifold ports.
+				PipeEndOverrideCm.Add(Handles.RackBranchPipeIndices[ColumnIndex], Rack->GjPointWorldCm(FVector(-.65,.245,.50)));
+				PipeStartOverrideCm.Add(Handles.RackReturnPipeIndices[ColumnIndex], Rack->GjPointWorldCm(FVector(-.65,-.245,.50)));
+			}
+		}
+		if (bUseGjConnections && Row.Cdu)
+		{
+			PipeEndOverrideCm.Add(Handles.ReturnToCduPipeIndex, SimUnits::MetersToUnreal(Row.Cdu->GetReturnPortWorldM()));
+			// Pump supply was invisible in the primitive renderer (pumps are not pipe edges).
+			GjPumpRoutes.Add({Handles.PumpIndex, SimUnits::MetersToUnreal(Row.Cdu->GetSupplyPortWorldM()),
+				SimUnits::MetersToUnreal(NodePositionM[Handles.SupplyNodeIndices[0]]), Row.Cdu->GetActorForwardVector()});
 		}
 
 		// 관 색을 공급/회수로 나누기 위한 역할표. 솔버는 이걸 모른다.
@@ -419,6 +436,9 @@ void ADataCenterRoomActor::DestroyMeshes(TArray<TObjectPtr<UStaticMeshComponent>
 void ADataCenterRoomActor::BuildPipeMeshes()
 {
 	DestroyMeshes(PipeMeshes);
+	PipeMeshFlowIndices.Reset();
+	PipeMeshSupply.Reset();
+	if (bUseGjConnections) { BuildGjPipeMeshes(); return; }
 
 	UStaticMesh* CylinderMesh = SimMeshBuilder::LoadCylinderMesh();
 	if (CylinderMesh == nullptr || Network.GetNumPipes() == 0)
@@ -450,6 +470,7 @@ void ADataCenterRoomActor::BuildPipeMeshes()
 void ADataCenterRoomActor::BuildDecorMeshes()
 {
 	DestroyMeshes(DecorMeshes);
+	if (bUseGjConnections) { BuildGjDecorMeshes(); return; }
 
 	UStaticMesh* CylinderMesh = SimMeshBuilder::LoadCylinderMesh();
 	if (CylinderMesh == nullptr || !bShowCableTray)
@@ -549,11 +570,13 @@ void ADataCenterRoomActor::UpdatePipeColors() const
 
 	for (int32 PipeIndex = 0; PipeIndex < PipeMeshes.Num(); ++PipeIndex)
 	{
-		const double Normalized = FMath::Abs(Network.GetPipeFlowM3s(PipeIndex)) / NormalizationM3s;
+		const int32 FlowIndex = bUseGjConnections ? PipeMeshFlowIndices[PipeIndex] : PipeIndex;
+		const double Flow = FlowIndex >= 0 ? Network.GetPipeFlowM3s(FlowIndex) : Network.GetPumpFlowM3s(-1-FlowIndex);
+		const double Normalized = FMath::Abs(Flow) / NormalizationM3s;
 
 		// 제곱근을 씌워 낮은 유량 구간을 펼친다. 표시용 보정이며 계산과 무관하다.
 		const float Shaped = FMath::Sqrt(FMath::Clamp(static_cast<float>(Normalized), 0.0f, 1.0f));
-		const bool bSupply = bPipeIsSupplySide.IsValidIndex(PipeIndex) && bPipeIsSupplySide[PipeIndex];
+		const bool bSupply = bUseGjConnections ? PipeMeshSupply[PipeIndex] : (bPipeIsSupplySide.IsValidIndex(PipeIndex) && bPipeIsSupplySide[PipeIndex]);
 
 		SimMeshBuilder::SetMeshColor(PipeMeshes[PipeIndex],
 			FMath::Lerp(bSupply ? SupplyLowColor : ReturnLowColor,
@@ -607,6 +630,7 @@ void ADataCenterRoomActor::SpawnRackGrid()
 
 			// GB200 NVL72 프리셋. 컴퓨트 트레이 18장, 트레이당 Grace 2 + Blackwell 4.
 			Rack->RackSizeM = RackSizeM;
+			Rack->bUseGjModels = bUseGjConnections;
 			Rack->Params = FRackThermalModel::MakeGb200Nvl72Params();
 			Rack->Input.ComponentHeatW = FRackThermalModel::MakeGb200Nvl72HeatW();
 			Rack->Input.SledDocked.Init(true, Rack->Params.NumSleds);
@@ -647,6 +671,7 @@ void ADataCenterRoomActor::DestroySpawnedRackGrid()
 void ADataCenterRoomActor::Tick(float DeltaTime)
 {
 	Super::Tick(DeltaTime);
+	if (bUseGjConnections && GjLayoutHash() != LastGjLayoutHash) bNeedsRebuild = true;
 
 	if (bNeedsRebuild)
 	{
@@ -656,6 +681,7 @@ void ADataCenterRoomActor::Tick(float DeltaTime)
 		BuildDecorMeshes();
 		bNeedsRebuild = false;
 		bRebuiltSinceLastQuery = true;
+		LastGjLayoutHash = GjLayoutHash();
 	}
 
 	UpdatePipeColors();
@@ -663,6 +689,124 @@ void ADataCenterRoomActor::Tick(float DeltaTime)
 	if (bShowSummary)
 	{
 		DrawSummary();
+	}
+}
+
+uint32 ADataCenterRoomActor::GjLayoutHash() const
+{
+	uint32 Hash=0;
+	if (!GetWorld()) return Hash;
+	for (TActorIterator<ARackThermalActor> It(GetWorld()); It; ++It)
+	{
+		Hash=HashCombine(Hash,GetTypeHash(It->GetActorLocation()));
+		Hash=HashCombine(Hash,GetTypeHash(It->GetActorRotation().Euler()));
+		Hash=HashCombine(Hash,GetTypeHash(It->GetActorScale3D()));
+		Hash=HashCombine(Hash,GetTypeHash(It->RackSizeM));
+		Hash=HashCombine(Hash,GetTypeHash(It->GetNumDockedSleds()));
+	}
+	for (TActorIterator<ACoolingDistributionUnitActor> It(GetWorld()); It; ++It)
+	{
+		Hash=HashCombine(Hash,GetTypeHash(It->GetSupplyPortWorldM()));
+		Hash=HashCombine(Hash,GetTypeHash(It->GetReturnPortWorldM()));
+		Hash=HashCombine(Hash,GetTypeHash(It->PumpSpeedRatio));
+	}
+	return Hash;
+}
+
+void ADataCenterRoomActor::RefreshGjConnections()
+{
+	DiscoverRows(); BuildNetwork(); BuildPipeMeshes(); BuildDecorMeshes(); UpdatePipeColors();
+	bNeedsRebuild=false; bRebuiltSinceLastQuery=true; LastGjLayoutHash=GjLayoutHash();
+}
+
+void ADataCenterRoomActor::BuildGjPipeMeshes()
+{
+	UStaticMesh* Header=GjConnectionMesh::Mesh(TEXT("SM_Connection_Header"));
+	UStaticMesh* Riser=GjConnectionMesh::Mesh(TEXT("SM_Connection_Riser"));
+	UMaterialInterface* Surface=GjConnectionMesh::Material(TEXT("MC_FlowBody"));
+	if (!Header || !Riser || !Surface)
+	{
+		UE_LOG(LogTemp,Error,TEXT("Missing GJ pipe assets. Run Tools/install_gj_models.py.")); return;
+	}
+	auto Add=[&](TArray<FVector> Points, bool Branch, int32 Edge, bool Supply)
+	{
+		for (FVector& P:Points) P=GetActorTransform().InverseTransformPosition(P);
+		const int32 Before=PipeMeshes.Num();
+		GjConnectionMesh::AddPath(this,Points,Branch?Riser:Header,Surface,Branch?6.0:14.0,PipeMeshes,
+			Branch?BranchDiameterM/.05:HeaderDiameterM/.11);
+		for (int32 I=Before;I<PipeMeshes.Num();++I)
+		{
+			PipeMeshFlowIndices.Add(Edge); PipeMeshSupply.Add(Supply);
+			PipeMeshes[I]->ComponentTags.Add(*FString::Printf(TEXT("HydraulicEdge_%d"),Edge));
+		}
+	};
+	for (int32 I=0;I<Network.GetNumPipes();++I)
+	{
+		FVector A=SimUnits::MetersToUnreal(NodePositionM[Network.GetPipeFromNodeIndex(I)]);
+		FVector B=SimUnits::MetersToUnreal(NodePositionM[Network.GetPipeToNodeIndex(I)]);
+		const FVector* Start=PipeStartOverrideCm.Find(I); const FVector* End=PipeEndOverrideCm.Find(I);
+		if(Start) A=*Start; if(End) B=*End;
+		const bool Branch=RackBranchPipeIndices.Contains(I) || (I>0 && RackBranchPipeIndices.Contains(I-1));
+		TArray<FVector> Points={A,B};
+		if (Branch) Points={A,FVector(A.X,A.Y,FMath::Max(A.Z,B.Z)),FVector(B.X,B.Y,FMath::Max(A.Z,B.Z)),B};
+		// Return terminal: honour the real CDU return port and its outward direction.
+		if (!Branch && End)
+		{
+			for (const FRackRow& Row:Rows) if(Row.Cdu && B.Equals(SimUnits::MetersToUnreal(Row.Cdu->GetReturnPortWorldM()),.01))
+			{
+				const FVector D=Row.Cdu->GetActorForwardVector(), Lead=B+D*30;
+				Points={A,A-D*FVector::DotProduct(A-Lead,D),Lead,B}; break;
+			}
+		}
+		Add(Points,Branch,I,bPipeIsSupplySide[I]);
+	}
+	for (const FGjPumpRoute& R:GjPumpRoutes)
+	{
+		const FVector Lead=R.StartCm+R.Outward*30;
+		Add({R.StartCm,Lead,R.EndCm-R.Outward*FVector::DotProduct(R.EndCm-Lead,R.Outward),R.EndCm},false,-1-R.Pump,true);
+	}
+}
+
+void ADataCenterRoomActor::BuildGjDecorMeshes()
+{
+	UStaticMesh* Cable=GjConnectionMesh::Mesh(TEXT("SM_Connection_Data"));
+	UStaticMesh* Plug=GjConnectionMesh::Mesh(TEXT("SM_Plug_Switch"));
+	UStaticMesh* Adapter=GjConnectionMesh::Mesh(TEXT("SM_CDU_Adapter"));
+	if (!Cable || !Plug || !Adapter) return;
+	auto Fit=[&](UStaticMesh* Mesh,const FVector& WorldCm,const FVector& Direction)
+	{
+		auto* C=SimMeshBuilder::CreateMeshComponent(this,Mesh,nullptr,TEXT("GJ_Fitting"));
+		C->SetWorldLocationAndRotation(WorldCm,Direction.Rotation()); DecorMeshes.Add(C);
+	};
+	auto Path=[&](TArray<FVector> Points)
+	{
+		for (FVector& P:Points) P=GetActorTransform().InverseTransformPosition(P);
+		GjConnectionMesh::AddPath(this,Points,Cable,GjConnectionMesh::Material(TEXT("MC_Cyan")),10,DecorMeshes);
+	};
+	for (const FRackRow& Row:Rows)
+	{
+		if(Row.Cdu)
+		{
+			Fit(Adapter,SimUnits::MetersToUnreal(Row.Cdu->GetSupplyPortWorldM()),Row.Cdu->GetActorForwardVector());
+			Fit(Adapter,SimUnits::MetersToUnreal(Row.Cdu->GetReturnPortWorldM()),Row.Cdu->GetActorForwardVector());
+		}
+		if(!bShowCableTray) continue;
+		for(int32 I=0;I<Row.Racks.Num()-1;++I)
+		{
+			ARackThermalActor* A=Row.Racks[I]; ARackThermalActor* B=Row.Racks[I+1];
+			if(!A || !B || !A->bUseGjModels || !B->bUseGjModels) continue;
+			for(int32 J=0;J<FMath::Clamp(CablesPerRack,0,4);++J)
+			{
+				// Incoming ports 4..7, outgoing 8..11: adjacent links never double-book a port.
+				const double YA=.197-(8+J)*.022, YB=.197-(4+J)*.022;
+				const FVector PA=A->GjPointWorldCm(FVector(.476,YA,1.941)), PB=B->GjPointWorldCm(FVector(.476,YB,1.941));
+				Fit(Plug,PA,A->GetActorForwardVector()); Fit(Plug,PB,B->GetActorForwardVector());
+				const FVector S=A->GjPointWorldCm(FVector(.520,YA,1.941)), E=B->GjPointWorldCm(FVector(.520,YB,1.941));
+				const FVector LeadA=S+A->GetActorForwardVector()*(20+J*1.2), LeadB=E+B->GetActorForwardVector()*(20+J*1.2);
+				const double Top=FMath::Max3(CableTrayHeightM*100,A->GjPointWorldCm(FVector(0,0,2.4)).Z,B->GjPointWorldCm(FVector(0,0,2.4)).Z)+J*1.2;
+				Path({S,LeadA,FVector(LeadA.X,LeadA.Y,Top),FVector(LeadB.X,LeadB.Y,Top),LeadB,E});
+			}
+		}
 	}
 }
 

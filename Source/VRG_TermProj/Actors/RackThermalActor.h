@@ -104,6 +104,16 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Visualization")
 	FVector RackSizeM = FVector(1.2, 0.6, 2.0);
 
+	// Opt-in visual kit. Thermal parameters and the original primitive path are retained.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Visualization|GJ")
+	bool bUseGjModels = false;
+
+	UFUNCTION(CallInEditor, BlueprintCallable, Category = "Visualization|GJ")
+	void RefreshVisuals();
+
+	// Authored local metres (+X front), converted at this actor boundary, including rotation/scale.
+	FVector GjPointWorldCm(const FVector& LocalM) const;
+
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Visualization")
 	double PanelThicknessM = 0.03;
 
@@ -154,6 +164,12 @@ private:
 	// 부품 박스. 평탄 배열 [SledIndex * NumRackComponents + Component].
 	UPROPERTY(Transient)
 	TArray<TObjectPtr<UStaticMeshComponent>> ComponentMeshes;
+
+	UPROPERTY(Transient)
+	TArray<TObjectPtr<UStaticMeshComponent>> SledHarnessMeshes;
+
+	bool bUsingGjMeshes = false;
+	bool BuildGjMeshes();
 
 	// 부품이 꽂힌 상태일 때의 X [cm]. 슬라이드 오프셋을 여기에 더해 쓴다.
 	TArray<double> ComponentBaseXCm;
