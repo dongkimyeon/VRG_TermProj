@@ -6,7 +6,7 @@
 // Units: world metres. The room actor converts to cm at its boundary (rule 1).
 //
 // This is a cabling plan for display. It does not model bandwidth, latency, cable length limits,
-// tension, bend radius or cable-to-cable collision. The only hard rule is that no port is used twice.
+// tension or bend radius. Centreline segment interference is a diagnostic, not a routing constraint.
 namespace Patch
 {
 	struct FDevice
@@ -45,10 +45,17 @@ namespace Patch
 
 	struct FUnconnected { int32 Device = INDEX_NONE; FString Reason; };
 
+	struct FInterference
+	{
+		int32 CableA, CableB, SegmentA, SegmentB;
+		double SurfaceGapM;
+	};
+
 	struct FPlan
 	{
 		TArray<FCable> Cables;
 		TArray<FUnconnected> Unconnected;
+		TArray<FInterference> Interferences;
 		TArray<TPair<FVector, FVector>> TrayRunsM;  // straight tray segments (centreline)
 		int32 RejectedClaims = 0;
 		int32 NumUplinks() const;
@@ -70,4 +77,7 @@ namespace Patch
 	};
 
 	VRG_TERMPROJ_API FPlan PlanPatches(const FInput& In);
+	// Diameter is the authored GJ cable diameter, not a certified product specification.
+	// Tests straight plan segments; rounded render bends and connector bodies are outside this scope.
+	VRG_TERMPROJ_API TArray<FInterference> FindInterferences(const TArray<FCable>& Cables, double DiameterM);
 }

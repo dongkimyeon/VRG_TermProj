@@ -131,3 +131,13 @@ QM9700 수동 케이블 대표 전력 747 W/대의 열 대체 모델이며, 사�
 출처와 추정값: CLAUDE.md 발열 확장 절 및 RackThermalModel.cpp / SpineCabinetActor.cpp.
 Blender 미리보기는 새 배치로 재렌더했다. 끝점 오차 최대 5.87e-8 m, 냉각 호스와 데이터선
 최소 표면 간격 64.11 mm (샘플링 검사; 케이블끼리 간섭·장력 보장은 아님).
+
+
+## 2026-09-24 생성기 원본 의존 정리
+
+`build_connections.py`는 같은 폴더에 커밋된 `GB200_Connections.blend`와 manifest를 열어
+NVL72 배치 → 후면 포트 → 끝점 검증 순서로 재생성한다. 저장소에 없는
+`GB200_Modular_Kit.blend`는 필요하지 않다. 무에서 장비 메시를 다시 만드는 생성기는 아니다.
+`-- --no-render`로 미리보기 렌더를 생략할 수 있다. UE용 병합 FBX 갱신은 기존
+`Tools/bake_gj_rack_harness.py` 절차를 별도로 따른다. 재실행에서 장비 37대 배치, 커넥터
+298곳의 최대 끝점 차이 5.8689e-8 m를 확인했다. 실물 공차·전체 장애물 검사는 아니다.

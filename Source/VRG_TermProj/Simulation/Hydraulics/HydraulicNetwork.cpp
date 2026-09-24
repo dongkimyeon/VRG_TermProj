@@ -1,6 +1,7 @@
 // Fill out your copyright notice in the Description page of Project Settings.
 
 #include "Simulation/Hydraulics/HydraulicNetwork.h"
+#include "Simulation/Hydraulics/SparseLinearSystem.h"
 #include "Simulation/Hydraulics/DenseLinearSystem.h"
 
 int32 FHydraulicNetwork::AddNode(const FHydraulicNode& Node)
@@ -343,6 +344,8 @@ FHydraulicSolveResult FHydraulicNetwork::Solve(const FHydraulicSolveSettings& Se
 		return Result;
 	}
 
+	Result.bUsedSparse = Nodes.Num() > 200;
+	TArray<FHydraulicMatrixEntry> SparseJacobian;
 	TArray<double> Jacobian;
 	TArray<double> Delta;
 	TArray<double> SavedPressurePa;
@@ -351,11 +354,13 @@ FHydraulicSolveResult FHydraulicNetwork::Solve(const FHydraulicSolveSettings& Se
 	int32 Iteration = 0;
 	while (Iteration < Settings.MaxIterations && CurrentResidual > Settings.NormalizedResidualTarget)
 	{
-		Jacobian.SetNumZeroed(NumUnknowns * NumUnknowns, EAllowShrinking::No);
-		for (int32 Index = 0; Index < NumUnknowns * NumUnknowns; ++Index)
+		SparseJacobian.Reset();
+		if (!Result.bUsedSparse) Jacobian.Init(0.0, NumUnknowns * NumUnknowns);
+		auto AddJacobian = [&](int32 Row, int32 Col, double Value)
 		{
-			Jacobian[Index] = 0.0;
-		}
+			if (Result.bUsedSparse) SparseJacobian.Add({Row, Col, Value});
+			else Jacobian[Row * NumUnknowns + Col] += Value;
+		};
 
 		// 파이프: Δp에 대한 도함수가 Δp=0에서 발산하므로 여기에만 하한을 건다.
 		for (const FHydraulicPipe& Pipe : Pipes)
@@ -369,18 +374,18 @@ FHydraulicSolveResult FHydraulicNetwork::Solve(const FHydraulicSolveSettings& Se
 
 			if (FromUnknown != INDEX_NONE)
 			{
-				Jacobian[FromUnknown * NumUnknowns + FromUnknown] += ConductanceM3sPa;
+				AddJacobian(FromUnknown, FromUnknown, ConductanceM3sPa);
 				if (ToUnknown != INDEX_NONE)
 				{
-					Jacobian[FromUnknown * NumUnknowns + ToUnknown] -= ConductanceM3sPa;
+					AddJacobian(FromUnknown, ToUnknown, -ConductanceM3sPa);
 				}
 			}
 			if (ToUnknown != INDEX_NONE)
 			{
-				Jacobian[ToUnknown * NumUnknowns + ToUnknown] += ConductanceM3sPa;
+				AddJacobian(ToUnknown, ToUnknown, ConductanceM3sPa);
 				if (FromUnknown != INDEX_NONE)
 				{
-					Jacobian[ToUnknown * NumUnknowns + FromUnknown] -= ConductanceM3sPa;
+					AddJacobian(ToUnknown, FromUnknown, -ConductanceM3sPa);
 				}
 			}
 		}
@@ -395,17 +400,17 @@ FHydraulicSolveResult FHydraulicNetwork::Solve(const FHydraulicSolveSettings& Se
 
 			if (FromUnknown != INDEX_NONE)
 			{
-				Jacobian[FromUnknown * NumUnknowns + FlowUnknown] += 1.0;
-				Jacobian[FlowUnknown * NumUnknowns + FromUnknown] -= 1.0;
+				AddJacobian(FromUnknown, FlowUnknown, 1.0);
+				AddJacobian(FlowUnknown, FromUnknown, -1.0);
 			}
 			if (ToUnknown != INDEX_NONE)
 			{
-				Jacobian[ToUnknown * NumUnknowns + FlowUnknown] -= 1.0;
-				Jacobian[FlowUnknown * NumUnknowns + ToUnknown] += 1.0;
+				AddJacobian(ToUnknown, FlowUnknown, -1.0);
+				AddJacobian(FlowUnknown, ToUnknown, 1.0);
 			}
 
 			const double ClampedFlowM3s = FMath::Max(FMath::Abs(PumpFlowM3s[PumpIndex]), Settings.JacobianFlowFloorM3s);
-			Jacobian[FlowUnknown * NumUnknowns + FlowUnknown] += 2.0 * Pump.CurveCoeffPaS2M6 * ClampedFlowM3s;
+			AddJacobian(FlowUnknown, FlowUnknown, 2.0 * Pump.CurveCoeffPaS2M6 * ClampedFlowM3s);
 		}
 
 		Delta.SetNumUninitialized(NumUnknowns, EAllowShrinking::No);
@@ -434,14 +439,18 @@ FHydraulicSolveResult FHydraulicNetwork::Solve(const FHydraulicSolveSettings& Se
 		for (int32 Row = 0; Row < NumUnknowns; ++Row)
 		{
 			const double RowScale = EquationScale(Row);
-			for (int32 Col = 0; Col < NumUnknowns; ++Col)
+			for (int32 Col = 0; !Result.bUsedSparse && Col < NumUnknowns; ++Col)
 			{
 				Jacobian[Row * NumUnknowns + Col] *= UnknownScale(Col) / RowScale;
 			}
 			Delta[Row] /= RowScale;
 		}
 
-		if (!SolveDenseLinearSystem(Jacobian, Delta, NumUnknowns))
+		for (FHydraulicMatrixEntry& Entry : SparseJacobian)
+			Entry.Value *= UnknownScale(Entry.Col) / EquationScale(Entry.Row);
+
+		if (!(Result.bUsedSparse ? SolveSparseLinearSystem(SparseJacobian, Delta, NumUnknowns)
+			: SolveDenseLinearSystem(Jacobian, Delta, NumUnknowns)))
 		{
 			Result.bLinearSolveFailed = true;
 			break;

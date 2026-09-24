@@ -124,6 +124,10 @@ struct FHydraulicSolveResult
 {
 	GENERATED_BODY()
 
+	// D3: same Newton equations, sparse LU for networks exceeding 200 nodes.
+	UPROPERTY(BlueprintReadOnly, Category = "Hydraulics")
+	bool bUsedSparse = false;
+
 	UPROPERTY(BlueprintReadOnly, Category = "Hydraulics")
 	bool bConverged = false;
 

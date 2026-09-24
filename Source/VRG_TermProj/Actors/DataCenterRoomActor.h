@@ -68,6 +68,7 @@ public:
 	int32 SpineLinksPerRowPair = 4;
 
 	const Patch::FPlan& GetPatchPlan() const { return PatchPlan; }
+	const TArray<Patch::FDevice>& GetPatchDevices() const { return PatchDevices; }
 
 	// For scripts: the one-line patch status and whether anything is unpatched / double-booked.
 	UFUNCTION(BlueprintCallable, Category = "Visualization|GJ")
@@ -276,6 +277,7 @@ private:
 	void BuildGjPipeMeshes();
 	void BuildGjDecorMeshes();
 	Patch::FPlan PatchPlan;
+	TArray<Patch::FDevice> PatchDevices;
 
 	bool bNeedsRebuild = true;
 

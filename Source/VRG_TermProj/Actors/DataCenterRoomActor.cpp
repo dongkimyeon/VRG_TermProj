@@ -399,15 +399,6 @@ void ADataCenterRoomActor::BuildNetwork()
 		return;
 	}
 
-	// D3: 노드 200개 미만이면 밀행렬 LU로 충분하다는 전제로 짠 솔버다.
-	// 밀행렬 LU는 O(n^3)이라 노드가 두 배면 여덟 배 걸린다.
-	if (Network.GetNumNodes() >= 200)
-	{
-		UE_LOG(LogTemp, Warning,
-			TEXT("DataCenterRoomActor: 노드 %d개로 D3의 밀행렬 LU 전제(200개 미만)를 넘었습니다. ")
-			TEXT("결과는 맞지만 재계산이 느려집니다."),
-			Network.GetNumNodes());
-	}
 
 	LastResult = Network.Solve(SolveSettings);
 
@@ -775,6 +766,7 @@ void ADataCenterRoomActor::BuildGjPipeMeshes()
 void ADataCenterRoomActor::BuildGjDecorMeshes()
 {
 	PatchPlan=Patch::FPlan();
+	PatchDevices.Reset();
 	UStaticMesh* Cable=GjConnectionMesh::Mesh(TEXT("SM_Connection_Data"));
 	UStaticMesh* Plug=GjConnectionMesh::Mesh(TEXT("SM_Plug_Switch"));
 	UStaticMesh* Adapter=GjConnectionMesh::Mesh(TEXT("SM_CDU_Adapter"));
@@ -802,7 +794,7 @@ void ADataCenterRoomActor::BuildGjDecorMeshes()
 		for (ARackThermalActor* Rack:Row.Racks)
 		{
 			if (!Rack || !Rack->bUseGjModels) continue;
-			Patch::FDevice D; D.Row=In.Rows.Num()-1; D.Label=Rack->GetActorLabel();
+			Patch::FDevice D; D.Row=In.Rows.Num()-1; D.Label=Rack->GetActorNameOrLabel();
 			D.ToWorld=FTransform(Rack->GetActorQuat(),SimUnits::UnrealToMeters(Rack->GetActorLocation()));
 			D.HalfExtentM=Rack->RackSizeM*.5; D.HeightM=Rack->RackSizeM.Z; D.Outward=-Rack->GetActorForwardVector();
 			for (int32 Col=1;Col<=GjRackLayout::PortsPerSwitchRow;++Col)
@@ -814,7 +806,7 @@ void ADataCenterRoomActor::BuildGjDecorMeshes()
 	}
 	for (TActorIterator<ASpineCabinetActor> It(GetWorld()); It; ++It)
 	{
-		Patch::FDevice D; D.bSpine=true; D.Label=It->GetActorLabel();
+		Patch::FDevice D; D.bSpine=true; D.Label=It->GetActorNameOrLabel();
 		const FVector LocM=SimUnits::UnrealToMeters(It->GetActorLocation());
 		D.ToWorld=FTransform(It->GetActorQuat(),LocM); D.Outward=It->GetPortOutwardWorld();
 		for (int32 P=0;P<It->GetNumPorts();++P) D.PortM.Add(It->GetPortWorldM(P));
@@ -828,6 +820,9 @@ void ADataCenterRoomActor::BuildGjDecorMeshes()
 		In.Devices.Add(MoveTemp(D));
 	}
 	PatchPlan=Patch::PlanPatches(In);
+	PatchDevices=In.Devices;
+	// Authored diameter, Art/GJ_PIPE&CABLE/reports/connection_manifest.json (estimated visual asset).
+	PatchPlan.Interferences=Patch::FindInterferences(PatchPlan.Cables,.0048);
 
 	UMaterialInterface* Uplink=GjConnectionMesh::Material(TEXT("MC_Cyan"));
 	UMaterialInterface* Trunk=GjConnectionMesh::Material(TEXT("MC_White"));

@@ -49,6 +49,7 @@ FString Patch::FPlan::Summary() const
 	FString S = FString::Printf(TEXT("[패치] 케이블 %d (업링크 %d, 스파인 간 %d) | 중복 점유 거부 %d"),
 		Cables.Num(), NumUplinks(), Cables.Num() - NumUplinks(), RejectedClaims);
 	if (!Unconnected.IsEmpty()) S += FString::Printf(TEXT(" | 미연결 %d: %s"), Unconnected.Num(), *Unconnected[0].Reason);
+	S += FString::Printf(TEXT(" | 선분 간섭 %d쌍"), Interferences.Num());
 	return S + TEXT(" | 표시용 배선 계획이며 계산에 쓰이지 않음");
 }
 
@@ -163,4 +164,34 @@ Patch::FPlan Patch::PlanPatches(const FInput& In)
 	}
 	Plan.RejectedClaims = Ledger.GetRejected();
 	return Plan;
+}
+
+TArray<Patch::FInterference> Patch::FindInterferences(const TArray<FCable>& Cables, double DiameterM)
+{
+	TArray<FInterference> Found;
+	if (!FMath::IsFinite(DiameterM) || DiameterM <= 0) return Found;
+	TArray<FBox> Bounds;
+	for (const FCable& Cable : Cables)
+	{
+		FBox Bound(ForceInit);
+		for (const FVector& Point : Cable.PointsM) Bound += Point;
+		Bounds.Add(Bound);
+	}
+	for (int32 A = 0; A < Cables.Num(); ++A)
+		for (int32 B = A + 1; B < Cables.Num(); ++B)
+		{
+			if (!Bounds[A].IsValid || !Bounds[B].IsValid || !Bounds[A].ExpandBy(DiameterM).Intersect(Bounds[B])) continue;
+			FInterference Hit{A, B, INDEX_NONE, INDEX_NONE, 0.0};
+			for (int32 I = 1; I < Cables[A].PointsM.Num(); ++I)
+				for (int32 J = 1; J < Cables[B].PointsM.Num(); ++J)
+				{
+					FVector PointA, PointB;
+					FMath::SegmentDistToSegmentSafe(Cables[A].PointsM[I-1], Cables[A].PointsM[I],
+						Cables[B].PointsM[J-1], Cables[B].PointsM[J], PointA, PointB);
+					const double Gap = FVector::Distance(PointA, PointB) - DiameterM;
+					if (Gap < Hit.SurfaceGapM) Hit = {A, B, I-1, J-1, Gap};
+				}
+			if (Hit.SegmentA != INDEX_NONE) Found.Add(Hit);
+		}
+	return Found;
 }

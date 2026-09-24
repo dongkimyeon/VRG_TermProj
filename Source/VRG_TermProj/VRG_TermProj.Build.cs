@@ -16,10 +16,10 @@ public class VRG_TermProj : ModuleRules
 		// RenderCore는 S7-0 계측에서 GGameThreadTime/GRenderThreadTime을 읽으려고 추가했다.
 		// RHI는 GPU 프레임 시간 때문이다 — UE 5.8에는 GGPUFrameTime 전역이 없고
 		// GRHIGPUFrameTimeHistory에서 꺼내야 한다.
-		// UMG와 Niagara는 아직 쓰지 않으므로 넣지 않는다.
+		// UMG/Slate는 패치 평면도에 사용한다. Niagara는 아직 사용하지 않는다.
 		PublicDependencyModuleNames.AddRange(new string[] { "Core", "CoreUObject", "Engine", "InputCore", "EnhancedInput", "RenderCore", "RHI", "VrgRender" });
 
-		PrivateDependencyModuleNames.AddRange(new string[] {  });
+		PrivateDependencyModuleNames.AddRange(new string[] { "Eigen", "UMG", "Slate", "SlateCore" });
 
 		// Uncomment if you are using Slate UI
 		// PrivateDependencyModuleNames.AddRange(new string[] { "Slate", "SlateCore" });
