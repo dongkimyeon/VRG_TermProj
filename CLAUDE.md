@@ -1297,3 +1297,40 @@ Zen storage 연결 실패 기록이 있으나, 로그만으로 최종 종료 원
 사용자의 작업 축소 요청에 따라 재시도는 다음 담당자에게 넘긴다. `Tools/인계_2026-09-24.md` 참고.
 마지막 UI 장비 ID 변경은 검증 전이어서 되돌렸다. 커밋의 UI는 84건 테스트 및 렌더 확인 당시 코드이며,
 동일한 액터 표시 이름이 반복될 수 있다. 고유 장비 ID 표시는 후속 사용성 과제다.
+
+
+## Win64 Development 패키징 재시도 (2026-09-25)
+
+**결과: 패키징 성공.** 커밋 `922885f` 새 체크아웃에서 Editor 재빌드 뒤 BuildCookRun을 실행했다.
+Game C++ 빌드 188.8 s(ExitCode=0), Cook 685.2 s(ExitCode=0, 651개 중 644개 Cook, 플랫폼 제외 7개,
+Warning/Error 0건), UnrealPak 3회 ExitCode=0, `BUILD SUCCESSFUL`, AutomationTool ExitCode=0.
+아카이브 1.1 GB에 `Maps/L_Test.umap`, `/Game/ExistingGB200`(19개 항목)·`/Game/Connections`(93개 항목),
+전역 셰이더 캐시가 들어갔다. 프로젝트 전역 셰이더 `FVrgVolumeRaymarchPS`·`FVrgPressureJacobiCS`의
+SM6/SM5 Cook 컴파일도 로그로 확인했다.
+
+환경: UE 5.8.2 `C:\Program Files\Epic Games\UE_5.8`, 저장소 `C:\Github-repo\VRG_TermProj`,
+노트북 RAM 15.4 GB, 페이지 파일 12 GB(시스템 관리), C 드라이브 여유 125 GB.
+위의 `D:\UE_5.8` / `E:\UE_5.8` 기록은 다른 환경이므로 바꾸지 않는다.
+
+```powershell
+& 'C:\Program Files\Epic Games\UE_5.8\Engine\Build\BatchFiles\Build.bat' VRG_TermProjEditor Win64 Development '-Project=C:\Github-repo\VRG_TermProj\VRG_TermProj.uproject' -WaitMutex -MaxParallelActions=4
+& 'C:\Program Files\Epic Games\UE_5.8\Engine\Build\BatchFiles\RunUAT.bat' BuildCookRun '-project=C:\Github-repo\VRG_TermProj\VRG_TermProj.uproject' -noP4 -platform=Win64 -clientconfig=Development -build -cook -stage -pak -archive '-map=/Game/Maps/L_Test' '-archivedirectory=C:\VRG_Builds\20260925\Archive' '-stagingdirectory=C:\VRG_Builds\20260925\Stage' '-UbtArgs=-MaxParallelActions=4' -unattended -utf8output
+```
+
+**이전 실패(537/650)는 재현되지 않았고, 원인은 여전히 확정하지 못했다.** 이번 실행에서도
+`MemoryMinFreePhysical` 미달 경고가 23회(가용 물리 메모리 최저 258 MiB),
+"Out of memory condition … GC 억제"가 14회 찍혔다. 그런데도 Cook은 끝까지 성공했다.
+따라서 **메모리 경고만으로는 실패를 설명할 수 없다.** Zen 원격 연결/호스트 조회 실패는 이번 로그에 없었다
+(로컬 Zen 캐시만 사용, 적중률 48%). 이전 실행과 다른 점은 아래와 같고, 이 중 무엇이 원인인지는 가려내지 않았다.
+- 이전 바이너리에는 되돌린 UI 장비 ID 코드가 섞였을 수 있었다. 이번에는 커밋 상태에서 Editor를 다시 빌드했다.
+- 이번에는 `-CookOutputDir`를 지정하지 않아 기본 `Saved/Cooked`를 썼다. 이전에는 다른 드라이브(E)를 지정했다.
+- 병렬 컴파일 수가 2에서 4로 바뀌었고, 디스크·메모리·Zen 환경이 다른 PC다.
+같은 증상이 다시 나면 AutomationTool 로그 `Log.txt`와 Cook 로그의 마지막 Error/Fatal 줄을 먼저 보존한다.
+메모리 안전 임계값(2048 MiB)은 낮추지 않았다. 다른 프로그램도 종료하지 않았다.
+
+**패키지 실행은 검증하지 않았다.** 노트북 환경이라 사용자가 패키지 실행은 빼고 컴파일·빌드까지만
+확인하라고 요청했다. 에디터 없는 L_Test 실행, 장비·배관·열 결합·패치 UI·압력 실패 로그 확인,
+HMD 성능은 전부 미검증이다. 코드·에셋은 바꾸지 않았다. Automation은 이번에 다시 돌리지 않았으며,
+마지막 기록은 위 절의 84 성공/0 실패다.
+빌드 경고는 `VrgPressureGpuSolver.cpp`의 `BlockUntilGPUIdle` deprecated(C4996) 하나이며, 이번 범위에서 고치지 않았다.
+로그는 `Saved/Build_Pkg_Editor.log`, `Saved/Package_1.log`에 있다(커밋 제외).
