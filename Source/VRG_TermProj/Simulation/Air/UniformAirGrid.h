@@ -182,7 +182,7 @@ public:
 	// 셀의 속도 발산 [1/s]. 비압축 조건에서 0에 가까워야 한다.
 	double CellDivergencePerS(int32 X, int32 Y, int32 Z) const;
 
-	// 모든 셀 중 가장 큰 발산 크기 [1/s].
+	// 공기 셀 중 가장 큰 발산 크기 [1/s]. 고체 셀은 방정식이 없으므로 세지 않는다.
 	double MaxAbsDivergencePerS() const;
 
 	// 셀 중심 속도 크기의 최댓값 [m/s]. 발산을 정규화할 기준으로 쓴다.

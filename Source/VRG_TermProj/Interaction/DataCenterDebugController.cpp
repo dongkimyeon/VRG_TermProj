@@ -45,6 +45,12 @@ ADataCenterDebugController::ADataCenterDebugController()
 	RadiatorUAKnob.MaxValue = 2.0e4;
 	RadiatorUAKnob.StepSize = 1.25;
 	RadiatorUAKnob.bMultiplicative = true;
+
+	// Utilization is dimensionless and the same for every rack type.
+	UtilizationKnob.Value = 1.0;
+	UtilizationKnob.MinValue = 0.0;
+	UtilizationKnob.MaxValue = 1.0;
+	UtilizationKnob.StepSize = 0.1;
 }
 
 void ADataCenterDebugController::BeginPlay()
@@ -242,6 +248,8 @@ void ADataCenterDebugController::SetupInputComponent()
 		{ TEXT("PumpSpeedUp"),   EKeys::Six,        &ADataCenterDebugController::OnPumpSpeedUp },
 		{ TEXT("RadiatorDown"),  EKeys::Seven,      &ADataCenterDebugController::OnRadiatorDown },
 		{ TEXT("RadiatorUp"),    EKeys::Eight,      &ADataCenterDebugController::OnRadiatorUp },
+		{ TEXT("UtilDown"),      EKeys::Nine,       &ADataCenterDebugController::OnUtilizationDown },
+		{ TEXT("UtilUp"),        EKeys::Zero,       &ADataCenterDebugController::OnUtilizationUp },
 		{ TEXT("PrevSled"),      EKeys::Left,       &ADataCenterDebugController::OnSelectPreviousSled },
 		{ TEXT("NextSled"),      EKeys::Right,      &ADataCenterDebugController::OnSelectNextSled },
 		{ TEXT("ToggleSled"),    EKeys::E,          &ADataCenterDebugController::OnToggleSelectedSled },
@@ -353,6 +361,30 @@ void ADataCenterDebugController::OnRadiatorUp()
 	ApplyRadiatorKnob();
 }
 
+void ADataCenterDebugController::ApplyUtilizationKnob()
+{
+	for (ARackThermalActor* Rack : Racks)
+	{
+		if (Rack != nullptr)
+		{
+			Rack->Input.Utilization = UtilizationKnob.Value;
+			Rack->Input.SlotUtilization.Reset();
+		}
+	}
+}
+
+void ADataCenterDebugController::OnUtilizationDown()
+{
+	UtilizationKnob.Nudge(-1);
+	ApplyUtilizationKnob();
+}
+
+void ADataCenterDebugController::OnUtilizationUp()
+{
+	UtilizationKnob.Nudge(+1);
+	ApplyUtilizationKnob();
+}
+
 void ADataCenterDebugController::OnSelectPreviousSled()
 {
 	if (Racks.Num() > 0 && Racks[0] != nullptr)
@@ -439,15 +471,15 @@ void ADataCenterDebugController::DrawHelp() const
 	const uint64 BaseKey = static_cast<uint64>(GetUniqueID());
 
 	GEngine->AddOnScreenDebugMessage(BaseKey, 0.0f, FColor(180, 220, 255),
-		TEXT("[디버그 키] 1/2 CPU 발열  3/4 GPU 발열  5/6 펌프 회전수  7/8 라디에이터 UA  ←/→ 유닛 선택  E 뽑기/꽂기  R 리셋  H 도움말"));
+		TEXT("[디버그 키] 1/2 CPU 발열  3/4 GPU 발열  5/6 펌프 회전수  7/8 라디에이터 UA  9/0 부하율  ←/→ 유닛 선택  E 뽑기/꽂기  R 리셋  H 도움말"));
 
 	const int32 NumSleds = (Racks.Num() > 0 && Racks[0] != nullptr) ? Racks[0]->Params.NumSleds : 0;
 	const bool bSelectedDocked = (Racks.Num() > 0 && Racks[0] != nullptr) && Racks[0]->IsSledDocked(SelectedSledIndex);
 
 	GEngine->AddOnScreenDebugMessage(BaseKey + 1, 0.0f, FColor(255, 220, 160),
 		FString::Printf(
-			TEXT("CPU %.0f W/유닛 | GPU %.0f W/유닛 | 펌프 r=%.2f | 라디에이터 UA %.0f W/K | 선택 유닛 U%d/%d %s"),
-			CpuHeatKnob.Value, GpuHeatKnob.Value, PumpSpeedKnob.Value, RadiatorUAKnob.Value,
+			TEXT("CPU %.0f W/유닛 | GPU %.0f W/유닛 (전부하) | 부하율 %.0f%% | 펌프 r=%.2f | 라디에이터 UA %.0f W/K | 선택 유닛 U%d/%d %s"),
+			CpuHeatKnob.Value, GpuHeatKnob.Value, UtilizationKnob.Value * 100.0, PumpSpeedKnob.Value, RadiatorUAKnob.Value,
 			SelectedSledIndex, NumSleds,
 			bSelectedDocked ? TEXT("[꽂힘]") : TEXT("[뽑힘]")));
 }

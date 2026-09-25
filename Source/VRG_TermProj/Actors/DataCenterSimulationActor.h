@@ -85,6 +85,12 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Coupling")
 	bool bMarkRacksAsSolid = true;
 
+	// Rack fans drive air through the rack body in the air grid (intake faces in front, exhaust faces behind,
+	// velocity from each slot's fan operating point). Needs bMarkRacksAsSolid. Off = racks only exchange heat
+	// with the room air and the room air moves by buoyancy alone (the pre-2026-09-25 behaviour).
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Coupling")
+	bool bFanThroughFlow = true;
+
 	// ---- CRAH 냉각 코일 ----
 	// 코일을 둘 높이 범위 [m]. 천장 쪽 한 층을 코일로 쓴다.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Cooling")
@@ -162,6 +168,13 @@ private:
 
 	// 랙이 차지하는 셀을 고체로 표시한다.
 	void MarkRackSolidCells();
+
+	// Which cabinet (racks first, then spines) owns each solid cell; INDEX_NONE for fluid.
+	TArray<int32> SolidOwner;
+
+	// Intake / exhaust faces of one cabinet and the layer -> slot weights (see FRackCouplingLink).
+	void BuildFanFaces(int32 CabinetIndex, const AActor& Cabinet, const FUniformAirGrid& Grid, const FVector& GridOriginM,
+		const ARackThermalActor* Rack, const ASpineCabinetActor* Spine, int32 NumSlots, FRackCouplingLink& Link) const;
 
 	// 천장 쪽 한 층을 CRAH 코일로 잡는다.
 	void BuildCoolingCoil();

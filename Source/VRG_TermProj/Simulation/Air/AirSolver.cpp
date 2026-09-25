@@ -220,6 +220,16 @@ void FAirSolver::ApplyWallBoundary()
 			}
 		}
 	}
+
+	// Fan duct faces: the same solid boundary, but with the fans' prescribed normal velocity instead of 0.
+	// The projection never touches a face with a solid neighbour, so this flux survives it unchanged.
+	if (ActiveDucts != nullptr)
+	{
+		for (int32 F = 0; F < ActiveDucts->DuctFaceIndex.Num(); ++F)
+		{
+			VelocityArray(ActiveDucts->DuctFaceAxis[F])[ActiveDucts->DuctFaceIndex[F]] = ActiveDucts->DuctFaceVelocityMs[F];
+		}
+	}
 }
 
 void FAirSolver::ProjectToDivergenceFree(double DeltaTimeS)
@@ -432,6 +442,28 @@ void FAirSolver::AdvectTemperature(double DeltaTimeS)
 	//    투영 뒤에도 발산이 반올림만큼은 남는데, 그때 T*div(u)를 빼서 보정하면
 	//    이류에는 더 충실해지지만 **총 열량 보존이 깨진다**.
 	//    여기서는 장부가 어긋나지 않는 쪽을 택했다. 발산 잔차는 별도로 감시한다.
+	// Fan ducts (rule 6): the enthalpy leaving through intake faces is summed once per duct and the exhaust
+	// faces carry exactly that back, at the flow-weighted intake temperature. The solid body in between
+	// stores nothing, so the fluid's total heat is unchanged by the duct itself.
+	if (ActiveDucts != nullptr)
+	{
+		DuctIntakeEnthalpy.Init(0.0, ActiveDucts->NumDucts);
+		DuctExhaustSpeedSum.Init(0.0, ActiveDucts->NumDucts);
+		for (int32 F = 0; F < ActiveDucts->DuctFaceIndex.Num(); ++F)
+		{
+			const double Speed = FMath::Abs(ActiveDucts->DuctFaceVelocityMs[F]);
+			if (ActiveDucts->DuctFaceIsExhaust[F]) DuctExhaustSpeedSum[ActiveDucts->DuctFaceDuct[F]] += Speed;
+			else DuctIntakeEnthalpy[ActiveDucts->DuctFaceDuct[F]] += Speed * Grid.TemperatureK[ActiveDucts->DuctFaceFluidCell[F]];
+		}
+		for (int32 F = 0; F < ActiveDucts->DuctFaceIndex.Num(); ++F)
+		{
+			const int32 D = ActiveDucts->DuctFaceDuct[F];
+			const double CarriedK = !ActiveDucts->DuctFaceIsExhaust[F] ? Grid.TemperatureK[ActiveDucts->DuctFaceFluidCell[F]]
+				: DuctExhaustSpeedSum[D] > 0.0 ? DuctIntakeEnthalpy[D] / DuctExhaustSpeedSum[D] : 0.0;
+			FluxArray(ActiveDucts->DuctFaceAxis[F])[ActiveDucts->DuctFaceIndex[F]] = ActiveDucts->DuctFaceVelocityMs[F] * CarriedK;
+		}
+	}
+
 	const double DtOverH = DeltaTimeS / CellSizeM;
 
 	for (int32 Z = 0; Z < Grid.GetNumCellsZ(); ++Z)
@@ -441,6 +473,14 @@ void FAirSolver::AdvectTemperature(double DeltaTimeS)
 			for (int32 X = 0; X < Grid.GetNumCellsX(); ++X)
 			{
 				const int32 Index = Grid.CellIndex(X, Y, Z);
+
+				// A solid cell holds no air; with ducts its faces carry flux, but that enthalpy belongs to
+				// the duct transfer above, not to the body.
+				if (Grid.bSolidCell.IsValidIndex(Index) && Grid.bSolidCell[Index])
+				{
+					Grid.NextTemperatureK[Index] = Grid.TemperatureK[Index];
+					continue;
+				}
 
 				const double NetFlux =
 					(TemperatureFluxX[Grid.FaceXIndex(X + 1, Y, Z)] - TemperatureFluxX[Grid.FaceXIndex(X, Y, Z)])
@@ -499,8 +539,21 @@ void FAirSolver::Step(const FAirSolverInput& Input, double DeltaTimeS)
 	{
 		return;
 	}
+	bLastDuctsRejected = false;
+	LastDuctFlowM3s = 0.0;
+	LastNumDuctFaces = 0;
 	if (bUseOctree)
 	{
+		if (Input.HasDucts())
+		{
+			// Not silent (D5 spirit): the octree path has no duct faces yet, so rack fans are not driving air.
+			bLastDuctsRejected = true;
+			if (!bOctreeDuctWarningLogged)
+			{
+				UE_LOG(LogTemp, Warning, TEXT("[Air] 옥트리 경로는 팬 덕트(랙 관통 기류)를 아직 지원하지 않는다. 팬 기류 없이 적분한다."));
+				bOctreeDuctWarningLogged = true;
+			}
+		}
 		if (bOctreeNeedsImport)
 		{
 			FString Error;
@@ -528,6 +581,25 @@ void FAirSolver::Step(const FAirSolverInput& Input, double DeltaTimeS)
 		return;
 	}
 
+	// Fan ducts are checked before anything moves: a bad duct would make the pressure problem incompatible.
+	if (Input.HasDucts())
+	{
+		const FString DuctError = ValidateDucts(Input);
+		if (DuctError.IsEmpty())
+		{
+			ActiveDucts = &Input;
+			LastNumDuctFaces = Input.DuctFaceIndex.Num();
+			const double FaceAreaM2 = Grid.GetCellSizeM() * Grid.GetCellSizeM();
+			for (int32 F = 0; F < Input.DuctFaceIndex.Num(); ++F)
+				if (Input.DuctFaceIsExhaust[F]) LastDuctFlowM3s += FMath::Abs(Input.DuctFaceVelocityMs[F]) * FaceAreaM2;
+		}
+		else
+		{
+			bLastDuctsRejected = true;
+			UE_LOG(LogTemp, Error, TEXT("[Air] 팬 덕트 입력 거부: %s"), *DuctError);
+		}
+	}
+
 	// CFL을 먼저 재 둔다. 1을 넘으면 반라그랑주가 한 스텝에 한 셀을 건너뛴다.
 	// 반라그랑주는 무조건 안정이라 터지지는 않지만 결과가 뭉개진다.
 	LastCourantNumber = Grid.MaxAbsVelocityMs() * DeltaTimeS / Grid.GetCellSizeM();
@@ -536,9 +608,53 @@ void FAirSolver::Step(const FAirSolverInput& Input, double DeltaTimeS)
 	ApplyBuoyancy(Input, DeltaTimeS);
 	ApplyWallBoundary();
 	ProjectToDivergenceFree(DeltaTimeS);
-	AdvectTemperature(DeltaTimeS);
+
+	// Explicit upwind flux transport is stable while dt * (sum of outflow speeds) / h <= 1 in every cell.
+	// Three axes bound that sum by 3 * max|u|, so sub-step when 3 * Courant would exceed 0.9 (same velocity
+	// field, same total dt - rule 4; conservation is unchanged because every sub-step is conservative).
+	const double TransportCourant = Grid.MaxAbsVelocityMs() * DeltaTimeS / Grid.GetCellSizeM();
+	LastTemperatureSubsteps = FMath::Clamp(FMath::CeilToInt32(3.0 * TransportCourant / 0.9), 1, 64);
+	for (int32 Sub = 0; Sub < LastTemperatureSubsteps; ++Sub)
+	{
+		AdvectTemperature(DeltaTimeS / LastTemperatureSubsteps);
+	}
 	InjectHeat(Input, DeltaTimeS);
 	ApplyCooling(Input, DeltaTimeS);
+	ActiveDucts = nullptr;
+}
+
+FString FAirSolver::ValidateDucts(const FAirSolverInput& Input) const
+{
+	const int32 N = Input.DuctFaceIndex.Num();
+	if (Input.DuctFaceAxis.Num() != N || Input.DuctFaceFluidCell.Num() != N || Input.DuctFaceDuct.Num() != N
+		|| Input.DuctFaceIsExhaust.Num() != N || Input.DuctFaceVelocityMs.Num() != N)
+	{
+		return TEXT("배열 길이가 서로 다르다");
+	}
+	TArray<double> IntakeFlow, ExhaustFlow;
+	IntakeFlow.Init(0.0, FMath::Max(Input.NumDucts, 0));
+	ExhaustFlow.Init(0.0, FMath::Max(Input.NumDucts, 0));
+	for (int32 F = 0; F < N; ++F)
+	{
+		const uint8 Axis = Input.DuctFaceAxis[F];
+		const int32 NumFaces = Axis == 0 ? Grid.GetNumFacesX() : Axis == 1 ? Grid.GetNumFacesY() : Axis == 2 ? Grid.GetNumFacesZ() : -1;
+		if (NumFaces < 0 || Input.DuctFaceIndex[F] < 0 || Input.DuctFaceIndex[F] >= NumFaces) return FString::Printf(TEXT("면 %d 인덱스가 격자 밖"), F);
+		const int32 Cell = Input.DuctFaceFluidCell[F];
+		if (!Grid.TemperatureK.IsValidIndex(Cell) || (Grid.bSolidCell.IsValidIndex(Cell) && Grid.bSolidCell[Cell]))
+			return FString::Printf(TEXT("면 %d의 공기 셀이 격자 밖이거나 고체"), F);
+		if (!Input.DuctFaceDuct.IsValidIndex(F) || Input.DuctFaceDuct[F] < 0 || Input.DuctFaceDuct[F] >= Input.NumDucts)
+			return FString::Printf(TEXT("면 %d의 덕트 번호가 범위 밖"), F);
+		if (!FMath::IsFinite(Input.DuctFaceVelocityMs[F])) return FString::Printf(TEXT("면 %d 속도가 유한하지 않다"), F);
+		(Input.DuctFaceIsExhaust[F] ? ExhaustFlow : IntakeFlow)[Input.DuctFaceDuct[F]] += FMath::Abs(Input.DuctFaceVelocityMs[F]);
+	}
+	for (int32 D = 0; D < Input.NumDucts; ++D)
+	{
+		// Unequal volume flow would make the Neumann pressure problem incompatible (net source in a closed box).
+		const double Scale = FMath::Max(IntakeFlow[D], ExhaustFlow[D]);
+		if (Scale > 0.0 && FMath::Abs(IntakeFlow[D] - ExhaustFlow[D]) > 1e-9 * Scale)
+			return FString::Printf(TEXT("덕트 %d 흡기/배기 체적유량 불일치 (%.6e / %.6e, 면 속도 합)"), D, IntakeFlow[D], ExhaustFlow[D]);
+	}
+	return FString();
 }
 
 void FAirSolver::ApplyCooling(const FAirSolverInput& Input, double DeltaTimeS)
@@ -659,6 +775,9 @@ FAirSolverSnapshot FAirSolver::MakeSnapshot(double SimTimeS) const
 	Snapshot.PressureIterations = LastPressureResult.IterationsUsed;
 	Snapshot.PressureNormalizedResidual = LastPressureResult.NormalizedResidual;
 	Snapshot.CourantNumber = LastCourantNumber;
+	Snapshot.DuctFlowM3s = LastDuctFlowM3s;
+	Snapshot.NumDuctFaces = LastNumDuctFaces;
+	Snapshot.bDuctsRejected = bLastDuctsRejected;
 	if (bUseOctree && !bOctreeNeedsImport)
 	{
 		Snapshot.MaxAbsDivergencePerS = OctreeSolver.MaxDivergencePerS();

@@ -26,7 +26,11 @@ bool FSpineThermalTest::RunTest(const FString& Parameters)
 	double MaxC = -273.15; for (double T : Thermal.ComponentTempK) MaxC = FMath::Max(MaxC, T - 273.15);
 	AddInfo(FString::Printf(TEXT("Spine: IT %.6f W, CRAH %.6f W, residual %.12e (energy-in J normalization), max part %.3f C, inlet %.3f C"),
 		Snap.TotalItHeatW, Snap.TotalAirCoolingRemovedW, Snap.NormalizedEnergyResidual, MaxC, Input.AirInletTempK - 273.15));
-	TestEqual(TEXT("Four QM9700 reference switches, 747 W each (NVIDIA passive-cable specification)"), Snap.TotalItHeatW, 2988.0);
+	// Fan parts carry the computed fan input (affinity law at the controlled speed), the rest is the preset.
+	const double FanW = Thermal.TotalFanPowerW;
+	AddInfo(FString::Printf(TEXT("Spine fans: %.3f W total, speed %.3f"), FanW, Thermal.SlotFanSpeedRatio.Num() ? Thermal.SlotFanSpeedRatio[0] : -1.0));
+	TestTrue(TEXT("IT = 4 x 597 W electronics + computed fan input"), FMath::Abs(Snap.TotalItHeatW - (4 * 597.0 + FanW)) < 1e-9 * Snap.TotalItHeatW);
+	TestTrue(TEXT("Below the 4 x 747 W QM9700 typical reference (fans included there)"), Snap.TotalItHeatW <= 2988.0 && FanW > 0.0);
 	TestEqual(TEXT("No hydraulic flow"), Input.CoolantMassFlowKgs, 0.0);
 	TestEqual(TEXT("No radiator heat rejection"), Snap.TotalRadiatorRejectedW, 0.0);
 	TestEqual(TEXT("No liquid slots"), FRackThermalModel::CountLiquidSlots(Params), 0);

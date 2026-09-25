@@ -158,6 +158,39 @@ void FRackThermalModel::Initialize(const FRackThermalParams& InParams, const FRa
 	LastSlotAirMassFlowKgs.Init(0.0, Params.NumSleds);
 	LastSlotHeatToAirW.Init(0.0, Params.NumSleds);
 	LastSledAirOutletTempK.Init(State.CoolantTempK, Params.NumSleds);
+	LastSlotPressureRisePa.Init(0.0, Params.NumSleds);
+	LastSlotFanPowerW.Init(0.0, Params.NumSleds);
+	LastTotalHeatToRoomAirW = 0.0;
+	ScratchNodeHeatW.Init(0.0, NumNodes);
+
+	// Fan mode and where each slot's fan power turns into heat.
+	bFanMode = IsFanMode(Params);
+	NodeGetsFanHeat.Init(0, NumNodes);
+	SlotFanHeatNodes.Init(0, Params.NumSleds);
+	for (int32 Slot = 0; Slot < Params.NumSleds; ++Slot)
+	{
+		if (!bFanMode || !FansOf(Params, Slot)) continue;
+		const int32 Begin = SlotNodeStart[Slot], End = SlotNodeStart[Slot + 1];
+		auto Mark = [&](TFunctionRef<bool(const FRackComponentParams&)> Pred)
+		{
+			for (int32 I = Begin; I < End; ++I) if (Pred(NodeParams[I])) { NodeGetsFanHeat[I] = 1; ++SlotFanHeatNodes[Slot]; }
+		};
+		Mark([](const FRackComponentParams& P) { return P.Kind == ERackPartKind::Fan; });
+		if (SlotFanHeatNodes[Slot] == 0) Mark([](const FRackComponentParams& P) { return P.ToAirUAWK > 0.0; });
+		if (SlotFanHeatNodes[Slot] == 0) Mark([](const FRackComponentParams&) { return true; });
+	}
+	// Fan parts in fan mode take their heat from the fan operating point, not from ComponentHeatW.
+	// Only non-Fan receivers add the share on top of their own heat (see Step).
+	for (int32 I = 0; I < NumNodes; ++I) if (NodeParams[I].Kind == ERackPartKind::Fan) NodeGetsFanHeat[I] = 0;
+
+	if (State.SlotFanSpeedRatio.Num() != Params.NumSleds)
+	{
+		State.SlotFanSpeedRatio.Init(0.0, Params.NumSleds);
+		for (int32 Slot = 0; Slot < Params.NumSleds; ++Slot)
+			if (const FRackFanSpec* Fans = bFanMode ? FansOf(Params, Slot) : nullptr)
+				State.SlotFanSpeedRatio[Slot] = FanTargetSpeedRatio(*Fans, SlotControlTempK(Slot));
+	}
+	InitialState.SlotFanSpeedRatio = State.SlotFanSpeedRatio;
 }
 
 namespace
@@ -259,7 +292,7 @@ bool FRackThermalModel::IsStepStable(const FRackThermalInput& Input, double Delt
 {
 	const int32 NumSleds = Params.NumSleds;
 	if (SlotNodeStart.Num() != NumSleds + 1) return true;  // not initialized yet
-	DistributeSlotAirMassFlowKgs(Params, Input.SledDocked, Input.TotalAirMassFlowKgs, ScratchSlotFlowKgs);
+	ComputeSlotAirFlows(Input, ScratchSlotFlowKgs);
 
 	double MaxRatePerS = 0.0;
 	double TotalCoolantUAWK = 0.0;
@@ -302,20 +335,48 @@ void FRackThermalModel::Step(const FRackThermalInput& Input, double DeltaTimeS)
 	bLastStepStable = IsStepStable(Input, DeltaTimeS);
 
 	const int32 NumSleds = Params.NumSleds;
-	DistributeSlotAirMassFlowKgs(Params, Input.SledDocked, Input.TotalAirMassFlowKgs, LastSlotAirMassFlowKgs);
+	ComputeSlotAirFlows(Input, LastSlotAirMassFlowKgs);
 
 	double TotalHeatW = 0.0;
 	double TotalHeatToCoolantW = 0.0;
 	double TotalHeatToAirW = 0.0;
 	double TotalHeatToAmbientW = 0.0;
 
-	// DC load for conversion-loss parts (power shelves): heat of every other docked part this step.
+	// Heat of every node this step [W], computed once (rule 6) and read by the loop below.
+	//   - ordinary part: full-load input x load factor (utilization, IdleHeatFraction)
+	//   - fan mode: the slot's fan electric input (affinity law, D8) becomes heat of its fan parts
+	//     (or of its air-cooled parts when the device lists no separate fan part, e.g. PSU fans)
+	//   - conversion-loss part (power shelf): fraction of the rack's DC load, added after the DC sum
+	ScratchNodeHeatW.SetNumZeroed(NodeParams.Num());
 	double DcLoadW = 0.0;
 	for (int32 SledIndex = 0; SledIndex < NumSleds; ++SledIndex)
 	{
-		if (!IsDocked(Input.SledDocked, SledIndex, NumSleds)) continue;
+		const bool bDocked = IsDocked(Input.SledDocked, SledIndex, NumSleds);
+		LastSlotFanPowerW[SledIndex] = SlotFanPowerW(SledIndex, bDocked, Input);
+		const FRackFanSpec* Fans = FansOf(Params, SledIndex);
+		LastSlotPressureRisePa[SledIndex] = bFanMode && Fans && bDocked
+			? DockedResistanceOf(Params, SledIndex) * FMath::Square(LastSlotAirMassFlowKgs[SledIndex]) : 0.0;
+		if (!bDocked) continue;
+		const double Utilization = SlotUtilizationOf(Input, SledIndex, NumSleds);
+		const double FanShareW = SlotFanHeatNodes[SledIndex] > 0 ? LastSlotFanPowerW[SledIndex] / SlotFanHeatNodes[SledIndex] : 0.0;
 		for (int32 Index = SlotNodeStart[SledIndex]; Index < SlotNodeStart[SledIndex + 1]; ++Index)
-			if (NodeParams[Index].LossFractionOfRackLoad <= 0.0) DcLoadW += HeatAt(Input.ComponentHeatW, Index);
+		{
+			const FRackComponentParams& Part = NodeParams[Index];
+			double HeatW = 0.0;
+			if (bFanMode && Fans && Part.Kind == ERackPartKind::Fan) HeatW = FanShareW;
+			else if (Part.LossFractionOfRackLoad <= 0.0)
+				HeatW = HeatAt(Input.ComponentHeatW, Index) * LoadFactor(Part, Utilization) + (NodeGetsFanHeat[Index] ? FanShareW : 0.0);
+			ScratchNodeHeatW[Index] = HeatW;
+			if (Part.LossFractionOfRackLoad <= 0.0) DcLoadW += HeatW;
+		}
+	}
+	for (int32 SledIndex = 0; SledIndex < NumSleds; ++SledIndex)
+	{
+		if (!IsDocked(Input.SledDocked, SledIndex, NumSleds)) continue;
+		const double FanShareW = SlotFanHeatNodes[SledIndex] > 0 ? LastSlotFanPowerW[SledIndex] / SlotFanHeatNodes[SledIndex] : 0.0;
+		for (int32 Index = SlotNodeStart[SledIndex]; Index < SlotNodeStart[SledIndex + 1]; ++Index)
+			if (NodeParams[Index].LossFractionOfRackLoad > 0.0)
+				ScratchNodeHeatW[Index] = NodeParams[Index].LossFractionOfRackLoad * DcLoadW + (NodeGetsFanHeat[Index] ? FanShareW : 0.0);
 	}
 	const bool bSlotInlets = Input.SlotAirInletTempK.Num() == NumSleds;
 
@@ -356,10 +417,8 @@ void FRackThermalModel::Step(const FRackThermalInput& Input, double DeltaTimeS)
 			const FRackComponentParams& Component = NodeParams[Index];
 			const double ComponentTempK = State.ComponentTempK[Index];
 
-			// 뽑힌 유닛은 전원이 끊긴다. 변환 손실 부품은 입력이 아니라 이번 스텝 DC 부하의 비율이다.
-			const double HeatW = !bDocked ? 0.0
-				: Component.LossFractionOfRackLoad > 0.0 ? Component.LossFractionOfRackLoad * DcLoadW
-				: HeatAt(Input.ComponentHeatW, Index);
+			// 뽑힌 유닛은 전원이 끊긴다 (위에서 0으로 남겨 둔다).
+			const double HeatW = ScratchNodeHeatW[Index];
 
 			// 열유속 3개를 여기서 한 번만 계산한다 (규약 6).
 			// 뽑힌 유닛은 콜드플레이트와 강제 공랭이 모두 끊긴다. 케이스 자연대류만 남는다.
@@ -411,6 +470,126 @@ void FRackThermalModel::Step(const FRackThermalInput& Input, double DeltaTimeS)
 
 	LastTotalHeatW = TotalHeatW;
 	LastHeatRemovedByCoolantW = HeatRemovedByCoolantW;
+	LastTotalHeatToRoomAirW = TotalHeatToAirW + TotalHeatToAmbientW;
+
+	// Fan controller: move each fan-equipped slot toward its target at the slew limit, from the temperatures
+	// just integrated. The new speed acts from the next step (explicit, like every other exchange here).
+	if (bFanMode)
+	{
+		for (int32 SledIndex = 0; SledIndex < NumSleds; ++SledIndex)
+		{
+			const FRackFanSpec* Fans = FansOf(Params, SledIndex);
+			if (!Fans) continue;
+			double& Ratio = State.SlotFanSpeedRatio[SledIndex];
+			if (Input.FanSpeedOverride >= 0.0) { Ratio = FMath::Clamp(Input.FanSpeedOverride, 0.0, 1.0); continue; }
+			if (!IsDocked(Input.SledDocked, SledIndex, NumSleds)) continue;
+			const double Target = FanTargetSpeedRatio(*Fans, SlotControlTempK(SledIndex));
+			const double MaxChange = FMath::Max(0.0, Fans->MaxSlewPerS) * DeltaTimeS;
+			Ratio += FMath::Clamp(Target - Ratio, -MaxChange, MaxChange);
+		}
+	}
+}
+
+bool FRackThermalModel::IsFanMode(const FRackThermalParams& InParams)
+{
+	if (InParams.Slots.Num() == 0) return false;
+	for (const FRackDeviceType& D : InParams.DeviceTypes) if (D.Fans.HasFans()) return true;
+	return false;
+}
+
+double FRackThermalModel::FanOperatingMassFlowKgs(const FRackFanSpec& Fans, double ResistancePaS2Kg2,
+	double AirDensityKgM3, double SpeedRatio)
+{
+	if (!Fans.HasFans() || SpeedRatio <= 0.0 || AirDensityKgM3 <= 0.0) return 0.0;
+	const double TotalFreeFlowM3s = Fans.NumFans * Fans.MaxFlowM3s;
+	const double Denominator = FMath::Max(ResistancePaS2Kg2, 0.0) * AirDensityKgM3 * AirDensityKgM3
+		+ Fans.ShutoffPressurePa / (TotalFreeFlowM3s * TotalFreeFlowM3s);
+	return AirDensityKgM3 * SpeedRatio * FMath::Sqrt(Fans.ShutoffPressurePa / Denominator);
+}
+
+double FRackThermalModel::FanTargetSpeedRatio(const FRackFanSpec& Fans, double ControlTempK)
+{
+	const double MinRatio = FMath::Clamp(Fans.MinSpeedRatio, 0.0, 1.0);
+	const double Span = Fans.ControlFullK - Fans.ControlStartK;
+	const double Alpha = Span > UE_DOUBLE_SMALL_NUMBER
+		? FMath::Clamp((ControlTempK - Fans.ControlStartK) / Span, 0.0, 1.0)
+		: (ControlTempK >= Fans.ControlStartK ? 1.0 : 0.0);
+	return MinRatio + (1.0 - MinRatio) * Alpha;
+}
+
+double FRackThermalModel::DockedResistanceOf(const FRackThermalParams& InParams, int32 Slot)
+{
+	if (InParams.Slots.IsValidIndex(Slot) && InParams.DeviceTypes.IsValidIndex(InParams.Slots[Slot].DeviceType)
+		&& InParams.DeviceTypes[InParams.Slots[Slot].DeviceType].DockedResistancePaS2Kg2 > 0.0)
+	{
+		return InParams.DeviceTypes[InParams.Slots[Slot].DeviceType].DockedResistancePaS2Kg2;
+	}
+	return InParams.DockedSlotResistancePaS2Kg2;
+}
+
+const FRackFanSpec* FRackThermalModel::FansOf(const FRackThermalParams& InParams, int32 Slot)
+{
+	if (!InParams.Slots.IsValidIndex(Slot) || !InParams.DeviceTypes.IsValidIndex(InParams.Slots[Slot].DeviceType)) return nullptr;
+	const FRackFanSpec& Fans = InParams.DeviceTypes[InParams.Slots[Slot].DeviceType].Fans;
+	return Fans.HasFans() ? &Fans : nullptr;
+}
+
+double FRackThermalModel::LoadFactor(const FRackComponentParams& Part, double Utilization)
+{
+	// f >= 1 returns exactly 1 so load-independent parts stay bit-identical to the S1 model.
+	const double F = Part.IdleHeatFraction;
+	if (F >= 1.0) return 1.0;
+	return FMath::Max(F, 0.0) + (1.0 - FMath::Max(F, 0.0)) * FMath::Clamp(Utilization, 0.0, 1.0);
+}
+
+double FRackThermalModel::SlotUtilizationOf(const FRackThermalInput& Input, int32 Slot, int32 NumSlots)
+{
+	const double U = Input.SlotUtilization.Num() == NumSlots && Input.SlotUtilization.IsValidIndex(Slot)
+		? Input.SlotUtilization[Slot] : Input.Utilization;
+	return FMath::Clamp(U, 0.0, 1.0);
+}
+
+void FRackThermalModel::ComputeSlotAirFlows(const FRackThermalInput& Input, TArray<double>& OutSlotFlowKgs) const
+{
+	if (!bFanMode)
+	{
+		DistributeSlotAirMassFlowKgs(Params, Input.SledDocked, Input.TotalAirMassFlowKgs, OutSlotFlowKgs);
+		return;
+	}
+	// Fan mode: each device pulls its own air. An empty slot or a fanless device gets no forced flow.
+	// (Recirculation through an open slot driven by a front/rear aisle pressure difference is not modelled:
+	// the rack front and rear are taken at the same static pressure.)
+	const int32 NumSleds = Params.NumSleds;
+	OutSlotFlowKgs.SetNum(NumSleds);
+	for (int32 Slot = 0; Slot < NumSleds; ++Slot)
+	{
+		const FRackFanSpec* Fans = FansOf(Params, Slot);
+		if (!Fans || !IsDocked(Input.SledDocked, Slot, NumSleds)) { OutSlotFlowKgs[Slot] = 0.0; continue; }
+		const double Ratio = Input.FanSpeedOverride >= 0.0 ? FMath::Clamp(Input.FanSpeedOverride, 0.0, 1.0)
+			: State.SlotFanSpeedRatio.IsValidIndex(Slot) ? State.SlotFanSpeedRatio[Slot] : 1.0;
+		OutSlotFlowKgs[Slot] = FanOperatingMassFlowKgs(*Fans, DockedResistanceOf(Params, Slot), Params.AirDensityKgM3, Ratio);
+	}
+}
+
+double FRackThermalModel::SlotFanPowerW(int32 Slot, bool bDocked, const FRackThermalInput& Input) const
+{
+	const FRackFanSpec* Fans = bFanMode ? FansOf(Params, Slot) : nullptr;
+	if (!Fans || !bDocked) return 0.0;
+	const double Ratio = Input.FanSpeedOverride >= 0.0 ? FMath::Clamp(Input.FanSpeedOverride, 0.0, 1.0)
+		: State.SlotFanSpeedRatio.IsValidIndex(Slot) ? State.SlotFanSpeedRatio[Slot] : 1.0;
+	return Fans->NumFans * Fans->RatedInputW * Ratio * Ratio * Ratio;
+}
+
+double FRackThermalModel::SlotControlTempK(int32 Slot) const
+{
+	double MaxAirK = -1.0, MaxAnyK = -1.0;
+	for (int32 Index = SlotNodeStart[Slot]; Index < SlotNodeStart[Slot + 1]; ++Index)
+	{
+		if (NodeParams[Index].Kind == ERackPartKind::Fan) continue;
+		MaxAnyK = FMath::Max(MaxAnyK, State.ComponentTempK[Index]);
+		if (NodeParams[Index].ToAirUAWK > 0.0) MaxAirK = FMath::Max(MaxAirK, State.ComponentTempK[Index]);
+	}
+	return MaxAirK > 0.0 ? MaxAirK : MaxAnyK;
 }
 
 double FRackThermalModel::GetEnergyStoredJ() const
@@ -450,9 +629,15 @@ FRackThermalSnapshot FRackThermalModel::MakeSnapshot(double SimTimeS) const
 	Snapshot.ComponentTempK = State.ComponentTempK;
 	Snapshot.ComponentHeatToCoolantW = LastHeatToCoolantW;
 	Snapshot.ComponentHeatToAirW = LastHeatToAirW;
+	Snapshot.ComponentHeatW = ScratchNodeHeatW;
 	Snapshot.SlotAirMassFlowKgs = LastSlotAirMassFlowKgs;
 	Snapshot.SledAirOutletTempK = LastSledAirOutletTempK;
 	Snapshot.SlotHeatToAirW = LastSlotHeatToAirW;
+	Snapshot.bFanMode = bFanMode;
+	Snapshot.SlotFanSpeedRatio = State.SlotFanSpeedRatio;
+	Snapshot.SlotPressureRisePa = LastSlotPressureRisePa;
+	Snapshot.SlotFanPowerW = LastSlotFanPowerW;
+	for (const double W : LastSlotFanPowerW) Snapshot.TotalFanPowerW += W;
 	Snapshot.CoolantTempK = State.CoolantTempK;
 	Snapshot.CoolantOutletTempK = State.CoolantTempK;
 	Snapshot.TotalHeatW = LastTotalHeatW;
@@ -514,16 +699,56 @@ FRackThermalSnapshot FRackThermalModel::MakeSnapshot(double SimTimeS) const
 // 측정 결과 (MakeGb200Nvl72Params): DC 116.32 kW + PSU 손실 2.983 kW = 119.30 kW,
 // 정상 공기 14.6% / 액체 85.4%. SteadyStatePlausible 테스트가 별도 타당성 범위를 확인한다.
 
+// ---- Load dependence and fans (2026-09-25) ----
+// Heat at utilization u = full-load heat x (f + (1 - f) u), f = IdleHeatFraction (Fan et al., ISCA 2007).
+// Published anchors:
+//   - Blackwell: NVIDIA DGX B200 User Guide, "Managing Power Capping": B200 can be capped down to 200 W and
+//     "will report a power draw exceeding 200 W, including at idle". Idle = 200 W is taken as the floor
+//     -> f = 200/1200. https://docs.nvidia.com/dgx/dgxb200-user-guide/power-capping.html
+//   - E1.S NVMe: Samsung PM9A3 datasheet idle 3.5 W -> f = 3.5/20 (the 20 W full load is the preset's
+//     Gen5 E1.S estimate, not PM9A3).
+// Estimates (no public idle figure): Grace 60 W idle (f 0.21), LPDDR5X 0.3, NVSwitch 0.5 (links stay up),
+// ConnectX-7 0.7 and BlueField-3 0.5 (SerDes / Arm cores idle), M.2 0.5, BMC 1.0 (always on),
+// PDB/VRM 0.2 (conversion loss follows the power it converts), switches 0.6-0.8.
+// PSU loss is a fraction of the live DC load, so it follows utilization by construction. PSU efficiency is
+// held at 97.5% at every load; real PSUs lose efficiency at light load (not modelled).
+//
+// Fans (representative parts; the actual SKUs fitted in GB200 / QM9700 are not published):
+//   - Compute tray: 8 x San Ace 9CRJ0412P5J001 (40x40x56 mm counter-rotating, 1U server fan):
+//     1.06 m^3/min, 2400 Pa, 37.2 W rated input.
+//     https://products.sanyodenki.com/en/sanace/dc/counter-rotating-fan/9CRJ0412P5J001/
+//   - Switches / PSUs: San Ace 9HVA0412P3J001 (40x40x28 mm): 1.05 m^3/min, 2300 Pa, 31.2 W.
+//     https://products.sanyodenki.com/en/sanace/dc/dc-fan/9HVA0412P3J001/
+//   The fan count of the compute tray (8) is public (DGX GB200 guide / SemiAnalysis); the others are estimates.
+// Device impedance R [Pa s^2/kg^2]: a typical dense 1U chassis sits at 8-15 mmH2O at its operating flow
+// (Sanyo Denki / server fan selection guides). R is set so that ~12 mmH2O (118 Pa) is reached at the flow
+// that carries the device's design air heat with a ~15 K air rise. Estimate, not measured.
+// Fan speed control: proportional on the hottest air-cooled part, 30% minimum duty (PWM fans run reliably
+// down to ~20-33% duty), full speed at 75 C. BMC control laws are vendor specific; this one is an estimate.
 namespace
 {
 	FRackComponentParams Part(const TCHAR* Name, ERackPartKind Kind, double HeatW, double CapacityJK,
-		double ToCoolantUAWK, double ToAirUAWK, double ToAmbientUAWK, int32 AirStage = -1)
+		double ToCoolantUAWK, double ToAirUAWK, double ToAmbientUAWK, int32 AirStage = -1, double IdleFraction = 1.0)
 	{
 		FRackComponentParams P;
 		P.Name = Name; P.Kind = Kind; P.DefaultHeatW = HeatW; P.HeatCapacityJK = CapacityJK;
 		P.ToCoolantUAWK = ToCoolantUAWK; P.ToAirUAWK = ToAirUAWK; P.ToAmbientUAWK = ToAmbientUAWK; P.AirStage = AirStage;
+		P.IdleHeatFraction = IdleFraction;
 		return P;
 	}
+
+	FRackFanSpec MakeFans(int32 Num, double MaxFlowM3min, double ShutoffPa, double RatedInputW)
+	{
+		FRackFanSpec F;
+		F.NumFans = Num; F.MaxFlowM3s = MaxFlowM3min / 60.0; F.ShutoffPressurePa = ShutoffPa; F.RatedInputW = RatedInputW;
+		F.MinSpeedRatio = .3; F.ControlStartK = 328.15; F.ControlFullK = 348.15; F.MaxSlewPerS = .2;
+		return F;
+	}
+	FRackFanSpec San9Crj(int32 Num) { return MakeFans(Num, 1.06, 2400.0, 37.2); }
+	FRackFanSpec San9Hva(int32 Num) { return MakeFans(Num, 1.05, 2300.0, 31.2); }
+
+	// R that gives 118 Pa (12 mmH2O) at the mass flow carrying DesignAirW with a 15 K rise (cp 1005).
+	double ImpedanceFor(double DesignAirW) { const double M = DesignAirW / (1005.0 * 15.0); return 118.0 / (M * M); }
 
 	// PSU conversion loss shared by every PSU module of every shelf: (1/eta - 1) / (shelves * PSUs).
 	constexpr double PsuEfficiency = .975;
@@ -546,25 +771,29 @@ FRackDeviceType FRackThermalModel::Gb200ComputeTray()
 	FRackDeviceType D;
 	D.Name = TEXT("GB200 Compute Tray");
 	D.bLiquidCooled = true;
-	D.DockedResistancePaS2Kg2 = 1.0e4;  // same as the S1 docked slot (dP ~100 Pa at 0.1 kg/s)
+	// Air-side design heat ~640 W (drives, IO cards, PDB, fans) -> R ~ 6.7e4 (118 Pa at 0.042 kg/s).
+	D.DockedResistancePaS2Kg2 = ImpedanceFor(640.0);
+	D.Fans = San9Crj(8);
 	// Air path front -> rear. Stage 0: E1.S bay, 1: front IO cards side by side, 2: cold-plated boards
 	// (no air coupling, pass-through), 3: power distribution board, 4: fan wall.
-	for (int32 I = 0; I < 4; ++I) D.Components.Add(Part(*FString::Printf(TEXT("E1.S NVMe %d"), I), ERackPartKind::Storage, 20.0, 60.0, 0.0, 1.0, .02, 0));
-	for (int32 I = 0; I < 4; ++I) D.Components.Add(Part(*FString::Printf(TEXT("ConnectX-7 %d"), I), ERackPartKind::Nic, 25.0, 80.0, 0.0, 1.2, .02, 1));
-	for (int32 I = 0; I < 2; ++I) D.Components.Add(Part(*FString::Printf(TEXT("BlueField-3 %d"), I), ERackPartKind::Dpu, 75.0, 150.0, 0.0, 2.5, .03, 1));
-	D.Components.Add(Part(TEXT("M.2 boot"), ERackPartKind::Storage, 8.0, 20.0, 0.0, .4, .01, 1));
-	D.Components.Add(Part(TEXT("BMC / mgmt"), ERackPartKind::Management, 25.0, 60.0, 0.0, 1.0, .02, 1));
+	for (int32 I = 0; I < 4; ++I) D.Components.Add(Part(*FString::Printf(TEXT("E1.S NVMe %d"), I), ERackPartKind::Storage, 20.0, 60.0, 0.0, 1.0, .02, 0, 3.5 / 20.0));
+	for (int32 I = 0; I < 4; ++I) D.Components.Add(Part(*FString::Printf(TEXT("ConnectX-7 %d"), I), ERackPartKind::Nic, 25.0, 80.0, 0.0, 1.2, .02, 1, .7));
+	for (int32 I = 0; I < 2; ++I) D.Components.Add(Part(*FString::Printf(TEXT("BlueField-3 %d"), I), ERackPartKind::Dpu, 75.0, 150.0, 0.0, 2.5, .03, 1, .5));
+	D.Components.Add(Part(TEXT("M.2 boot"), ERackPartKind::Storage, 8.0, 20.0, 0.0, .4, .01, 1, .5));
+	D.Components.Add(Part(TEXT("BMC / mgmt"), ERackPartKind::Management, 25.0, 60.0, 0.0, 1.0, .02, 1, 1.0));
 	// Two Bianca boards: each Grace + its LPDDR5X + two Blackwell on one cold-plate loop.
 	// UA: Grace 280 W at ~8 K, LPDDR5X 20 W at ~10 K through the plate, Blackwell 1200 W at ~12 K.
 	for (int32 B = 0; B < 2; ++B)
 	{
-		D.Components.Add(Part(*FString::Printf(TEXT("Grace CPU %d"), B), ERackPartKind::Cpu, 280.0, 400.0, 35.0, 0.0, .05, 2));
-		D.Components.Add(Part(*FString::Printf(TEXT("LPDDR5X %d"), B), ERackPartKind::Memory, 20.0, 80.0, 2.0, 0.0, .02, 2));
+		D.Components.Add(Part(*FString::Printf(TEXT("Grace CPU %d"), B), ERackPartKind::Cpu, 280.0, 400.0, 35.0, 0.0, .05, 2, 60.0 / 280.0));
+		D.Components.Add(Part(*FString::Printf(TEXT("LPDDR5X %d"), B), ERackPartKind::Memory, 20.0, 80.0, 2.0, 0.0, .02, 2, .3));
 		for (int32 G = 0; G < 2; ++G)
-			D.Components.Add(Part(*FString::Printf(TEXT("Blackwell GPU %d"), B * 2 + G), ERackPartKind::Gpu, 1200.0, 600.0, 100.0, 0.0, .05, 2));
+			D.Components.Add(Part(*FString::Printf(TEXT("Blackwell GPU %d"), B * 2 + G), ERackPartKind::Gpu, 1200.0, 600.0, 100.0, 0.0, .05, 2, 200.0 / 1200.0));
 	}
 	// 48 V -> 12 V power distribution + board VRM share that is not under the plates (~96% of 5.9 kW).
-	D.Components.Add(Part(TEXT("PDB / VRM loss"), ERackPartKind::Power, 250.0, 500.0, 0.0, 8.3, .1, 3));
+	D.Components.Add(Part(TEXT("PDB / VRM loss"), ERackPartKind::Power, 250.0, 500.0, 0.0, 8.3, .1, 3, .2));
+	// Fan parts: in fan mode their heat is the fans' electric input at the current speed (the 20 W here is
+	// only the design value used for CRAH sizing, DesignHeatToAirW).
 	for (int32 I = 0; I < 8; ++I) D.Components.Add(Part(*FString::Printf(TEXT("Fan %d"), I), ERackPartKind::Fan, 20.0, 40.0, 0.0, 3.0, .01, 4));
 	return D;
 }
@@ -574,10 +803,10 @@ FRackDeviceType FRackThermalModel::Gb200NvLinkSwitchTray()
 	FRackDeviceType D;
 	D.Name = TEXT("NVLink Switch Tray");
 	D.bLiquidCooled = true;
-	D.DockedResistancePaS2Kg2 = 1.0e6;  // fully liquid-cooled: almost no air through the tray
+	D.DockedResistancePaS2Kg2 = 1.0e6;  // fully liquid-cooled: no fans, no forced air (Lenovo GB300 NVL72 guide)
 	// UA: each ASIC 230 W at ~9 K; board (retimers, CPLD, mgmt) 85 W on the plate at ~10 K.
-	for (int32 I = 0; I < 2; ++I) D.Components.Add(Part(*FString::Printf(TEXT("NVSwitch %d"), I), ERackPartKind::Switch, 230.0, 300.0, 25.0, 0.0, .05));
-	D.Components.Add(Part(TEXT("Switch board"), ERackPartKind::Other, 85.0, 300.0, 8.0, 0.0, .05));
+	for (int32 I = 0; I < 2; ++I) D.Components.Add(Part(*FString::Printf(TEXT("NVSwitch %d"), I), ERackPartKind::Switch, 230.0, 300.0, 25.0, 0.0, .05, -1, .5));
+	D.Components.Add(Part(TEXT("Switch board"), ERackPartKind::Other, 85.0, 300.0, 8.0, 0.0, .05, -1, .6));
 	return D;
 }
 
@@ -585,7 +814,9 @@ FRackDeviceType FRackThermalModel::Gb200PowerShelf(int32 NumShelves)
 {
 	FRackDeviceType D;
 	D.Name = TEXT("Power Shelf 33 kW");
-	D.DockedResistancePaS2Kg2 = 1.5e4;
+	// Shelf loss at full rack load ~2.98 kW / 8 shelves = 373 W -> R ~ 1.9e5.
+	D.DockedResistancePaS2Kg2 = ImpedanceFor(373.0);
+	D.Fans = San9Hva(PsusPerShelf);  // one fan per PSU module; its power heats the PSUs (no separate fan part)
 	// Six 5.5 kW PSUs side by side (one parallel stage). Their heat is the conversion loss of the whole
 	// rack's DC load, recomputed every step, shared by all shelves (N+N load sharing).
 	const double Loss = (1.0 / PsuEfficiency - 1.0) / (FMath::Max(1, NumShelves) * PsusPerShelf);
@@ -602,11 +833,12 @@ FRackDeviceType FRackThermalModel::ManagementSwitch()
 {
 	FRackDeviceType D;
 	D.Name = TEXT("Management Switch 1U");
-	D.DockedResistancePaS2Kg2 = 2.0e4;
+	D.DockedResistancePaS2Kg2 = ImpedanceFor(140.0);
+	D.Fans = San9Hva(4);
 	// 1 GbE-class management switch, ~140 W total. Estimated split.
-	D.Components.Add(Part(TEXT("Switch ASIC"), ERackPartKind::Switch, 70.0, 150.0, 0.0, 4.0, .03, 0));
-	D.Components.Add(Part(TEXT("Control CPU"), ERackPartKind::Cpu, 25.0, 60.0, 0.0, 1.5, .02, 0));
-	for (int32 I = 0; I < 2; ++I) D.Components.Add(Part(*FString::Printf(TEXT("PSU %d"), I), ERackPartKind::Power, 20.0, 120.0, 0.0, 1.5, .02, 1));
+	D.Components.Add(Part(TEXT("Switch ASIC"), ERackPartKind::Switch, 70.0, 150.0, 0.0, 4.0, .03, 0, .7));
+	D.Components.Add(Part(TEXT("Control CPU"), ERackPartKind::Cpu, 25.0, 60.0, 0.0, 1.5, .02, 0, .6));
+	for (int32 I = 0; I < 2; ++I) D.Components.Add(Part(*FString::Printf(TEXT("PSU %d"), I), ERackPartKind::Power, 20.0, 120.0, 0.0, 1.5, .02, 1, .8));
 	for (int32 I = 0; I < 4; ++I) D.Components.Add(Part(*FString::Printf(TEXT("Fan %d"), I), ERackPartKind::Fan, 3.75, 20.0, 0.0, 1.0, .01, 2));
 	return D;
 }
@@ -615,15 +847,42 @@ FRackDeviceType FRackThermalModel::QuantumSpineSwitch()
 {
 	FRackDeviceType D;
 	D.Name = TEXT("Quantum-2 Spine Switch");
-	D.DockedResistancePaS2Kg2 = 1.0e4;
+	D.DockedResistancePaS2Kg2 = ImpedanceFor(747.0);
+	D.Fans = San9Hva(6);
 	// QM9700 typical passive-cable total = 747 W (ATIS); active-cable maximum = 1720 W.
 	// Source checked 2026-09-23: https://networking-docs.nvidia.com/qm97x0hw/specifications
 	// All component splits, capacities and UA are estimates; photo geometry is not this SKU.
-	D.Components.Add(Part(TEXT("Quantum-2 ASIC"), ERackPartKind::Switch, 527.0, 800.0, 0.0, 15.0, .05, 0));
-	D.Components.Add(Part(TEXT("Control CPU"), ERackPartKind::Cpu, 30.0, 60.0, 0.0, 1.5, .02, 0));
-	for (int32 I = 0; I < 2; ++I) D.Components.Add(Part(*FString::Printf(TEXT("PSU %d"), I), ERackPartKind::Power, 20.0, 200.0, 0.0, 1.5, .02, 1));
+	// Since 2026-09-25 the fan parts' heat is the fans' computed electric input at their current speed. The 747 W
+	// reference includes the fans, so the non-fan parts are 597 W and 747 W is an upper reference at typical
+	// fan speed (the earlier 6 x 25 W fan share was itself an estimate).
+	D.Components.Add(Part(TEXT("Quantum-2 ASIC"), ERackPartKind::Switch, 527.0, 800.0, 0.0, 15.0, .05, 0, .6));
+	D.Components.Add(Part(TEXT("Control CPU"), ERackPartKind::Cpu, 30.0, 60.0, 0.0, 1.5, .02, 0, .6));
+	for (int32 I = 0; I < 2; ++I) D.Components.Add(Part(*FString::Printf(TEXT("PSU %d"), I), ERackPartKind::Power, 20.0, 200.0, 0.0, 1.5, .02, 1, .8));
 	for (int32 I = 0; I < 6; ++I) D.Components.Add(Part(*FString::Printf(TEXT("Fan %d"), I), ERackPartKind::Fan, 25.0, 60.0, 0.0, 2.0, .01, 2));
 	return D;
+}
+
+bool FRackThermalModel::RefreshKnownDeviceTypes(FRackThermalParams& InOutParams)
+{
+	bool bChanged = false;
+	for (int32 T = 0; T < InOutParams.DeviceTypes.Num(); ++T)
+	{
+		const FName Name = InOutParams.DeviceTypes[T].Name;
+		int32 Count = 0;
+		for (const FRackSlot& Slot : InOutParams.Slots) Count += Slot.DeviceType == T;
+		FRackDeviceType Fresh;
+		if (Name == Gb200ComputeTray().Name) Fresh = Gb200ComputeTray();
+		else if (Name == Gb200NvLinkSwitchTray().Name) Fresh = Gb200NvLinkSwitchTray();
+		else if (Name == Gb200PowerShelf(1).Name) Fresh = Gb200PowerShelf(FMath::Max(1, Count));
+		else if (Name == ManagementSwitch().Name) Fresh = ManagementSwitch();
+		else if (Name == QuantumSpineSwitch().Name) Fresh = QuantumSpineSwitch();
+		else continue;
+		// A different part list would silently remap every node: keep the saved definition then.
+		if (Fresh.Components.Num() != InOutParams.DeviceTypes[T].Components.Num()) continue;
+		InOutParams.DeviceTypes[T] = Fresh;
+		bChanged = true;
+	}
+	return bChanged;
 }
 
 FRackThermalParams FRackThermalModel::MakeGb200Nvl72Params()

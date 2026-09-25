@@ -123,6 +123,12 @@ double FUniformAirGrid::MaxAbsDivergencePerS() const
 		{
 			for (int32 X = 0; X < Params.NumCellsX; ++X)
 			{
+				// Only air cells carry the continuity equation. A solid cell has no unknown; with fan ducts its
+				// faces carry the through-flow of the body, so its "divergence" is not a residual.
+				if (IsSolidCell(X, Y, Z))
+				{
+					continue;
+				}
 				MaxAbs = FMath::Max(MaxAbs, FMath::Abs(CellDivergencePerS(X, Y, Z)));
 			}
 		}

@@ -49,6 +49,13 @@ void ARackThermalActor::ConformInputArrays()
 	const int32 NumSleds = FRackThermalModel::NumSlotsOf(Params);
 	if (Params.Slots.Num() > 0) Params.NumSleds = NumSleds;
 
+	// Racks saved in a level carry an old copy of the preset devices (no fans, no idle fractions).
+	// The code definition is the single source of physical defaults, so refresh them by name.
+	if (FRackThermalModel::RefreshKnownDeviceTypes(Params))
+	{
+		UE_LOG(LogTemp, Verbose, TEXT("RackThermalActor %s: preset device definitions refreshed from code."), *GetName());
+	}
+
 	if (Input.ComponentHeatW.Num() != FRackThermalModel::CountNodes(Params))
 	{
 		// Legacy uniform parts carry no DefaultHeatW; keep the S1 per-sled defaults for them.
@@ -610,6 +617,15 @@ void ARackThermalActor::DrawReadout() const
 		Snapshot.NormalizedEnergyResidual,
 		Snapshot.bStepStable ? TEXT("") : TEXT(" [불안정]"));
 
+	// Load and fans: utilization drives part heat, the fans' own operating point drives the air flow.
+	double AirKgs = 0.0, MinRatio = 1.0, MaxRatio = 0.0;
+	for (const double M : Snapshot.SlotAirMassFlowKgs) AirKgs += M;
+	for (int32 Slot = 0; Slot < Snapshot.SlotFanSpeedRatio.Num(); ++Slot)
+		if (FRackThermalModel::FansOf(Params, Slot)) { MinRatio = FMath::Min(MinRatio, Snapshot.SlotFanSpeedRatio[Slot]); MaxRatio = FMath::Max(MaxRatio, Snapshot.SlotFanSpeedRatio[Slot]); }
+	const FString FanText = Snapshot.bFanMode
+		? FString::Printf(TEXT(" | 부하율 %.0f%% | 팬 %.0f~%.0f%% %.0f W, 풍량 %.3f kg/s"), Input.Utilization * 100.0, MinRatio * 100.0, MaxRatio * 100.0, Snapshot.TotalFanPowerW, AirKgs)
+		: FString::Printf(TEXT(" | 부하율 %.0f%% | 랙 팬(고정) 풍량 %.3f kg/s"), Input.Utilization * 100.0, AirKgs);
+
 	// 같은 키로 덮어써서 프레임마다 쌓이지 않게 한다.
-	GEngine->AddOnScreenDebugMessage(static_cast<uint64>(GetUniqueID()), 0.0f, FColor::Yellow, Readout);
+	GEngine->AddOnScreenDebugMessage(static_cast<uint64>(GetUniqueID()), 0.0f, FColor::Yellow, Readout + FanText);
 }

@@ -17,7 +17,7 @@ namespace
 	// ADataCenterRoomActor가 띄우는 랙과 같은 운전점이어야 한다.
 	// 이 값이 바뀌면 여기도 같이 바꿔야 테스트가 실제 구성을 검증한다.
 	constexpr double CoolantMassFlowKgs = 2.3;
-	constexpr double TotalAirMassFlowKgs = 1.2;   // FRackThermalInput default (rack fan total)
+	constexpr double TotalAirMassFlowKgs = 1.2;   // ignored in fan mode (each device runs its own fans)
 	constexpr double RadiatorUAWK = 1.1e4;
 
 	// Design liquid-side heat of the preset [W]: each part's heat times its coolant share.
@@ -97,7 +97,8 @@ bool FGb200Nvl72SteadyStateTest::RunTest(const FString& Parameters)
 			const FRackComponentParams& P = Model.GetNodeParams(N);
 			const double C = Snapshot.ComponentTempK[N] - 273.15;
 			MaxC.FindOrAdd(P.Kind, -1e9) = FMath::Max(MaxC.FindOrAdd(P.Kind, -1e9), C);
-			if (P.LossFractionOfRackLoad > 0.0) PsuW += P.LossFractionOfRackLoad; else DcW += Input.ComponentHeatW[N];
+			// Actual heat of the step (fan parts carry the computed fan input, not their nominal 20 W).
+			if (P.LossFractionOfRackLoad > 0.0) PsuW += P.LossFractionOfRackLoad; else DcW += Snapshot.ComponentHeatW[N];
 			if (Slot == 6 && P.Kind == ERackPartKind::Storage && P.Name.ToString().StartsWith(TEXT("E1.S"))) E1sC.Add(C);
 		}
 	const double PsuLossW = PsuW * DcW;  // sum of loss fractions times the DC load
@@ -122,7 +123,10 @@ bool FGb200Nvl72SteadyStateTest::RunTest(const FString& Parameters)
 	double SlotAirSumW = 0.0;
 	for (const double W : Snapshot.SlotHeatToAirW) SlotAirSumW += W;
 	const double SlotAirError = FMath::Abs(SlotAirSumW - Snapshot.TotalHeatToAirW - Snapshot.TotalHeatToAmbientW) / Snapshot.TotalHeatW;
-	const double PsuError = FMath::Abs(Snapshot.TotalHeatW - DcW - DcW * (1.0 / .975 - 1.0)) / Snapshot.TotalHeatW;
+	// Power-shelf fans are powered inside the PSU and their heat lands on the PSU parts, outside the DC load.
+	double ShelfFanW = 0.0;
+	for (int32 Slot = 0; Slot < Params.Slots.Num(); ++Slot) if (Params.Slots[Slot].DeviceType == 2) ShelfFanW += Snapshot.SlotFanPowerW[Slot];
+	const double PsuError = FMath::Abs(Snapshot.TotalHeatW - DcW - DcW * (1.0 / .975 - 1.0) - ShelfFanW) / Snapshot.TotalHeatW;
 	AddInfo(FString::Printf(TEXT("정상 상태 불균형 %.3e / 슬롯별 공기 열 합 오차 %.3e / PSU 손실 = DC x (1/0.975-1) 오차 %.3e (발열 기준, 무차원)"),
 		NormalizedImbalance, SlotAirError, PsuError));
 
@@ -132,6 +136,17 @@ bool FGb200Nvl72SteadyStateTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("전원 셸프 열 = DC 부하의 변환 손실"), PsuError < 1.0e-12);
 
 	// --- 타당성 안전망 (물리 법칙이 아니라 공개 자료 범위다) ---
+	// Fans: every fan-equipped slot inside [min, 1]; fan power a small share of the rack (plausibility).
+	double MinR = 1.0, MaxR = 0.0;
+	for (int32 Slot = 0; Slot < Params.Slots.Num(); ++Slot)
+		if (FRackThermalModel::FansOf(Params, Slot)) { MinR = FMath::Min(MinR, Snapshot.SlotFanSpeedRatio[Slot]); MaxR = FMath::Max(MaxR, Snapshot.SlotFanSpeedRatio[Slot]); }
+	double RackAirKgs = 0.0; for (const double M : Snapshot.SlotAirMassFlowKgs) RackAirKgs += M;
+	AddInfo(FString::Printf(TEXT("팬 모드 %s | 팬 속도 %.3f ~ %.3f | 팬 전력 %.3f kW (%.2f%%) | 랙 풍량 %.3f kg/s"),
+		Snapshot.bFanMode ? TEXT("켬") : TEXT("끔"), MinR, MaxR, Snapshot.TotalFanPowerW / 1000.0,
+		Snapshot.TotalFanPowerW / Snapshot.TotalHeatW * 100.0, RackAirKgs));
+	TestTrue(TEXT("GB200 preset runs its own fans"), Snapshot.bFanMode && MinR >= .3 - 1e-12 && MaxR <= 1.0);
+	TestTrue(TEXT("Fan power below 2% of rack heat"), Snapshot.TotalFanPowerW > 0.0 && Snapshot.TotalFanPowerW < .02 * Snapshot.TotalHeatW);
+
 	TestTrue(TEXT("랙 발열이 NVIDIA 공개치(약 120 kW)의 ±5% 안이어야 한다"),
 		Snapshot.TotalHeatW > 1.14e5 && Snapshot.TotalHeatW < 1.26e5);
 	TestTrue(TEXT("공기 몫이 공개 범위(랙 약 10% ~ 트레이 약 15%) 근처여야 한다 (8~17%)"), AirFraction > .08 && AirFraction < .17);

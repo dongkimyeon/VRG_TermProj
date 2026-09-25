@@ -89,6 +89,62 @@ struct FRackComponentParams
 	// -1 = a stage of its own in list order (series), which is the S1 behaviour.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Component")
 	int32 AirStage = -1;
+
+	// Load dependence: heat = ComponentHeatW * (f + (1 - f) * utilization), f = this fraction.
+	// The input ComponentHeatW is the full-load heat. 1 = load independent (the S1 behaviour).
+	// Linear idle-to-busy interpolation is the standard server power model (Fan, Weber, Barroso,
+	// "Power Provisioning for a Warehouse-sized Computer", ISCA 2007). Per-part values and sources are in
+	// RackThermalModel.cpp; most are estimates.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Component", meta = (ClampMin = "0", ClampMax = "1"))
+	double IdleHeatFraction = 1.0;
+};
+
+// Fans of one device (all identical, in parallel, blowing front -> rear).
+// NumFans <= 0: the device has no fans. In a rack that has any fan-equipped device the air flow of every slot
+// comes from its own fans (FRackThermalModel "fan mode"); a fanless device then gets no forced air.
+//
+// Fan curve (per fan, quadratic approximation of the datasheet P-Q curve between its two end points):
+//   dP = r^2 * ShutoffPressurePa * (1 - (FlowM3s / (r * MaxFlowM3s))^2)
+// Affinity laws for a speed change of the same fan: flow ~ r, pressure ~ r^2, electric input ~ r^3 (D8: a
+// speed-change approximation of one device, not a comparison between devices). RatedInputW is the
+// ELECTRIC input at full speed (D8: not divided by an efficiency again).
+// Device impedance: dP = DockedResistancePaS2Kg2 * MassFlowKgs^2.
+USTRUCT(BlueprintType)
+struct FRackFanSpec
+{
+	GENERATED_BODY()
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Fan")
+	int32 NumFans = 0;
+
+	// Free-delivery flow of one fan at full speed [m^3/s].
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Fan")
+	double MaxFlowM3s = 0.0;
+
+	// Shut-off (zero flow) static pressure of one fan at full speed [Pa].
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Fan")
+	double ShutoffPressurePa = 0.0;
+
+	// Electric input of one fan at full speed [W] (datasheet rated input).
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Fan")
+	double RatedInputW = 0.0;
+
+	// Speed control (BMC-like proportional law on the hottest air-cooled part of the device):
+	//   r_target = MinSpeedRatio + (1 - MinSpeedRatio) * clamp((T - ControlStartK) / (ControlFullK - ControlStartK), 0, 1)
+	// r follows r_target at most MaxSlewPerS per second. A manual override in the input bypasses this.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Fan", meta = (ClampMin = "0", ClampMax = "1"))
+	double MinSpeedRatio = 0.3;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Fan")
+	double ControlStartK = 328.15;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Fan")
+	double ControlFullK = 348.15;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Fan")
+	double MaxSlewPerS = 0.2;
+
+	bool HasFans() const { return NumFans > 0 && MaxFlowM3s > 0.0 && ShutoffPressurePa > 0.0; }
 };
 
 // One kind of rack-mounted device (compute tray, switch tray, power shelf, ...). Components are listed
@@ -111,6 +167,9 @@ struct FRackDeviceType
 	// True when the device has cold-plate parts on the rack coolant loop (counts for the branch resistance).
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Device")
 	bool bLiquidCooled = false;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Device")
+	FRackFanSpec Fans;
 };
 
 // A mounted device: which type and where (rack-local, from the rack floor).
@@ -152,6 +211,10 @@ struct FRackThermalParams
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Rack")
 	double AirCpJKgK = 1005.0;
+
+	// Air density for the fan curves (volume flow <-> mass flow) [kg/m^3]. Same value as the air grid.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Rack")
+	double AirDensityKgM3 = 1.184;
 
 	// ---- 슬롯 병렬 유로 저항 [Pa*s^2/kg^2] ----
 	// 공기는 캐비닛 앞뒤 압력차 하나를 공유하는 병렬 유로로 슬롯에 나뉜다.
@@ -212,8 +275,22 @@ struct FRackThermalInput
 	TArray<double> SlotAirInletTempK;
 
 	// 캐비닛 전체를 지나는 공기 질량유량 [kg/s]. 팬이 정하며 슬롯 사이에 배분된다.
+	// Used only when no device of the rack has fans (legacy rack-level fan). In fan mode each slot's own
+	// fans set its flow and this value is ignored.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Rack")
 	double TotalAirMassFlowKgs = 1.2;
+
+	// Workload utilization 0..1 for every slot (full load = 1: ComponentHeatW as given).
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Rack", meta = (ClampMin = "0", ClampMax = "1"))
+	double Utilization = 1.0;
+
+	// Optional per-slot utilization; length != number of slots -> every slot uses Utilization.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Rack")
+	TArray<double> SlotUtilization;
+
+	// Fan speed ratio override 0..1 for every fan-equipped slot. < 0: automatic control (default).
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Rack")
+	double FanSpeedOverride = -1.0;
 };
 
 // 적분되는 상태. 이것만 있으면 시뮬레이션을 이어서 돌릴 수 있다.
@@ -228,6 +305,11 @@ struct FRackThermalState
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Rack")
 	double CoolantTempK = 300.15;
+
+	// Fan speed ratio per slot (0..1). Integrated state of the fan controller (fan mode only).
+	// Length != number of slots -> Initialize sets it to each device's controller target at the initial state.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Rack")
+	TArray<double> SlotFanSpeedRatio;
 };
 
 // 표시용 읽기 전용 사본. 렌더/UI는 이것만 본다.
@@ -246,6 +328,11 @@ struct FRackThermalSnapshot
 	UPROPERTY(BlueprintReadOnly, Category = "Rack")
 	TArray<double> ComponentHeatToCoolantW;
 
+	// Heat each part actually produced in the last step [W] (utilization, fan operating point and PSU loss
+	// applied; 0 when undocked). Same index rule as ComponentTempK.
+	UPROPERTY(BlueprintReadOnly, Category = "Rack")
+	TArray<double> ComponentHeatW;
+
 	UPROPERTY(BlueprintReadOnly, Category = "Rack")
 	TArray<double> ComponentHeatToAirW;
 
@@ -261,6 +348,23 @@ struct FRackThermalSnapshot
 	// The coupling injects this at the slot's own height behind the rack.
 	UPROPERTY(BlueprintReadOnly, Category = "Rack")
 	TArray<double> SlotHeatToAirW;
+
+	// Fan mode: speed ratio, device pressure rise [Pa] and fan electric input [W] per slot (0 without fans).
+	UPROPERTY(BlueprintReadOnly, Category = "Rack")
+	TArray<double> SlotFanSpeedRatio;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Rack")
+	TArray<double> SlotPressureRisePa;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Rack")
+	TArray<double> SlotFanPowerW;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Rack")
+	double TotalFanPowerW = 0.0;
+
+	// True when slot flows come from the devices' own fans (see FRackFanSpec).
+	UPROPERTY(BlueprintReadOnly, Category = "Rack")
+	bool bFanMode = false;
 
 	UPROPERTY(BlueprintReadOnly, Category = "Rack")
 	double CoolantTempK = 0.0;

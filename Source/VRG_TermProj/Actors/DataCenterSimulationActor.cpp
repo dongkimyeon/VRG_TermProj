@@ -106,6 +106,7 @@ void ADataCenterSimulationActor::FindTargetActors()
 
 void ADataCenterSimulationActor::MarkRackSolidCells()
 {
+	SolidOwner.Reset();
 	if (AirField == nullptr || !bMarkRacksAsSolid)
 	{
 		return;
@@ -114,6 +115,7 @@ void ADataCenterSimulationActor::MarkRackSolidCells()
 	FAirSolver& Solver = AirField->GetMutableSolver();
 	FUniformAirGrid& Grid = Solver.GetMutableGrid();
 	Grid.ClearSolidCells();
+	SolidOwner.Init(INDEX_NONE, Grid.GetNumCells());
 
 	const FVector GridOriginM = SimUnits::UnrealToMeters(AirField->GetActorLocation());
 
@@ -157,6 +159,7 @@ void ADataCenterSimulationActor::MarkRackSolidCells()
 						&& OffsetM.Z >= 0.0 && OffsetM.Z <= SizeM.Z)
 					{
 						Grid.bSolidCell[Grid.CellIndex(X, Y, Z)] = true;
+						SolidOwner[Grid.CellIndex(X, Y, Z)] = I;
 					}
 				}
 			}
@@ -277,6 +280,7 @@ void ADataCenterSimulationActor::BuildCoupling()
 		: FVector::ZeroVector;
 
 	int32 NumRacksWithAir = 0;
+	int32 NumFanFaces = 0;
 
 	for (int32 RackIndex = 0; RackIndex < Racks.Num() + Spines.Num(); ++RackIndex)
 	{
@@ -372,6 +376,12 @@ void ADataCenterSimulationActor::BuildCoupling()
 			};
 			BuildSlotLists(Link.InletCellIndices, InletCellZ, Link.SlotInletStart, Link.SlotInletCells);
 			BuildSlotLists(Link.ExhaustCellIndices, ExhaustCellZ, Link.SlotExhaustStart, Link.SlotExhaustCells);
+
+			if (bFanThroughFlow)
+			{
+				BuildFanFaces(RackIndex, *Cabinet, *Grid, GridOriginM, Rack, Spine, Target.Model->GetNumSleds(), Link);
+				NumFanFaces += Link.FanFaceIndex.Num();
+			}
 		}
 
 		Links.Add(Link);
@@ -398,10 +408,68 @@ void ADataCenterSimulationActor::BuildCoupling()
 	{
 		Missing.Add(TEXT("공기 격자와 랙이 겹치지 않음 (FitToRacks를 누르세요)"));
 	}
+	else if (bFanThroughFlow && NumFanFaces == 0)
+	{
+		Missing.Add(TEXT("팬 관통 기류 면이 없음 (bMarkRacksAsSolid를 켜야 랙 앞뒤 면이 생긴다)"));
+	}
 
 	LastSetupMessage = Missing.Num() > 0
 		? FString::Printf(TEXT("안 붙은 도메인: %s"), *FString::Join(Missing, TEXT(", ")))
 		: FString();
+}
+
+void ADataCenterSimulationActor::BuildFanFaces(int32 CabinetIndex, const AActor& Cabinet, const FUniformAirGrid& Grid,
+	const FVector& GridOriginM, const ARackThermalActor* Rack, const ASpineCabinetActor* Spine, int32 NumSlots,
+	FRackCouplingLink& Link) const
+{
+	// Faces between this cabinet's solid cells and the fluid in front of / behind it. The cabinet's forward
+	// axis (+X local = intake side) is snapped to the nearest grid axis; racks are placed at 0/90/180/270
+	// degrees in this project. Air flows from the front to the rear, i.e. along -Forward.
+	const FVector Forward = Cabinet.GetActorForwardVector().GetSafeNormal2D();
+	const int32 Axis = FMath::Abs(Forward.X) >= FMath::Abs(Forward.Y) ? 0 : 1;
+	const int32 Sign = (Axis == 0 ? Forward.X : Forward.Y) >= 0.0 ? 1 : -1;
+	if (FMath::Abs(Axis == 0 ? Forward.X : Forward.Y) < 0.99)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("DataCenterSimulationActor: %s is not aligned with the air grid; fan faces use the nearest axis."), *Cabinet.GetName());
+	}
+	const double CabinetZM = SimUnits::UnrealToMeters(Cabinet.GetActorLocation()).Z;
+
+	TMap<int32, int32> LayerOfZ;  // grid Z index -> local layer
+	auto AddFace = [&](int32 SolidX, int32 SolidY, int32 Z, int32 Step, bool bExhaust)
+	{
+		const int32 FX = SolidX + (Axis == 0 ? Step : 0), FY = SolidY + (Axis == 1 ? Step : 0);
+		if (!Grid.IsFluidCell(FX, FY, Z)) return;
+		// MAC face between two cells along Axis sits at the larger index.
+		const int32 FaceIndex = Axis == 0 ? Grid.FaceXIndex(FMath::Max(SolidX, FX), SolidY, Z) : Grid.FaceYIndex(SolidX, FMath::Max(SolidY, FY), Z);
+		int32& Layer = LayerOfZ.FindOrAdd(Z, LayerOfZ.Num());
+		Link.FanFaceAxis.Add(uint8(Axis));
+		Link.FanFaceIndex.Add(FaceIndex);
+		Link.FanFaceFluidCell.Add(Grid.CellIndex(FX, FY, Z));
+		Link.FanFaceLayer.Add(Layer);
+		Link.FanFaceIsExhaust.Add(bExhaust ? 1 : 0);
+		Link.FanFaceSign.Add(int8(-Sign));
+	};
+	for (int32 Z = 0; Z < Grid.GetNumCellsZ(); ++Z)
+		for (int32 Y = 0; Y < Grid.GetNumCellsY(); ++Y)
+			for (int32 X = 0; X < Grid.GetNumCellsX(); ++X)
+			{
+				if (!SolidOwner.IsValidIndex(Grid.CellIndex(X, Y, Z)) || SolidOwner[Grid.CellIndex(X, Y, Z)] != CabinetIndex) continue;
+				AddFace(X, Y, Z, Sign, false);   // front neighbour: intake
+				AddFace(X, Y, Z, -Sign, true);   // rear neighbour: exhaust
+			}
+
+	// Layer -> slot weights: the fraction of each slot's height that falls inside the layer's cell height.
+	TArray<double> LayerZ; LayerZ.SetNum(LayerOfZ.Num());
+	for (const TPair<int32, int32>& P : LayerOfZ) LayerZ[P.Value] = GridOriginM.Z + Grid.CellCenterM(0, 0, P.Key).Z - CabinetZM;
+	TArray<double> SlotBottom, SlotHeight;
+	for (int32 Slot = 0; Slot < NumSlots; ++Slot)
+	{
+		double BottomM = 0.0, HeightM = 0.0;
+		if (Rack) Rack->GetSlotHeightRangeM(Slot, BottomM, HeightM);
+		else if (Spine) { BottomM = Spine->GetSwitchZM(Slot); HeightM = GjRackLayout::UnitM; }
+		SlotBottom.Add(BottomM); SlotHeight.Add(HeightM);
+	}
+	FCouplingBridge::AssignSlotsToFanLayers(Link, LayerZ, Grid.GetCellSizeM(), SlotBottom, SlotHeight);
 }
 
 void ADataCenterSimulationActor::Tick(float DeltaTime)
@@ -512,6 +580,18 @@ void ADataCenterSimulationActor::DrawSummary() const
 		FString::Printf(TEXT("전역 열수지: 유입 %.3e J - 유출 %.3e J - 축적 %.3e J | 정규화 잔차 %.2e"),
 			Snapshot.EnergyInJ, Snapshot.EnergyOutJ, Snapshot.EnergyStoredJ,
 			Snapshot.NormalizedEnergyResidual));
+
+	if (Snapshot.RackAirMassFlowKgs.Num() > 0)
+	{
+		double AirKgs = 0.0, DuctKgs = 0.0;
+		for (const double M : Snapshot.RackAirMassFlowKgs) AirKgs += M;
+		for (const double M : Snapshot.RackDuctMassFlowKgs) DuctKgs += M;
+		const bool bDuctOk = !Snapshot.bAirDuctsRejected && (AirKgs <= 0.0 || DuctKgs >= .999 * AirKgs);
+		GEngine->AddOnScreenDebugMessage(BaseKey + 5, 0.0f, bDuctOk ? FColor(180, 255, 200) : FColor::Orange,
+			FString::Printf(TEXT("팬: 랙 풍량 %.2f kg/s 중 공기 격자 관통 %.2f kg/s | 팬 전력 %.2f kW%s"),
+				AirKgs, DuctKgs, Snapshot.TotalFanPowerW / 1000.0,
+				Snapshot.bAirDuctsRejected ? TEXT(" | 덕트 거부됨 - 팬 기류 없음 (옥트리 경로 또는 잘못된 면)") : TEXT("")));
+	}
 
 	if (Snapshot.RackCoolantMassFlowKgs.Num() > 0)
 	{

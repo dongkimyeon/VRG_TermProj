@@ -32,6 +32,125 @@ void FCouplingBridge::Initialize(const TArray<FRackCouplingTarget>& InTargets,
 	LastCoolantMassFlowKgs.Init(0.0, NumRacks);
 	LastAirInletTempK.Init(0.0, NumRacks);
 	LastHeatToAirW.Init(0.0, NumRacks);
+	LastRackAirMassFlowKgs.Init(0.0, NumRacks);
+	LastRackDuctMassFlowKgs.Init(0.0, NumRacks);
+	LastFanPowerW = 0.0;
+	BuildDuctFaces();
+}
+
+void FCouplingBridge::BuildDuctFaces()
+{
+	// Static duct structure: one duct per (rack, layer). Only velocities change per step (UpdateDuctVelocities).
+	FAirSolverInput& In = AirSolverInput;
+	In.DuctFaceAxis.Reset(); In.DuctFaceIndex.Reset(); In.DuctFaceFluidCell.Reset();
+	In.DuctFaceDuct.Reset(); In.DuctFaceIsExhaust.Reset(); In.DuctFaceVelocityMs.Reset();
+	DuctBase.Init(0, Links.Num());
+	int32 NumDucts = 0;
+	for (int32 R = 0; R < Links.Num(); ++R)
+	{
+		const FRackCouplingLink& L = Links[R];
+		DuctBase[R] = NumDucts;
+		if (!L.HasFanFaces()) continue;
+		for (int32 F = 0; F < L.FanFaceIndex.Num(); ++F)
+		{
+			In.DuctFaceAxis.Add(L.FanFaceAxis[F]);
+			In.DuctFaceIndex.Add(L.FanFaceIndex[F]);
+			In.DuctFaceFluidCell.Add(L.FanFaceFluidCell[F]);
+			In.DuctFaceDuct.Add(NumDucts + L.FanFaceLayer[F]);
+			In.DuctFaceIsExhaust.Add(L.FanFaceIsExhaust[F]);
+			In.DuctFaceVelocityMs.Add(0.0);
+		}
+		NumDucts += L.NumFanLayers();
+	}
+	In.NumDucts = NumDucts;
+	ScratchLayerFlowKgs.Init(0.0, NumDucts);
+	ScratchLayerIntakeK.Init(0.0, NumDucts);
+	ScratchLayerIntakeCount.Init(0, NumDucts);
+	ScratchLayerExhaustCount.Init(0, NumDucts);
+	for (int32 F = 0; F < In.DuctFaceDuct.Num(); ++F)
+		++(In.DuctFaceIsExhaust[F] ? ScratchLayerExhaustCount : ScratchLayerIntakeCount)[In.DuctFaceDuct[F]];
+}
+
+void FCouplingBridge::AssignSlotsToFanLayers(FRackCouplingLink& Link, const TArray<double>& LayerCenterZM, double LayerHeightM,
+	const TArray<double>& SlotBottomZM, const TArray<double>& SlotHeightM)
+{
+	Link.LayerSlotStart.Reset(); Link.LayerSlot.Reset(); Link.LayerSlotWeight.Reset();
+	for (int32 Layer = 0; Layer < LayerCenterZM.Num(); ++Layer)
+	{
+		Link.LayerSlotStart.Add(Link.LayerSlot.Num());
+		for (int32 Slot = 0; Slot < FMath::Min(SlotBottomZM.Num(), SlotHeightM.Num()); ++Slot)
+		{
+			if (SlotHeightM[Slot] <= 0.0) continue;
+			const double Overlap = FMath::Min(SlotBottomZM[Slot] + SlotHeightM[Slot], LayerCenterZM[Layer] + .5 * LayerHeightM)
+				- FMath::Max(SlotBottomZM[Slot], LayerCenterZM[Layer] - .5 * LayerHeightM);
+			if (Overlap > 0.0) { Link.LayerSlot.Add(Slot); Link.LayerSlotWeight.Add(Overlap / SlotHeightM[Slot]); }
+		}
+	}
+	Link.LayerSlotStart.Add(Link.LayerSlot.Num());
+}
+
+bool FCouplingBridge::IsLayerActive(int32 RackIndex, int32 Layer) const
+{
+	const int32 D = DuctBase[RackIndex] + Layer;
+	return ScratchLayerIntakeCount[D] > 0 && ScratchLayerExhaustCount[D] > 0;
+}
+
+void FCouplingBridge::MeasureLayers(int32 RackIndex)
+{
+	// Mixed intake temperature of every layer of one rack: the mean over its intake faces' fluid cells,
+	// which is also what the air solver's duct takes in (equal face velocities within a layer).
+	const FRackCouplingLink& L = Links[RackIndex];
+	const FUniformAirGrid& Grid = AirSolver->GetGrid();
+	for (int32 Layer = 0; Layer < L.NumFanLayers(); ++Layer) ScratchLayerIntakeK[DuctBase[RackIndex] + Layer] = 0.0;
+	for (int32 F = 0; F < L.FanFaceIndex.Num(); ++F)
+		if (!L.FanFaceIsExhaust[F] && Grid.TemperatureK.IsValidIndex(L.FanFaceFluidCell[F]))
+			ScratchLayerIntakeK[DuctBase[RackIndex] + L.FanFaceLayer[F]] += Grid.TemperatureK[L.FanFaceFluidCell[F]];
+	for (int32 Layer = 0; Layer < L.NumFanLayers(); ++Layer)
+	{
+		const int32 D = DuctBase[RackIndex] + Layer;
+		if (ScratchLayerIntakeCount[D] > 0) ScratchLayerIntakeK[D] /= ScratchLayerIntakeCount[D];
+	}
+}
+
+void FCouplingBridge::UpdateDuctVelocities()
+{
+	LastFanPowerW = 0.0;
+	for (int32 R = 0; R < Targets.Num(); ++R)
+	{
+		LastRackAirMassFlowKgs[R] = LastRackDuctMassFlowKgs[R] = 0.0;
+		const FRackThermalModel* Model = Targets[R].Model;
+		if (!Model) continue;
+		const TArray<double>& SlotFlow = Model->GetLastSlotAirMassFlowKgs();
+		for (const double M : SlotFlow) LastRackAirMassFlowKgs[R] += M;
+		LastFanPowerW += Model->GetLastTotalFanPowerW();
+		const FRackCouplingLink& L = Links[R];
+		for (int32 Layer = 0; Layer < L.NumFanLayers(); ++Layer)
+		{
+			double FlowKgs = 0.0;
+			for (int32 K = L.LayerSlotStart[Layer]; K < L.LayerSlotStart[Layer + 1]; ++K)
+				if (SlotFlow.IsValidIndex(L.LayerSlot[K])) FlowKgs += L.LayerSlotWeight[K] * SlotFlow[L.LayerSlot[K]];
+			const int32 D = DuctBase[R] + Layer;
+			// A layer without faces on both sides cannot carry mass (the pressure problem would be incompatible).
+			ScratchLayerFlowKgs[D] = IsLayerActive(R, Layer) ? FlowKgs : 0.0;
+			LastRackDuctMassFlowKgs[R] += ScratchLayerFlowKgs[D];
+		}
+	}
+	if (!AirSolver || AirSolverInput.DuctFaceIndex.Num() == 0) return;
+	const FAirGridParams& GridParams = AirSolver->GetGrid().GetParams();
+	const double FaceAreaM2 = GridParams.CellSizeM * GridParams.CellSizeM;
+	int32 FaceCursor = 0;
+	for (int32 R = 0; R < Links.Num(); ++R)
+	{
+		const FRackCouplingLink& L = Links[R];
+		if (!L.HasFanFaces()) continue;
+		for (int32 F = 0; F < L.FanFaceIndex.Num(); ++F, ++FaceCursor)
+		{
+			const int32 D = DuctBase[R] + L.FanFaceLayer[F];
+			const int32 Count = L.FanFaceIsExhaust[F] ? ScratchLayerExhaustCount[D] : ScratchLayerIntakeCount[D];
+			const double VolumeFlowM3s = ScratchLayerFlowKgs[D] / GridParams.DensityKgM3;
+			AirSolverInput.DuctFaceVelocityMs[FaceCursor] = Count > 0 ? L.FanFaceSign[F] * VolumeFlowM3s / (Count * FaceAreaM2) : 0.0;
+		}
+	}
 }
 
 void FCouplingBridge::PullCoolantFlow()
@@ -120,6 +239,26 @@ void FCouplingBridge::PullAirInletTemperature()
 		{
 			Input->SlotAirInletTempK.Reset();
 		}
+
+		// Fan through-flow: a slot breathes exactly the air its duct layers take in (the flow-weighted intake
+		// temperature), so the rack model and the air grid see the same inlet enthalpy.
+		if (Link.HasFanFaces() && Targets[RackIndex].Model)
+		{
+			const int32 NumModelSlots = Targets[RackIndex].Model->GetNumSleds();
+			MeasureLayers(RackIndex);
+			TArray<double> Sum, Weight;
+			Sum.Init(0.0, NumModelSlots); Weight.Init(0.0, NumModelSlots);
+			for (int32 Layer = 0; Layer < Link.NumFanLayers(); ++Layer)
+			{
+				if (!IsLayerActive(RackIndex, Layer)) continue;
+				const double LayerK = ScratchLayerIntakeK[DuctBase[RackIndex] + Layer];
+				for (int32 K = Link.LayerSlotStart[Layer]; K < Link.LayerSlotStart[Layer + 1]; ++K)
+					if (Sum.IsValidIndex(Link.LayerSlot[K])) { Sum[Link.LayerSlot[K]] += Link.LayerSlotWeight[K] * LayerK; Weight[Link.LayerSlot[K]] += Link.LayerSlotWeight[K]; }
+			}
+			if (Input->SlotAirInletTempK.Num() != NumModelSlots) Input->SlotAirInletTempK.Init(Input->AirInletTempK, NumModelSlots);
+			for (int32 Slot = 0; Slot < NumModelSlots; ++Slot)
+				if (Weight[Slot] > 0.0) Input->SlotAirInletTempK[Slot] = Sum[Slot] / Weight[Slot];
+		}
 	}
 }
 
@@ -160,24 +299,12 @@ void FCouplingBridge::CloseCoolantLoop(double DeltaTimeS)
 
 void FCouplingBridge::PushHeatToAir()
 {
-	double TotalHeatToAirW = 0.0;
-
 	for (int32 RackIndex = 0; RackIndex < Targets.Num(); ++RackIndex)
 	{
-		const FRackThermalModel* Model = Targets[RackIndex].Model;
-		if (Model == nullptr)
-		{
-			LastHeatToAirW[RackIndex] = 0.0;
-			continue;
-		}
-
-		// D1: 부품별로 쪼개 넣지 않는다. 강제 공랭과 케이스 자연대류를 **합산해 하나**로 준다.
+		// D1: 부품별로 쪼개 넣지 않는다. 강제 공랭과 케이스 자연대류를 합산한다.
 		// 자연대류를 빼면 그만큼 전역 장부에서 새어 나간다 (그 열도 방 공기를 데운다).
-		const FRackThermalSnapshot Snapshot = Model->MakeSnapshot(0.0);
-		const double HeatW = Snapshot.TotalHeatToAirW + Snapshot.TotalHeatToAmbientW;
-
-		LastHeatToAirW[RackIndex] = HeatW;
-		TotalHeatToAirW += HeatW;
+		const FRackThermalModel* Model = Targets[RackIndex].Model;
+		LastHeatToAirW[RackIndex] = Model ? Model->GetLastTotalHeatToRoomAirW() : 0.0;
 	}
 
 	if (AirSolver == nullptr)
@@ -191,10 +318,6 @@ void FCouplingBridge::PushHeatToAir()
 	for (int32 RackIndex = 0; RackIndex < Targets.Num(); ++RackIndex)
 	{
 		const TArray<int32>& ExhaustCells = Links[RackIndex].ExhaustCellIndices;
-		if (ExhaustCells.Num() == 0)
-		{
-			continue;
-		}
 		auto Spread = [&](double HeatW, const int32* Cells, int32 Num)
 		{
 			// 배기 셀에 고르게 나눈다. 겹치면 더한다 - 덮어쓰면 열이 사라진다.
@@ -202,22 +325,62 @@ void FCouplingBridge::PushHeatToAir()
 				if (ScratchCellHeatW.IsValidIndex(Cells[K])) ScratchCellHeatW[Cells[K]] += HeatW / Num;
 		};
 
-		// Per-slot injection: every device's air-side heat enters behind it at its own height.
 		const FRackCouplingLink& Link = Links[RackIndex];
 		const FRackThermalModel* Model = Targets[RackIndex].Model;
+		if (Model == nullptr) continue;
+		const TArray<double>& SlotHeatW = Model->GetLastSlotHeatToAirW();
 		const int32 NumSlots = Link.SlotExhaustStart.Num() - 1;
-		const FRackThermalSnapshot Snap = Model ? Model->MakeSnapshot(0.0) : FRackThermalSnapshot();
-		if (NumSlots > 0 && Snap.SlotHeatToAirW.Num() == NumSlots)
+
+		// Fan through-flow: a slot's air-side heat enters the fluid cells its duct layers exhaust into, in
+		// proportion to the slot flow each layer carries (D1: still one volumetric source per cell).
+		TArray<double> SlotRemainingW = SlotHeatW;
+		if (Link.HasFanFaces())
+		{
+			for (int32 Slot = 0; Slot < SlotHeatW.Num(); ++Slot)
+			{
+				double WeightSum = 0.0;
+				for (int32 Layer = 0; Layer < Link.NumFanLayers(); ++Layer)
+				{
+					if (!IsLayerActive(RackIndex, Layer)) continue;
+					for (int32 K = Link.LayerSlotStart[Layer]; K < Link.LayerSlotStart[Layer + 1]; ++K)
+						if (Link.LayerSlot[K] == Slot) WeightSum += Link.LayerSlotWeight[K];
+				}
+				if (WeightSum <= 0.0) continue;
+				for (int32 Layer = 0; Layer < Link.NumFanLayers(); ++Layer)
+				{
+					if (!IsLayerActive(RackIndex, Layer)) continue;
+					double W = 0.0;
+					for (int32 K = Link.LayerSlotStart[Layer]; K < Link.LayerSlotStart[Layer + 1]; ++K)
+						if (Link.LayerSlot[K] == Slot) W += Link.LayerSlotWeight[K];
+					if (W <= 0.0) continue;
+					const int32 D = DuctBase[RackIndex] + Layer;
+					const double FaceHeatW = SlotHeatW[Slot] * W / WeightSum / ScratchLayerExhaustCount[D];
+					for (int32 F = 0; F < Link.FanFaceIndex.Num(); ++F)
+						if (Link.FanFaceIsExhaust[F] && Link.FanFaceLayer[F] == Layer && ScratchCellHeatW.IsValidIndex(Link.FanFaceFluidCell[F]))
+							ScratchCellHeatW[Link.FanFaceFluidCell[F]] += FaceHeatW;
+				}
+				SlotRemainingW[Slot] = 0.0;
+			}
+		}
+
+		if (ExhaustCells.Num() == 0)
+		{
+			continue;
+		}
+
+		// Per-slot injection: every device's air-side heat enters behind it at its own height.
+		if (NumSlots > 0 && SlotHeatW.Num() == NumSlots)
 		{
 			for (int32 Slot = 0; Slot < NumSlots; ++Slot)
 			{
+				if (SlotRemainingW[Slot] == 0.0) continue;
 				const int32 Num = Link.SlotExhaustStart[Slot + 1] - Link.SlotExhaustStart[Slot];
-				if (Num > 0) Spread(Snap.SlotHeatToAirW[Slot], Link.SlotExhaustCells.GetData() + Link.SlotExhaustStart[Slot], Num);
-				else Spread(Snap.SlotHeatToAirW[Slot], ExhaustCells.GetData(), ExhaustCells.Num());
+				if (Num > 0) Spread(SlotRemainingW[Slot], Link.SlotExhaustCells.GetData() + Link.SlotExhaustStart[Slot], Num);
+				else Spread(SlotRemainingW[Slot], ExhaustCells.GetData(), ExhaustCells.Num());
 			}
 			continue;
 		}
-		Spread(LastHeatToAirW[RackIndex], ExhaustCells.GetData(), ExhaustCells.Num());
+		if (!Link.HasFanFaces()) Spread(LastHeatToAirW[RackIndex], ExhaustCells.GetData(), ExhaustCells.Num());
 	}
 }
 
@@ -261,14 +424,15 @@ void FCouplingBridge::Step(double DeltaTimeS, bool bHydraulicsResolved, bool bHy
 		}
 
 		Target.Model->Step(*Target.Input, DeltaTimeS);
-		const FRackThermalSnapshot RackSnap = Target.Model->MakeSnapshot(0.0);
-		ItHeatW += RackSnap.TotalHeatW;
-		RackCoolantOutJ += RackSnap.HeatRemovedByCoolantW * DeltaTimeS;
-		RackAirOutJ += (RackSnap.TotalHeatToAirW + RackSnap.TotalHeatToAmbientW) * DeltaTimeS;
+		ItHeatW += Target.Model->GetLastTotalHeatW();
+		RackCoolantOutJ += Target.Model->GetLastHeatRemovedByCoolantW() * DeltaTimeS;
+		RackAirOutJ += Target.Model->GetLastTotalHeatToRoomAirW() * DeltaTimeS;
 	}
 	LastItHeatW = ItHeatW;
 
 	// 5) 열 -> 공기: 랙이 공기로 내보낸 열을 체적 열원으로 민다 (D1: 합산해 하나로).
+	//    Fans: the slot flows the rack models just used become the duct face velocities (one exchange, rule 6).
+	UpdateDuctVelocities();
 	PushHeatToAir();
 
 	// 6) 공기 격자를 같은 dt로 돌린다.
@@ -357,6 +521,10 @@ FCouplingSnapshot FCouplingBridge::MakeSnapshot(double SimTimeS) const
 	Snapshot.RackCoolantMassFlowKgs = LastCoolantMassFlowKgs;
 	Snapshot.RackAirInletTempK = LastAirInletTempK;
 	Snapshot.RackHeatToAirW = LastHeatToAirW;
+	Snapshot.RackAirMassFlowKgs = LastRackAirMassFlowKgs;
+	Snapshot.RackDuctMassFlowKgs = LastRackDuctMassFlowKgs;
+	Snapshot.TotalFanPowerW = LastFanPowerW;
+	Snapshot.bAirDuctsRejected = AirSolver != nullptr && AirSolver->WereDuctsRejected();
 
 	Snapshot.TotalItHeatW = LastItHeatW;
 	Snapshot.TotalRadiatorRejectedW = LastRadiatorRejectedW;

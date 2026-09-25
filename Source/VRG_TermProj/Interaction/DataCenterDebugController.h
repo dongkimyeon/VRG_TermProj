@@ -63,6 +63,10 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Debug")
 	FDebugKnob RadiatorUAKnob;
 
+	// Workload utilization of every rack [dimensionless, 0..1]. Part heat follows its idle fraction.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Debug")
+	FDebugKnob UtilizationKnob;
+
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Debug")
 	bool bShowHelp = true;
 
@@ -110,6 +114,7 @@ private:
 	void ApplyHeatKnobs();
 	void ApplyPumpSpeedKnob();
 	void ApplyRadiatorKnob();
+	void ApplyUtilizationKnob();
 
 	void OnCpuHeatDown();
 	void OnCpuHeatUp();
@@ -119,6 +124,8 @@ private:
 	void OnPumpSpeedUp();
 	void OnRadiatorDown();
 	void OnRadiatorUp();
+	void OnUtilizationDown();
+	void OnUtilizationUp();
 	void OnSelectPreviousSled();
 	void OnSelectNextSled();
 	void OnToggleSelectedSled();

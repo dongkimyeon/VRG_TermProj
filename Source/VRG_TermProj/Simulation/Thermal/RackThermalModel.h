@@ -124,8 +124,50 @@ public:
 
 	// 슬롯별 공기 질량유량 [kg/s]. 총 유량을 1/sqrt(R) 가중으로 나눈다.
 	// SledDocked 길이가 NumSleds와 다르면 전부 도킹으로 본다. 합은 총 유량과 같다.
+	// Legacy (rack-level fan) path only; fan mode uses each slot's own fan operating point.
 	static void DistributeSlotAirMassFlowKgs(const FRackThermalParams& InParams,
 		const TArray<bool>& SledDocked, double TotalAirMassFlowKgs, TArray<double>& OutSlotFlowKgs);
+
+	// ---- Fan mode (devices with their own fans) ----
+	// True when any device type of the layout has fans. Then every slot's air flow is its own fans'
+	// operating point and TotalAirMassFlowKgs is ignored.
+	static bool IsFanMode(const FRackThermalParams& InParams);
+
+	// Operating point of NumFans parallel fans at speed ratio r against dP = R * mdot^2 [kg/s].
+	// Intersection of R*rho^2*Q^2 with r^2*P0*(1 - (Q/(r*Qt))^2), Qt = NumFans * MaxFlowM3s:
+	//   Q = r * sqrt(P0 / (R*rho^2 + P0/Qt^2))
+	// Closed form, no iteration; r = 0 gives 0 (no division by the flow, D2).
+	static double FanOperatingMassFlowKgs(const FRackFanSpec& Fans, double ResistancePaS2Kg2,
+		double AirDensityKgM3, double SpeedRatio);
+
+	// Controller target speed ratio for a control temperature [K].
+	static double FanTargetSpeedRatio(const FRackFanSpec& Fans, double ControlTempK);
+
+	// Air-path resistance of a slot when docked [Pa*s^2/kg^2] (device value, else the rack default).
+	static double DockedResistanceOf(const FRackThermalParams& InParams, int32 Slot);
+
+	// Fans of the device in a slot, or nullptr (legacy layout, fanless device, invalid slot).
+	static const FRackFanSpec* FansOf(const FRackThermalParams& InParams, int32 Slot);
+
+	// Heat multiplier of a part at utilization u: f + (1 - f) * u, f = IdleHeatFraction.
+	static double LoadFactor(const FRackComponentParams& Part, double Utilization);
+
+	// Utilization of a slot from the input (per-slot array when its length matches, else the scalar), 0..1.
+	static double SlotUtilizationOf(const FRackThermalInput& Input, int32 Slot, int32 NumSlots);
+
+	// Racks saved in a level keep an old copy of the device definitions. Replace every device type whose Name
+	// matches a code preset (GB200 NVL72 devices, management / spine switch) with the current code definition so
+	// the code stays the single source of physical defaults. The slot layout is kept. Returns true if changed.
+	static bool RefreshKnownDeviceTypes(FRackThermalParams& InOutParams);
+
+	// Cheap accessors for the coupling (the snapshot copies every per-node array).
+	const TArray<double>& GetLastSlotAirMassFlowKgs() const { return LastSlotAirMassFlowKgs; }
+	const TArray<double>& GetLastSlotHeatToAirW() const { return LastSlotHeatToAirW; }
+	double GetLastTotalHeatW() const { return LastTotalHeatW; }
+	double GetLastHeatRemovedByCoolantW() const { return LastHeatRemovedByCoolantW; }
+	double GetLastTotalHeatToRoomAirW() const { return LastTotalHeatToRoomAirW; }
+	bool IsInFanMode() const { return bFanMode; }
+	double GetLastTotalFanPowerW() const { double W = 0.0; for (const double P : LastSlotFanPowerW) W += P; return W; }
 
 	// 누적 에너지 [J]. 보존 검사용.
 	double GetEnergyInJ() const { return EnergyInJ; }
@@ -171,10 +213,31 @@ private:
 	TArray<double> LastSledAirOutletTempK;
 	double LastTotalHeatW = 0.0;
 	double LastHeatRemovedByCoolantW = 0.0;
+	double LastTotalHeatToRoomAirW = 0.0;
 	bool bLastStepStable = true;
+
+	// Fan mode (resolved at Initialize) and its last-step values per slot.
+	bool bFanMode = false;
+	TArray<double> LastSlotPressureRisePa;
+	TArray<double> LastSlotFanPowerW;
 
 	// 스텝마다 쓰는 임시 버퍼. 매 프레임 재할당하지 않으려고 멤버로 들고 있다.
 	mutable TArray<double> ScratchSlotFlowKgs;
+
+	// Slot air mass flows for this step: fan operating points (fan mode) or the legacy distribution.
+	void ComputeSlotAirFlows(const FRackThermalInput& Input, TArray<double>& OutSlotFlowKgs) const;
+
+	// Fan electric input of a slot at its current speed [W] (0 without fans or undocked).
+	double SlotFanPowerW(int32 Slot, bool bDocked, const FRackThermalInput& Input) const;
+
+	// Per-node heat of the current step [W] and where a slot's fan power is deposited (resolved at Initialize):
+	// the device's Fan parts, else its air-cooled parts, else all its parts.
+	TArray<double> ScratchNodeHeatW;
+	TArray<uint8> NodeGetsFanHeat;
+	TArray<int32> SlotFanHeatNodes;
+
+	// Hottest air-cooled (non-fan) part of a slot [K]: the fan controller's input.
+	double SlotControlTempK(int32 Slot) const;
 
 	static double HeatAt(const TArray<double>& HeatW, int32 Index);
 	static bool IsDocked(const TArray<bool>& SledDocked, int32 SledIndex, int32 NumSleds);

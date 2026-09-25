@@ -79,6 +79,26 @@ struct FRackCouplingLink
 	// gives every slot its own inlet temperature and injects every slot's air-side heat at its own height
 	// instead of lumping the rack. A slot with no cells falls back to the rack-wide lists above.
 	TArray<int32> SlotInletStart, SlotInletCells, SlotExhaustStart, SlotExhaustCells;
+
+	// ---- Fan through-flow (optional, needs the rack body marked solid in the air grid) ----
+	// Faces between the rack's solid cells and the fluid cells in front of / behind it. Air enters the body at
+	// intake faces and leaves at exhaust faces with a velocity set every step from the rack model's slot flows.
+	// Faces are grouped in layers (one grid cell height each); a layer is one duct in the air solver. Slot s
+	// sends the fraction LayerSlotWeight of its mass flow through layer l (height overlap / slot height).
+	// Velocity = FanFaceSign * speed; the sign points from the rack front to its rear along the face axis.
+	TArray<uint8> FanFaceAxis;
+	TArray<int32> FanFaceIndex;
+	TArray<int32> FanFaceFluidCell;
+	TArray<int32> FanFaceLayer;
+	TArray<uint8> FanFaceIsExhaust;
+	TArray<int8> FanFaceSign;
+	// Layer l uses entries [LayerSlotStart[l], LayerSlotStart[l+1]) of LayerSlot / LayerSlotWeight.
+	TArray<int32> LayerSlotStart;
+	TArray<int32> LayerSlot;
+	TArray<double> LayerSlotWeight;
+
+	int32 NumFanLayers() const { return FMath::Max(LayerSlotStart.Num() - 1, 0); }
+	bool HasFanFaces() const { return FanFaceIndex.Num() > 0 && NumFanLayers() > 0; }
 };
 
 // 한 스텝에 실제로 오간 값. 화면에 그대로 띄워 어디서 끊겼는지 볼 수 있게 한다.
@@ -101,6 +121,22 @@ struct FCouplingSnapshot
 	// 랙별로 공기에 넘긴 열 [W]. D1대로 부품별 합산값 하나다.
 	UPROPERTY(BlueprintReadOnly, Category = "Coupling")
 	TArray<double> RackHeatToAirW;
+
+	// Air mass flow through each rack [kg/s] (sum of its slot flows) and the part of it that the air grid
+	// actually carried through fan ducts. A difference means some slots have no matching intake/exhaust
+	// faces (rack outside the grid, or not marked solid); their air then only exchanges heat, not mass.
+	UPROPERTY(BlueprintReadOnly, Category = "Coupling")
+	TArray<double> RackAirMassFlowKgs;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Coupling")
+	TArray<double> RackDuctMassFlowKgs;
+
+	// Fan electric input of all racks [W] (already part of TotalItHeatW: it ends up as heat in the air).
+	UPROPERTY(BlueprintReadOnly, Category = "Coupling")
+	double TotalFanPowerW = 0.0;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Coupling")
+	bool bAirDuctsRejected = false;
 
 	// ---- 전역 열수지 ----
 	UPROPERTY(BlueprintReadOnly, Category = "Coupling")
@@ -175,6 +211,11 @@ public:
 	// to the air but dropped because the target cell was solid or outside the grid, and the rest (coupling).
 	FString DescribeEnergyLedger() const;
 
+	// Fills Link.LayerSlotStart / LayerSlot / LayerSlotWeight: layer l (cell height LayerHeightM centred at
+	// LayerCenterZM[l], rack-local) carries the fraction (height overlap / slot height) of every slot it overlaps.
+	static void AssignSlotsToFanLayers(FRackCouplingLink& Link, const TArray<double>& LayerCenterZM, double LayerHeightM,
+		const TArray<double>& SlotBottomZM, const TArray<double>& SlotHeightM);
+
 	// 랙마다 붙은 라디에이터가 지금 버리는 열의 합 [W].
 	double GetTotalRadiatorRejectedW() const { return LastRadiatorRejectedW; }
 
@@ -201,7 +242,22 @@ private:
 	TArray<double> LastCoolantMassFlowKgs;
 	TArray<double> LastAirInletTempK;
 	TArray<double> LastHeatToAirW;
+	TArray<double> LastRackAirMassFlowKgs, LastRackDuctMassFlowKgs;
+	double LastFanPowerW = 0.0;
 	double LastItHeatW = 0.0;
+
+	// Fan ducts: global duct id of every rack layer (DuctBase[r] + layer) and the air solver face arrays,
+	// built once in Initialize; only the velocities change per step.
+	TArray<int32> DuctBase;
+	TArray<double> ScratchLayerFlowKgs, ScratchLayerIntakeK;
+	TArray<int32> ScratchLayerIntakeCount, ScratchLayerExhaustCount;
+	void BuildDuctFaces();
+	// Mixed intake temperature and face counts of every layer of a rack from the current air grid.
+	void MeasureLayers(int32 RackIndex);
+	// A layer carries flow only when it has faces on both sides of the rack.
+	bool IsLayerActive(int32 RackIndex, int32 Layer) const;
+	// Sets this step's duct face velocities from the rack models' slot flows.
+	void UpdateDuctVelocities();
 	double LastRadiatorRejectedW = 0.0;
 	double LastAirCoolingRemovedW = 0.0;
 

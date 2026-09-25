@@ -52,6 +52,12 @@
 // 둘 다 장부에 적으므로 유입 - 유출 - 축적 = 0이 성립한다.
 // 벽을 통한 급배기(질량이 드나드는 경계)는 아직 없다.
 //
+// --- Fan ducts (2026-09-25) ---
+// Rack fans drive air through the solid rack body: intake faces on its front, exhaust faces on its rear, each
+// with a prescribed normal velocity (FAirSolverInput::DuctFace*). Mass stays inside the box (every duct has
+// equal intake and exhaust volume flow) and the enthalpy taken in at the front is handed back at the rear
+// unchanged, so the ledger above still holds. Uniform path only; the octree path reports them as rejected.
+//
 // 이 클래스는 UObject가 아니다. 액터를 조회하지 않으므로 워커 스레드에서 돌릴 수 있다.
 
 // 매 스텝 바깥에서 주어지는 경계 조건.
@@ -86,6 +92,28 @@ struct FAirSolverInput
 	// 냉각 코일의 공급 온도 [K]. 공기가 이 온도 아래로는 내려가지 않는다.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Air")
 	double CoolingSupplyTempK = 291.15;
+
+	// ---- Fan ducts: air driven through a solid body (rack through-flow) ----
+	// A duct is a set of intake faces and exhaust faces on the boundary between fluid cells and a solid body.
+	// Every duct face has a prescribed normal velocity [m/s, signed along +axis] that the projection keeps
+	// (like a wall, but with a known flux): the fans push air into the body at the intake faces and out of it
+	// at the exhaust faces. The caller gives equal volume flow on both sides of a duct, so the pressure
+	// equation stays compatible.
+	// Energy (rule 6): the enthalpy the intake faces carry out of the fluid is computed once per step and the
+	// exhaust faces return exactly that enthalpy (exhaust temperature = flow-weighted intake temperature).
+	// Heat added inside the body still enters only as a volumetric source (CellHeatW, D1); the duct never
+	// sets an exhaust temperature from HeatW / (mdot * cp).
+	// Flat SoA arrays of equal length (rule 7). Axis 0/1/2 = X/Y/Z face array; FaceIndex indexes that array;
+	// FluidCell is the fluid cell on the face; Duct is the duct id (< NumDucts).
+	TArray<uint8> DuctFaceAxis;
+	TArray<int32> DuctFaceIndex;
+	TArray<int32> DuctFaceFluidCell;
+	TArray<int32> DuctFaceDuct;
+	TArray<uint8> DuctFaceIsExhaust;
+	TArray<double> DuctFaceVelocityMs;
+	int32 NumDucts = 0;
+
+	bool HasDucts() const { return DuctFaceIndex.Num() > 0; }
 };
 
 // 표시용 읽기 전용 사본. 렌더/UI는 이것만 본다 (규약 5).
@@ -148,6 +176,18 @@ struct FAirSolverSnapshot
 	// 반라그랑주는 그래도 터지지 않지만 결과가 뭉개진다.
 	UPROPERTY(BlueprintReadOnly, Category = "Air")
 	double CourantNumber = 0.0;
+
+	// Fan ducts of the last step: total volume flow through exhaust faces [m^3/s] and face count.
+	UPROPERTY(BlueprintReadOnly, Category = "Air")
+	double DuctFlowM3s = 0.0;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Air")
+	int32 NumDuctFaces = 0;
+
+	// True when duct faces were given but not applied (invalid arrays, or the octree path which does not
+	// support ducts yet). The flow field then has no fan-driven through-flow: do not trust it for racks.
+	UPROPERTY(BlueprintReadOnly, Category = "Air")
+	bool bDuctsRejected = false;
 };
 
 class VRG_TERMPROJ_API FAirSolver
@@ -229,8 +269,14 @@ public:
 
 	double GetNormalizedEnergyResidual() const;
 
+	// True when the last step was given fan ducts it could not apply (see FAirSolverSnapshot::bDuctsRejected).
+	bool WereDuctsRejected() const { return bLastDuctsRejected; }
+
 	// 마지막 스텝의 CFL 수.
 	double GetCourantNumber() const { return LastCourantNumber; }
+
+	// Temperature-transport sub-steps used in the last step (1 unless the flow got fast for the cell size).
+	int32 GetLastTemperatureSubsteps() const { return LastTemperatureSubsteps; }
 
 private:
 	FOctreeAirSolver OctreeSolver;
@@ -273,4 +319,21 @@ private:
 
 	// 면 속도를 셀 중심으로 평균한 값 [m/s].
 	FVector CellCenterVelocityMs(int32 X, int32 Y, int32 Z) const;
+
+	// Ducts of the step in progress (set by Step, cleared after). ApplyWallBoundary re-imposes their face
+	// velocities; AdvectTemperature applies their enthalpy transfer.
+	const FAirSolverInput* ActiveDucts = nullptr;
+	TArray<double> DuctIntakeEnthalpy, DuctExhaustSpeedSum;
+	double LastDuctFlowM3s = 0.0;
+	int32 LastNumDuctFaces = 0;
+	bool bLastDuctsRejected = false;
+	int32 LastTemperatureSubsteps = 1;
+	bool bOctreeDuctWarningLogged = false;
+	TArray<double>& FluxArray(uint8 Axis) { return Axis == 0 ? TemperatureFluxX : Axis == 1 ? TemperatureFluxY : TemperatureFluxZ; }
+	TArray<double>& VelocityArray(uint8 Axis) { return Axis == 0 ? Grid.VelocityXMs : Axis == 1 ? Grid.VelocityYMs : Grid.VelocityZMs; }
+
+public:
+	// Checks duct arrays against this grid (lengths, indices, fluid cells, finite velocities, every duct with
+	// flow has both intake and exhaust faces). Empty error = valid.
+	FString ValidateDucts(const FAirSolverInput& Input) const;
 };
