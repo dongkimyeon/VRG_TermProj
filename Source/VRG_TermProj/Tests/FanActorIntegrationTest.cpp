@@ -57,7 +57,11 @@ bool FFanActorIntegrationTest::RunTest(const FString& Parameters)
 		Snap.SimTimeS, AirSnap.NumDuctFaces, AirSnap.DuctFlowM3s, TotalKgs / Rho, Snap.TotalFanPowerW / 1000.0,
 		Snap.NormalizedEnergyResidual, AirSnap.NormalizedDivergence, AirSnap.CourantNumber));
 	TestFalse(TEXT("Ducts accepted"), Snap.bAirDuctsRejected || AirSnap.bDuctsRejected);
-	TestTrue(TEXT("Grid carries the racks' volume flow"), FMath::Abs(AirSnap.DuctFlowM3s - TotalKgs / Rho) < 1e-9 * AirSnap.DuctFlowM3s);
+	// Default layout is in-row CRAH: one cooler at each end of each row (4 here), their ducts on the same grid.
+	AddInfo(FString::Printf(TEXT("CRAH %d대, 풍량 %.4f m3/s, 코일 %.3f kW"), Sim->GetNumCrahUnits(), Snap.CrahFlowM3s, Snap.CrahCoilRemovedW / 1000.0));
+	TestEqual(TEXT("In-row coolers at both ends of both rows"), Sim->GetNumCrahUnits(), 4);
+	TestTrue(TEXT("Grid carries the racks' and the CRAH units' volume flow"),
+		FMath::Abs(AirSnap.DuctFlowM3s - TotalKgs / Rho - Snap.CrahFlowM3s) < 1e-9 * AirSnap.DuctFlowM3s);
 	TestTrue(TEXT("Global ledger closes"), FMath::Abs(Snap.NormalizedEnergyResidual) < 1e-9);
 	TestTrue(TEXT("Divergence free"), AirSnap.NormalizedDivergence < 1e-5);
 

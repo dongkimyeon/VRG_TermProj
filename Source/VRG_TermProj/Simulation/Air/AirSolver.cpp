@@ -455,11 +455,29 @@ void FAirSolver::AdvectTemperature(double DeltaTimeS)
 			if (ActiveDucts->DuctFaceIsExhaust[F]) DuctExhaustSpeedSum[ActiveDucts->DuctFaceDuct[F]] += Speed;
 			else DuctIntakeEnthalpy[ActiveDucts->DuctFaceDuct[F]] += Speed * Grid.TemperatureK[ActiveDucts->DuctFaceFluidCell[F]];
 		}
+		// Duct coils: DuctIntakeEnthalpy becomes the exhaust temperature of each duct (mixed intake, then the coil).
+		// The heat removed is booked from that same temperature, so fluid change + removed = 0 exactly.
+		const bool bCoils = ActiveDucts->DuctCoilUAWK.Num() == ActiveDucts->NumDucts;
+		const FAirGridParams& Params = Grid.GetParams();
+		const double FaceAreaM2 = CellSizeM * CellSizeM;
+		for (int32 D = 0; D < ActiveDucts->NumDucts; ++D)
+		{
+			const double SpeedSum = DuctExhaustSpeedSum[D];
+			const double MixK = SpeedSum > 0.0 ? DuctIntakeEnthalpy[D] / SpeedSum : 0.0;
+			double ExhaustK = MixK;
+			if (bCoils && SpeedSum > 0.0 && ActiveDucts->DuctCoilUAWK[D] > 0.0)
+			{
+				const double CapacityWK = Params.DensityKgM3 * SpeedSum * FaceAreaM2 * Params.SpecificHeatJKgK;
+				const double Effectiveness = 1.0 - FMath::Exp(-ActiveDucts->DuctCoilUAWK[D] / CapacityWK);
+				ExhaustK = MixK - Effectiveness * (MixK - ActiveDucts->DuctCoilWaterTempK[D]);
+				DuctCoilRemovedJ += CapacityWK * (MixK - ExhaustK) * DeltaTimeS;
+			}
+			DuctIntakeEnthalpy[D] = ExhaustK;
+		}
 		for (int32 F = 0; F < ActiveDucts->DuctFaceIndex.Num(); ++F)
 		{
-			const int32 D = ActiveDucts->DuctFaceDuct[F];
 			const double CarriedK = !ActiveDucts->DuctFaceIsExhaust[F] ? Grid.TemperatureK[ActiveDucts->DuctFaceFluidCell[F]]
-				: DuctExhaustSpeedSum[D] > 0.0 ? DuctIntakeEnthalpy[D] / DuctExhaustSpeedSum[D] : 0.0;
+				: DuctIntakeEnthalpy[ActiveDucts->DuctFaceDuct[F]];
 			FluxArray(ActiveDucts->DuctFaceAxis[F])[ActiveDucts->DuctFaceIndex[F]] = ActiveDucts->DuctFaceVelocityMs[F] * CarriedK;
 		}
 	}
@@ -542,6 +560,7 @@ void FAirSolver::Step(const FAirSolverInput& Input, double DeltaTimeS)
 	bLastDuctsRejected = false;
 	LastDuctFlowM3s = 0.0;
 	LastNumDuctFaces = 0;
+	DuctCoilRemovedJ = LastDuctCoilRemovedW = 0.0;
 	if (bUseOctree)
 	{
 		if (Input.HasDucts())
@@ -620,6 +639,10 @@ void FAirSolver::Step(const FAirSolverInput& Input, double DeltaTimeS)
 	}
 	InjectHeat(Input, DeltaTimeS);
 	ApplyCooling(Input, DeltaTimeS);
+	// Duct coils removed their heat during transport (AdvectTemperature); book it with the cell coils.
+	LastDuctCoilRemovedW = DuctCoilRemovedJ / DeltaTimeS;
+	LastCoolingRemovedW += LastDuctCoilRemovedW;
+	EnergyOutJ += DuctCoilRemovedJ;
 	ActiveDucts = nullptr;
 }
 
@@ -646,6 +669,15 @@ FString FAirSolver::ValidateDucts(const FAirSolverInput& Input) const
 			return FString::Printf(TEXT("면 %d의 덕트 번호가 범위 밖"), F);
 		if (!FMath::IsFinite(Input.DuctFaceVelocityMs[F])) return FString::Printf(TEXT("면 %d 속도가 유한하지 않다"), F);
 		(Input.DuctFaceIsExhaust[F] ? ExhaustFlow : IntakeFlow)[Input.DuctFaceDuct[F]] += FMath::Abs(Input.DuctFaceVelocityMs[F]);
+	}
+	if (Input.DuctCoilUAWK.Num() > 0 || Input.DuctCoilWaterTempK.Num() > 0)
+	{
+		if (Input.DuctCoilUAWK.Num() != Input.NumDucts || Input.DuctCoilWaterTempK.Num() != Input.NumDucts)
+			return TEXT("덕트 코일 배열 길이가 덕트 수와 다르다");
+		for (int32 D = 0; D < Input.NumDucts; ++D)
+			if (!FMath::IsFinite(Input.DuctCoilUAWK[D]) || Input.DuctCoilUAWK[D] < 0.0
+				|| !FMath::IsFinite(Input.DuctCoilWaterTempK[D]) || Input.DuctCoilWaterTempK[D] <= 0.0)
+				return FString::Printf(TEXT("덕트 %d 코일 UA 또는 냉수 온도가 잘못됐다"), D);
 	}
 	for (int32 D = 0; D < Input.NumDucts; ++D)
 	{
@@ -776,6 +808,7 @@ FAirSolverSnapshot FAirSolver::MakeSnapshot(double SimTimeS) const
 	Snapshot.PressureNormalizedResidual = LastPressureResult.NormalizedResidual;
 	Snapshot.CourantNumber = LastCourantNumber;
 	Snapshot.DuctFlowM3s = LastDuctFlowM3s;
+	Snapshot.DuctCoilRemovedW = LastDuctCoilRemovedW;
 	Snapshot.NumDuctFaces = LastNumDuctFaces;
 	Snapshot.bDuctsRejected = bLastDuctsRejected;
 	if (bUseOctree && !bOctreeNeedsImport)

@@ -12,15 +12,43 @@
 #include "Simulation/Core/SimUnits.h"
 
 #include "Components/SceneComponent.h"
+#include "Components/StaticMeshComponent.h"
 #include "Engine/Engine.h"
+#include "Engine/StaticMesh.h"
 #include "Engine/World.h"
 #include "EngineUtils.h"
+#include "HAL/IConsoleManager.h"
+#include "UObject/ConstructorHelpers.h"
 
 ADataCenterSimulationActor::ADataCenterSimulationActor()
 {
 	PrimaryActorTick.bCanEverTick = true;
 	RootComponent = CreateDefaultSubobject<USceneComponent>(TEXT("Root"));
+	// Referenced from the CDO so the cooker packages it (a runtime LoadObject would not be found in a build).
+	static ConstructorHelpers::FObjectFinder<UStaticMesh> Cube(TEXT("/Engine/BasicShapes/Cube.Cube"));
+	CrahMesh = Cube.Object;
 }
+
+// Switches the air cooling of every running integrated actor and rebuilds it (the clock restarts at 0).
+static FAutoConsoleCommand GVrgSimCrahLayoutCommand(
+	TEXT("vrg.Sim.CrahLayout"),
+	TEXT("공기 냉각 방식. 0 = 천장 뭉친 코일, 1 = 인로우 쿨러, 2 = 벽면 CRAH. vrg.Sim.CrahLayout <0|1|2>"),
+	FConsoleCommandWithArgsDelegate::CreateLambda([](const TArray<FString>& Args)
+	{
+		if (Args.Num() == 0 || GEngine == nullptr) return;
+		const ECrahLayout Layout = static_cast<ECrahLayout>(FMath::Clamp(FCString::Atoi(*Args[0]), 0, 2));
+		for (const FWorldContext& Context : GEngine->GetWorldContexts())
+		{
+			UWorld* World = Context.World();
+			if (World == nullptr || !World->IsGameWorld()) continue;
+			for (TActorIterator<ADataCenterSimulationActor> It(World); It; ++It)
+			{
+				It->CrahLayout = Layout;
+				It->RebuildCoupling();
+				UE_LOG(LogTemp, Display, TEXT("[VrgSim] 공기 냉각 방식 %d로 재구축"), int32(Layout));
+			}
+		}
+	}));
 
 void ADataCenterSimulationActor::BeginPlay()
 {
@@ -166,6 +194,29 @@ void ADataCenterSimulationActor::MarkRackSolidCells()
 		}
 	}
 
+	// CRAH units own the ids after the cabinets. In-row units leave one cell front and rear open like a rack;
+	// perimeter units are solid through (their intake is the top face). Cells a cabinet already owns stay its.
+	const int32 NumCabinets = Racks.Num() + Spines.Num();
+	for (int32 U = 0; U < CrahPlacements.Num(); ++U)
+	{
+		const FCrahPlacement& P = CrahPlacements[U];
+		const double HalfDepthM = .5 * (P.bTopIntake ? P.SizeM.X : FMath::Max(P.SizeM.X - 2.0 * Grid.GetCellSizeM(), 0.0));
+		const FVector Right(-P.ForwardM.Y, P.ForwardM.X, 0.0);
+		for (int32 Z = 0; Z < Grid.GetNumCellsZ(); ++Z)
+			for (int32 Y = 0; Y < Grid.GetNumCellsY(); ++Y)
+				for (int32 X = 0; X < Grid.GetNumCellsX(); ++X)
+				{
+					const int32 Index = Grid.CellIndex(X, Y, Z);
+					const FVector OffsetM = GridOriginM + Grid.CellCenterM(X, Y, Z) - P.BaseM;
+					if (SolidOwner[Index] == INDEX_NONE && FMath::Abs(FVector::DotProduct(OffsetM, P.ForwardM)) <= HalfDepthM
+						&& FMath::Abs(FVector::DotProduct(OffsetM, Right)) <= .5 * P.SizeM.Y && OffsetM.Z >= 0.0 && OffsetM.Z <= P.SizeM.Z)
+					{
+						Grid.bSolidCell[Index] = true;
+						SolidOwner[Index] = NumCabinets + U;
+					}
+				}
+	}
+
 	Solver.OnSolidCellsChanged();
 }
 
@@ -182,6 +233,14 @@ void ADataCenterSimulationActor::BuildCoolingCoil()
 	Bridge.AirSolverInput.CoolingSupplyTempK = CoilSupplyTempK;
 	Bridge.AirSolverInput.GravityZMs2 = AirField->GravityZMs2;
 	Bridge.AirSolverInput.bEnableBuoyancy = AirField->bEnableBuoyancy;
+
+	// CRAH units carry the cooling; the lumped coil stays off (both at once would double the capacity).
+	if (CrahUnits.Num() > 0)
+	{
+		Bridge.AirSolverInput.CellCoolingUAWK.Reset();
+		EffectiveCoilUAWK = 0.0;
+		return;
+	}
 
 	const FVector GridOriginM = SimUnits::UnrealToMeters(AirField->GetActorLocation());
 
@@ -215,14 +274,6 @@ void ADataCenterSimulationActor::BuildCoolingCoil()
 		return;
 	}
 
-	// Design air load: component heat that leaves through air (per-part UA split for mixed parts).
-	DesignAirLoadW = 0.0;
-	for (const ARackThermalActor* Rack : Racks)
-	{
-		if (!Rack) continue;
-		DesignAirLoadW += Rack->GetDesignHeatToAirW();
-	}
-	for (const ASpineCabinetActor* Spine : Spines) DesignAirLoadW += Spine->GetDesignHeatToAirW();
 	EffectiveCoilUAWK = bAutoSizeCoil && DesignAirLoadW > 0.0 ? DesignAirLoadW / CoilDesignApproachK : CoilTotalUAWK;
 
 	// 전체 UA를 코일 셀에 고르게 나눈다.
@@ -260,9 +311,24 @@ void ADataCenterSimulationActor::BuildCoupling()
 		AirField->bDrivenExternally = true;
 	}
 
+	// Design air load: component heat that leaves through air (per-part UA split for mixed parts).
+	// Sizes both the lumped coil and the CRAH units.
+	DesignAirLoadW = 0.0;
+	for (const ARackThermalActor* Rack : Racks)
+	{
+		if (Rack) DesignAirLoadW += Rack->GetDesignHeatToAirW();
+	}
+	for (const ASpineCabinetActor* Spine : Spines)
+	{
+		if (Spine) DesignAirLoadW += Spine->GetDesignHeatToAirW();
+	}
+
 	// 고체 표시가 먼저다. 코일 셀을 고를 때 고체를 빼야 한다.
+	PlanCrahUnits();
 	MarkRackSolidCells();
+	BuildCrahUnits();
 	BuildCoolingCoil();
+	UpdateCrahMeshes();
 
 	const TArray<int32>& BranchIndices = Room != nullptr
 		? Room->GetRackBranchPipeIndices()
@@ -388,6 +454,7 @@ void ADataCenterSimulationActor::BuildCoupling()
 	}
 
 	Bridge.Initialize(Targets, Links);
+	Bridge.SetCrahUnits(CrahUnits);
 	Bridge.SetHydraulicNetwork(Room != nullptr ? &Room->GetMutableNetwork() : nullptr);
 	Bridge.SetAirSolver(bHasAir ? &AirField->GetMutableSolver() : nullptr);
 	Bridge.SetCoolantDensityKgM3(CoolantDensityKgM3);
@@ -411,6 +478,14 @@ void ADataCenterSimulationActor::BuildCoupling()
 	else if (bFanThroughFlow && NumFanFaces == 0)
 	{
 		Missing.Add(TEXT("팬 관통 기류 면이 없음 (bMarkRacksAsSolid를 켜야 랙 앞뒤 면이 생긴다)"));
+	}
+	if (bCrahFellBackToCoil)
+	{
+		Missing.Add(TEXT("CRAH 유닛을 쓸 수 없어(격자 밖, 고체 표시 꺼짐, 또는 옥트리 경로) 천장 뭉친 코일로 대신함"));
+	}
+	else if (CrahUnitsDropped > 0)
+	{
+		Missing.Add(FString::Printf(TEXT("CRAH 유닛 %d대가 격자 밖이거나 면이 없어 빠짐"), CrahUnitsDropped));
 	}
 
 	LastSetupMessage = Missing.Num() > 0
@@ -470,6 +545,220 @@ void ADataCenterSimulationActor::BuildFanFaces(int32 CabinetIndex, const AActor&
 		SlotBottom.Add(BottomM); SlotHeight.Add(HeightM);
 	}
 	FCouplingBridge::AssignSlotsToFanLayers(Link, LayerZ, Grid.GetCellSizeM(), SlotBottom, SlotHeight);
+}
+
+void ADataCenterSimulationActor::PlanCrahUnits()
+{
+	CrahPlacements.Reset();
+	CrahUnitsDropped = 0;
+	if (CrahLayout == ECrahLayout::CeilingCoil || AirField == nullptr)
+	{
+		return;
+	}
+
+	// Rows: cabinets (racks and spines) facing the same grid direction whose centres share the across-row
+	// coordinate. Along is a fixed axis per orientation so rows facing each other share it.
+	struct FRow
+	{
+		FVector Forward, Along;
+		double Across = 0.0, Depth = 0.0, BaseZ = 0.0;
+		double MinAlong = TNumericLimits<double>::Max(), MaxAlong = TNumericLimits<double>::Lowest();
+	};
+	TArray<FRow> Rows;
+	for (int32 I = 0; I < Racks.Num() + Spines.Num(); ++I)
+	{
+		const ARackThermalActor* Rack = I < Racks.Num() ? Racks[I].Get() : nullptr;
+		const AActor* Cabinet = I < Racks.Num() ? static_cast<const AActor*>(Rack) : static_cast<const AActor*>(Spines[I - Racks.Num()].Get());
+		if (Cabinet == nullptr) continue;
+		const FVector SizeM = Rack ? Rack->RackSizeM : FVector(GjRackLayout::FrameDepthM, GjRackLayout::FrameWidthM, GjRackLayout::FrameHeightM);
+		const FVector F2 = Cabinet->GetActorForwardVector().GetSafeNormal2D();
+		const bool bAlongX = FMath::Abs(F2.X) < FMath::Abs(F2.Y);
+		const FVector Forward = bAlongX ? FVector(0.0, FMath::Sign(F2.Y), 0.0) : FVector(FMath::Sign(F2.X), 0.0, 0.0);
+		const FVector M = SimUnits::UnrealToMeters(Cabinet->GetActorLocation());
+		const double Across = FVector::DotProduct(M, Forward);
+		FRow* Row = Rows.FindByPredicate([&](const FRow& R) { return R.Forward.Equals(Forward) && FMath::Abs(R.Across - Across) < .5 * SizeM.X; });
+		if (Row == nullptr)
+		{
+			Row = &Rows.AddDefaulted_GetRef();
+			Row->Forward = Forward; Row->Along = bAlongX ? FVector(1.0, 0.0, 0.0) : FVector(0.0, 1.0, 0.0);
+			Row->Across = Across; Row->Depth = SizeM.X; Row->BaseZ = M.Z;
+		}
+		const double A = FVector::DotProduct(M, Row->Along);
+		Row->MinAlong = FMath::Min(Row->MinAlong, A - .5 * SizeM.Y);
+		Row->MaxAlong = FMath::Max(Row->MaxAlong, A + .5 * SizeM.Y);
+	}
+
+	auto Place = [&](const FVector& BaseM, const FVector& Forward, const FVector& SizeM, bool bTopIntake)
+	{
+		CrahPlacements.Add({BaseM, Forward, SizeM, bTopIntake});
+	};
+
+	if (CrahLayout == ECrahLayout::InRow)
+	{
+		// One cooler at each end of every row, same depth line and orientation as the row: it breathes the hot
+		// aisle behind the row and supplies the cold aisle in front of it.
+		for (const FRow& Row : Rows)
+		{
+			const double HalfWidth = .5 * CrahInRowSizeM.Y;
+			for (const double A : {Row.MinAlong - HalfWidth, Row.MaxAlong + HalfWidth})
+				Place(Row.Forward * Row.Across + Row.Along * A + FVector(0.0, 0.0, Row.BaseZ), Row.Forward, CrahInRowSizeM, false);
+		}
+	}
+	else
+	{
+		// Cold aisles: two rows facing each other (opposite forwards, front planes toward each other). One unit
+		// at each end of the aisle, centred on it, blowing along it.
+		TArray<bool> bPaired; bPaired.Init(false, Rows.Num());
+		for (int32 I = 0; I < Rows.Num(); ++I)
+			for (int32 J = I + 1; J < Rows.Num(); ++J)
+			{
+				const FRow& A = Rows[I];
+				const FRow& B = Rows[J];
+				if (bPaired[I] || bPaired[J] || !A.Forward.Equals(-B.Forward)) continue;
+				const double FrontA = A.Across + .5 * A.Depth;        // in A's forward coordinate
+				const double FrontB = -B.Across - .5 * B.Depth;       // B's front, in A's forward coordinate
+				if (FrontB <= FrontA) continue;                        // backs toward each other: a hot aisle
+				bPaired[I] = bPaired[J] = true;
+				const FVector AisleCentre = A.Forward * (.5 * (FrontA + FrontB));
+				const double MinAlong = FMath::Min(A.MinAlong, B.MinAlong), MaxAlong = FMath::Max(A.MaxAlong, B.MaxAlong);
+				const double Offset = CrahPerimeterClearanceM + .5 * CrahPerimeterSizeM.X;
+				const FVector Z(0.0, 0.0, FMath::Min(A.BaseZ, B.BaseZ));
+				Place(AisleCentre + A.Along * (MinAlong - Offset) + Z, A.Along, CrahPerimeterSizeM, true);
+				Place(AisleCentre + A.Along * (MaxAlong + Offset) + Z, -A.Along, CrahPerimeterSizeM, true);
+			}
+		for (int32 I = 0; I < Rows.Num(); ++I)
+			if (!bPaired[I]) UE_LOG(LogTemp, Warning, TEXT("DataCenterSimulationActor: 줄 %d는 마주 보는 줄이 없어 벽면 CRAH를 붙이지 않는다."), I);
+	}
+
+	// Units must sit inside the air grid, otherwise their faces are missing and they would carry no air.
+	const FUniformAirGrid& Grid = AirField->GetMutableSolver().GetGrid();
+	const FVector GridMinM = SimUnits::UnrealToMeters(AirField->GetActorLocation());
+	const FVector GridMaxM = GridMinM + Grid.GetCellSizeM() * FVector(Grid.GetNumCellsX(), Grid.GetNumCellsY(), Grid.GetNumCellsZ());
+	const int32 Planned = CrahPlacements.Num();
+	CrahPlacements.RemoveAll([&](const FCrahPlacement& P)
+	{
+		// Forward is a grid axis: depth lies along it, width across it.
+		const double AlongXM = FMath::Abs(P.ForwardM.X) > .5 ? P.SizeM.X : P.SizeM.Y;
+		const double AlongYM = FMath::Abs(P.ForwardM.X) > .5 ? P.SizeM.Y : P.SizeM.X;
+		const FVector Half(.5 * AlongXM, .5 * AlongYM, 0.0);
+		return P.BaseM.X - Half.X < GridMinM.X || P.BaseM.X + Half.X > GridMaxM.X || P.BaseM.Y - Half.Y < GridMinM.Y
+			|| P.BaseM.Y + Half.Y > GridMaxM.Y || P.BaseM.Z < GridMinM.Z || P.BaseM.Z + P.SizeM.Z > GridMaxM.Z;
+	});
+	CrahUnitsDropped = Planned - CrahPlacements.Num();
+}
+
+void ADataCenterSimulationActor::BuildCrahUnits()
+{
+	CrahUnits.Reset();
+	CrahUnitFlowM3s = CrahUnitUAWK = 0.0;
+	bCrahFellBackToCoil = false;
+	if (CrahLayout == ECrahLayout::CeilingCoil || AirField == nullptr)
+	{
+		return;
+	}
+	const FUniformAirGrid& Grid = AirField->GetMutableSolver().GetGrid();
+	const FVector GridOriginM = SimUnits::UnrealToMeters(AirField->GetActorLocation());
+	const int32 NumCabinets = Racks.Num() + Spines.Num();
+	// The octree air path rejects ducts, so CRAH units there would leave the room with no cooling at all.
+	if (SolidOwner.Num() != Grid.GetNumCells() || AirField->GetMutableSolver().IsUsingOctree())
+	{
+		// Nothing marked solid (bMarkRacksAsSolid off): a unit has no body to push air through.
+		CrahUnitsDropped += CrahPlacements.Num();
+		CrahPlacements.Reset();
+		bCrahFellBackToCoil = CrahUnitsDropped > 0;
+		return;
+	}
+
+	for (int32 U = 0; U < CrahPlacements.Num(); ++U)
+	{
+		const FCrahPlacement& P = CrahPlacements[U];
+		const int32 Axis = FMath::Abs(P.ForwardM.X) > .5 ? 0 : 1;
+		const int32 Sign = (Axis == 0 ? P.ForwardM.X : P.ForwardM.Y) > 0.0 ? 1 : -1;
+		FCrahCouplingUnit Unit;
+		auto AddFace = [&](int32 FaceAxis, int32 FaceIndex, int32 FluidX, int32 FluidY, int32 FluidZ, bool bExhaust, int8 FaceSign)
+		{
+			if (!Grid.IsFluidCell(FluidX, FluidY, FluidZ)) return;
+			Unit.FaceAxis.Add(uint8(FaceAxis)); Unit.FaceIndex.Add(FaceIndex);
+			Unit.FaceFluidCell.Add(Grid.CellIndex(FluidX, FluidY, FluidZ));
+			Unit.FaceIsExhaust.Add(bExhaust ? 1 : 0); Unit.FaceSign.Add(FaceSign);
+		};
+		for (int32 Z = 0; Z < Grid.GetNumCellsZ(); ++Z)
+			for (int32 Y = 0; Y < Grid.GetNumCellsY(); ++Y)
+				for (int32 X = 0; X < Grid.GetNumCellsX(); ++X)
+				{
+					if (SolidOwner[Grid.CellIndex(X, Y, Z)] != NumCabinets + U) continue;
+					const int32 FX = X + (Axis == 0 ? Sign : 0), FY = Y + (Axis == 1 ? Sign : 0);   // front neighbour
+					const int32 RX = X - (Axis == 0 ? Sign : 0), RY = Y - (Axis == 1 ? Sign : 0);   // rear neighbour
+					const auto AlongFace = [&](int32 NX, int32 NY)
+					{
+						return Axis == 0 ? Grid.FaceXIndex(FMath::Max(X, NX), Y, Z) : Grid.FaceYIndex(X, FMath::Max(Y, NY), Z);
+					};
+					// Supply leaves through the front: every height for in-row, the lower half for perimeter units.
+					const double CellZM = GridOriginM.Z + Grid.CellCenterM(X, Y, Z).Z - P.BaseM.Z;
+					if (!P.bTopIntake || CellZM < .5 * P.SizeM.Z)
+					{
+						if (FX >= 0 && FY >= 0 && FX < Grid.GetNumCellsX() && FY < Grid.GetNumCellsY())
+							AddFace(Axis, AlongFace(FX, FY), FX, FY, Z, true, int8(Sign));
+					}
+					if (P.bTopIntake)
+					{
+						// Return air enters from above, moving -Z.
+						if (Z + 1 < Grid.GetNumCellsZ()) AddFace(2, Grid.FaceZIndex(X, Y, Z + 1), X, Y, Z + 1, false, -1);
+					}
+					else if (RX >= 0 && RY >= 0 && RX < Grid.GetNumCellsX() && RY < Grid.GetNumCellsY())
+					{
+						AddFace(Axis, AlongFace(RX, RY), RX, RY, Z, false, int8(Sign));
+					}
+				}
+		Unit.WaterSupplyTempK = CoilSupplyTempK;
+		if (Unit.HasBothSides()) CrahUnits.Add(MoveTemp(Unit));
+		else ++CrahUnitsDropped;
+	}
+
+	if (CrahUnits.Num() == 0)
+	{
+		bCrahFellBackToCoil = CrahPlacements.Num() > 0 || CrahUnitsDropped > 0;
+		return;
+	}
+
+	// Design sizing (assumptions, see the property comments): total airflow carries the design air load at
+	// CrahDesignAirDeltaTK; the coil reaches CrahDesignApproachK above the water at that flow.
+	const FAirGridParams& Air = Grid.GetParams();
+	const double TotalFlowM3s = DesignAirLoadW / (Air.DensityKgM3 * Air.SpecificHeatJKgK * CrahDesignAirDeltaTK);
+	CrahUnitFlowM3s = TotalFlowM3s / CrahUnits.Num();
+	const double Effectiveness = CrahDesignAirDeltaTK / (CrahDesignAirDeltaTK + CrahDesignApproachK);
+	CrahUnitUAWK = -FMath::Loge(1.0 - Effectiveness) * Air.DensityKgM3 * CrahUnitFlowM3s * Air.SpecificHeatJKgK;
+	for (FCrahCouplingUnit& Unit : CrahUnits)
+	{
+		Unit.VolumeFlowM3s = CrahUnitFlowM3s;
+		Unit.CoilUAWK = CrahUnitUAWK;
+	}
+}
+
+void ADataCenterSimulationActor::UpdateCrahMeshes()
+{
+	for (UStaticMeshComponent* Mesh : CrahMeshes)
+	{
+		if (Mesh) Mesh->DestroyComponent();
+	}
+	CrahMeshes.Reset();
+	if (CrahMesh == nullptr)
+	{
+		return;
+	}
+	// The engine cube is 100 cm on a side; scale 1 = 1 m. Every placed unit is drawn: one without faces carries
+	// no air but still blocks it as a solid, and the summary reports it (what is shown is what is computed).
+	for (const FCrahPlacement& P : CrahPlacements)
+	{
+		UStaticMeshComponent* Mesh = NewObject<UStaticMeshComponent>(this);
+		Mesh->SetStaticMesh(CrahMesh);
+		Mesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+		Mesh->SetupAttachment(RootComponent);
+		Mesh->RegisterComponent();
+		Mesh->SetWorldLocationAndRotation(SimUnits::MetersToUnreal(P.BaseM + FVector(0.0, 0.0, .5 * P.SizeM.Z)), P.ForwardM.Rotation());
+		Mesh->SetWorldScale3D(P.SizeM);
+		CrahMeshes.Add(Mesh);
+	}
 }
 
 void ADataCenterSimulationActor::Tick(float DeltaTime)
@@ -593,6 +882,15 @@ void ADataCenterSimulationActor::DrawSummary() const
 				Snapshot.bAirDuctsRejected ? TEXT(" | 덕트 거부됨 - 팬 기류 없음 (옥트리 경로 또는 잘못된 면)") : TEXT("")));
 	}
 
+	// Air cooling: which device carries it. The CRAH figures are design sizing (assumptions), not a product.
+	GEngine->AddOnScreenDebugMessage(BaseKey + 6, 0.0f, bCrahFellBackToCoil ? FColor::Orange : FColor(180, 220, 255),
+		CrahUnits.Num() > 0
+			? FString::Printf(TEXT("CRAH %s %d대 | 대당 풍량 %.2f m3/s, 코일 UA %.0f W/K (설계 dT %.0f K, 접근 %.0f K 가정) | 코일 제거 %.1f kW"),
+				CrahLayout == ECrahLayout::InRow ? TEXT("인로우") : TEXT("벽면"), CrahUnits.Num(), CrahUnitFlowM3s, CrahUnitUAWK,
+				CrahDesignAirDeltaTK, CrahDesignApproachK, Snapshot.CrahCoilRemovedW / 1000.0)
+			: FString::Printf(TEXT("공기 냉각: 천장 뭉친 코일 UA %.0f W/K (풍량 없음, 포화 없음)%s"), EffectiveCoilUAWK,
+				bCrahFellBackToCoil ? TEXT(" - CRAH 유닛을 못 놓아 대신 씀") : TEXT("")));
+
 	if (Snapshot.RackCoolantMassFlowKgs.Num() > 0)
 	{
 		double MinInletK = TNumericLimits<double>::Max();
@@ -620,6 +918,8 @@ void ADataCenterSimulationActor::QueueWarmupSteps(int32 NumSteps)
 	}
 	PendingWarmupSteps = FMath::Clamp(NumSteps, 1, 100000);
 	WarmupStepsReported = PendingWarmupSteps;
+	WarmupInletSumK.Reset(); WarmupInletMaxK.Reset();
+	WarmupInletSamples = 0;
 	VrgPerf::PendingWarmupSteps() = PendingWarmupSteps;
 	bSimRunning = true;
 	UE_LOG(LogTemp, Display, TEXT("[VrgSim] 예열 %d스텝 예약 (%.2f s 분량)"),
@@ -652,6 +952,23 @@ void ADataCenterSimulationActor::DrainWarmupSteps()
 		Clock.CompleteStep();
 		--PendingWarmupSteps;
 
+		if (PendingWarmupSteps < WarmupStepsReported / 4)
+		{
+			const FCouplingSnapshot Snap = GetSnapshot();
+			if (WarmupInletSumK.Num() != Snap.RackAirInletTempK.Num())
+			{
+				WarmupInletSumK.Init(0.0, Snap.RackAirInletTempK.Num());
+				WarmupInletMaxK.Init(0.0, Snap.RackAirInletTempK.Num());
+				WarmupInletSamples = 0;
+			}
+			for (int32 I = 0; I < WarmupInletSumK.Num(); ++I)
+			{
+				WarmupInletSumK[I] += Snap.RackAirInletTempK[I];
+				WarmupInletMaxK[I] = FMath::Max(WarmupInletMaxK[I], Snap.RackAirInletTempK[I]);
+			}
+			++WarmupInletSamples;
+		}
+
 		if (FPlatformTime::ToMilliseconds64(FPlatformTime::Cycles64() - StartCycles) >= WarmupBudgetMs)
 		{
 			break;
@@ -683,5 +1000,33 @@ void ADataCenterSimulationActor::DrainWarmupSteps()
 			Snap.TotalRadiatorRejectedW / 1000.0, Snap.TotalAirCoolingRemovedW / 1000.0, EffectiveCoilUAWK, DesignAirLoadW / 1000.0,
 			MinInK - 273.15, MaxInK - 273.15, Snap.NormalizedEnergyResidual);
 		UE_LOG(LogTemp, Display, TEXT("[VrgSim] %s"), *Bridge.DescribeEnergyLedger());
+		// Which cabinet breathes the hottest air (racks first, then spines, as in the bridge).
+		int32 HottestIndex = 0;
+		for (int32 I = 1; I < Snap.RackAirInletTempK.Num(); ++I)
+			if (Snap.RackAirInletTempK[I] > Snap.RackAirInletTempK[HottestIndex]) HottestIndex = I;
+		const AActor* Hottest = HottestIndex < Racks.Num() ? static_cast<const AActor*>(Racks[HottestIndex].Get())
+			: Spines.IsValidIndex(HottestIndex - Racks.Num()) ? static_cast<const AActor*>(Spines[HottestIndex - Racks.Num()].Get()) : nullptr;
+		const FVector HottestM = Hottest ? SimUnits::UnrealToMeters(Hottest->GetActorLocation()) : FVector::ZeroVector;
+		UE_LOG(LogTemp, Display, TEXT("[VrgSim] 공기 냉각 방식 %d | CRAH %d대 (빠짐 %d, 코일 대체 %s) | 대당 %.3f m3/s, UA %.0f W/K | CRAH 코일 %.1f kW / 풍량 %.2f m3/s | 랙 흡기 최고 %.2f C (%s, %.2f, %.2f m)"),
+			int32(CrahLayout), CrahUnits.Num(), CrahUnitsDropped, bCrahFellBackToCoil ? TEXT("예") : TEXT("아니오"),
+			CrahUnitFlowM3s, CrahUnitUAWK, Snap.CrahCoilRemovedW / 1000.0, Snap.CrahFlowM3s, MaxInK - 273.15,
+			Hottest ? *Hottest->GetName() : TEXT("-"), HottestM.X, HottestM.Y);
+		if (WarmupInletSamples > 0)
+		{
+			double AvgMinK = TNumericLimits<double>::Max(), AvgMaxK = 0.0, AvgMeanK = 0.0, PeakK = 0.0;
+			for (int32 I = 0; I < WarmupInletSumK.Num(); ++I)
+			{
+				const double AvgK = WarmupInletSumK[I] / WarmupInletSamples;
+				AvgMinK = FMath::Min(AvgMinK, AvgK); AvgMaxK = FMath::Max(AvgMaxK, AvgK); AvgMeanK += AvgK / WarmupInletSumK.Num();
+				PeakK = FMath::Max(PeakK, WarmupInletMaxK[I]);
+				const AActor* Cabinet = I < Racks.Num() ? static_cast<const AActor*>(Racks[I].Get())
+					: Spines.IsValidIndex(I - Racks.Num()) ? static_cast<const AActor*>(Spines[I - Racks.Num()].Get()) : nullptr;
+				const FVector M = Cabinet ? SimUnits::UnrealToMeters(Cabinet->GetActorLocation()) : FVector::ZeroVector;
+				UE_LOG(LogTemp, Display, TEXT("[VrgSim]   흡기 (%.2f, %.2f) m: 평균 %.2f C / 최고 %.2f C / 마지막 %.2f C"), M.X, M.Y,
+					AvgK - 273.15, WarmupInletMaxK[I] - 273.15, Snap.RackAirInletTempK[I] - 273.15);
+			}
+			UE_LOG(LogTemp, Display, TEXT("[VrgSim] 마지막 %.0f s 시간 평균 흡기: 최저 %.2f / 평균 %.2f / 최고 %.2f C | 순간 최고 %.2f C (%d 표본)"),
+				WarmupInletSamples * Clock.GetFixedStepS(), AvgMinK - 273.15, AvgMeanK - 273.15, AvgMaxK - 273.15, PeakK - 273.15, WarmupInletSamples);
+		}
 	}
 }

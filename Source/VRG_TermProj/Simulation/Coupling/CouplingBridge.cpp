@@ -17,6 +17,7 @@ void FCouplingBridge::Initialize(const TArray<FRackCouplingTarget>& InTargets,
 	const int32 NumRacks = FMath::Min(Targets.Num(), Links.Num());
 	Targets.SetNum(NumRacks);
 	Links.SetNum(NumRacks);
+	CrahUnits.Reset();
 
 	EnergyInJ = 0.0;
 	EnergyOutJ = 0.0;
@@ -61,6 +62,31 @@ void FCouplingBridge::BuildDuctFaces()
 			In.DuctFaceVelocityMs.Add(0.0);
 		}
 		NumDucts += L.NumFanLayers();
+	}
+	// CRAH units: one duct each, after the racks. Only these ducts carry a coil.
+	CrahDuctBase = NumDucts;
+	for (const FCrahCouplingUnit& U : CrahUnits)
+	{
+		for (int32 F = 0; F < U.FaceIndex.Num(); ++F)
+		{
+			In.DuctFaceAxis.Add(U.FaceAxis[F]);
+			In.DuctFaceIndex.Add(U.FaceIndex[F]);
+			In.DuctFaceFluidCell.Add(U.FaceFluidCell[F]);
+			In.DuctFaceDuct.Add(NumDucts);
+			In.DuctFaceIsExhaust.Add(U.FaceIsExhaust[F]);
+			In.DuctFaceVelocityMs.Add(0.0);
+		}
+		++NumDucts;
+	}
+	In.DuctCoilUAWK.Reset(); In.DuctCoilWaterTempK.Reset();
+	if (CrahUnits.Num() > 0)
+	{
+		In.DuctCoilUAWK.Init(0.0, NumDucts); In.DuctCoilWaterTempK.Init(291.15, NumDucts);
+		for (int32 U = 0; U < CrahUnits.Num(); ++U)
+		{
+			In.DuctCoilUAWK[CrahDuctBase + U] = CrahUnits[U].CoilUAWK;
+			In.DuctCoilWaterTempK[CrahDuctBase + U] = CrahUnits[U].WaterSupplyTempK;
+		}
 	}
 	In.NumDucts = NumDucts;
 	ScratchLayerFlowKgs.Init(0.0, NumDucts);
@@ -149,6 +175,18 @@ void FCouplingBridge::UpdateDuctVelocities()
 			const int32 Count = L.FanFaceIsExhaust[F] ? ScratchLayerExhaustCount[D] : ScratchLayerIntakeCount[D];
 			const double VolumeFlowM3s = ScratchLayerFlowKgs[D] / GridParams.DensityKgM3;
 			AirSolverInput.DuctFaceVelocityMs[FaceCursor] = Count > 0 ? L.FanFaceSign[F] * VolumeFlowM3s / (Count * FaceAreaM2) : 0.0;
+		}
+	}
+	// CRAH units run at their set airflow. A unit without faces on both sides carries nothing (compatibility).
+	for (int32 U = 0; U < CrahUnits.Num(); ++U)
+	{
+		const FCrahCouplingUnit& Unit = CrahUnits[U];
+		const int32 D = CrahDuctBase + U;
+		const double VolumeFlowM3s = Unit.HasBothSides() ? Unit.VolumeFlowM3s : 0.0;
+		for (int32 F = 0; F < Unit.FaceIndex.Num(); ++F, ++FaceCursor)
+		{
+			const int32 Count = Unit.FaceIsExhaust[F] ? ScratchLayerExhaustCount[D] : ScratchLayerIntakeCount[D];
+			AirSolverInput.DuctFaceVelocityMs[FaceCursor] = Count > 0 ? Unit.FaceSign[F] * VolumeFlowM3s / (Count * FaceAreaM2) : 0.0;
 		}
 	}
 }
@@ -529,6 +567,11 @@ FCouplingSnapshot FCouplingBridge::MakeSnapshot(double SimTimeS) const
 	Snapshot.TotalItHeatW = LastItHeatW;
 	Snapshot.TotalRadiatorRejectedW = LastRadiatorRejectedW;
 	Snapshot.TotalAirCoolingRemovedW = LastAirCoolingRemovedW;
+	if (AirSolver != nullptr && !AirSolver->WereDuctsRejected())
+	{
+		Snapshot.CrahCoilRemovedW = AirSolver->GetLastDuctCoilRemovedW();
+		for (const FCrahCouplingUnit& U : CrahUnits) Snapshot.CrahFlowM3s += U.HasBothSides() ? U.VolumeFlowM3s : 0.0;
+	}
 
 	Snapshot.EnergyInJ = EnergyInJ;
 	Snapshot.EnergyOutJ = EnergyOutJ;

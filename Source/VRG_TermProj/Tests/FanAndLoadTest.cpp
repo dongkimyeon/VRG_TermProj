@@ -270,6 +270,106 @@ bool FAirDuctTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+// A cooling coil inside a duct (CRAH unit): epsilon-NTU exhaust temperature, saturation, zero flow, ledger.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FAirDuctCoilTest, "VRG.Air.Duct.CoilEffectivenessAndLedger", VrgFanTestFlags)
+bool FAirDuctCoilTest::RunTest(const FString& Parameters)
+{
+	constexpr int32 NX = 12, NY = 6, NZ = 6;
+	constexpr double H = .25, Q = .2, WaterK = 285.15;  // m, m^3/s, K
+	FAirGridParams GP; GP.NumCellsX = NX; GP.NumCellsY = NY; GP.NumCellsZ = NZ; GP.CellSizeM = H;
+	const double CapacityWK = GP.DensityKgM3 * Q * GP.SpecificHeatJKgK;  // mdot * cp of the unit
+
+	// Same body as the duct test: X = 5..6, Y = 2..3, Z = 1..3, intake at X = 7, exhaust at X = 4.
+	auto Setup = [&](FAirSolver& Air, FAirSolverInput& In, double InitialK, double CoilUAWK, double FlowM3s)
+	{
+		Air.Initialize(GP, InitialK);
+		Air.GetMutablePressureSettings().NormalizedResidualTarget = 1e-10;
+		Air.GetMutablePressureSettings().MaxIterations = 200;
+		FUniformAirGrid& G = Air.GetMutableGrid();
+		for (int32 Z = 1; Z <= 3; ++Z) for (int32 Y = 2; Y <= 3; ++Y) for (int32 X = 5; X <= 6; ++X) G.bSolidCell[G.CellIndex(X, Y, Z)] = true;
+		Air.OnSolidCellsChanged();
+		In = FAirSolverInput(); In.bEnableBuoyancy = false; In.CellHeatW.Init(0.0, G.GetNumCells());
+		In.NumDucts = 1; In.DuctCoilUAWK = {CoilUAWK}; In.DuctCoilWaterTempK = {WaterK};
+		for (int32 Z = 1; Z <= 3; ++Z) for (int32 Y = 2; Y <= 3; ++Y)
+		{
+			const double V = -FlowM3s / (6 * H * H);
+			In.DuctFaceAxis.Add(0); In.DuctFaceIndex.Add(G.FaceXIndex(7, Y, Z)); In.DuctFaceFluidCell.Add(G.CellIndex(7, Y, Z));
+			In.DuctFaceDuct.Add(0); In.DuctFaceIsExhaust.Add(0); In.DuctFaceVelocityMs.Add(V);
+			In.DuctFaceAxis.Add(0); In.DuctFaceIndex.Add(G.FaceXIndex(5, Y, Z)); In.DuctFaceFluidCell.Add(G.CellIndex(4, Y, Z));
+			In.DuctFaceDuct.Add(0); In.DuctFaceIsExhaust.Add(1); In.DuctFaceVelocityMs.Add(V);
+		}
+	};
+
+	// 1) Uniform warm air, one step: removed heat = mdot cp eps (T - T_water), eps = 1 - exp(-NTU), NTU = 1.
+	{
+		FAirSolver Air; FAirSolverInput In; Setup(Air, In, 305.15, CapacityWK, Q);
+		Air.Step(In, .02);
+		const double Expected = CapacityWK * (1.0 - FMath::Exp(-1.0)) * (305.15 - WaterK);
+		const FAirSolverSnapshot Snap = Air.MakeSnapshot(.02);
+		const double Err = FMath::Abs(Snap.DuctCoilRemovedW - Expected) / Expected;
+		AddInfo(FString::Printf(TEXT("NTU 1 한 스텝: 제거 %.6f W / 해석 %.6f W, 정규화 오차 %.3e | 냉각 합계 %.6f W | 공기 열수지 %.3e"),
+			Snap.DuctCoilRemovedW, Expected, Err, Snap.CoolingRemovedW, Air.GetNormalizedEnergyResidual()));
+		TestTrue(TEXT("Coil removal matches epsilon-NTU"), Err < 1e-12);
+		TestTrue(TEXT("Coil counted as air cooling"), Snap.CoolingRemovedW == Snap.DuctCoilRemovedW && !Snap.bDuctsRejected);
+		// No heat source: the ledger is -out - stored = 0 (normalised by the removed heat here).
+		const double Resid = FMath::Abs(Air.GetEnergyResidualJ()) / Air.GetEnergyOutJ();
+		AddInfo(FString::Printf(TEXT("한 스텝 장부 잔차 %.3e (제거 %.6f J 기준)"), Resid, Air.GetEnergyOutJ()));
+		TestTrue(TEXT("Ledger closes over one step"), Resid < 1e-12);
+	}
+
+	// 2) Saturation: a huge UA takes the exhaust to the water temperature, never below (eps -> 1).
+	{
+		FAirSolver Air; FAirSolverInput In; Setup(Air, In, 305.15, 1e9, Q);
+		for (int32 S = 0; S < 50; ++S) Air.Step(In, .02);
+		const FUniformAirGrid& G = Air.GetGrid();
+		double MinK = 1e9;
+		for (int32 I = 0; I < G.GetNumCells(); ++I) if (!G.bSolidCell[I]) MinK = FMath::Min(MinK, G.TemperatureK[I]);
+		FAirSolver Air1; FAirSolverInput In1; Setup(Air1, In1, 305.15, 1e9, Q);
+		Air1.Step(In1, .02);
+		const double Limit = CapacityWK * (305.15 - WaterK);
+		const double Err = FMath::Abs(Air1.MakeSnapshot(.02).DuctCoilRemovedW - Limit) / Limit;
+		AddInfo(FString::Printf(TEXT("UA 1e9: 한 스텝 제거 %.6f W / 한계 mdot*cp*dT %.6f W (정규화 %.3e) | 50스텝 뒤 최저 %.9f K (냉수 %.2f K)"),
+			Air1.MakeSnapshot(.02).DuctCoilRemovedW, Limit, Err, MinK, WaterK));
+		TestTrue(TEXT("Coil saturates at mdot cp (T - T_water)"), Err < 1e-12);
+		TestTrue(TEXT("Air never colder than the water"), MinK >= WaterK - 1e-9);
+	}
+
+	// 3) Zero flow: no removal, no singular 1/(mdot cp) (D2).
+	{
+		FAirSolver Air; FAirSolverInput In; Setup(Air, In, 305.15, CapacityWK, 0.0);
+		Air.Step(In, .02);
+		const FAirSolverSnapshot Snap = Air.MakeSnapshot(.02);
+		TestTrue(TEXT("Zero flow removes nothing"), Snap.DuctCoilRemovedW == 0.0 && FMath::IsFinite(Snap.MaxTemperatureK));
+	}
+
+	// 4) 2000 W source upstream of the unit with buoyancy: ledger closes and the coil carries the load at steady state.
+	{
+		FAirSolver Air; FAirSolverInput In; Setup(Air, In, 297.15, CapacityWK, Q);
+		In.bEnableBuoyancy = true;
+		FUniformAirGrid& G = Air.GetMutableGrid();
+		for (int32 Y = 2; Y <= 3; ++Y) In.CellHeatW[G.CellIndex(10, Y, 1)] = 1000.0;
+		const double Dt = .02;
+		for (int32 S = 0; S < 20000; ++S) Air.Step(In, Dt);
+		const FAirSolverSnapshot Snap = Air.MakeSnapshot(20000 * Dt);
+		AddInfo(FString::Printf(TEXT("2000 W 400 s: 코일 %.2f W (발열 대비 %.4f) | 공기 %.2f ~ %.2f C | 열수지 %.3e (유입 %.4e J) | 발산 %.3e | 압력 %s"),
+			Snap.DuctCoilRemovedW, Snap.DuctCoilRemovedW / 2000.0, Snap.MinTemperatureK - 273.15, Snap.MaxTemperatureK - 273.15,
+			Air.GetNormalizedEnergyResidual(), Air.GetEnergyInJ(), Snap.NormalizedDivergence, Snap.bPressureConverged ? TEXT("수렴") : TEXT("실패")));
+		TestTrue(TEXT("Ledger closes with a coil"), FMath::Abs(Air.GetNormalizedEnergyResidual()) < 1e-12);
+		TestTrue(TEXT("Coil carries the load at steady state"), FMath::Abs(Snap.DuctCoilRemovedW / 2000.0 - 1.0) < .02);
+		TestTrue(TEXT("Pressure converged"), Snap.bPressureConverged);
+	}
+
+	// 5) Coil arrays of the wrong length are rejected like any bad duct.
+	{
+		FAirSolver Air; FAirSolverInput In; Setup(Air, In, 305.15, CapacityWK, Q);
+		In.DuctCoilWaterTempK.Add(WaterK);
+		AddExpectedError(TEXT("팬 덕트 입력 거부"), EAutomationExpectedErrorFlags::Contains, 1);
+		Air.Step(In, .02);
+		TestTrue(TEXT("Bad coil rejected"), Air.MakeSnapshot(.02).bDuctsRejected && Air.MakeSnapshot(.02).DuctCoilRemovedW == 0.0);
+	}
+	return true;
+}
+
 // Full coupling with fan ducts: a GB200 NVL72 rack in a small room. Its slots breathe the duct intake air,
 // the grid carries the fans' mass flow, and the global ledger still closes.
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFanCouplingTest, "VRG.Coupling.FanDuctsEnergyAndFlow", VrgFanTestFlags)
@@ -367,6 +467,100 @@ bool FFanCouplingTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("Fan power below 2% of IT"), Snap.TotalFanPowerW > 0.0 && Snap.TotalFanPowerW < .02 * Snap.TotalItHeatW);
 	TestTrue(TEXT("Compute tray air rise 5~30 K"), MinTrayRiseK > 5.0 && MaxTrayRiseK < 30.0);
 	TestTrue(TEXT("Fan speeds within [min, 1]"), MinR >= .3 - 1e-12 && MaxR <= 1.0);
+	return true;
+}
+
+// The same rack cooled by one in-row CRAH unit instead of the lumped ceiling coil: the unit breathes the hot
+// side, supplies the cold side, and is the only way heat leaves the air. The global ledger still closes.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrahCouplingTest, "VRG.Coupling.CrahUnitCarriesAirLoad", VrgFanTestFlags)
+bool FCrahCouplingTest::RunTest(const FString& Parameters)
+{
+	constexpr int32 NX = 10, NY = 6, NZ = 12;
+	constexpr double H = .25, DesignDeltaTK = 12.0, ApproachK = 5.0, WaterK = 291.15;
+	FAirGridParams GP; GP.NumCellsX = NX; GP.NumCellsY = NY; GP.NumCellsZ = NZ; GP.CellSizeM = H;
+	FAirSolver Air; Air.Initialize(GP, 297.15);
+	FUniformAirGrid& G = Air.GetMutableGrid();
+	// Rack body X = 4..5, Y = 1..2; CRAH body X = 4..5, Y = 4..5 (Z = 0..8 both). Rack front +X (cold side X = 6),
+	// rear X = 3 (hot side). The CRAH takes in at X = 3 and supplies at X = 6.
+	for (int32 Z = 0; Z <= 8; ++Z) for (int32 X = 4; X <= 5; ++X)
+		for (const int32 Y : {1, 2, 4, 5}) G.bSolidCell[G.CellIndex(X, Y, Z)] = true;
+	Air.OnSolidCellsChanged();
+
+	const FRackThermalParams Params = FRackThermalModel::MakeGb200Nvl72Params();
+	FRackThermalModel Model; FRackThermalState Init; Init.CoolantTempK = 300.15; Model.Initialize(Params, Init);
+	FRackThermalInput Input; Input.ComponentHeatW = FRackThermalModel::MakeGb200Nvl72HeatW();
+	Input.SledDocked.Init(true, Params.Slots.Num()); Input.CoolantMassFlowKgs = 2.3;
+	FRadiatorParams Radiator; Radiator.UAWK = 1.1e4;
+
+	FRackCouplingLink Link; Link.FallbackCoolantMassFlowKgs = 2.3;
+	FCrahCouplingUnit Crah;
+	TArray<double> LayerZ;
+	for (int32 Z = 0; Z <= 8; ++Z)
+	{
+		LayerZ.Add((Z + .5) * H);
+		for (int32 Y = 1; Y <= 2; ++Y)
+		{
+			Link.FanFaceAxis.Add(0); Link.FanFaceIndex.Add(G.FaceXIndex(6, Y, Z)); Link.FanFaceFluidCell.Add(G.CellIndex(6, Y, Z));
+			Link.FanFaceLayer.Add(Z); Link.FanFaceIsExhaust.Add(0); Link.FanFaceSign.Add(-1);
+			Link.FanFaceAxis.Add(0); Link.FanFaceIndex.Add(G.FaceXIndex(4, Y, Z)); Link.FanFaceFluidCell.Add(G.CellIndex(3, Y, Z));
+			Link.FanFaceLayer.Add(Z); Link.FanFaceIsExhaust.Add(1); Link.FanFaceSign.Add(-1);
+			Link.InletCellIndices.Add(G.CellIndex(6, Y, Z)); Link.ExhaustCellIndices.Add(G.CellIndex(3, Y, Z));
+		}
+		for (int32 Y = 4; Y <= 5; ++Y)
+		{
+			Crah.FaceAxis.Add(0); Crah.FaceIndex.Add(G.FaceXIndex(4, Y, Z)); Crah.FaceFluidCell.Add(G.CellIndex(3, Y, Z));
+			Crah.FaceIsExhaust.Add(0); Crah.FaceSign.Add(1);
+			Crah.FaceAxis.Add(0); Crah.FaceIndex.Add(G.FaceXIndex(6, Y, Z)); Crah.FaceFluidCell.Add(G.CellIndex(6, Y, Z));
+			Crah.FaceIsExhaust.Add(1); Crah.FaceSign.Add(1);
+		}
+	}
+	TArray<double> SlotBottom, SlotHeight;
+	for (const FRackSlot& S : Params.Slots) { SlotBottom.Add(S.BottomZM); SlotHeight.Add(S.HeightM); }
+	FCouplingBridge::AssignSlotsToFanLayers(Link, LayerZ, H, SlotBottom, SlotHeight);
+
+	// Sized as the integrated actor does (design assumptions): flow from the design air load at a 12 K rise,
+	// UA from epsilon-NTU so the supply is 5 K above the water at design flow.
+	const double DesignAirW = FRackThermalModel::DesignHeatToAirW(Params, Input);
+	Crah.VolumeFlowM3s = DesignAirW / (GP.DensityKgM3 * GP.SpecificHeatJKgK * DesignDeltaTK);
+	Crah.CoilUAWK = -FMath::Loge(1.0 - DesignDeltaTK / (DesignDeltaTK + ApproachK)) * GP.DensityKgM3 * Crah.VolumeFlowM3s * GP.SpecificHeatJKgK;
+	Crah.WaterSupplyTempK = WaterK;
+
+	FCouplingBridge Bridge;
+	Bridge.Initialize({{&Model, &Input, &Radiator}}, {Link});
+	Bridge.SetCrahUnits({Crah});
+	Bridge.SetAirSolver(&Air);
+
+	const double Dt = .02;
+	constexpr int32 Steps = 15000;
+	for (int32 S = 0; S < Steps; ++S) Bridge.Step(Dt, false, true);
+	const FCouplingSnapshot Snap = Bridge.MakeSnapshot(Steps * Dt);
+	const FAirSolverSnapshot AirSnap = Air.MakeSnapshot(Steps * Dt);
+	// Rack air heat now = forced air + case convection handed to the grid.
+	const double RackAirW = Snap.RackHeatToAirW[0];
+	double SupplyK = 0.0, ReturnK = 0.0;
+	for (int32 Z = 0; Z <= 8; ++Z) for (int32 Y = 4; Y <= 5; ++Y) { SupplyK += G.TemperatureK[G.CellIndex(6, Y, Z)]; ReturnK += G.TemperatureK[G.CellIndex(3, Y, Z)]; }
+	SupplyK /= 18.0; ReturnK /= 18.0;
+	double MinInletK = 1e9, MaxInletK = 0.0;
+	for (const double K : Input.SlotAirInletTempK) { MinInletK = FMath::Min(MinInletK, K); MaxInletK = FMath::Max(MaxInletK, K); }
+
+	AddInfo(FString::Printf(TEXT("%d s: 설계 공기 부하 %.2f kW -> CRAH %.4f m3/s, UA %.1f W/K | 랙 공기 반출 %.2f kW, CRAH 코일 %.2f kW (비 %.4f) | 공기 냉각 합계 %.2f kW"),
+		int32(Steps * Dt), DesignAirW / 1000.0, Crah.VolumeFlowM3s, Crah.CoilUAWK, RackAirW / 1000.0, Snap.CrahCoilRemovedW / 1000.0,
+		Snap.CrahCoilRemovedW / RackAirW, Snap.TotalAirCoolingRemovedW / 1000.0));
+	AddInfo(FString::Printf(TEXT("CRAH 환기 %.2f C / 토출 %.2f C (냉수 %.2f C) | 슬롯 흡기 %.2f ~ %.2f C | 전역 잔차 %.3e (유입 %.4e J) | 발산 %.3e | 압력 %s"),
+		ReturnK - 273.15, SupplyK - 273.15, WaterK - 273.15, MinInletK - 273.15, MaxInletK - 273.15, Snap.NormalizedEnergyResidual, Snap.EnergyInJ,
+		AirSnap.NormalizedDivergence, AirSnap.bPressureConverged ? TEXT("수렴") : TEXT("실패")));
+	AddInfo(Bridge.DescribeEnergyLedger());
+
+	TestTrue(TEXT("Global ledger closes"), FMath::Abs(Snap.NormalizedEnergyResidual) < 1e-9);
+	TestTrue(TEXT("Only the CRAH cools the air"), Snap.CrahCoilRemovedW > 0.0 && FMath::Abs(Snap.TotalAirCoolingRemovedW - Snap.CrahCoilRemovedW) < 1e-9 * Snap.CrahCoilRemovedW);
+	TestTrue(TEXT("CRAH flow reported"), FMath::Abs(Snap.CrahFlowM3s - Crah.VolumeFlowM3s) < 1e-12);
+	TestTrue(TEXT("Divergence free"), AirSnap.NormalizedDivergence < 1e-5);
+	TestTrue(TEXT("Pressure converged"), AirSnap.bPressureConverged);
+	// Plausibility (not physics): near steady state the unit carries the rack's air heat; supply between the
+	// water and the return; slot inlets within 15~35 C.
+	TestTrue(TEXT("CRAH carries the air heat"), FMath::Abs(Snap.CrahCoilRemovedW / RackAirW - 1.0) < .05);
+	TestTrue(TEXT("Supply between water and return"), SupplyK > WaterK && SupplyK < ReturnK);
+	TestTrue(TEXT("Slot inlets 15~35 C"), MinInletK > 288.15 && MaxInletK < 308.15);
 	return true;
 }
 

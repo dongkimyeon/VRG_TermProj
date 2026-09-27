@@ -101,6 +101,25 @@ struct FRackCouplingLink
 	bool HasFanFaces() const { return FanFaceIndex.Num() > 0 && NumFanLayers() > 0; }
 };
 
+// A CRAH / in-row cooler unit (2026-09-27): a solid box whose fans push VolumeFlowM3s from its intake faces to its
+// exhaust faces through a chilled-water coil. It becomes one air-solver duct with a coil (FAirSolverInput::DuctCoil*),
+// so the room air really circulates through it and its capacity saturates with airflow instead of a lumped UA.
+// Face arrays mean the same as a rack's fan faces; Sign points from the intake side to the exhaust side.
+// Fan electric input is not modelled (it would be one more heat source in the ledger).
+struct FCrahCouplingUnit
+{
+	TArray<uint8> FaceAxis;
+	TArray<int32> FaceIndex;
+	TArray<int32> FaceFluidCell;
+	TArray<uint8> FaceIsExhaust;
+	TArray<int8> FaceSign;
+	double VolumeFlowM3s = 0.0;
+	double CoilUAWK = 0.0;
+	double WaterSupplyTempK = 291.15;
+
+	bool HasBothSides() const { return FaceIsExhaust.Contains(0) && FaceIsExhaust.Contains(1); }
+};
+
 // 한 스텝에 실제로 오간 값. 화면에 그대로 띄워 어디서 끊겼는지 볼 수 있게 한다.
 USTRUCT(BlueprintType)
 struct FCouplingSnapshot
@@ -148,6 +167,13 @@ struct FCouplingSnapshot
 	UPROPERTY(BlueprintReadOnly, Category = "Coupling")
 	double TotalAirCoolingRemovedW = 0.0;
 
+	// Part of TotalAirCoolingRemovedW taken by CRAH unit coils [W], and their total airflow [m^3/s].
+	UPROPERTY(BlueprintReadOnly, Category = "Coupling")
+	double CrahCoilRemovedW = 0.0;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Coupling")
+	double CrahFlowM3s = 0.0;
+
 	// 누적값 [J].
 	UPROPERTY(BlueprintReadOnly, Category = "Coupling")
 	double EnergyInJ = 0.0;
@@ -185,6 +211,10 @@ public:
 	// 수력망과 공기 격자를 붙인다. nullptr이면 그 도메인은 쓰지 않는다.
 	void SetHydraulicNetwork(FHydraulicNetwork* InNetwork) { HydraulicNetwork = InNetwork; }
 	void SetAirSolver(FAirSolver* InAirSolver) { if (AirSolver != InAirSolver) bLedgerBaselineTaken = false; AirSolver = InAirSolver; }
+
+	// CRAH units become ducts after the racks' ones. Call after Initialize (Initialize clears them).
+	void SetCrahUnits(const TArray<FCrahCouplingUnit>& InUnits) { CrahUnits = InUnits; BuildDuctFaces(); }
+	int32 GetNumCrahUnits() const { return CrahUnits.Num(); }
 
 	// 물의 밀도 [kg/m^3]. 체적유량을 질량유량으로 바꿀 때만 쓴다.
 	void SetCoolantDensityKgM3(double InDensityKgM3) { CoolantDensityKgM3 = InDensityKgM3; }
@@ -249,6 +279,8 @@ private:
 	// Fan ducts: global duct id of every rack layer (DuctBase[r] + layer) and the air solver face arrays,
 	// built once in Initialize; only the velocities change per step.
 	TArray<int32> DuctBase;
+	TArray<FCrahCouplingUnit> CrahUnits;
+	int32 CrahDuctBase = 0;  // duct id of CrahUnits[0]
 	TArray<double> ScratchLayerFlowKgs, ScratchLayerIntakeK;
 	TArray<int32> ScratchLayerIntakeCount, ScratchLayerExhaustCount;
 	void BuildDuctFaces();

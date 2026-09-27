@@ -113,6 +113,16 @@ struct FAirSolverInput
 	TArray<double> DuctFaceVelocityMs;
 	int32 NumDucts = 0;
 
+	// Optional cooling coil inside a duct (CRAH unit, 2026-09-27). Length NumDucts, or empty for no coils.
+	// UA 0 = plain duct. The coil sees the duct's mixed intake air and water at DuctCoilWaterTempK:
+	//   eps = 1 - exp(-UA / (mdot * cp)),  T_exhaust = T_mix - eps * (T_mix - T_water)
+	// Water-side capacity rate is taken as much larger than the air side (C_r -> 0): chilled-water flow limits
+	// are not modelled. Like the radiator the coil saturates as UA grows; at zero flow it removes nothing (D2).
+	// The removed heat is computed once from the same exhaust temperature the faces carry and booked as air
+	// cooling (rule 6).
+	TArray<double> DuctCoilUAWK;
+	TArray<double> DuctCoilWaterTempK;
+
 	bool HasDucts() const { return DuctFaceIndex.Num() > 0; }
 };
 
@@ -157,6 +167,10 @@ struct FAirSolverSnapshot
 	// 마지막 스텝에 냉각 코일이 빼 간 열 [W].
 	UPROPERTY(BlueprintReadOnly, Category = "Air")
 	double CoolingRemovedW = 0.0;
+
+	// Part of CoolingRemovedW taken by duct coils (CRAH units) [W].
+	UPROPERTY(BlueprintReadOnly, Category = "Air")
+	double DuctCoilRemovedW = 0.0;
 
 	// 고체가 막고 있지 않은 셀 수. 온도 통계는 이 셀들만 본다.
 	UPROPERTY(BlueprintReadOnly, Category = "Air")
@@ -272,6 +286,9 @@ public:
 	// True when the last step was given fan ducts it could not apply (see FAirSolverSnapshot::bDuctsRejected).
 	bool WereDuctsRejected() const { return bLastDuctsRejected; }
 
+	// Heat duct coils (CRAH units) removed in the last step [W]; included in the cooling ledger.
+	double GetLastDuctCoilRemovedW() const { return LastDuctCoilRemovedW; }
+
 	// 마지막 스텝의 CFL 수.
 	double GetCourantNumber() const { return LastCourantNumber; }
 
@@ -325,6 +342,7 @@ private:
 	const FAirSolverInput* ActiveDucts = nullptr;
 	TArray<double> DuctIntakeEnthalpy, DuctExhaustSpeedSum;
 	double LastDuctFlowM3s = 0.0;
+	double DuctCoilRemovedJ = 0.0, LastDuctCoilRemovedW = 0.0;  // this step (sum over sub-steps) / its rate
 	int32 LastNumDuctFaces = 0;
 	bool bLastDuctsRejected = false;
 	int32 LastTemperatureSubsteps = 1;

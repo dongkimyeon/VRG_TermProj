@@ -12,6 +12,21 @@ class AAirFieldDebugActor;
 class ADataCenterRoomActor;
 class ARackThermalActor;
 class ASpineCabinetActor;
+class UStaticMesh;
+class UStaticMeshComponent;
+
+// How the room air is cooled (2026-09-27).
+UENUM(BlueprintType)
+enum class ECrahLayout : uint8
+{
+	// Legacy lumped coil: every fluid cell above CoilBottomZM loses UA * (T - supply). No airflow, no capacity limit.
+	CeilingCoil,
+	// In-row coolers at both ends of every rack row: hot-aisle air in at the rear, cold air out at the front.
+	InRow,
+	// Perimeter CRAH at both ends of every cold aisle: return air in at the top, supply out of the lower front.
+	// There is no raised floor in the model, so the supply goes straight into the aisle instead of a plenum.
+	Perimeter,
+};
 
 // S4: 세 도메인을 하나의 시계로 묶는 통합 액터 (MVP).
 //
@@ -122,6 +137,36 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Cooling")
 	double CoilSupplyTempK = 291.15;
 
+	// ---- CRAH units (fan-driven ducts with a coil, see FCrahCouplingUnit) ----
+	// Units are placed from the rack rows at every rebuild; nothing is saved in the level. If none fits inside
+	// the air grid the lumped ceiling coil is used instead and the summary says so.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Cooling|CRAH")
+	ECrahLayout CrahLayout = ECrahLayout::InRow;
+
+	// Design air temperature rise through the racks = drop through the CRAH coils [K]. Sets the total CRAH
+	// airflow: design air load / (rho * cp * this). A design assumption, not a measured value.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Cooling|CRAH", meta = (ClampMin = "2.0"))
+	double CrahDesignAirDeltaTK = 12.0;
+
+	// Design supply air minus chilled water temperature [K]. Sets the coil UA through epsilon-NTU at design flow:
+	// eps = dT / (dT + approach), UA = -ln(1 - eps) * mdot * cp. A design assumption, not a measured value.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Cooling|CRAH", meta = (ClampMin = "0.5"))
+	double CrahDesignApproachK = 5.0;
+
+	// Unit box [m]: X depth (along its airflow), Y width, Z height.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Cooling|CRAH")
+	FVector CrahInRowSizeM = FVector(1.068, 0.6, 2.236);
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Cooling|CRAH")
+	FVector CrahPerimeterSizeM = FVector(0.9, 2.0, 2.0);
+
+	// Gap between a perimeter unit and the ends of the rows it serves [m].
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Cooling|CRAH")
+	double CrahPerimeterClearanceM = 0.4;
+
+	UFUNCTION(BlueprintCallable, Category = "Cooling|CRAH")
+	int32 GetNumCrahUnits() const { return CrahPlacements.Num(); }
+
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Visualization")
 	bool bShowSummary = true;
 
@@ -156,6 +201,10 @@ private:
 	// 남은 예열 스텝. 프레임마다 예산만큼만 소화한다.
 	int32 PendingWarmupSteps = 0;
 	int32 WarmupStepsReported = 0;
+	// Time-averaged cabinet inlet temperature over the last quarter of the warmup [K sum, samples]. The room flow
+	// keeps fluctuating (plumes, fan jets), so one instant is not a fair basis for comparing layouts.
+	TArray<double> WarmupInletSumK, WarmupInletMaxK;
+	int32 WarmupInletSamples = 0;
 	void DrainWarmupSteps();
 
 	// 연결이 성립했는지. 안 되면 화면에 이유를 띄운다.
@@ -178,6 +227,30 @@ private:
 
 	// 천장 쪽 한 층을 CRAH 코일로 잡는다.
 	void BuildCoolingCoil();
+
+	// ---- CRAH units ----
+	struct FCrahPlacement
+	{
+		FVector BaseM;      // bottom centre, world [m]
+		FVector ForwardM;   // supply direction (grid axis)
+		FVector SizeM;      // depth, width, height
+		bool bTopIntake;    // perimeter: intake through the top face; in-row: through the rear face
+	};
+	TArray<FCrahPlacement> CrahPlacements;
+	TArray<FCrahCouplingUnit> CrahUnits;
+	double CrahUnitFlowM3s = 0.0, CrahUnitUAWK = 0.0;
+	int32 CrahUnitsDropped = 0;
+	bool bCrahFellBackToCoil = false;
+	// Places units from the rack rows (CrahLayout). Units that leave the air grid are dropped and counted.
+	void PlanCrahUnits();
+	// Faces, airflow and coil of every placed unit (after the solid cells are marked and the air load known).
+	void BuildCrahUnits();
+
+	UPROPERTY()
+	TObjectPtr<UStaticMesh> CrahMesh;
+	UPROPERTY(Transient)
+	TArray<TObjectPtr<UStaticMeshComponent>> CrahMeshes;
+	void UpdateCrahMeshes();
 
 	void DrawSummary() const;
 };
