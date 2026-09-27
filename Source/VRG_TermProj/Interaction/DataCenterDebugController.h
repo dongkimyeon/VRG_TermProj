@@ -33,10 +33,14 @@ class UInputMappingContext;
 //   3 / 4        GPU 발열 내리기 / 올리기 (유닛당)
 //   5 / 6        펌프 회전수비 내리기 / 올리기
 //   7 / 8        라디에이터 UA 내리기 / 올리기
-//   Left / Right 선택 유닛 바꾸기
-//   E            선택 유닛 뽑기 / 꽂기
+//   Left / Right 바라보는 랙의 선택 유닛 바꾸기
+//   E            바라보는 랙의 선택 유닛 뽑기 / 꽂기 (다른 랙은 건드리지 않는다)
 //   R            시뮬레이션 리셋
 //   H            도움말 표시 토글
+//
+// "바라보는 랙"은 카메라 시선이 처음 닿는 랙 상자(RackSizeM, 공기 격자에서 고체로 막는 것과 같은 상자)다.
+// 메시는 충돌이 꺼져 있어 라인 트레이스 대신 이 상자와 직접 교차시킨다. 대상 랙은 초록 상자로,
+// 선택 유닛은 노란 상자로 그린다.
 UCLASS()
 class VRG_TERMPROJ_API ADataCenterDebugController : public APlayerController
 {
@@ -70,6 +74,15 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Debug")
 	bool bShowHelp = true;
 
+	// How far the view ray looks for a rack to select [m].
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Debug", meta = (ClampMin = "0.5"))
+	double MaxSelectDistanceM = 15.0;
+
+	// Nearest rack whose box (RackSizeM, base at the actor origin) the ray hits within MaxDistanceCm, or null.
+	// Unreal units here (cm): this is view picking, not a solver.
+	static ARackThermalActor* PickRackAlongRay(const TArray<TObjectPtr<ARackThermalActor>>& Racks,
+		const FVector& EyeCm, const FVector& Dir, double MaxDistanceCm);
+
 	// 레벨에서 대상을 다시 훑는 주기 [s]. 방 액터가 랙을 늦게 띄우기 때문에 필요하다.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Debug")
 	float TargetRefreshIntervalS = 0.5f;
@@ -97,6 +110,11 @@ private:
 
 	int32 SelectedSledIndex = 0;
 	float TimeSinceRefreshS = 0.0f;
+
+	// The rack the camera looks at (updated every tick). Unit selection and E act on it only.
+	TWeakObjectPtr<ARackThermalActor> TargetRack;
+	ARackThermalActor* FindLookedAtRack() const;
+	void DrawTargetHighlight() const;
 	bool bKnobsInitialized = false;
 
 	// 키 하나를 InputAction으로 만들고 매핑에 넣는다.

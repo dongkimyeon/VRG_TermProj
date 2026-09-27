@@ -8,6 +8,7 @@
 #include "Simulation/Core/SimUnits.h"
 #include "Simulation/Thermal/RackThermalModel.h"
 
+#include "DrawDebugHelpers.h"
 #include "EnhancedInputComponent.h"
 #include "EnhancedInputSubsystems.h"
 #include "Engine/Engine.h"
@@ -385,42 +386,102 @@ void ADataCenterDebugController::OnUtilizationUp()
 	ApplyUtilizationKnob();
 }
 
+ARackThermalActor* ADataCenterDebugController::FindLookedAtRack() const
+{
+	FVector EyeCm;
+	FRotator ViewRotation;
+	GetPlayerViewPoint(EyeCm, ViewRotation);
+	return PickRackAlongRay(Racks, EyeCm, ViewRotation.Vector(), MaxSelectDistanceM * 100.0);
+}
+
+ARackThermalActor* ADataCenterDebugController::PickRackAlongRay(const TArray<TObjectPtr<ARackThermalActor>>& Racks,
+	const FVector& EyeCm, const FVector& Dir, double MaxDistanceCm)
+{
+	// Slab test against each rack's box in its own frame (forward = depth, right = width, up = height from the base).
+	ARackThermalActor* Best = nullptr;
+	double BestT = MaxDistanceCm;
+	for (ARackThermalActor* Rack : Racks)
+	{
+		if (Rack == nullptr) continue;
+		const FVector Axes[3] = { Rack->GetActorForwardVector(), Rack->GetActorRightVector(), Rack->GetActorUpVector() };
+		const FVector SizeCm = Rack->RackSizeM * 100.0;
+		const double Lo[3] = { -.5 * SizeCm.X, -.5 * SizeCm.Y, 0.0 }, Hi[3] = { .5 * SizeCm.X, .5 * SizeCm.Y, SizeCm.Z };
+		const FVector Rel = EyeCm - Rack->GetActorLocation();
+		double TMin = 0.0, TMax = BestT;
+		bool bHit = true;
+		for (int32 A = 0; A < 3 && bHit; ++A)
+		{
+			const double O = FVector::DotProduct(Rel, Axes[A]), D = FVector::DotProduct(Dir, Axes[A]);
+			if (FMath::Abs(D) < 1e-9)
+			{
+				bHit = O >= Lo[A] && O <= Hi[A];
+				continue;
+			}
+			double T0 = (Lo[A] - O) / D, T1 = (Hi[A] - O) / D;
+			if (T0 > T1) Swap(T0, T1);
+			TMin = FMath::Max(TMin, T0); TMax = FMath::Min(TMax, T1);
+			bHit = TMin <= TMax;
+		}
+		if (bHit && TMin < BestT)
+		{
+			BestT = TMin;
+			Best = Rack;
+		}
+	}
+	return Best;
+}
+
+void ADataCenterDebugController::DrawTargetHighlight() const
+{
+	const ARackThermalActor* Rack = TargetRack.Get();
+	UWorld* World = GetWorld();
+	if (Rack == nullptr || World == nullptr) return;
+	const FQuat Rotation = Rack->GetActorQuat();
+	const FVector SizeCm = Rack->RackSizeM * 100.0;
+	DrawDebugBox(World, Rack->GetActorLocation() + Rack->GetActorUpVector() * .5 * SizeCm.Z, .5 * SizeCm, Rotation, FColor::Green, false, 0.0f, 0, 1.5f);
+	double BottomM = 0.0, HeightM = 0.0;
+	Rack->GetSlotHeightRangeM(SelectedSledIndex, BottomM, HeightM);
+	if (HeightM > 0.0)
+	{
+		const FVector SlotCentre = Rack->GetActorLocation() + Rack->GetActorUpVector() * (BottomM + .5 * HeightM) * 100.0;
+		DrawDebugBox(World, SlotCentre, FVector(.5 * SizeCm.X + 2.0, .5 * SizeCm.Y + 2.0, .5 * HeightM * 100.0), Rotation, FColor::Yellow, false, 0.0f, 0, 2.0f);
+	}
+}
+
 void ADataCenterDebugController::OnSelectPreviousSled()
 {
-	if (Racks.Num() > 0 && Racks[0] != nullptr)
+	if (const ARackThermalActor* Rack = TargetRack.Get())
 	{
-		const int32 NumSleds = FMath::Max(1, Racks[0]->Params.NumSleds);
+		const int32 NumSleds = FMath::Max(1, Rack->Params.NumSleds);
 		SelectedSledIndex = (SelectedSledIndex - 1 + NumSleds) % NumSleds;
 	}
 }
 
 void ADataCenterDebugController::OnSelectNextSled()
 {
-	if (Racks.Num() > 0 && Racks[0] != nullptr)
+	if (const ARackThermalActor* Rack = TargetRack.Get())
 	{
-		const int32 NumSleds = FMath::Max(1, Racks[0]->Params.NumSleds);
+		const int32 NumSleds = FMath::Max(1, Rack->Params.NumSleds);
 		SelectedSledIndex = (SelectedSledIndex + 1) % NumSleds;
 	}
 }
 
 void ADataCenterDebugController::OnToggleSelectedSled()
 {
-	for (ARackThermalActor* Rack : Racks)
+	// Only the rack being looked at. Nothing happens when the view ray hits no rack.
+	ARackThermalActor* Rack = TargetRack.Get();
+	if (Rack == nullptr)
 	{
-		if (Rack != nullptr)
-		{
-			Rack->ToggleSledDocked(SelectedSledIndex);
-		}
+		return;
 	}
+	Rack->ToggleSledDocked(SelectedSledIndex);
 
-	// 수력 쪽 분기 저항도 같이 바뀌어야 한다.
-	if (HydraulicNetwork != nullptr && Racks.Num() > 0 && Racks[0] != nullptr)
+	// The S2 hydraulic debug actor has its own abstract racks and no link to rack actors; its rack with the
+	// same index as the target in this controller's list follows the target's docked count.
+	const int32 TargetIndex = Racks.IndexOfByKey(Rack);
+	if (HydraulicNetwork != nullptr && TargetIndex != INDEX_NONE && TargetIndex < HydraulicNetwork->NumRacks)
 	{
-		const int32 NumDocked = Racks[0]->GetNumDockedSleds();
-		for (int32 RackIndex = 0; RackIndex < HydraulicNetwork->NumRacks; ++RackIndex)
-		{
-			HydraulicNetwork->SetRackDockedSleds(RackIndex, NumDocked);
-		}
+		HydraulicNetwork->SetRackDockedSleds(TargetIndex, Rack->GetNumDockedSleds());
 	}
 
 	// 방 액터는 랙 액터에서 도킹 상태를 직접 읽으므로 다시 풀라고만 알리면 된다.
@@ -455,6 +516,15 @@ void ADataCenterDebugController::Tick(float DeltaTime)
 
 	RefreshTargetsIfStale(DeltaTime);
 
+	ARackThermalActor* Looked = FindLookedAtRack();
+	if (Looked != TargetRack.Get())
+	{
+		TargetRack = Looked;
+		// Racks can differ in slot count (NVL72 37 slots vs hybrid 12); keep the index valid for the new rack.
+		if (Looked != nullptr) SelectedSledIndex = FMath::Clamp(SelectedSledIndex, 0, FMath::Max(1, Looked->Params.NumSleds) - 1);
+	}
+	DrawTargetHighlight();
+
 	if (bShowHelp)
 	{
 		DrawHelp();
@@ -471,15 +541,21 @@ void ADataCenterDebugController::DrawHelp() const
 	const uint64 BaseKey = static_cast<uint64>(GetUniqueID());
 
 	GEngine->AddOnScreenDebugMessage(BaseKey, 0.0f, FColor(180, 220, 255),
-		TEXT("[디버그 키] 1/2 CPU 발열  3/4 GPU 발열  5/6 펌프 회전수  7/8 라디에이터 UA  9/0 부하율  ←/→ 유닛 선택  E 뽑기/꽂기  R 리셋  H 도움말"));
+		TEXT("[디버그 키] 1/2 CPU 발열  3/4 GPU 발열  5/6 펌프 회전수  7/8 라디에이터 UA  9/0 부하율  ←/→ 유닛 선택  E 뽑기/꽂기 (바라보는 랙만)  R 리셋  H 도움말"));
 
-	const int32 NumSleds = (Racks.Num() > 0 && Racks[0] != nullptr) ? Racks[0]->Params.NumSleds : 0;
-	const bool bSelectedDocked = (Racks.Num() > 0 && Racks[0] != nullptr) && Racks[0]->IsSledDocked(SelectedSledIndex);
+	const ARackThermalActor* Rack = TargetRack.Get();
+	FString Selection = TEXT("바라보는 랙 없음 - 랙을 조준하면 ←/→, E가 그 랙에만 적용된다");
+	if (Rack != nullptr)
+	{
+		const FVector M = SimUnits::UnrealToMeters(Rack->GetActorLocation());
+		Selection = FString::Printf(TEXT("대상 랙 (%.2f, %.2f) m | 선택 유닛 U%d/%d %s | 꽂힌 유닛 %d"),
+			M.X, M.Y, SelectedSledIndex, Rack->Params.NumSleds,
+			Rack->IsSledDocked(SelectedSledIndex) ? TEXT("[꽂힘]") : TEXT("[뽑힘]"), Rack->GetNumDockedSleds());
+	}
 
 	GEngine->AddOnScreenDebugMessage(BaseKey + 1, 0.0f, FColor(255, 220, 160),
 		FString::Printf(
-			TEXT("CPU %.0f W/유닛 | GPU %.0f W/유닛 (전부하) | 부하율 %.0f%% | 펌프 r=%.2f | 라디에이터 UA %.0f W/K | 선택 유닛 U%d/%d %s"),
+			TEXT("CPU %.0f W/유닛 | GPU %.0f W/유닛 (전부하) | 부하율 %.0f%% | 펌프 r=%.2f | 라디에이터 UA %.0f W/K | %s"),
 			CpuHeatKnob.Value, GpuHeatKnob.Value, UtilizationKnob.Value * 100.0, PumpSpeedKnob.Value, RadiatorUAKnob.Value,
-			SelectedSledIndex, NumSleds,
-			bSelectedDocked ? TEXT("[꽂힘]") : TEXT("[뽑힘]")));
+			*Selection));
 }
