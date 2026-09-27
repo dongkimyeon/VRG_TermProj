@@ -1,6 +1,7 @@
 // Fill out your copyright notice in the Description page of Project Settings.
 
 #include "Actors/HydraulicNetworkDebugActor.h"
+#include "Simulation/Core/VrgHud.h"
 #include "Simulation/Core/SimUnits.h"
 #include "DrawDebugHelpers.h"
 #include "Engine/Engine.h"
@@ -275,7 +276,7 @@ void AHydraulicNetworkDebugActor::DrawNetwork() const
 		if (bShowAllFlowLabels || bIsRackBranch)
 		{
 			const FVector MidCm = (StartCm + EndCm) * 0.5;
-			DrawDebugString(World, MidCm, FString::Printf(TEXT("%.1f L/s"), MagnitudeM3s * 1000.0),
+			if (VrgHud::ShowDebugText()) DrawDebugString(World, MidCm, FString::Printf(TEXT("%.1f L/s"), MagnitudeM3s * 1000.0),
 				nullptr, FColor::White, 0.0f, true, 1.0f);
 		}
 	}
@@ -288,7 +289,7 @@ void AHydraulicNetworkDebugActor::DrawNetwork() const
 
 		if (bShowNodePressures)
 		{
-			DrawDebugString(World, NodeCm + FVector(0, 0, 12.0),
+			if (VrgHud::ShowDebugText()) DrawDebugString(World, NodeCm + FVector(0, 0, 12.0),
 				FString::Printf(TEXT("%.0f kPa"), Network.GetNodePressurePa(NodeIndex) / 1000.0),
 				nullptr, FColor(180, 180, 255), 0.0f, true, 0.9f);
 		}
@@ -296,7 +297,7 @@ void AHydraulicNetworkDebugActor::DrawNetwork() const
 
 	// CDU(노드 0)를 크게 그려 구분한다.
 	DrawDebugSphere(World, NodeWorldLocation(0), 16.0f, 12, FColor::Orange, false, -1.0f, 0, 2.5f);
-	DrawDebugString(World, NodeWorldLocation(0) + FVector(0, 0, 30.0), TEXT("CDU / PUMP"),
+	if (VrgHud::ShowDebugText()) DrawDebugString(World, NodeWorldLocation(0) + FVector(0, 0, 30.0), TEXT("CDU / PUMP"),
 		nullptr, FColor::Orange, 0.0f, true, 1.1f);
 
 	// 랙 외형
@@ -318,7 +319,7 @@ void AHydraulicNetworkDebugActor::DrawNetwork() const
 					bIsolated ? FColor(160, 70, 70) : FColor(90, 110, 140), false, -1.0f, 0, 1.5f);
 			}
 
-			DrawDebugString(World, CenterCm + FVector(0, 0, HalfExtentCm.Z + 20.0),
+			if (VrgHud::ShowDebugText()) DrawDebugString(World, CenterCm + FVector(0, 0, HalfExtentCm.Z + 20.0),
 				FString::Printf(TEXT("R%d 유닛 %d/%d"), RackIndex,
 					GetRackDockedSleds(RackIndex), SledsPerRack),
 				nullptr, bIsolated ? FColor(255, 140, 140) : FColor(200, 220, 255), 0.0f, true, 1.0f);
@@ -365,7 +366,7 @@ void AHydraulicNetworkDebugActor::DrawSummary() const
 
 	const uint64 BaseKey = static_cast<uint64>(GetUniqueID());
 
-	GEngine->AddOnScreenDebugMessage(BaseKey, 0.0f,
+	if (VrgHud::ShowDebugText()) GEngine->AddOnScreenDebugMessage(BaseKey, 0.0f,
 		LastResult.bConverged ? FColor::Green : FColor::Red,
 		FString::Printf(TEXT("[%s] %s | Newton %d회 | 정규화 잔차 %.2e (기준 유량 %.4f m3/s, 기준 압력 %.0f Pa)"),
 			*GetName(),
@@ -373,7 +374,7 @@ void AHydraulicNetworkDebugActor::DrawSummary() const
 			LastResult.IterationsUsed, LastResult.NormalizedResidual,
 			LastResult.ReferenceFlowM3s, LastResult.ReferencePressurePa));
 
-	GEngine->AddOnScreenDebugMessage(BaseKey + 1, 0.0f, FColor::Cyan,
+	if (VrgHud::ShowDebugText()) GEngine->AddOnScreenDebugMessage(BaseKey + 1, 0.0f, FColor::Cyan,
 		FString::Printf(TEXT("펌프 유량 %.1f L/s | 양정 %.1f kPa | 유체 동력 %.2f kW | 전기 입력 %.2f kW (효율 %.2f)"),
 			Network.GetPumpFlowM3s(0) * 1000.0,
 			Network.GetPumpDeltaPPa(0) / 1000.0,
@@ -381,20 +382,20 @@ void AHydraulicNetworkDebugActor::DrawSummary() const
 			Network.GetPumpElectricalInputPowerW(0) / 1000.0,
 			PumpEfficiency));
 
-	GEngine->AddOnScreenDebugMessage(BaseKey + 4, 0.0f, FColor(200, 160, 255),
+	if (VrgHud::ShowDebugText()) GEngine->AddOnScreenDebugMessage(BaseKey + 4, 0.0f, FColor(200, 160, 255),
 		FString::Printf(TEXT("펌프 회전수비 r=%.2f | 체절양정 %.1f kPa (정격 %.1f kPa의 r^2=%.3f배) | 전력은 운전점에서 계산 (P_rated*r^3 아님)"),
 			PumpSpeedRatio,
 			PumpShutoffHeadPa * PumpSpeedRatio * PumpSpeedRatio / 1000.0,
 			PumpShutoffHeadPa / 1000.0,
 			PumpSpeedRatio * PumpSpeedRatio));
 
-	GEngine->AddOnScreenDebugMessage(BaseKey + 2, 0.0f, FColor::Yellow,
+	if (VrgHud::ShowDebugText()) GEngine->AddOnScreenDebugMessage(BaseKey + 2, 0.0f, FColor::Yellow,
 		FString::Printf(TEXT("랙 %d대(연결 %d대) | 유닛 %d/%d대 | 분기 유량 %.2f ~ %.2f L/s | 편차 %.1f%% (앞쪽 랙이 더 받음)"),
 			RackBranchPipeIndices.Num(), NumConnectedRacks,
 			NumDockedSledsTotal, RackBranchPipeIndices.Num() * SledsPerRack,
 			MinRackFlowM3s * 1000.0, MaxRackFlowM3s * 1000.0, SpreadPercent));
 
-	GEngine->AddOnScreenDebugMessage(BaseKey + 3, 0.0f, FColor(150, 150, 150),
+	if (VrgHud::ShowDebugText()) GEngine->AddOnScreenDebugMessage(BaseKey + 3, 0.0f, FColor(150, 150, 150),
 		TEXT("배관 색 = 유량 크기 (파랑 낮음 -> 노랑 높음). 온도가 아님 - S2에는 온도가 없다."));
 }
 

@@ -1,6 +1,7 @@
 // Fill out your copyright notice in the Description page of Project Settings.
 
 #include "Actors/DataCenterSimulationActor.h"
+#include "Simulation/Core/VrgHud.h"
 #include "Simulation/Core/VrgPerfCounters.h"
 
 #include "Actors/AirFieldDebugActor.h"
@@ -1227,20 +1228,20 @@ void ADataCenterSimulationActor::DrawSummary() const
 
 	if (!LastSetupMessage.IsEmpty())
 	{
-		GEngine->AddOnScreenDebugMessage(BaseKey + 4, 0.0f, FColor::Orange,
+		if (VrgHud::ShowDebugText()) GEngine->AddOnScreenDebugMessage(BaseKey + 4, 0.0f, FColor::Orange,
 			FString::Printf(TEXT("[%s] %s"), *GetName(), *LastSetupMessage));
 	}
 
 	const bool bAllConverged = Snapshot.bHydraulicsConverged && Snapshot.bAirPressureConverged;
 
-	GEngine->AddOnScreenDebugMessage(BaseKey, 0.0f,
+	if (VrgHud::ShowDebugText()) GEngine->AddOnScreenDebugMessage(BaseKey, 0.0f,
 		bAllConverged ? FColor::Green : FColor::Red,
 		FString::Printf(TEXT("[통합] t=%.1f s | 랙/스파인 %d대 | 수력 %s | 공기 압력 %s"),
 			Snapshot.SimTimeS, Snapshot.RackHeatToAirW.Num(),
 			Snapshot.bHydraulicsConverged ? TEXT("수렴") : TEXT("수렴 실패"),
 			Snapshot.bAirPressureConverged ? TEXT("수렴") : TEXT("수렴 실패 - 속도장 믿지 말 것")));
 
-	GEngine->AddOnScreenDebugMessage(BaseKey + 1, 0.0f, FColor::Cyan,
+	if (VrgHud::ShowDebugText()) GEngine->AddOnScreenDebugMessage(BaseKey + 1, 0.0f, FColor::Cyan,
 		FString::Printf(TEXT("IT 발열 %.1f kW + CRAH 팬 %.1f kW = 냉각수 방출(%s) %.1f kW + 공기 코일 %.2f kW + 축적"),
 			Snapshot.TotalItHeatW / 1000.0,
 			Snapshot.CrahFanPowerW / 1000.0,
@@ -1248,7 +1249,7 @@ void ADataCenterSimulationActor::DrawSummary() const
 			Snapshot.TotalRadiatorRejectedW / 1000.0,
 			Snapshot.TotalAirCoolingRemovedW / 1000.0));
 
-	GEngine->AddOnScreenDebugMessage(BaseKey + 2, 0.0f,
+	if (VrgHud::ShowDebugText()) GEngine->AddOnScreenDebugMessage(BaseKey + 2, 0.0f,
 		FMath::Abs(Snapshot.NormalizedEnergyResidual) < 1.0e-9 ? FColor::Yellow : FColor::Red,
 		FString::Printf(TEXT("전역 열수지: 유입 %.3e J - 유출 %.3e J - 축적 %.3e J | 정규화 잔차 %.2e"),
 			Snapshot.EnergyInJ, Snapshot.EnergyOutJ, Snapshot.EnergyStoredJ,
@@ -1260,7 +1261,7 @@ void ADataCenterSimulationActor::DrawSummary() const
 		for (const double M : Snapshot.RackAirMassFlowKgs) AirKgs += M;
 		for (const double M : Snapshot.RackDuctMassFlowKgs) DuctKgs += M;
 		const bool bDuctOk = !Snapshot.bAirDuctsRejected && (AirKgs <= 0.0 || DuctKgs >= .999 * AirKgs);
-		GEngine->AddOnScreenDebugMessage(BaseKey + 5, 0.0f, bDuctOk ? FColor(180, 255, 200) : FColor::Orange,
+		if (VrgHud::ShowDebugText()) GEngine->AddOnScreenDebugMessage(BaseKey + 5, 0.0f, bDuctOk ? FColor(180, 255, 200) : FColor::Orange,
 			FString::Printf(TEXT("팬: 랙 풍량 %.2f kg/s 중 공기 격자 관통 %.2f kg/s | 팬 전력 %.2f kW%s"),
 				AirKgs, DuctKgs, Snapshot.TotalFanPowerW / 1000.0,
 				Snapshot.bAirDuctsRejected ? TEXT(" | 덕트 거부됨 - 팬 기류 없음 (옥트리 경로 또는 잘못된 면)") : TEXT("")));
@@ -1280,16 +1281,16 @@ void ADataCenterSimulationActor::DrawSummary() const
 			Line += FString::Printf(TEXT(" [%d] 랙 %d대 %.0f kW (설계 %.0f) 회수 %.1f -> 공급 %.1f C, 설비수 %.1f -> %.1f C |"),
 				G, S.NumRacks, Duty / 1000.0, S.DesignDutyW / 1000.0, Ret - 273.15, Sup - 273.15, S.FacilitySupplyTempK - 273.15, Fac - 273.15);
 		}
-		GEngine->AddOnScreenDebugMessage(BaseKey + 7, 0.0f, FColor(160, 210, 255), Line);
+		if (VrgHud::ShowDebugText()) GEngine->AddOnScreenDebugMessage(BaseKey + 7, 0.0f, FColor(160, 210, 255), Line);
 	}
 	else
 	{
-		GEngine->AddOnScreenDebugMessage(BaseKey + 7, 0.0f, FColor(160, 210, 255),
+		if (VrgHud::ShowDebugText()) GEngine->AddOnScreenDebugMessage(BaseKey + 7, 0.0f, FColor(160, 210, 255),
 			TEXT("냉각수 열 방출: 랙별 라디에이터 (CDU 용량 제한 없음)"));
 	}
 
 	// Air cooling: which device carries it. The CRAH figures are design sizing (assumptions), not a product.
-	GEngine->AddOnScreenDebugMessage(BaseKey + 6, 0.0f, bCrahFellBackToCoil ? FColor::Orange : FColor(180, 220, 255),
+	if (VrgHud::ShowDebugText()) GEngine->AddOnScreenDebugMessage(BaseKey + 6, 0.0f, bCrahFellBackToCoil ? FColor::Orange : FColor(180, 220, 255),
 		CrahUnits.Num() > 0
 			? FString::Printf(TEXT("CRAH %s %d대 | 대당 평균 풍량 %.2f m3/s, 코일 UA %.0f W/K (설계 dT %.0f K, 접근 %.0f K 가정) | 코일 제거 %.1f kW | 팬 %.1f kW (추정 %.0f Pa, 효율 %.2f)"),
 				bUsingPlacedCrahs ? TEXT("(레벨에 놓은 액터)") : CrahLayout == ECrahLayout::InRow ? TEXT("인로우") : TEXT("벽면"), CrahUnits.Num(), CrahUnitFlowM3s, CrahUnitUAWK,
@@ -1309,7 +1310,7 @@ void ADataCenterSimulationActor::DrawSummary() const
 		}
 
 		// 온도 표시는 여기서만 °C로 바꾼다 (규약 2).
-		GEngine->AddOnScreenDebugMessage(BaseKey + 3, 0.0f, FColor(200, 220, 255),
+		if (VrgHud::ShowDebugText()) GEngine->AddOnScreenDebugMessage(BaseKey + 3, 0.0f, FColor(200, 220, 255),
 			FString::Printf(TEXT("랙 0 냉각수 %.3f kg/s | 랙 흡기 %.2f ~ %.2f C (공기 격자에서 옴)"),
 				Snapshot.RackCoolantMassFlowKgs[0],
 				MinInletK - 273.15, MaxInletK - 273.15));

@@ -177,6 +177,8 @@ private:
 	FVector GrabOffsetCm = FVector::ZeroVector;  // actor origin minus the floor point it was grabbed at
 	TWeakObjectPtr<AActor> HoveredPlaceable;
 	int32 StartFrameAttempts = 0;
+	FVector FramedEyeCm = FVector::ZeroVector;
+	bool bFramedMoveLogged = false;
 	bool TryFrameEquipment();
 	void OnResetSim();
 	void OnToggleHelp();

@@ -1,6 +1,7 @@
 // Fill out your copyright notice in the Description page of Project Settings.
 
 #include "Actors/DataCenterRoomActor.h"
+#include "Simulation/Core/VrgHud.h"
 
 #include "Actors/CoolingDistributionUnitActor.h"
 #include "Actors/RackThermalActor.h"
@@ -1088,7 +1089,7 @@ void ADataCenterRoomActor::DrawSummary() const
 
 	if (Rows.Num() == 0)
 	{
-		GEngine->AddOnScreenDebugMessage(BaseKey, 0.0f, FColor::Orange,
+		if (VrgHud::ShowDebugText()) GEngine->AddOnScreenDebugMessage(BaseKey, 0.0f, FColor::Orange,
 			FString::Printf(TEXT("[%s] 레벨에서 랙을 찾지 못했습니다. 랙을 놓거나 SpawnRackGrid를 누르세요."),
 				*GetName()));
 		return;
@@ -1125,7 +1126,7 @@ void ADataCenterRoomActor::DrawSummary() const
 		MinBranchFlowM3s = 0.0;
 	}
 
-	GEngine->AddOnScreenDebugMessage(BaseKey, 0.0f,
+	if (VrgHud::ShowDebugText()) GEngine->AddOnScreenDebugMessage(BaseKey, 0.0f,
 		LastResult.bConverged ? FColor::Green : FColor::Red,
 		FString::Printf(TEXT("[%s] %s | 랙 %d대 / 줄 %d개 (CDU 연결 %d줄) | Newton %d회 | 정규화 잔차 %.2e"),
 			*GetName(),
@@ -1133,17 +1134,17 @@ void ADataCenterRoomActor::DrawSummary() const
 			GetNumRoutedRacks(), Rows.Num(), NumCduRows,
 			LastResult.IterationsUsed, LastResult.NormalizedResidual));
 
-	GEngine->AddOnScreenDebugMessage(BaseKey + 1, 0.0f, FColor::Cyan,
+	if (VrgHud::ShowDebugText()) GEngine->AddOnScreenDebugMessage(BaseKey + 1, 0.0f, FColor::Cyan,
 		FString::Printf(TEXT("펌프 합계 유량 %.2f L/s | 전기 입력 %.2f kW | 랙 분기 %.2f ~ %.2f L/s | 펌프 r=%.2f"),
 			TotalPumpFlowM3s * 1000.0, TotalPumpElectricalW / 1000.0,
 			MinBranchFlowM3s * 1000.0, MaxBranchFlowM3s * 1000.0, LastPumpSpeedRatio));
 
-	GEngine->AddOnScreenDebugMessage(BaseKey + 2, 0.0f, FColor(150, 150, 150),
+	if (VrgHud::ShowDebugText()) GEngine->AddOnScreenDebugMessage(BaseKey + 2, 0.0f, FColor(150, 150, 150),
 		TEXT("배관: 파랑 = 공급, 빨강 = 회수 (색상은 역할, 밝기는 계산된 유량 크기). 온도를 그린 것이 아니다."));
 
 	if (bUseGjConnections && bShowCableTray)
 	{
-		GEngine->AddOnScreenDebugMessage(BaseKey + 3, 0.0f,
+		if (VrgHud::ShowDebugText()) GEngine->AddOnScreenDebugMessage(BaseKey + 3, 0.0f,
 			PatchPlan.Unconnected.IsEmpty() && PatchPlan.RejectedClaims == 0 ? FColor(150, 200, 255) : FColor::Orange,
 			PatchPlan.Summary());
 	}

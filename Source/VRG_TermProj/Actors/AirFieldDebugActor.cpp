@@ -1,6 +1,7 @@
 // Fill out your copyright notice in the Description page of Project Settings.
 
 #include "Actors/AirFieldDebugActor.h"
+#include "Simulation/Core/VrgHud.h"
 
 #include "Actors/DataCenterSimulationActor.h"
 #include "Actors/RackThermalActor.h"
@@ -859,13 +860,13 @@ void AAirFieldDebugActor::DrawSummaryText() const
 	if (Solver.IsUsingOctree())
 	{
 		const auto& Tree = Solver.GetOctreeSolver().GetGrid();
-		GEngine->AddOnScreenDebugMessage(BaseKey + 9, 0.0f, FColor::Cyan,
+		if (VrgHud::ShowDebugText()) GEngine->AddOnScreenDebugMessage(BaseKey + 9, 0.0f, FColor::Cyan,
 			FString::Printf(TEXT("[S5-C] %d leaves / %d hanging faces | MG residual %.3e | %s"),
 				Tree.GetNumLeaves(), Tree.GetNumHangingFaces(), Snapshot.PressureNormalizedResidual, *OctreeStatus));
 		if (Solver.IsOctreeAutoAdapting())
 		{
 			const FOctreeAdaptController& Adapt = Solver.GetOctreeAdaptController();
-			GEngine->AddOnScreenDebugMessage(BaseKey + 10, 0.0f, Solver.GetNumAutoAdaptFailures() > 0 ? FColor::Orange : FColor::Cyan,
+			if (VrgHud::ShowDebugText()) GEngine->AddOnScreenDebugMessage(BaseKey + 10, 0.0f, Solver.GetNumAutoAdaptFailures() > 0 ? FColor::Orange : FColor::Cyan,
 				FString::Printf(TEXT("[S5-D] 자동 적응: 정밀 루트 %d개 | 격자 변경 %lld회 (루트 전환 %lld) | 실패 %lld회%s%s"),
 					Adapt.GetNumRefined(), Adapt.GetNumTopologyChanges(), Adapt.GetNumRootFlips(), Solver.GetNumAutoAdaptFailures(),
 					OctreeAdaptSettings.TargetStepMs > 0.0 && Adapt.GetLodHistory().Num() > 0
@@ -876,7 +877,7 @@ void AAirFieldDebugActor::DrawSummaryText() const
 		}
 	}
 
-	GEngine->AddOnScreenDebugMessage(BaseKey, 0.0f,
+	if (VrgHud::ShowDebugText()) GEngine->AddOnScreenDebugMessage(BaseKey, 0.0f,
 		Snapshot.bPressureConverged ? FColor::Green : FColor::Red,
 		FString::Printf(TEXT("[%s] t=%.1f s | 격자 %dx%dx%d (h=%.2f m) | 압력 %s (반복 %d회, 정규화 잔차 %.2e)"),
 			*GetName(), Snapshot.SimTimeS,
@@ -885,7 +886,7 @@ void AAirFieldDebugActor::DrawSummaryText() const
 			Snapshot.PressureIterations, Snapshot.PressureNormalizedResidual));
 
 	// 온도 표시는 여기서만 °C로 바꾼다 (규약 2).
-	GEngine->AddOnScreenDebugMessage(BaseKey + 1, 0.0f, FColor::Cyan,
+	if (VrgHud::ShowDebugText()) GEngine->AddOnScreenDebugMessage(BaseKey + 1, 0.0f, FColor::Cyan,
 		FString::Printf(TEXT("열원 %s | 공기 %.2f ~ %.2f C | 최대 속도 %.3f m/s | CFL %.2f%s"),
 			// 통합 액터가 돌릴 때는 다리(FCouplingBridge)가 자기 입력 구조체를 쓰므로
 			// 이 액터의 Input.CellHeatW는 안 쓰이는 옛날 값이다. 그걸 숫자로 띄우면
@@ -898,7 +899,7 @@ void AAirFieldDebugActor::DrawSummaryText() const
 			Snapshot.MaxSpeedMs, Snapshot.CourantNumber,
 			Snapshot.CourantNumber > 1.0 ? TEXT(" [CFL>1: 결과가 뭉개짐]") : TEXT("")));
 
-	GEngine->AddOnScreenDebugMessage(BaseKey + 2, 0.0f, FColor::Yellow,
+	if (VrgHud::ShowDebugText()) GEngine->AddOnScreenDebugMessage(BaseKey + 2, 0.0f, FColor::Yellow,
 		FString::Printf(TEXT("정규화 발산 %.2e (무차원) | 유입 %.3e J / 축적 %.3e J / 정규화 열수지 잔차 %.2e"),
 			Snapshot.NormalizedDivergence,
 			Solver.GetEnergyInJ(), Solver.GetEnergyStoredJ(), Snapshot.NormalizedEnergyResidual));
@@ -908,7 +909,7 @@ void AAirFieldDebugActor::DrawSummaryText() const
 		: (DrawMode == EAirDrawMode::Volume) ? TEXT("격자 전체")
 		: TEXT("단면 + 격자 전체");
 
-	GEngine->AddOnScreenDebugMessage(BaseKey + 3, 0.0f, FColor(150, 150, 150),
+	if (VrgHud::ShowDebugText()) GEngine->AddOnScreenDebugMessage(BaseKey + 3, 0.0f, FColor(150, 150, 150),
 		FString::Printf(
 			TEXT("공기 색 = 온도 (파랑 낮음 -> 빨강 높음). 표시 %s, 간격 %d%s. 막힌 상자이며 급배기는 S4에서 붙인다."),
 			DrawModeText, EffectiveDrawStride,

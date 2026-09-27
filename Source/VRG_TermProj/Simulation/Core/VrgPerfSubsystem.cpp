@@ -1,6 +1,7 @@
 // Fill out your copyright notice in the Description page of Project Settings.
 
 #include "Simulation/Core/VrgPerfSubsystem.h"
+#include "Simulation/Core/VrgHud.h"
 
 #include "Engine/Engine.h"
 #include "Engine/GameInstance.h"
@@ -186,14 +187,14 @@ void UVrgPerfSubsystem::DrawOverlay(const FVrgPerfSample& Sample) const
 	// 게임 스레드 대비가 아니라 프레임 대비로 적는다. 에디터 PIE에서는 게임 스레드
 	// 값이 신뢰할 수 없어 "게임의 3%" 같은 오해를 부르는 수치가 나왔다.
 	const double SolverShare = Sample.FrameMs > 0.0 ? 100.0 * Sample.Costs.SolverMs / Sample.FrameMs : 0.0;
-	GEngine->AddOnScreenDebugMessage(0x56524750, 0.0f, FColor::Yellow,
+	if (VrgHud::ShowDebugText()) GEngine->AddOnScreenDebugMessage(0x56524750, 0.0f, FColor::Yellow,
 		FString::Printf(
 			TEXT("[VrgPerf] Frame %.2f ms (%.1f fps) | Game %.2f | Draw %s | GPU %s"),
 			Sample.FrameMs, Sample.FrameMs > 0.0 ? 1000.0 / Sample.FrameMs : 0.0,
 			Sample.GameMs,
 			Sample.DrawMs > 0.0 ? *FString::Printf(TEXT("%.2f"), Sample.DrawMs) : TEXT("-"),
 			Sample.GpuMs > 0.0 ? *FString::Printf(TEXT("%.2f"), Sample.GpuMs) : TEXT("-")));
-	GEngine->AddOnScreenDebugMessage(0x56524751, 0.0f, FColor::Yellow,
+	if (VrgHud::ShowDebugText()) GEngine->AddOnScreenDebugMessage(0x56524751, 0.0f, FColor::Yellow,
 		FString::Printf(
 			TEXT("[VrgPerf] 솔버 %.2f ms (프레임의 %.0f%%, 스텝 %d, 압력 %.2f ms / %d회) | 디버그 드로우 %.2f ms / %d개"),
 			Sample.Costs.SolverMs, SolverShare, Sample.Costs.SolverSteps,

@@ -1,6 +1,7 @@
 // Fill out your copyright notice in the Description page of Project Settings.
 
 #include "Interaction/DataCenterDebugController.h"
+#include "Simulation/Core/VrgHud.h"
 
 #include "Actors/DataCenterRoomActor.h"
 #include "Actors/HydraulicNetworkDebugActor.h"
@@ -562,6 +563,7 @@ bool ADataCenterDebugController::TryFrameEquipment()
 	FRotator Look;
 	if (!EquipmentViewpoint(GetWorld(), Fov, Aspect, Eye, Look)) return false;
 	ViewPawn->SetActorLocation(Eye, false, nullptr, ETeleportType::TeleportPhysics);
+	FramedEyeCm = ViewPawn->GetActorLocation();
 	ViewPawn->SetActorRotation(Look);
 	SetControlRotation(Look);
 	UE_LOG(LogTemp, Display, TEXT("[VrgDebug] 시작 시점: 장비 전체가 보이게 %s (FOV %.0f, 화면비 %.2f)"), *Eye.ToCompactString(), Fov, Aspect);
@@ -700,6 +702,13 @@ void ADataCenterDebugController::Tick(float DeltaTime)
 	{
 		StartFrameAttempts = TryFrameEquipment() ? -1 : StartFrameAttempts + 1;
 	}
+	// Diagnostic (log only): the start view moved without input.
+	if (StartFrameAttempts < 0 && !bFramedMoveLogged && GetPawn() != nullptr && FVector::Dist(GetPawn()->GetActorLocation(), FramedEyeCm) > 100.0)
+	{
+		bFramedMoveLogged = true;
+		UE_LOG(LogTemp, Warning, TEXT("[VrgDebug] 시작 시점에서 카메라가 움직였다: %s -> %s (폰 %s)"), *FramedEyeCm.ToCompactString(),
+			*GetPawn()->GetActorLocation().ToCompactString(), *GetPawn()->GetClass()->GetName());
+	}
 
 	// Layout mode: hover / move the equipment under the crosshair. The room re-routes pipes once it settles.
 	if (IsLayoutMode())
@@ -776,7 +785,7 @@ void ADataCenterDebugController::DrawHelp() const
 			Rack->IsSledDocked(SelectedSledIndex) ? TEXT("[꽂힘]") : TEXT("[뽑힘]"), Rack->GetNumDockedSleds());
 	}
 
-	GEngine->AddOnScreenDebugMessage(BaseKey + 1, 0.0f, FColor(255, 220, 160),
+	if (VrgHud::ShowDebugText()) GEngine->AddOnScreenDebugMessage(BaseKey + 1, 0.0f, FColor(255, 220, 160),
 		FString::Printf(
 			TEXT("CPU %.0f W/유닛 | GPU %.0f W/유닛 (전부하) | 부하율 %.0f%% | 펌프 r=%.2f | 라디에이터 UA %.0f W/K | %s"),
 			CpuHeatKnob.Value, GpuHeatKnob.Value, UtilizationKnob.Value * 100.0, PumpSpeedKnob.Value, RadiatorUAKnob.Value,

@@ -1,6 +1,7 @@
 // Fill out your copyright notice in the Description page of Project Settings.
 
 #include "Actors/FixedOctreeDebugActor.h"
+#include "Simulation/Core/VrgHud.h"
 
 #include "Actors/AirFieldDebugActor.h"
 #include "Actors/RackThermalActor.h"
@@ -246,9 +247,9 @@ void AFixedOctreeDebugActor::Tick(float DeltaTime)
 	}
 	if (GEngine)
 	{
-		GEngine->AddOnScreenDebugMessage(uint64(GetUniqueID()) + 500001, 0.0f,
+		if (VrgHud::ShowDebugText()) GEngine->AddOnScreenDebugMessage(uint64(GetUniqueID()) + 500001, 0.0f,
 			FColor::White, OperatorStatus.IsEmpty() ? TEXT("[S5-B] CheckPoissonOperator로 연산자 점검") : OperatorStatus);
-		GEngine->AddOnScreenDebugMessage(uint64(GetUniqueID()) + 500000, 0.0f,
+		if (VrgHud::ShowDebugText()) GEngine->AddOnScreenDebugMessage(uint64(GetUniqueID()) + 500000, 0.0f,
 			ActiveLeafCount > 0 ? FColor::Cyan : FColor::Orange,
 			FString::Printf(TEXT("[S5-A] %s | 표시 %d/%d (랙 이동 후 RebuildOctree)"), *BuildStatus, Drawn, Eligible));
 	}

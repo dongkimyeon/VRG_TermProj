@@ -1,6 +1,7 @@
 // Fill out your copyright notice in the Description page of Project Settings.
 
 #include "Actors/RackThermalActor.h"
+#include "Simulation/Core/VrgHud.h"
 #include "Simulation/Core/SimUnits.h"
 #include "Visualization/SimMeshBuilder.h"
 #include "Visualization/GjConnectionMesh.h"
@@ -557,7 +558,7 @@ void ARackThermalActor::DrawReadout() const
 					SimUnits::MetersToCentimeters(LabelZM));
 
 			// 온도 표시는 여기서만 °C로 바꾼다 (규약 2).
-			DrawDebugString(World, LabelCm,
+			if (VrgHud::ShowDebugText()) DrawDebugString(World, LabelCm,
 				FString::Printf(TEXT("S%02d %s %s | 최고 %s %.1f C | 공기 %.3f kg/s, %.0f W"),
 					SledIndex,
 					IsSledDocked(SledIndex) ? TEXT("[꽂힘]") : TEXT("[뽑힘]"),
@@ -627,5 +628,5 @@ void ARackThermalActor::DrawReadout() const
 		: FString::Printf(TEXT(" | 부하율 %.0f%% | 랙 팬(고정) 풍량 %.3f kg/s"), Input.Utilization * 100.0, AirKgs);
 
 	// 같은 키로 덮어써서 프레임마다 쌓이지 않게 한다.
-	GEngine->AddOnScreenDebugMessage(static_cast<uint64>(GetUniqueID()), 0.0f, FColor::Yellow, Readout + FanText);
+	if (VrgHud::ShowDebugText()) GEngine->AddOnScreenDebugMessage(static_cast<uint64>(GetUniqueID()), 0.0f, FColor::Yellow, Readout + FanText);
 }
