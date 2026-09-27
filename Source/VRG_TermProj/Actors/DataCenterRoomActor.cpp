@@ -309,7 +309,7 @@ void ADataCenterRoomActor::BuildNetwork()
 		FInRowLoopSpec Spec;
 		Spec.NumRacks = Row.Racks.Num();
 		// Branch resistance scales with the liquid-cooled devices that are docked (compute and NVLink
-		// switch trays on the GB200 preset; every unit on the legacy uniform rack).
+		// switch trays of the GB200 NVL72).
 		Spec.SledsPerRack = Row.Racks.Num() > 0 && Row.Racks[0] ? FMath::Max(1, Row.Racks[0]->GetNumLiquidSlots()) : FMath::Max(1, SledsPerRack);
 		Spec.HeaderSegmentResistancePaS2M6 = HeaderSegmentResistancePaS2M6;
 		Spec.RackBranchResistancePaS2M6 = RackBranchResistancePaS2M6;

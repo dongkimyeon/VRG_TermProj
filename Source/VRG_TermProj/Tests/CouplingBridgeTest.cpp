@@ -50,7 +50,6 @@ namespace
 
 				RackInputs[RackIndex].ComponentHeatW = FRackThermalModel::MakeGb200Nvl72HeatW();
 				RackInputs[RackIndex].SledDocked.Init(true, Params.NumSleds);
-				RackInputs[RackIndex].TotalAirMassFlowKgs = 0.6;
 				RackInputs[RackIndex].AirInletTempK = 297.15;
 
 				Radiators[RackIndex].UAWK = 1.1e4;

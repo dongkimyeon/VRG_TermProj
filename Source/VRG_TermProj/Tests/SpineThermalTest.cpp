@@ -11,7 +11,6 @@ bool FSpineThermalTest::RunTest(const FString& Parameters)
 	FRackThermalInput Input;
 	Input.ComponentHeatW = FRackThermalModel::MakeDefaultHeatW(Params);
 	Input.CoolantMassFlowKgs = 0.0;
-	Input.TotalAirMassFlowKgs = 4 * 747.0 / (Params.AirCpJKgK * 10.0);
 	FRackThermalModel Model; Model.Initialize(Params, FRackThermalState());
 	FAirGridParams GP; GP.NumCellsX = 2; GP.NumCellsY = 2; GP.NumCellsZ = 2; GP.CellSizeM = 1.0;
 	FAirSolver Air; Air.Initialize(GP, 297.15);

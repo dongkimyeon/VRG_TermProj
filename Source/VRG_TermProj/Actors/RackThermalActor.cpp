@@ -27,6 +27,11 @@ ARackThermalActor::ARackThermalActor()
 
 	// 메쉬를 붙일 곳이 필요하다. 액터 위치가 캐비닛 바닥 중심이 된다.
 	RootComponent = CreateDefaultSubobject<USceneComponent>(TEXT("Root"));
+
+	// 랙은 GB200 NVL72 한 종류다 (2026-09-27, 15 kW 하이브리드 균일 랙은 없앴다).
+	Params = FRackThermalModel::MakeGb200Nvl72Params();
+	Input.ComponentHeatW = FRackThermalModel::MakeGb200Nvl72HeatW();
+	Input.SledDocked.Init(true, Params.Slots.Num());
 }
 
 void ARackThermalActor::BeginPlay()
@@ -48,7 +53,7 @@ void ARackThermalActor::PostEditChangeProperty(FPropertyChangedEvent& PropertyCh
 void ARackThermalActor::ConformInputArrays()
 {
 	const int32 NumSleds = FRackThermalModel::NumSlotsOf(Params);
-	if (Params.Slots.Num() > 0) Params.NumSleds = NumSleds;
+	Params.NumSleds = NumSleds;
 
 	// Racks saved in a level carry an old copy of the preset devices (no fans, no idle fractions).
 	// The code definition is the single source of physical defaults, so refresh them by name.
@@ -59,9 +64,7 @@ void ARackThermalActor::ConformInputArrays()
 
 	if (Input.ComponentHeatW.Num() != FRackThermalModel::CountNodes(Params))
 	{
-		// Legacy uniform parts carry no DefaultHeatW; keep the S1 per-sled defaults for them.
-		Input.ComponentHeatW = Params.Slots.Num() > 0
-			? FRackThermalModel::MakeDefaultHeatW(Params) : FRackThermalModel::MakeUniformHeatW(NumSleds);
+		Input.ComponentHeatW = FRackThermalModel::MakeDefaultHeatW(Params);
 	}
 
 	if (Input.SledDocked.Num() != NumSleds)
@@ -142,7 +145,6 @@ void ARackThermalActor::ApplyGb200Nvl72Preset()
 	Input.SledDocked.Init(true, Params.Slots.Num());
 	Input.SlotAirInletTempK.Reset();
 	Input.CoolantMassFlowKgs = 2.3;     // NVL72 branch design flow (S4 room hydraulics)
-	Input.TotalAirMassFlowKgs = 1.2;
 	ResetSim();
 }
 
@@ -158,22 +160,15 @@ double ARackThermalActor::GetUplinkSwitchZM() const
 
 void ARackThermalActor::GetSledRowM(int32 SledIndex, double& OutBottomZM, double& OutRowHeightM) const
 {
+	OutBottomZM = 0.0;
+	OutRowHeightM = 0.0;
 	if (Params.Slots.IsValidIndex(SledIndex))
 	{
-		// Heterogeneous rack: the slot says where the device is.
+		// The slot says where the device is.
 		const double ScaleZ = RackSizeM.Z / 2.236;
 		OutBottomZM = Params.Slots[SledIndex].BottomZM * ScaleZ;
 		OutRowHeightM = Params.Slots[SledIndex].HeightM * ScaleZ;
-		return;
 	}
-	const int32 NumSleds = FMath::Max(1, Params.NumSleds);
-
-	// 위아래에 캐비닛 패널이 들어갈 자리를 남긴다.
-	const double BayBottomZM = PanelThicknessM;
-	const double BayTopZM = RackSizeM.Z - PanelThicknessM;
-
-	OutRowHeightM = (BayTopZM - BayBottomZM) / NumSleds;
-	OutBottomZM = BayBottomZM + OutRowHeightM * SledIndex;
 }
 
 FVector ARackThermalActor::GjPointWorldCm(const FVector& LocalM) const
@@ -309,7 +304,7 @@ void ARackThermalActor::RebuildMeshes()
 	}
 	UMaterialInterface* Material = SimMeshBuilder::LoadColorableMaterial();
 
-	const int32 NumSleds = FMath::Max(1, Params.NumSleds);
+	const int32 NumSleds = Params.NumSleds;
 
 	// 길이 단위 변환은 여기서만 한다 (규약 1).
 	const FVector SizeCm = SimUnits::MetersToUnreal(RackSizeM);
@@ -376,7 +371,7 @@ void ARackThermalActor::RebuildMeshes()
 		SledMeshes.Add(Sled);
 		SledBaseXCm.Add(0.0); bSledFixed.Add(false);
 
-		// One box per part for small devices (the S1 4-part unit), else one box per part kind so a
+		// One box per part for small devices, else one box per part kind so a
 		// 29-part compute tray stays readable. Front (+X) is the air inlet, list order = air path order.
 		TArray<TArray<int32>> Groups;
 		const int32 First = SlotNodeStart[SledIndex], End = SlotNodeStart[SledIndex + 1];

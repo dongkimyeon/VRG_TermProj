@@ -31,10 +31,10 @@ struct FRadiatorParams
 	GENERATED_BODY()
 
 	// 라디에이터 크기 [W/K]. 디버그 키로 조절하는 값이 이것이다.
-	// 기본값은 15 kW 랙의 냉각수 반출(약 12.5 kW)을 외기 대비 약 8 K 접근온도로
-	// 버리는 운전점에서 역산했다.
+	// 기본값은 GB200 NVL72 랙 1대(냉각수 반출 약 100 kW, 유량 2.3 kg/s)의 설계점 값이다
+	// (Gb200Nvl72.SteadyStatePlausible과 같은 값). 랙별 라디에이터 모드에서만 쓰인다.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Radiator", meta = (ClampMin = "0.0"))
-	double UAWK = 1.6e3;
+	double UAWK = 1.1e4;
 
 	// 열을 버리는 쪽 온도 [K]. 설비수나 외기.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Radiator")

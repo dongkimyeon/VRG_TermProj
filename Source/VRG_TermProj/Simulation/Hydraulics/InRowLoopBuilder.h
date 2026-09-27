@@ -10,8 +10,10 @@
 //
 //   CDU -> 펌프 -> 공급 헤더(행을 따라) -> 랙 분기 -> 회수 헤더 -> CDU
 //
-// 같은 위상을 방 액터, 배관 디버그 액터, 테스트가 각각 따로 세우고 있었다.
-// 위상은 물리이므로 한 곳에서만 만든다. 좌표는 여기 없다 - 솔버는 위상만 안다.
+// 위상은 물리이므로 한 곳(여기)에서만 만든다. 방 액터와 테스트가 같이 쓴다. 좌표는 여기 없다 - 솔버는 위상만 안다.
+//
+// 기본값은 GB200 NVL72 한 줄(랙 8대, 랙당 수랭 장비 27대 = 컴퓨트 18 + NVLink 스위치 9)이며
+// ADataCenterRoomActor / ACoolingDistributionUnitActor의 기본값과 같다. 랙 분기 설계 유량 약 2.3 L/s에서 역산했다.
 //
 // 이 파일은 UObject를 만들지 않는다. 워커 스레드에서 불러도 된다.
 
@@ -21,11 +23,11 @@ struct FInRowLoopSpec
 	GENERATED_BODY()
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hydraulics", meta = (ClampMin = "1", ClampMax = "64"))
-	int32 NumRacks = 6;
+	int32 NumRacks = 8;
 
-	// 랙 한 대의 슬롯 수. 분기 저항을 병렬 합성할 때 기준이 된다.
+	// 랙 한 대의 수랭 장비 수. 분기 저항을 병렬 합성할 때 기준이 된다.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hydraulics", meta = (ClampMin = "1", ClampMax = "64"))
-	int32 SledsPerRack = 12;
+	int32 SledsPerRack = 27;
 
 	// 랙별로 지금 꽂혀 있는 유닛 수. 길이가 NumRacks와 다르면 전부 만재로 본다.
 	// 0이면 그 랙의 노드와 분기 배관을 아예 만들지 않는다. 큰 저항으로 흉내 내면
@@ -34,15 +36,15 @@ struct FInRowLoopSpec
 	TArray<int32> DockedSledsPerRack;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hydraulics")
-	double HeaderSegmentResistancePaS2M6 = 2.7e8;
+	double HeaderSegmentResistancePaS2M6 = 6.0e6;
 
 	// 슬롯이 전부 찼을 때의 분기 저항. 2차 손실 병렬 합성이라 꽂힌 수가 n이면
 	// 유효 저항은 이 값 * (SledsPerRack / n)^2 이다.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hydraulics")
-	double RackBranchResistancePaS2M6 = 1.4e11;
+	double RackBranchResistancePaS2M6 = 1.7e10;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hydraulics")
-	double ReturnToCduResistancePaS2M6 = 5.4e8;
+	double ReturnToCduResistancePaS2M6 = 1.5e7;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hydraulics")
 	double CduReferencePressurePa = 2.0e5;
@@ -51,7 +53,7 @@ struct FInRowLoopSpec
 	double PumpShutoffHeadPa = 4.0e5;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hydraulics")
-	double PumpCurveCoeffPaS2M6 = 8.0e9;
+	double PumpCurveCoeffPaS2M6 = 6.0e8;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hydraulics", meta = (ClampMin = "0.01", ClampMax = "1.0"))
 	double PumpEfficiency = 0.7;

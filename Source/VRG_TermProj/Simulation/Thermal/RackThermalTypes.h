@@ -9,43 +9,26 @@
 // 여기 있는 구조체는 전부 POD다. UObject 참조나 포인터를 넣지 않는다.
 // 워커 스레드가 그대로 복사해 들고 갈 수 있어야 한다.
 //
-// 규약 7: 유닛(슬레드) x 부품 온도는 평탄 배열 + 선형 인덱스로 들고 있다.
-// 인덱스는 SledIndex * NumRackComponents + (int32)ERackComponent.
+// 규약 7: 부품 온도는 평탄 배열 + 선형 인덱스로 들고 있다. 슬롯 s의 노드는
+// FRackThermalModel::GetSlotNodeStart(s)부터 그 장비의 부품 수만큼이다.
 //
 // 모든 온도는 K, 열량은 W, 질량유량은 kg/s (규약 1·2·3).
 //
 // D1 준수: 랙 내부를 부품 노드로 쪼개는 것은 D1 위반이 아니다. D1은 *공기 도메인에
-// 주입할 때* 하나의 체적 열원으로 합치라는 뜻이다. S3/S4에서 격자에 넘길 때는
-// FRackThermalSnapshot::TotalHeatToAirW + TotalHeatToAmbientW 를 합산해 하나로 준다.
-
-// 서버 유닛 1대 안의 부품. 배열 순서가 그대로 공랭 직렬 체인 순서다.
+// 주입할 때* 체적 열원으로 넣으라는 뜻이다. 슬롯마다 자기 높이의 격자 셀에 넣는다.
 //
-// 액랭/공랭 분담은 하이브리드 서버 실기 구성을 따른다:
-//   콜드플레이트(액랭) = Cpu, Gpu      -> ToCoolantUAWK > 0, ToAirUAWK = 0
-//   공기               = Ram, Vrm      -> ToAirUAWK > 0,     ToCoolantUAWK = 0
-// 공랭 체인 순서는 허용 온도가 낮은 부품을 앞에 둔다 (DDR5 RDIMM 약 85 C <
-// VRM 파워스테이지 약 125 C). 앞쪽 부품이 더 찬 공기를 받는다.
-// Cpu/Gpu는 ToAirUAWK가 0이라 체인에서 공기 온도를 바꾸지 않고 통과만 한다.
-UENUM(BlueprintType)
-enum class ERackComponent : uint8
-{
-	Cpu   UMETA(DisplayName = "CPU"),
-	Gpu   UMETA(DisplayName = "GPU"),
-	Ram   UMETA(DisplayName = "RAM"),
-	Vrm   UMETA(DisplayName = "VRM"),
-};
-
-static constexpr int32 NumRackComponents = 4;
+// 2026-09-27: 랙은 공개 사양 기반 장비(GB200 NVL72, Quantum 스파인 스위치)만 쓴다.
+// 예전의 15 kW 하이브리드 균일 랙(유닛 12대 x CPU/GPU/RAM/VRM)과 랙 단위 팬 경로는 없앴다.
 
 // What a component is, independent of where it sits in a device's list. Debug knobs and the UI find
-// "every GPU" by kind; the legacy ERackComponent index only means something for the uniform 4-part layout.
+// "every GPU" by kind.
 UENUM(BlueprintType)
 enum class ERackPartKind : uint8
 {
 	Cpu, Gpu, Memory, Nic, Dpu, Storage, Power, Fan, Switch, Management, Other
 };
 
-// 부품 하나의 고정 물성. 모든 유닛이 같은 구성이라고 보고 유닛 간에 공유한다.
+// 부품 하나의 고정 물성. 같은 장비 종류의 슬롯끼리 공유한다.
 USTRUCT(BlueprintType)
 struct FRackComponentParams
 {
@@ -100,8 +83,8 @@ struct FRackComponentParams
 };
 
 // Fans of one device (all identical, in parallel, blowing front -> rear).
-// NumFans <= 0: the device has no fans. In a rack that has any fan-equipped device the air flow of every slot
-// comes from its own fans (FRackThermalModel "fan mode"); a fanless device then gets no forced air.
+// NumFans <= 0: the device has no fans and gets no forced air (e.g. the fully liquid-cooled NVLink switch tray).
+// Every slot's air flow is its own fans' operating point.
 //
 // Fan curve (per fan, quadratic approximation of the datasheet P-Q curve between its two end points):
 //   dP = r^2 * ShutoffPressurePa * (1 - (FlowM3s / (r * MaxFlowM3s))^2)
@@ -160,7 +143,7 @@ struct FRackDeviceType
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Device")
 	TArray<FRackComponentParams> Components;
 
-	// Air-path resistance when docked [Pa*s^2/kg^2]. <= 0 uses the rack's DockedSlotResistancePaS2Kg2.
+	// Air-path resistance when docked [Pa*s^2/kg^2].
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Device")
 	double DockedResistancePaS2Kg2 = 0.0;
 
@@ -194,13 +177,9 @@ struct FRackThermalParams
 {
 	GENERATED_BODY()
 
-	// 캐비닛에 꽂히는 서버 유닛 슬롯 수.
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Rack", meta = (ClampMin = "1", ClampMax = "64"))
-	int32 NumSleds = 12;
-
-	// 길이 NumRackComponents. 비어 있으면 Initialize가 기본 구성으로 채운다.
+	// 슬롯 수. Initialize가 Slots.Num()으로 맞춘다.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Rack")
-	TArray<FRackComponentParams> Components;
+	int32 NumSleds = 0;
 
 	// 랙 내부 냉각수 노드 열용량 [J/K]. 약 9.6 kg의 물.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Rack")
@@ -216,26 +195,8 @@ struct FRackThermalParams
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Rack")
 	double AirDensityKgM3 = 1.184;
 
-	// ---- 슬롯 병렬 유로 저항 [Pa*s^2/kg^2] ----
-	// 공기는 캐비닛 앞뒤 압력차 하나를 공유하는 병렬 유로로 슬롯에 나뉜다.
-	// 2차 손실을 가정하므로 MassFlow_i = sqrt(dP / R_i), 즉 배분 가중치는 1/sqrt(R_i)다.
-	// 총 유량은 팬이 정하므로 입력으로 고정하고, 여기서는 비율만 결정한다.
-	//
-	// 유닛이 꽂힌 슬롯: 서버 내부(히트싱크·DIMM·백플레인)를 지나므로 저항이 크다.
-	// dP 약 100 Pa에서 0.1 kg/s -> R = 100/0.1^2 = 1.0e4.
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Rack")
-	double DockedSlotResistancePaS2Kg2 = 1.0e4;
-
-	// 빈 슬롯: 뻥 뚫린 구멍이라 저항이 훨씬 낮다. dP 약 100 Pa에서 0.5 kg/s -> R = 400.
-	// 저항비 25배 = 유량비 5배. 빈 슬롯이 공기를 훔쳐가므로 남은 유닛이 뜨거워진다.
-	// 실제로 blanking panel을 끼우는 이유가 이것이다 (패널을 끼우면 이 값이 커진다).
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Rack")
-	double EmptySlotResistancePaS2Kg2 = 4.0e2;
-
-	// ---- Heterogeneous layout ----
-	// When Slots is empty the rack is the uniform legacy layout: NumSleds identical slots using Components
-	// (bit-identical to the S1 model). Otherwise NumSleds is set to Slots.Num() at Initialize and every
-	// slot uses DeviceTypes[Slot.DeviceType].Components.
+	// ---- Layout ----
+	// Every slot uses DeviceTypes[Slot.DeviceType].Components. A rack with no slots has no nodes.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Rack")
 	TArray<FRackDeviceType> DeviceTypes;
 
@@ -249,8 +210,7 @@ struct FRackThermalInput
 {
 	GENERATED_BODY()
 
-	// 평탄 배열 [SledIndex * NumRackComponents + Component], 단위 W.
-	// 비어 있으면 모델이 0으로 본다.
+	// 노드별 전부하 발열 [W] (노드 순서는 모델의 슬롯 배치). 비어 있으면 모델이 0으로 본다.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Rack")
 	TArray<double> ComponentHeatW;
 
@@ -262,9 +222,9 @@ struct FRackThermalInput
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Rack")
 	double CoolantInletTempK = 300.15;
 
-	// S2 인로우 해석이 낸 랙당 분기 유량 0.82 L/s에 맞춘 값.
+	// GB200 NVL72 설계점 (랙당 약 2.3 kg/s, 냉각수 ΔT 약 10 K). 통합 구동에서는 수력 해가 준다.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Rack")
-	double CoolantMassFlowKgs = 0.82;
+	double CoolantMassFlowKgs = 2.3;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Rack")
 	double AirInletTempK = 297.15;
@@ -273,12 +233,6 @@ struct FRackThermalInput
 	// Length != number of slots -> every slot uses AirInletTempK.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Rack")
 	TArray<double> SlotAirInletTempK;
-
-	// 캐비닛 전체를 지나는 공기 질량유량 [kg/s]. 팬이 정하며 슬롯 사이에 배분된다.
-	// Used only when no device of the rack has fans (legacy rack-level fan). In fan mode each slot's own
-	// fans set its flow and this value is ignored.
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Rack")
-	double TotalAirMassFlowKgs = 1.2;
 
 	// Workload utilization 0..1 for every slot (full load = 1: ComponentHeatW as given).
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Rack", meta = (ClampMin = "0", ClampMax = "1"))
@@ -299,7 +253,7 @@ struct FRackThermalState
 {
 	GENERATED_BODY()
 
-	// 평탄 배열 [SledIndex * NumRackComponents + Component], 단위 K.
+	// 노드별 온도 [K]. Input.ComponentHeatW와 같은 순서.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Rack")
 	TArray<double> ComponentTempK;
 

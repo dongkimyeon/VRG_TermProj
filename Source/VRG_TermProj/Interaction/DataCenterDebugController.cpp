@@ -4,7 +4,6 @@
 #include "Simulation/Core/VrgHud.h"
 
 #include "Actors/DataCenterRoomActor.h"
-#include "Actors/HydraulicNetworkDebugActor.h"
 #include "Actors/RackThermalActor.h"
 #include "Actors/CoolingDistributionUnitActor.h"
 #include "Actors/CrahUnitActor.h"
@@ -29,9 +28,7 @@ ADataCenterDebugController::ADataCenterDebugController()
 	PrimaryActorTick.bCanEverTick = true;
 
 	// 여기 값은 레벨에 랙이 하나도 없을 때만 쓰이는 자리 표시다.
-	// 랙을 찾으면 InitializeKnobsFromTargets()가 그 랙의 현재 값으로 다시 잡는다.
-	// 랙 종류마다 발열 규모가 달라서(15 kW 하이브리드 vs GB200 NVL72) 숫자를
-	// 여기 박아 두면 다른 랙을 놓는 순간 범위가 어긋난다.
+	// 랙을 찾으면 InitializeKnobsFromTargets()가 그 랙의 현재 값(칩 한 개의 전부하 발열)으로 다시 잡는다.
 	CpuHeatKnob.Value = 350.0;
 	CpuHeatKnob.MinValue = 0.0;
 	CpuHeatKnob.MaxValue = 700.0;
@@ -96,7 +93,6 @@ void ADataCenterDebugController::BeginPlay()
 void ADataCenterDebugController::FindTargetActors()
 {
 	Racks.Reset();
-	HydraulicNetwork = nullptr;
 	Room = nullptr;
 
 	UWorld* World = GetWorld();
@@ -108,11 +104,6 @@ void ADataCenterDebugController::FindTargetActors()
 	for (TActorIterator<ARackThermalActor> It(World); It; ++It)
 	{
 		Racks.Add(*It);
-	}
-	for (TActorIterator<AHydraulicNetworkDebugActor> It(World); It; ++It)
-	{
-		HydraulicNetwork = *It;
-		break;
 	}
 	for (TActorIterator<ADataCenterRoomActor> It(World); It; ++It)
 	{
@@ -144,7 +135,7 @@ void ADataCenterDebugController::RefreshTargetsIfStale(float DeltaTime)
 		++RackCount;
 	}
 
-	if (RackCount == Racks.Num() && (Racks.Num() > 0 || Room != nullptr || HydraulicNetwork != nullptr))
+	if (RackCount == Racks.Num() && (Racks.Num() > 0 || Room != nullptr))
 	{
 		return;
 	}
@@ -303,10 +294,6 @@ void ADataCenterDebugController::ApplyHeatKnobs()
 
 void ADataCenterDebugController::ApplyPumpSpeedKnob()
 {
-	if (HydraulicNetwork != nullptr)
-	{
-		HydraulicNetwork->SetPumpSpeedRatio(PumpSpeedKnob.Value);
-	}
 	if (Room != nullptr)
 	{
 		Room->SetPumpSpeedRatio(PumpSpeedKnob.Value);
@@ -659,14 +646,6 @@ void ADataCenterDebugController::OnToggleSelectedSled()
 		return;
 	}
 	Rack->ToggleSledDocked(SelectedSledIndex);
-
-	// The S2 hydraulic debug actor has its own abstract racks and no link to rack actors; its rack with the
-	// same index as the target in this controller's list follows the target's docked count.
-	const int32 TargetIndex = Racks.IndexOfByKey(Rack);
-	if (HydraulicNetwork != nullptr && TargetIndex != INDEX_NONE && TargetIndex < HydraulicNetwork->NumRacks)
-	{
-		HydraulicNetwork->SetRackDockedSleds(TargetIndex, Rack->GetNumDockedSleds());
-	}
 
 	// 방 액터는 랙 액터에서 도킹 상태를 직접 읽으므로 다시 풀라고만 알리면 된다.
 	if (Room != nullptr)

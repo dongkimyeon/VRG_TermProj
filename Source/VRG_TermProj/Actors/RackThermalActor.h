@@ -190,7 +190,7 @@ private:
 	UPROPERTY(Transient)
 	TArray<TObjectPtr<UStaticMeshComponent>> SledMeshes;
 
-	// 부품 박스. 평탄 배열 [SledIndex * NumRackComponents + Component].
+	// 부품 박스. 슬롯마다 부품(또는 부품 종류)당 하나.
 	UPROPERTY(Transient)
 	TArray<TObjectPtr<UStaticMeshComponent>> ComponentMeshes;
 

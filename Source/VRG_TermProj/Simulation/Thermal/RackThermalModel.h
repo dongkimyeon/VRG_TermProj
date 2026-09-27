@@ -5,27 +5,27 @@
 #include "CoreMinimal.h"
 #include "Simulation/Thermal/RackThermalTypes.h"
 
-// S1(확장): 랙 1대 과도 열모델. 캐비닛 = 서버 유닛 N대, 유닛 = 부품 4개.
+// S1(확장): 랙 1대 과도 열모델. 캐비닛 = 슬롯 N개, 슬롯마다 장비 한 대(FRackDeviceType), 장비 = 부품 여러 개.
+// 2026-09-27부터 장비는 공개 사양 기반 프리셋(GB200 NVL72, Quantum 스파인)만 쓴다.
 //
-// 노드는 (NumSleds * NumRackComponents) 개의 부품 노드 + 냉각수 노드 1개다.
+// 노드는 모든 슬롯 장비의 부품 노드 + 냉각수 노드 1개다.
 // 전부 열용량을 가진 과도 노드다 (D2).
 //   부품 i:   C_i * dT_i/dt = P_i - Heat_to_coolant_i - Heat_to_air_i - Heat_to_ambient_i
 //   냉각수:   C_c * dT_c/dt = sum(Heat_to_coolant_i) - Heat_removed_by_coolant
 //
 // 룸 공기는 준정상(D2)이라 열용량 노드를 두지 않고 유효 전도도로만 열을 가져간다.
 //
-// --- 공랭은 직렬이다 ---
-// 유닛 하나 안에서 공기는 부품 배열 순서대로 지나간다. 뒤쪽 부품은 앞 단이 데운
+// --- 장비 안 공기 경로 ---
+// 장비 하나 안에서 공기는 부품 배열 순서대로 지나간다 (AirStage가 같은 연속 부품은 병렬). 뒤쪽 부품은 앞 단이 데운
 // 공기를 받는다. 모든 부품이 AirInletTempK를 보면 냉각 성능을 과대평가한다.
 // 출구 공기 온도는 나눗셈 없이 effectiveness로 직접 잇는다:
 //   eps = 1 - exp(-UA / (MassFlowKgs * Cp)),  T_out = T_in + eps * (T_comp - T_in)
 //   Heat = MassFlowKgs * Cp * eps * (T_comp - T_in) = CapacityRate * (T_out - T_in)
 // 두 식이 같은 eps를 쓰므로 구간별 열량의 합과 전체 공기 엔탈피 상승이 정확히 같다.
 //
-// --- 슬롯 병렬 유로 ---
-// 유닛들은 공기 쪽에서 병렬이다. 캐비닛 앞뒤 압력차를 공유하므로 2차 손실 가정에서
-// MassFlow_i = sqrt(dP / R_i)이고, 총 유량이 고정되면 배분 가중치는 1/sqrt(R_i)다.
-// 빈 슬롯은 저항이 낮아 공기를 더 가져가고, 그만큼 남은 유닛의 유량이 줄어든다.
+// --- 슬롯 공기 유량 ---
+// 슬롯마다 자기 장비 팬의 운전점(팬 곡선과 장비 임피던스의 교점)이다. 팬 없는 장비와 뽑힌 슬롯은 0이다.
+// 랙 앞뒤 정압은 같다고 본다 (통로 압력차에 따른 빈 슬롯 재순환은 모델에 없다).
 //
 // D2 준수: 어디에서도 HeatW/(MassFlowKgs*Cp)를 계산하지 않는다. 유량이 분모에 오는
 // 곳은 NTU뿐이고 유량 0에서는 분기로 처리한다. 유량이 0이면 CapacityRate가 0이라
@@ -40,7 +40,6 @@
 class FRackThermalModel
 {
 public:
-	// Params.Components가 비어 있으면 DefaultComponents()로 채운다.
 	// InitialState.ComponentTempK 길이가 맞지 않으면 CoolantTempK로 채워 맞춘다.
 	void Initialize(const FRackThermalParams& InParams, const FRackThermalState& InitialState);
 
@@ -73,23 +72,6 @@ public:
 	// ComponentHeatW filled from every component's DefaultHeatW.
 	static TArray<double> MakeDefaultHeatW(const FRackThermalParams& InParams);
 
-	// 평탄 인덱스 규칙. 이 함수 밖에서 직접 곱셈하지 않는다.
-	static int32 NodeIndex(int32 SledIndex, ERackComponent Component)
-	{
-		return SledIndex * NumRackComponents + static_cast<int32>(Component);
-	}
-
-	double GetComponentTempK(int32 SledIndex, ERackComponent Component) const;
-
-	// 하이브리드 서버 기본 구성 (CPU·GPU 액랭 / RAM·VRM 공랭). 근거는 cpp 주석 참고.
-	static TArray<FRackComponentParams> DefaultComponents();
-
-	// 유닛 1대분 기본 발열 [W]. 평탄 배열 한 칸 분량(NumRackComponents 길이).
-	static TArray<double> DefaultSledHeatW();
-
-	// NumSleds * NumRackComponents 길이로 펼친 기본 발열 배열.
-	static TArray<double> MakeUniformHeatW(int32 NumSleds);
-
 	// Design-point heat that leaves through air [W]: docked components' heat times their air share
 	// ToAirUAWK / (ToAirUAWK + ToCoolantUAWK). Used to size the room's air cooling (2-2), not by Step().
 	static double DesignHeatToAirW(const FRackThermalParams& Params, const FRackThermalInput& Input);
@@ -120,19 +102,12 @@ public:
 	// Row-end spine cabinet: one air-cooled Quantum switch per given slot height.
 	static FRackThermalParams MakeQuantumSpineParams(const TArray<double>& SlotBottomZM);
 
-	// Slots whose device is on the rack coolant loop (all slots for the legacy uniform rack).
+	// Slots whose device is on the rack coolant loop.
 	// With Docked, only docked ones. Hydraulic branch resistance scales with this.
 	static int32 CountLiquidSlots(const FRackThermalParams& InParams, const TArray<bool>* Docked = nullptr);
 
-	// 슬롯별 공기 질량유량 [kg/s]. 총 유량을 1/sqrt(R) 가중으로 나눈다.
-	// SledDocked 길이가 NumSleds와 다르면 전부 도킹으로 본다. 합은 총 유량과 같다.
-	// Legacy (rack-level fan) path only; fan mode uses each slot's own fan operating point.
-	static void DistributeSlotAirMassFlowKgs(const FRackThermalParams& InParams,
-		const TArray<bool>& SledDocked, double TotalAirMassFlowKgs, TArray<double>& OutSlotFlowKgs);
-
-	// ---- Fan mode (devices with their own fans) ----
-	// True when any device type of the layout has fans. Then every slot's air flow is its own fans'
-	// operating point and TotalAirMassFlowKgs is ignored.
+	// ---- Fans ----
+	// True when any device type of the layout has fans (reported in the snapshot).
 	static bool IsFanMode(const FRackThermalParams& InParams);
 
 	// Operating point of NumFans parallel fans at speed ratio r against dP = R * mdot^2 [kg/s].
@@ -145,10 +120,10 @@ public:
 	// Controller target speed ratio for a control temperature [K].
 	static double FanTargetSpeedRatio(const FRackFanSpec& Fans, double ControlTempK);
 
-	// Air-path resistance of a slot when docked [Pa*s^2/kg^2] (device value, else the rack default).
+	// Air-path resistance of a slot when docked [Pa*s^2/kg^2] (device value; 0 for an invalid slot).
 	static double DockedResistanceOf(const FRackThermalParams& InParams, int32 Slot);
 
-	// Fans of the device in a slot, or nullptr (legacy layout, fanless device, invalid slot).
+	// Fans of the device in a slot, or nullptr (fanless device, invalid slot).
 	static const FRackFanSpec* FansOf(const FRackThermalParams& InParams, int32 Slot);
 
 	// Heat multiplier of a part at utilization u: f + (1 - f) * u, f = IdleHeatFraction.
@@ -226,7 +201,7 @@ private:
 	// 스텝마다 쓰는 임시 버퍼. 매 프레임 재할당하지 않으려고 멤버로 들고 있다.
 	mutable TArray<double> ScratchSlotFlowKgs;
 
-	// Slot air mass flows for this step: fan operating points (fan mode) or the legacy distribution.
+	// Slot air mass flows for this step: each slot's fan operating point.
 	void ComputeSlotAirFlows(const FRackThermalInput& Input, TArray<double>& OutSlotFlowKgs) const;
 
 	// Fan electric input of a slot at its current speed [W] (0 without fans or undocked).

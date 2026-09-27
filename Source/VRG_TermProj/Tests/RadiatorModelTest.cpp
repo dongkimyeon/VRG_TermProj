@@ -23,10 +23,11 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FRadiatorEffectivenessAnalyticTest,
 bool FRadiatorEffectivenessAnalyticTest::RunTest(const FString& Parameters)
 {
 	FRadiatorParams Params;
-	Params.UAWK = 1.6e3;
+	Params.UAWK = 1.1e4;
 	Params.AmbientTempK = 295.15;
 
-	const double MassFlowKgs = 0.82;
+	// GB200 NVL72 랙 1대의 설계점 (2026-09-27, 15 kW 하이브리드 기준에서 바꿨다).
+	const double MassFlowKgs = 2.3;
 	const double CapacityRateWK = MassFlowKgs * WaterCpJKgK;
 	const double InletTempK = 303.15;
 
@@ -64,8 +65,8 @@ bool FRadiatorEnergyBalanceTest::RunTest(const FString& Parameters)
 	double MaxNormalizedError = 0.0;
 
 	// UA와 유량을 넓게 훑는다. 한 점에서만 맞는 식일 수도 있다.
-	const double UAValuesWK[] = { 1.0e2, 8.0e2, 1.6e3, 5.0e3, 2.0e4 };
-	const double MassFlowValuesKgs[] = { 0.05, 0.3, 0.82, 2.0 };
+	const double UAValuesWK[] = { 1.0e2, 1.0e3, 1.1e4, 5.0e4, 2.0e5 };
+	const double MassFlowValuesKgs[] = { 0.05, 0.5, 2.3, 5.0 };
 
 	for (const double UAWK : UAValuesWK)
 	{
@@ -106,7 +107,7 @@ bool FRadiatorSaturationTest::RunTest(const FString& Parameters)
 	FRadiatorParams Params;
 	Params.AmbientTempK = 295.15;
 
-	const double MassFlowKgs = 0.82;
+	const double MassFlowKgs = 2.3;
 	const double InletTempK = 308.15;
 	const double CapacityRateWK = MassFlowKgs * WaterCpJKgK;
 	const double MaxPossibleW = CapacityRateWK * (InletTempK - Params.AmbientTempK);
@@ -120,7 +121,7 @@ bool FRadiatorSaturationTest::RunTest(const FString& Parameters)
 	// UA를 "두 배씩" 키우며 보면 증가분이 줄지 않는다. 그건 식이 틀려서가 아니라
 	// 로그 축에서 보면 S자 곡선이라 변곡점 전까지는 증가분이 오히려 커지기 때문이다.
 	// 선형 증분으로 봐야 포화를 제대로 검증한다.
-	const double UAStepWK = 8.0e2;
+	const double UAStepWK = 5.5e3;
 	double PreviousHeatW = 0.0;
 	double PreviousGainW = TNumericLimits<double>::Max();
 	bool bGainShrinks = true;
@@ -149,13 +150,13 @@ bool FRadiatorSaturationTest::RunTest(const FString& Parameters)
 	}
 
 	// 기준 운전점에서 UA를 두 배로 키우면 반출열이 두 배보다 훨씬 적게 는다.
-	Params.UAWK = 1.6e3;
+	Params.UAWK = 1.1e4;
 	const double BaseHeatW = RadiatorModel::HeatRejectedW(Params, InletTempK, MassFlowKgs, WaterCpJKgK);
-	Params.UAWK = 3.2e3;
+	Params.UAWK = 2.2e4;
 	const double DoubledHeatW = RadiatorModel::HeatRejectedW(Params, InletTempK, MassFlowKgs, WaterCpJKgK);
 	const double Ratio = DoubledHeatW / BaseHeatW;
 
-	AddInfo(FString::Printf(TEXT("UA 1600 -> 3200 W/K: 반출 %.1f -> %.1f W (배율 %.4f)"),
+	AddInfo(FString::Printf(TEXT("UA 11000 -> 22000 W/K: 반출 %.1f -> %.1f W (배율 %.4f)"),
 		BaseHeatW, DoubledHeatW, Ratio));
 
 	TestTrue(TEXT("UA를 두 배로 키워도 반출열이 두 배가 되면 안 된다"), Ratio < 2.0);
@@ -184,7 +185,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FRadiatorZeroFlowTest,
 bool FRadiatorZeroFlowTest::RunTest(const FString& Parameters)
 {
 	FRadiatorParams Params;
-	Params.UAWK = 1.6e3;
+	Params.UAWK = 1.1e4;
 	Params.AmbientTempK = 295.15;
 
 	const double InletTempK = 308.15;
@@ -200,7 +201,7 @@ bool FRadiatorZeroFlowTest::RunTest(const FString& Parameters)
 
 	// UA가 0이면 아무 일도 일어나지 않는다.
 	Params.UAWK = 0.0;
-	const double NoUAOutletTempK = RadiatorModel::OutletTempK(Params, InletTempK, 0.82, WaterCpJKgK);
+	const double NoUAOutletTempK = RadiatorModel::OutletTempK(Params, InletTempK, 2.3, WaterCpJKgK);
 	TestEqual(TEXT("UA 0이면 출구가 입구와 같아야 한다"), NoUAOutletTempK, InletTempK);
 
 	return true;
@@ -213,11 +214,13 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FRadiatorClosedLoopSteadyStateTest,
 
 bool FRadiatorClosedLoopSteadyStateTest::RunTest(const FString& Parameters)
 {
-	const FRackThermalParams RackParams;
+	// GB200 NVL72 랙 1대 + 기본 라디에이터(UA 1.1e4 W/K), 냉각수 2.3 kg/s.
+	const FRackThermalParams RackParams = FRackThermalModel::MakeGb200Nvl72Params();
 
 	FRackThermalInput Input;
-	Input.ComponentHeatW = FRackThermalModel::MakeUniformHeatW(RackParams.NumSleds);
-	Input.SledDocked.Init(true, RackParams.NumSleds);
+	Input.ComponentHeatW = FRackThermalModel::MakeGb200Nvl72HeatW();
+	Input.SledDocked.Init(true, RackParams.Slots.Num());
+	Input.CoolantMassFlowKgs = 2.3;
 
 	FRadiatorParams Radiator;
 
@@ -264,8 +267,11 @@ bool FRadiatorClosedLoopSteadyStateTest::RunTest(const FString& Parameters)
 
 	// 타당성 안전망: 닫힌 루프에서도 냉각수가 외기보다 뜨겁고 부품이 허용 온도 아래여야 한다.
 	TestTrue(TEXT("냉각수가 외기보다 뜨거워야 한다"), Snapshot.CoolantOutletTempK > Radiator.AmbientTempK);
-	TestTrue(TEXT("GPU가 허용 온도 90 C 아래여야 한다"),
-		Model.GetComponentTempK(0, ERackComponent::Gpu) - 273.15 < 90.0);
+	double GpuMaxC = -1e9;
+	for (int32 N = 0; N < Model.GetNumNodes(); ++N)
+		if (Model.GetNodeParams(N).Kind == ERackPartKind::Gpu) GpuMaxC = FMath::Max(GpuMaxC, Snapshot.ComponentTempK[N] - 273.15);
+	AddInfo(FString::Printf(TEXT("Blackwell 최고 %.2f C"), GpuMaxC));
+	TestTrue(TEXT("GPU가 허용 온도 90 C 아래여야 한다"), GpuMaxC < 90.0);
 
 	return true;
 }

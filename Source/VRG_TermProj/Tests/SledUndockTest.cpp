@@ -1,11 +1,14 @@
 // Fill out your copyright notice in the Description page of Project Settings.
 
 #include "Misc/AutomationTest.h"
-#include "Simulation/Hydraulics/HydraulicNetwork.h"
+#include "Simulation/Hydraulics/InRowLoopBuilder.h"
 #include "Simulation/Thermal/RackThermalModel.h"
 
 #if WITH_DEV_AUTOMATION_TESTS
 
+// 장비 탈착 검증 (2026-09-27 재정립: GB200 NVL72 기준).
+// [A] 수력: 수랭 장비를 뽑으면 그 랙 분기 저항이 R*(N/n)^2로 올라가 유량이 줄고 남은 랙이 더 받는다.
+// [B] 열: 뽑힌 장비는 전원·콜드플레이트·자기 팬 기류가 모두 끊긴다. 다른 슬롯은 자기 팬으로 돌므로 풍량이 그대로다.
 namespace
 {
 	constexpr EAutomationTestFlags VrgUndockTestFlags =
@@ -13,14 +16,8 @@ namespace
 		| EAutomationTestFlags::CommandletContext
 		| EAutomationTestFlags::EngineFilter;
 
-	// --- 수력: AHydraulicNetworkDebugActor와 같은 인로우 루프를 솔버 수준에서 세운다 ---
-	// 액터 없이도 돌아야 하므로 그래프를 직접 만든다.
-	// 이 값들은 AHydraulicNetworkDebugActor의 기본값과 같아야 한다.
-	constexpr int32 RackCount = 6;
-	constexpr int32 SledsPerRack = 12;
-	constexpr double HeaderSegmentResistancePaS2M6 = 2.7e8;
-	constexpr double RackBranchResistanceFullPaS2M6 = 1.4e11;
-	constexpr double ReturnToCduResistancePaS2M6 = 5.4e8;
+	// NVL72 한 줄 (FInRowLoopSpec 기본값 = 방 액터 기본값). 랙마다 꽂힌 수랭 장비 수를 준다.
+	constexpr int32 RackCount = 8;
 
 	struct FRowSolveOutput
 	{
@@ -30,126 +27,64 @@ namespace
 		TArray<double> RackBranchFlowM3s;
 	};
 
-	// DockedSleds[i] == 0 이면 그 랙의 분기와 랙 노드를 아예 만들지 않는다.
-	FRowSolveOutput SolveRow(const TArray<int32>& DockedSleds)
+	FRowSolveOutput SolveRow(const TArray<int32>& DockedLiquidSlots)
 	{
+		FInRowLoopSpec Spec;
+		Spec.NumRacks = RackCount;
+		Spec.DockedSledsPerRack = DockedLiquidSlots;
+
 		FHydraulicNetwork Network;
-
-		FHydraulicNode CduNode;
-		CduNode.bFixedPressure = true;
-		CduNode.PressurePa = 2.0e5;
-		const int32 Cdu = Network.AddNode(CduNode);
-
-		TArray<int32> SupplyNodes;
-		TArray<int32> ReturnNodes;
-		TArray<int32> RackNodes;
-		for (int32 RackIndex = 0; RackIndex < RackCount; ++RackIndex)
-		{
-			SupplyNodes.Add(Network.AddNode(FHydraulicNode()));
-			ReturnNodes.Add(Network.AddNode(FHydraulicNode()));
-			RackNodes.Add(DockedSleds[RackIndex] > 0 ? Network.AddNode(FHydraulicNode()) : INDEX_NONE);
-		}
-
-		FHydraulicPump Pump;
-		Pump.FromNodeIndex = Cdu;
-		Pump.ToNodeIndex = SupplyNodes[0];
-		Pump.ShutoffHeadPa = 4.0e5;
-		Pump.CurveCoeffPaS2M6 = 8.0e9;
-		Pump.Efficiency = 0.7;
-		Network.AddPump(Pump);
-
-		auto AddPipe = [&Network](int32 FromNodeIndex, int32 ToNodeIndex, double ResistancePaS2M6)
-		{
-			FHydraulicPipe Pipe;
-			Pipe.FromNodeIndex = FromNodeIndex;
-			Pipe.ToNodeIndex = ToNodeIndex;
-			Pipe.ResistancePaS2M6 = ResistancePaS2M6;
-			return Network.AddPipe(Pipe);
-		};
-
-		TArray<int32> BranchPipes;
-		for (int32 RackIndex = 0; RackIndex < RackCount; ++RackIndex)
-		{
-			if (RackIndex + 1 < RackCount)
-			{
-				AddPipe(SupplyNodes[RackIndex], SupplyNodes[RackIndex + 1], HeaderSegmentResistancePaS2M6);
-			}
-
-			if (DockedSleds[RackIndex] > 0)
-			{
-				// 2차 손실 병렬 합성: 동일 저항 n개를 병렬로 묶으면 R/n^2.
-				const double ParallelScale = static_cast<double>(SledsPerRack) / static_cast<double>(DockedSleds[RackIndex]);
-				const double BranchPaS2M6 = RackBranchResistanceFullPaS2M6 * ParallelScale * ParallelScale;
-
-				BranchPipes.Add(AddPipe(SupplyNodes[RackIndex], RackNodes[RackIndex], BranchPaS2M6));
-				AddPipe(RackNodes[RackIndex], ReturnNodes[RackIndex], BranchPaS2M6);
-			}
-			else
-			{
-				BranchPipes.Add(INDEX_NONE);
-			}
-
-			if (RackIndex + 1 < RackCount)
-			{
-				AddPipe(ReturnNodes[RackIndex + 1], ReturnNodes[RackIndex], HeaderSegmentResistancePaS2M6);
-			}
-		}
-
-		AddPipe(ReturnNodes[0], Cdu, ReturnToCduResistancePaS2M6);
+		const FInRowLoopHandles Handles = InRowLoopBuilder::AddLoop(Network, Spec);
 
 		FRowSolveOutput Output;
-		FHydraulicSolveSettings Settings;
-		Output.Result = Network.Solve(Settings);
-		Output.PumpFlowM3s = Network.GetPumpFlowM3s(0);
-		for (const int32 PipeIndex : BranchPipes)
+		Output.Result = Network.Solve(FHydraulicSolveSettings());
+		Output.PumpFlowM3s = Network.GetPumpFlowM3s(Handles.PumpIndex);
+		for (const int32 PipeIndex : Handles.RackBranchPipeIndices)
 		{
 			Output.RackBranchFlowM3s.Add(PipeIndex == INDEX_NONE ? 0.0 : FMath::Abs(Network.GetPipeFlowM3s(PipeIndex)));
 		}
 		return Output;
 	}
+
+	FString BranchText(const FRowSolveOutput& Output)
+	{
+		FString Text;
+		for (const double FlowM3s : Output.RackBranchFlowM3s) Text += FString::Printf(TEXT("%.3f "), FlowM3s * 1000.0);
+		return Text;
+	}
 }
 
-// 유닛을 뽑으면 그 랙의 분기 저항이 올라가 유량이 줄고, 남은 랙이 더 받아야 한다.
+// 수랭 장비를 뽑으면 그 랙의 분기 저항이 올라가 유량이 줄고, 남은 랙이 더 받아야 한다.
 // D4: 영향 범위를 위상표로 정하지 않고 네트워크 재계산 결과로 판정한다.
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FHydraulicSledUndockRedistributionTest,
 	"VRG.Hydraulics.Network.SledUndockRedistributesFlow", VrgUndockTestFlags)
 
 bool FHydraulicSledUndockRedistributionTest::RunTest(const FString& Parameters)
 {
+	const int32 LiquidSlots = FRackThermalModel::CountLiquidSlots(FRackThermalModel::MakeGb200Nvl72Params());
+	TestEqual(TEXT("NVL72 수랭 장비는 27대 (컴퓨트 18 + NVLink 스위치 9)"), LiquidSlots, FInRowLoopSpec().SledsPerRack);
+
 	TArray<int32> FullDocked;
-	FullDocked.Init(SledsPerRack, RackCount);
+	FullDocked.Init(LiquidSlots, RackCount);
 	const FRowSolveOutput Baseline = SolveRow(FullDocked);
 
-	// 랙 2번에서 유닛 12대 중 4대를 뽑는다.
+	// 랙 2번에서 수랭 장비 27대 중 9대를 뽑는다.
 	TArray<int32> PartialDocked = FullDocked;
-	PartialDocked[2] = 8;
+	PartialDocked[2] = LiquidSlots - 9;
 	const FRowSolveOutput Partial = SolveRow(PartialDocked);
 
-	AddInfo(FString::Printf(TEXT("만재: 펌프 %.4f L/s | 분기 %.3f %.3f %.3f %.3f %.3f %.3f L/s"),
-		Baseline.PumpFlowM3s * 1000.0,
-		Baseline.RackBranchFlowM3s[0] * 1000.0, Baseline.RackBranchFlowM3s[1] * 1000.0,
-		Baseline.RackBranchFlowM3s[2] * 1000.0, Baseline.RackBranchFlowM3s[3] * 1000.0,
-		Baseline.RackBranchFlowM3s[4] * 1000.0, Baseline.RackBranchFlowM3s[5] * 1000.0));
-	AddInfo(FString::Printf(TEXT("랙2 8/12대: 펌프 %.4f L/s | 분기 %.3f %.3f %.3f %.3f %.3f %.3f L/s"),
-		Partial.PumpFlowM3s * 1000.0,
-		Partial.RackBranchFlowM3s[0] * 1000.0, Partial.RackBranchFlowM3s[1] * 1000.0,
-		Partial.RackBranchFlowM3s[2] * 1000.0, Partial.RackBranchFlowM3s[3] * 1000.0,
-		Partial.RackBranchFlowM3s[4] * 1000.0, Partial.RackBranchFlowM3s[5] * 1000.0));
+	AddInfo(FString::Printf(TEXT("만재: 펌프 %.4f L/s | 분기 %s L/s"), Baseline.PumpFlowM3s * 1000.0, *BranchText(Baseline)));
+	AddInfo(FString::Printf(TEXT("랙2 %d/%d대: 펌프 %.4f L/s | 분기 %s L/s"),
+		PartialDocked[2], LiquidSlots, Partial.PumpFlowM3s * 1000.0, *BranchText(Partial)));
 
 	TestTrue(TEXT("만재 구성이 수렴해야 한다"), Baseline.Result.bConverged);
 	TestTrue(TEXT("일부 탈착 구성이 수렴해야 한다"), Partial.Result.bConverged);
-
-	TestTrue(TEXT("유닛을 뽑은 랙은 분기 유량이 줄어야 한다"),
-		Partial.RackBranchFlowM3s[2] < Baseline.RackBranchFlowM3s[2]);
+	TestTrue(TEXT("장비를 뽑은 랙은 분기 유량이 줄어야 한다"), Partial.RackBranchFlowM3s[2] < Baseline.RackBranchFlowM3s[2]);
 
 	bool bOthersIncreased = true;
 	for (int32 RackIndex = 0; RackIndex < RackCount; ++RackIndex)
 	{
-		if (RackIndex == 2)
-		{
-			continue;
-		}
-		if (!(Partial.RackBranchFlowM3s[RackIndex] > Baseline.RackBranchFlowM3s[RackIndex]))
+		if (RackIndex != 2 && !(Partial.RackBranchFlowM3s[RackIndex] > Baseline.RackBranchFlowM3s[RackIndex]))
 		{
 			bOthersIncreased = false;
 		}
@@ -161,11 +96,7 @@ bool FHydraulicSledUndockRedistributionTest::RunTest(const FString& Parameters)
 	EmptyRackDocked[3] = 0;
 	const FRowSolveOutput EmptyRack = SolveRow(EmptyRackDocked);
 
-	AddInfo(FString::Printf(TEXT("랙3 0/12대: 펌프 %.4f L/s | 분기 %.3f %.3f %.3f %.3f %.3f %.3f L/s"),
-		EmptyRack.PumpFlowM3s * 1000.0,
-		EmptyRack.RackBranchFlowM3s[0] * 1000.0, EmptyRack.RackBranchFlowM3s[1] * 1000.0,
-		EmptyRack.RackBranchFlowM3s[2] * 1000.0, EmptyRack.RackBranchFlowM3s[3] * 1000.0,
-		EmptyRack.RackBranchFlowM3s[4] * 1000.0, EmptyRack.RackBranchFlowM3s[5] * 1000.0));
+	AddInfo(FString::Printf(TEXT("랙3 0/%d대: 펌프 %.4f L/s | 분기 %s L/s"), LiquidSlots, EmptyRack.PumpFlowM3s * 1000.0, *BranchText(EmptyRack)));
 
 	TestTrue(TEXT("랙을 통째로 비운 구성이 수렴해야 한다"), EmptyRack.Result.bConverged);
 	TestEqual(TEXT("비운 랙의 분기 유량은 정확히 0이어야 한다"), EmptyRack.RackBranchFlowM3s[3], 0.0);
@@ -176,8 +107,7 @@ bool FHydraulicSledUndockRedistributionTest::RunTest(const FString& Parameters)
 	{
 		BranchSumM3s += FlowM3s;
 	}
-	const double NormalizedMassError = FMath::Abs(BranchSumM3s - EmptyRack.PumpFlowM3s)
-		/ FMath::Max(EmptyRack.PumpFlowM3s, 1.0e-12);
+	const double NormalizedMassError = FMath::Abs(BranchSumM3s - EmptyRack.PumpFlowM3s) / FMath::Max(EmptyRack.PumpFlowM3s, 1.0e-12);
 
 	AddInfo(FString::Printf(TEXT("분기 합 %.9f vs 펌프 유량 %.9f m3/s, 정규화 오차 %.3e"),
 		BranchSumM3s, EmptyRack.PumpFlowM3s, NormalizedMassError));
@@ -186,113 +116,79 @@ bool FHydraulicSledUndockRedistributionTest::RunTest(const FString& Parameters)
 	// 타당성 안전망: 랙 하나가 빠졌다고 총 유량이 사라지거나 폭주하면 안 된다.
 	const double PumpFlowRatio = EmptyRack.PumpFlowM3s / Baseline.PumpFlowM3s;
 	AddInfo(FString::Printf(TEXT("랙 1대 격리 시 펌프 유량비 %.4f (만재 대비)"), PumpFlowRatio));
-	TestTrue(TEXT("랙 1대를 빼도 펌프 유량이 만재의 0.7~1.0배 범위여야 한다"),
-		PumpFlowRatio > 0.7 && PumpFlowRatio < 1.0);
+	TestTrue(TEXT("랙 1대를 빼도 펌프 유량이 만재의 0.7~1.0배 범위여야 한다"), PumpFlowRatio > 0.7 && PumpFlowRatio < 1.0);
 
 	return true;
 }
 
-// [B] 빈 슬롯은 유동저항이 낮아 공기를 더 가져간다. 그만큼 남은 유닛의 유량이 줄고
-// 온도가 오른다. 총 유량은 팬이 정하므로 보존된다.
-// 실제로 blanking panel을 끼우는 이유가 이것이다.
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FRackUndockedSlotAirBypassTest,
-	"VRG.Thermal.Rack.UndockedSlotStealsAirFlow", VrgUndockTestFlags)
+// 뽑힌 컴퓨트 트레이는 전원(발열), 콜드플레이트, 자기 팬 기류가 모두 끊긴다.
+// 장비마다 자기 팬으로 공기를 끌므로 다른 슬롯의 풍량은 바뀌지 않는다 (예전 랙 단위 팬 모델의 "빈 슬롯이 공기를 훔친다"는 없다).
+// 통로 압력차로 빈 슬롯을 지나는 재순환은 모델에 없다.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FRackUndockedSlotTest,
+	"VRG.Thermal.Rack.UndockedSlotHasNoAirOrHeat", VrgUndockTestFlags)
 
-bool FRackUndockedSlotAirBypassTest::RunTest(const FString& Parameters)
+bool FRackUndockedSlotTest::RunTest(const FString& Parameters)
 {
-	const FRackThermalParams Params;
-	const int32 NumSleds = Params.NumSleds;
+	const FRackThermalParams Params = FRackThermalModel::MakeGb200Nvl72Params();
+	const int32 NumSlots = Params.Slots.Num();
 
-	auto RunToSteadyState = [&Params, NumSleds](const TArray<bool>& SledDocked, FRackThermalModel& OutModel)
+	// 팬 회전수를 고정해 제어기 차이를 없앤다. 풍량 비교가 순수하게 탈착 효과만 본다.
+	auto Run = [&Params, NumSlots](const TArray<bool>& SledDocked, FRackThermalModel& OutModel)
 	{
 		FRackThermalInput Input;
-		Input.ComponentHeatW = FRackThermalModel::MakeUniformHeatW(NumSleds);
+		Input.ComponentHeatW = FRackThermalModel::MakeGb200Nvl72HeatW();
 		Input.SledDocked = SledDocked;
+		Input.CoolantMassFlowKgs = 2.3;
+		Input.FanSpeedOverride = 0.6;
 
 		FRackThermalState Initial;
 		Initial.CoolantTempK = 300.15;
-
 		OutModel.Initialize(Params, Initial);
-		for (int32 StepIndex = 0; StepIndex < 100000; ++StepIndex)
-		{
-			OutModel.Step(Input, 0.05);
-		}
-		return OutModel.MakeSnapshot(5.0e3);
+		for (int32 StepIndex = 0; StepIndex < 20000; ++StepIndex) OutModel.Step(Input, 0.05);
+		return OutModel.MakeSnapshot(1.0e3);
 	};
 
 	TArray<bool> FullDocked;
-	FullDocked.Init(true, NumSleds);
-
+	FullDocked.Init(true, NumSlots);
 	FRackThermalModel FullModel;
-	const FRackThermalSnapshot Full = RunToSteadyState(FullDocked, FullModel);
+	const FRackThermalSnapshot Full = Run(FullDocked, FullModel);
 
-	// 유닛 1대를 뽑는다.
+	int32 Removed = INDEX_NONE, Other = INDEX_NONE;
+	for (int32 Slot = 0; Slot < NumSlots; ++Slot)
+		if (Params.Slots[Slot].DeviceType == FRackThermalModel::Gb200DevCompute) { if (Removed == INDEX_NONE) Removed = Slot; else if (Other == INDEX_NONE) Other = Slot; }
+
 	TArray<bool> OneRemoved = FullDocked;
-	const int32 RemovedSled = 5;
-	OneRemoved[RemovedSled] = false;
-
+	OneRemoved[Removed] = false;
 	FRackThermalModel RemovedModel;
-	const FRackThermalSnapshot Removed = RunToSteadyState(OneRemoved, RemovedModel);
+	const FRackThermalSnapshot After = Run(OneRemoved, RemovedModel);
 
-	AddInfo(FString::Printf(TEXT("만재: 슬롯당 공기 %.5f kg/s (총 %.4f kg/s)"),
-		Full.SlotAirMassFlowKgs[0], 1.2));
-	AddInfo(FString::Printf(TEXT("유닛 %d 탈착: 빈 슬롯 %.5f kg/s / 남은 슬롯 %.5f kg/s"),
-		RemovedSled, Removed.SlotAirMassFlowKgs[RemovedSled], Removed.SlotAirMassFlowKgs[0]));
+	double MaxOtherFlowChangeKgs = 0.0;
+	for (int32 Slot = 0; Slot < NumSlots; ++Slot)
+		if (Slot != Removed) MaxOtherFlowChangeKgs = FMath::Max(MaxOtherFlowChangeKgs, FMath::Abs(After.SlotAirMassFlowKgs[Slot] - Full.SlotAirMassFlowKgs[Slot]));
 
-	// 총 유량 보존.
-	double FullSumKgs = 0.0;
-	double RemovedSumKgs = 0.0;
-	for (int32 SledIndex = 0; SledIndex < NumSleds; ++SledIndex)
+	double RemovedHeatW = 0.0, RemovedToCoolantW = 0.0, RemovedToAirW = 0.0;
+	for (int32 N = RemovedModel.GetSlotNodeStart(Removed); N < RemovedModel.GetSlotNodeStart(Removed) + RemovedModel.GetSlotNodeCount(Removed); ++N)
 	{
-		FullSumKgs += Full.SlotAirMassFlowKgs[SledIndex];
-		RemovedSumKgs += Removed.SlotAirMassFlowKgs[SledIndex];
+		RemovedHeatW += After.ComponentHeatW[N];
+		RemovedToCoolantW += FMath::Abs(After.ComponentHeatToCoolantW[N]);
+		RemovedToAirW += FMath::Abs(After.ComponentHeatToAirW[N]);
 	}
-	const double NormalizedFlowError = FMath::Abs(RemovedSumKgs - FullSumKgs) / FullSumKgs;
 
-	AddInfo(FString::Printf(TEXT("슬롯 유량 합: 만재 %.9f / 탈착 %.9f kg/s, 정규화 오차 %.3e"),
-		FullSumKgs, RemovedSumKgs, NormalizedFlowError));
-	TestTrue(TEXT("총 공기 유량이 보존돼야 한다"), NormalizedFlowError < 1.0e-12);
+	AddInfo(FString::Printf(TEXT("컴퓨트 트레이 슬롯 %d 탈착 | 만재 풍량 %.5f kg/s -> 탈착 %.5f kg/s"),
+		Removed, Full.SlotAirMassFlowKgs[Removed], After.SlotAirMassFlowKgs[Removed]));
+	AddInfo(FString::Printf(TEXT("다른 슬롯 풍량 최대 변화 %.3e kg/s (예: 슬롯 %d %.5f kg/s)"),
+		MaxOtherFlowChangeKgs, Other, After.SlotAirMassFlowKgs[Other]));
+	AddInfo(FString::Printf(TEXT("뽑은 장비: 발열 %.3f W / 냉각수로 %.3e W / 공기로 %.3e W | 랙 발열 %.1f -> %.1f kW"),
+		RemovedHeatW, RemovedToCoolantW, RemovedToAirW, Full.TotalHeatW / 1000.0, After.TotalHeatW / 1000.0));
 
-	// 빈 슬롯이 더 많이 가져간다.
-	TestTrue(TEXT("빈 슬롯이 남은 유닛보다 공기를 더 가져가야 한다"),
-		Removed.SlotAirMassFlowKgs[RemovedSled] > Removed.SlotAirMassFlowKgs[0]);
-
-	// 남은 유닛은 유량이 줄어든다.
-	TestTrue(TEXT("남은 유닛의 공기 유량이 줄어야 한다"),
-		Removed.SlotAirMassFlowKgs[0] < Full.SlotAirMassFlowKgs[0]);
-
-	// 남은 유닛의 공랭 부품 온도가 오른다. 액랭 부품은 영향이 거의 없어야 한다.
-	const int32 RamIndex = FRackThermalModel::NodeIndex(0, ERackComponent::Ram);
-	const int32 VrmIndex = FRackThermalModel::NodeIndex(0, ERackComponent::Vrm);
-	const int32 GpuIndex = FRackThermalModel::NodeIndex(0, ERackComponent::Gpu);
-
-	const double RamRiseK = Removed.ComponentTempK[RamIndex] - Full.ComponentTempK[RamIndex];
-	const double VrmRiseK = Removed.ComponentTempK[VrmIndex] - Full.ComponentTempK[VrmIndex];
-	const double GpuRiseK = Removed.ComponentTempK[GpuIndex] - Full.ComponentTempK[GpuIndex];
-
-	AddInfo(FString::Printf(TEXT("남은 유닛 0: RAM %.3f -> %.3f C (+%.3f K) / VRM %.3f -> %.3f C (+%.3f K)"),
-		Full.ComponentTempK[RamIndex] - 273.15, Removed.ComponentTempK[RamIndex] - 273.15, RamRiseK,
-		Full.ComponentTempK[VrmIndex] - 273.15, Removed.ComponentTempK[VrmIndex] - 273.15, VrmRiseK));
-	AddInfo(FString::Printf(TEXT("남은 유닛 0: GPU %.3f -> %.3f C (%+.3f K, 액랭이라 거의 영향 없음)"),
-		Full.ComponentTempK[GpuIndex] - 273.15, Removed.ComponentTempK[GpuIndex] - 273.15, GpuRiseK));
-
-	TestTrue(TEXT("남은 유닛의 RAM 온도가 올라야 한다"), RamRiseK > 0.0);
-	TestTrue(TEXT("남은 유닛의 VRM 온도가 올라야 한다"), VrmRiseK > 0.0);
-	TestTrue(TEXT("액랭 부품은 공기 유량 변화에 거의 영향받지 않아야 한다"), FMath::Abs(GpuRiseK) < 0.5);
-
-	// 뽑은 유닛은 콜드플레이트도 강제 공랭도 끊긴다.
-	const int32 RemovedGpuIndex = FRackThermalModel::NodeIndex(RemovedSled, ERackComponent::Gpu);
-	TestEqual(TEXT("뽑은 유닛은 냉각수로 열을 내보내지 않아야 한다"),
-		Removed.ComponentHeatToCoolantW[RemovedGpuIndex], 0.0);
-	TestEqual(TEXT("뽑은 유닛은 강제 공랭으로 열을 내보내지 않아야 한다"),
-		Removed.ComponentHeatToAirW[RemovedGpuIndex], 0.0);
-
-	// 빈 슬롯의 배기는 입구 온도 그대로다 (바이패스).
-	AddInfo(FString::Printf(TEXT("빈 슬롯 배기 %.4f C / 캐비닛 혼합 배기 %.4f C (만재 %.4f C)"),
-		Removed.SledAirOutletTempK[RemovedSled] - 273.15,
-		Removed.MixedAirOutletTempK - 273.15, Full.MixedAirOutletTempK - 273.15));
-	TestEqual(TEXT("빈 슬롯 배기는 입구 온도와 같아야 한다"),
-		Removed.SledAirOutletTempK[RemovedSled], 297.15);
+	TestTrue(TEXT("만재에서 컴퓨트 트레이 풍량이 0보다 커야 한다"), Full.SlotAirMassFlowKgs[Removed] > 0.0);
+	TestEqual(TEXT("뽑은 슬롯의 풍량은 0이어야 한다"), After.SlotAirMassFlowKgs[Removed], 0.0);
+	TestEqual(TEXT("다른 슬롯의 풍량은 그대로여야 한다 (장비마다 자기 팬)"), MaxOtherFlowChangeKgs, 0.0);
+	TestEqual(TEXT("뽑은 장비는 발열이 없어야 한다"), RemovedHeatW, 0.0);
+	TestEqual(TEXT("뽑은 장비는 냉각수로 열을 내보내지 않아야 한다"), RemovedToCoolantW, 0.0);
+	TestEqual(TEXT("뽑은 장비는 강제 공랭으로 열을 내보내지 않아야 한다"), RemovedToAirW, 0.0);
+	TestTrue(TEXT("랙 발열이 줄어야 한다"), After.TotalHeatW < Full.TotalHeatW);
+	TestEqual(TEXT("뽑은 슬롯 배기는 입구 온도와 같아야 한다"), After.SledAirOutletTempK[Removed], 297.15);
 
 	return true;
 }

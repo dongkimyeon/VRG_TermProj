@@ -12,12 +12,11 @@ namespace
 		| EAutomationTestFlags::CommandletContext
 		| EAutomationTestFlags::EngineFilter;
 
-	// ADataCenterRoomActor / AHydraulicNetworkDebugActor의 기본값과 같아야 한다.
+	// FInRowLoopSpec 기본값 = GB200 NVL72 한 줄 (ADataCenterRoomActor / CDU 액터 기본값과 같다).
 	FInRowLoopSpec MakeDefaultSpec(int32 NumRacks)
 	{
 		FInRowLoopSpec Spec;
 		Spec.NumRacks = NumRacks;
-		Spec.SledsPerRack = 12;
 		return Spec;
 	}
 
@@ -35,15 +34,15 @@ namespace
 	}
 }
 
-// 한 줄만 얹었을 때 S2가 기록한 인로우 참고값을 그대로 내야 한다.
-// 위상 코드를 공용 빌더로 옮기면서 결과가 바뀌지 않았는지 보는 회귀 검사다.
+// 한 줄만 얹었을 때 기록된 NVL72 행 참고값(CLAUDE.md, 랙 8대)을 그대로 내야 한다. 회귀 검사다.
+// 2026-09-27: 15 kW 하이브리드 랙 6대 기준(4.87 L/s)에서 NVL72 랙 8대 기준으로 바꿨다.
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FInRowLoopSingleRowTest,
 	"VRG.Hydraulics.InRowLoop.MatchesRecordedReference", VrgRoomTestFlags)
 
 bool FInRowLoopSingleRowTest::RunTest(const FString& Parameters)
 {
 	FHydraulicNetwork Network;
-	const FInRowLoopHandles Handles = InRowLoopBuilder::AddLoop(Network, MakeDefaultSpec(6));
+	const FInRowLoopHandles Handles = InRowLoopBuilder::AddLoop(Network, MakeDefaultSpec(8));
 
 	FHydraulicSolveSettings Settings;
 	const FHydraulicSolveResult Result = Network.Solve(Settings);
@@ -64,14 +63,14 @@ bool FInRowLoopSingleRowTest::RunTest(const FString& Parameters)
 
 	TestTrue(TEXT("수렴해야 한다"), Result.bConverged);
 
-	// CLAUDE.md에 기록된 S2 참고값: 펌프 4.87 L/s, 양정 210.3 kPa, 전기 입력 1.46 kW.
-	// 기준은 기록값 대비 0.5% 이내로 둔다. 위상이 같으면 해가 같아야 한다.
-	TestTrue(TEXT("펌프 유량이 기록된 4.87 L/s와 일치해야 한다"),
-		FMath::Abs(PumpFlowM3s * 1000.0 - 4.87) / 4.87 < 5.0e-3);
-	TestTrue(TEXT("양정이 기록된 210.3 kPa와 일치해야 한다"),
-		FMath::Abs(PumpHeadPa / 1000.0 - 210.3) / 210.3 < 5.0e-3);
-	TestTrue(TEXT("전기 입력이 기록된 1.46 kW와 일치해야 한다"),
-		FMath::Abs(PumpElectricalW / 1000.0 - 1.46) / 1.46 < 5.0e-3);
+	// CLAUDE.md에 기록된 NVL72 행 참고값: 펌프 18.53 L/s, 양정 193.9 kPa, 전기 입력 5.13 kW.
+	// 기준은 기록값(유효숫자 4자리) 대비 0.5% 이내로 둔다. 위상이 같으면 해가 같아야 한다.
+	TestTrue(TEXT("펌프 유량이 기록된 18.53 L/s와 일치해야 한다"),
+		FMath::Abs(PumpFlowM3s * 1000.0 - 18.53) / 18.53 < 5.0e-3);
+	TestTrue(TEXT("양정이 기록된 193.9 kPa와 일치해야 한다"),
+		FMath::Abs(PumpHeadPa / 1000.0 - 193.9) / 193.9 < 5.0e-3);
+	TestTrue(TEXT("전기 입력이 기록된 5.13 kW와 일치해야 한다"),
+		FMath::Abs(PumpElectricalW / 1000.0 - 5.13) / 5.13 < 5.0e-3);
 
 	return true;
 }
@@ -147,13 +146,13 @@ bool FInRowLoopRowIsolationTest::RunTest(const FString& Parameters)
 {
 	FHydraulicSolveSettings Settings;
 
-	// 두 줄을 얹고, 1번 줄의 3번 랙만 유닛을 4대 남긴다.
+	// 두 줄을 얹고, 1번 줄의 3번 랙만 수랭 장비를 9대(27대 중) 남긴다.
 	FHydraulicNetwork Network;
 	const FInRowLoopHandles RowA = InRowLoopBuilder::AddLoop(Network, MakeDefaultSpec(8));
 
 	FInRowLoopSpec PartialSpec = MakeDefaultSpec(8);
-	PartialSpec.DockedSledsPerRack.Init(12, 8);
-	PartialSpec.DockedSledsPerRack[3] = 4;
+	PartialSpec.DockedSledsPerRack.Init(PartialSpec.SledsPerRack, 8);
+	PartialSpec.DockedSledsPerRack[3] = 9;
 	const FInRowLoopHandles RowB = InRowLoopBuilder::AddLoop(Network, PartialSpec);
 
 	const FHydraulicSolveResult Result = Network.Solve(Settings);
@@ -168,7 +167,7 @@ bool FInRowLoopRowIsolationTest::RunTest(const FString& Parameters)
 	const double RowBPumpFlowM3s = Network.GetPumpFlowM3s(RowB.PumpIndex);
 
 	AddInfo(FString::Printf(TEXT("만재 기준 펌프 %.4f L/s"), ReferencePumpFlowM3s * 1000.0));
-	AddInfo(FString::Printf(TEXT("줄 A (만재) %.4f L/s / 줄 B (3번 랙 4/12대) %.4f L/s"),
+	AddInfo(FString::Printf(TEXT("줄 A (만재) %.4f L/s / 줄 B (3번 랙 9/27대) %.4f L/s"),
 		RowAPumpFlowM3s * 1000.0, RowBPumpFlowM3s * 1000.0));
 	AddInfo(FString::Printf(TEXT("줄 B 3번 랙 분기 %.4f L/s (줄 A의 같은 자리 %.4f L/s)"),
 		FMath::Abs(Network.GetPipeFlowM3s(RowB.RackBranchPipeIndices[3])) * 1000.0,

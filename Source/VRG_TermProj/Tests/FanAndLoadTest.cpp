@@ -53,8 +53,7 @@ namespace
 	}
 }
 
-// Heat follows utilization linearly between the idle fraction and full load; load-independent parts and
-// the legacy uniform rack do not move at all.
+// Heat follows utilization linearly between the idle fraction and full load; load-independent parts do not move.
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FLoadUtilizationTest, "VRG.Thermal.Load.UtilizationLinear", VrgFanTestFlags)
 bool FLoadUtilizationTest::RunTest(const FString& Parameters)
 {
@@ -80,22 +79,7 @@ bool FLoadUtilizationTest::RunTest(const FString& Parameters)
 		TestEqual(TEXT("Slot utilization 0 -> idle heat"), Model.GetLastTotalHeatW(), 20.0 + 50.0);
 	}
 
-	// 3) Legacy uniform rack (15 kW hybrid, every part load independent): bit-identical at any utilization.
-	{
-		FRackThermalParams Legacy; Legacy.NumSleds = 12;
-		FRackThermalState Init; Init.CoolantTempK = 300.15;
-		FRackThermalModel M1, M2; M1.Initialize(Legacy, Init); M2.Initialize(Legacy, Init);
-		FRackThermalInput I1; I1.ComponentHeatW = FRackThermalModel::MakeUniformHeatW(12);
-		FRackThermalInput I2 = I1; I2.Utilization = .3;
-		for (int32 S = 0; S < 500; ++S) { M1.Step(I1, .05); M2.Step(I2, .05); }
-		double Diff = 0.0;
-		for (int32 N = 0; N < M1.GetState().ComponentTempK.Num(); ++N)
-			Diff = FMath::Max(Diff, FMath::Abs(M1.GetState().ComponentTempK[N] - M2.GetState().ComponentTempK[N]));
-		AddInfo(FString::Printf(TEXT("레거시 균일 랙 부하율 1 대 0.3 최대 온도 차 %.3e K"), Diff));
-		TestTrue(TEXT("Load-independent legacy rack is unchanged"), Diff == 0.0);
-	}
-
-	// 4) GB200 NVL72: idle rack power as a share of full load, and conservation through a load step.
+	// 3) GB200 NVL72: idle rack power as a share of full load, and conservation through a load step.
 	{
 		const FRackThermalParams G = FRackThermalModel::MakeGb200Nvl72Params();
 		FRackThermalState Init; Init.CoolantTempK = 300.15;
@@ -152,7 +136,7 @@ bool FFanOperatingPointTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("Fan power from the affinity law"), FMath::Abs(Snap.TotalFanPowerW - ExpectedFanW) < 1e-12 * ExpectedFanW);
 	TestTrue(TEXT("Fan heat is part of the rack heat"), FMath::Abs(Snap.TotalHeatW - (150.0 + ExpectedFanW)) < 1e-12 * 150.0);
 	TestTrue(TEXT("Rack ledger closes with fan heat"), FMath::Abs(Model.GetNormalizedEnergyResidual()) < 1e-11);
-	TestTrue(TEXT("Slot flow is the fan operating point, not TotalAirMassFlowKgs"),
+	TestTrue(TEXT("Slot flow follows the affinity law (flow ~ r)"),
 		FMath::Abs(Snap.SlotAirMassFlowKgs[0] - .5 * FullKgs) < 1e-14);
 	return true;
 }

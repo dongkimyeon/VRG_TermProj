@@ -17,7 +17,6 @@ namespace
 	// ADataCenterRoomActor가 띄우는 랙과 같은 운전점이어야 한다.
 	// 이 값이 바뀌면 여기도 같이 바꿔야 테스트가 실제 구성을 검증한다.
 	constexpr double CoolantMassFlowKgs = 2.3;
-	constexpr double TotalAirMassFlowKgs = 1.2;   // ignored in fan mode (each device runs its own fans)
 	constexpr double RadiatorUAWK = 1.1e4;
 
 	// Design liquid-side heat of the preset [W]: each part's heat times its coolant share.
@@ -65,7 +64,6 @@ bool FGb200Nvl72SteadyStateTest::RunTest(const FString& Parameters)
 	Input.ComponentHeatW = FRackThermalModel::MakeGb200Nvl72HeatW();
 	Input.SledDocked.Init(true, Params.Slots.Num());
 	Input.CoolantMassFlowKgs = CoolantMassFlowKgs;
-	Input.TotalAirMassFlowKgs = TotalAirMassFlowKgs;
 
 	FRadiatorParams Radiator;
 	Radiator.UAWK = RadiatorUAWK;
@@ -184,8 +182,7 @@ bool FGb200Nvl72RowHydraulicsTest::RunTest(const FString& Parameters)
 	Spec.RackBranchResistancePaS2M6 = 1.7e10;
 	Spec.ReturnToCduResistancePaS2M6 = 1.5e7;
 
-	// 펌프도 방 액터 값으로 맞춰야 한다. FInRowLoopSpec의 기본 펌프는
-	// 15 kW 하이브리드 랙(AHydraulicNetworkDebugActor)용이라 NVL72 유량을 못 댄다.
+	// 펌프도 방 액터(CDU) 값으로 맞춘다. FInRowLoopSpec 기본값과 같다.
 	Spec.PumpShutoffHeadPa = 4.0e5;
 	Spec.PumpCurveCoeffPaS2M6 = 6.0e8;
 	Spec.PumpEfficiency = 0.7;

@@ -74,7 +74,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FSparseRoomTest, "VRG.Hydraulics.Sparse.EightRo
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::CommandletContext | EAutomationTestFlags::EngineFilter)
 bool FSparseRoomTest::RunTest(const FString& Parameters)
 {
-	// Existing 15 kW hybrid row parameters; do not mix with NVL72.
+	// FInRowLoopSpec defaults: the GB200 NVL72 row (same as the room actor).
 	FInRowLoopSpec Spec; Spec.NumRacks=16;
 	FHydraulicNetwork Dense, Sparse;
 	const FInRowLoopHandles Reference=InRowLoopBuilder::AddLoop(Dense,Spec);

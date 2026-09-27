@@ -8,7 +8,6 @@
 #include "DataCenterDebugController.generated.h"
 
 class ARackThermalActor;
-class AHydraulicNetworkDebugActor;
 class ADataCenterRoomActor;
 class UInputAction;
 class UInputMappingContext;
@@ -22,15 +21,14 @@ class UInputMappingContext;
 // 여기서는 키를 손잡이에 잇고 결과를 액터에 밀어 넣기만 한다.
 //
 // 손잡이의 시작값과 범위는 레벨에서 찾은 첫 랙의 현재 값에서 잡는다.
-// 랙 종류(15 kW 하이브리드 / GB200 NVL72)마다 발열 규모가 달라서, 여기에
-// 숫자를 박아 두면 다른 랙을 놓는 순간 범위가 어긋난다.
+// 코드에 숫자를 박아 두면 프리셋 값이 바뀌는 순간 범위가 어긋난다.
 //
 // 대상은 한 번만 찾지 않는다. ADataCenterRoomActor는 첫 틱에 랙을 띄우므로
 // BeginPlay 시점에는 아직 없다. 주기적으로 다시 훑는다.
 //
 // 키 배치:
-//   1 / 2        CPU 발열 내리기 / 올리기 (유닛당)
-//   3 / 4        GPU 발열 내리기 / 올리기 (유닛당)
+//   1 / 2        CPU 발열 내리기 / 올리기 (칩당, 모든 Grace)
+//   3 / 4        GPU 발열 내리기 / 올리기 (칩당, 모든 Blackwell)
 //   5 / 6        펌프 회전수비 내리기 / 올리기
 //   7 / 8        라디에이터 UA 내리기 / 올리기
 //   E            바라보는 유닛 하나 뽑기 / 꽂기 (다른 유닛·다른 랙은 건드리지 않는다)
@@ -50,11 +48,11 @@ public:
 
 	virtual void Tick(float DeltaTime) override;
 
-	// 유닛당 CPU 발열 [W].
+	// CPU 칩 하나의 전부하 발열 [W].
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Debug")
 	FDebugKnob CpuHeatKnob;
 
-	// 유닛당 GPU 발열 [W].
+	// GPU 칩 하나의 전부하 발열 [W].
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Debug")
 	FDebugKnob GpuHeatKnob;
 
@@ -124,9 +122,6 @@ private:
 	// 레벨에서 찾은 대상. 랙은 여러 대일 수 있고 손잡이는 전부에 같이 적용한다.
 	UPROPERTY(Transient)
 	TArray<TObjectPtr<ARackThermalActor>> Racks;
-
-	UPROPERTY(Transient)
-	TObjectPtr<AHydraulicNetworkDebugActor> HydraulicNetwork;
 
 	UPROPERTY(Transient)
 	TObjectPtr<ADataCenterRoomActor> Room;

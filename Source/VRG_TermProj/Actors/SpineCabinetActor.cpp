@@ -29,10 +29,7 @@ void ASpineCabinetActor::EnsureThermalModel()
 	Input.ComponentHeatW = FRackThermalModel::MakeDefaultHeatW(Params);
 	Input.SledDocked.Init(true, Heights.Num());
 	Input.CoolantMassFlowKgs = 0.0;
-	// Engineering estimate: mdot = P/(cp*10 K), not measured fan flow. 10 K is an assumed
-	// design air rise; 747 W/switch is the passive-cable QM9700 reference documented in
-	// QuantumSpineSwitch (https://networking-docs.nvidia.com/qm97x0hw/specifications).
-	Input.TotalAirMassFlowKgs = FRackThermalModel::DesignHeatToAirW(Params, Input) / (Params.AirCpJKgK * 10.0);
+	// Air flow comes from the switch's own fans (QuantumSpineSwitch, sources in RackThermalModel.cpp).
 	Model.Initialize(Params, FRackThermalState());
 	ThermalSwitchCount = NumSwitches;
 	ThermalFirstSlot = FirstSwitchSlot;

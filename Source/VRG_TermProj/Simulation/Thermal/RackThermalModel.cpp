@@ -2,89 +2,9 @@
 
 #include "Simulation/Thermal/RackThermalModel.h"
 
-TArray<FRackComponentParams> FRackThermalModel::DefaultComponents()
-{
-	// 배열 순서 = 공랭 직렬 체인 순서. 허용 온도가 낮은 부품이 앞이다.
-	// Cpu/Gpu는 ToAirUAWK가 0이라 체인에서 공기 온도를 바꾸지 않는다.
-	TArray<FRackComponentParams> Components;
-	Components.SetNum(NumRackComponents);
-
-	// ToAmbientUAWK는 케이스를 통한 자연대류·복사다. 합치면 유닛당 0.6 W/K,
-	// 랙 12대 기준 7.2 W/K로 정상 상태 반출의 1% 정도다. 밀폐 캐비닛에서
-	// 이보다 크게 잡으면 랙이 저절로 수 백 W를 버리는 셈이 돼 타당하지 않다.
-	// 대신 뽑은 유닛은 이 경로로만 식으므로 시정수가 C/UA = 2000/0.6 약 55분이다.
-	// 느리게 식는 것이 정상이며 데모를 위해 부풀린 값이 아니다.
-
-	// CPU: 서버용 1소켓. 콜드플레이트 UA는 350 W를 약 9 K 접근온도로 뽑는 값이다.
-	// 열용량은 다이 + IHS + 콜드플레이트 구리 약 1 kg (c ~ 385 J/kgK).
-	FRackComponentParams& Cpu = Components[static_cast<int32>(ERackComponent::Cpu)];
-	Cpu.Name = TEXT("CPU");
-	Cpu.HeatCapacityJK = 400.0;
-	Cpu.ToCoolantUAWK = 40.0;
-	Cpu.ToAirUAWK = 0.0;
-	Cpu.ToAmbientUAWK = 0.2;
-	Cpu.Kind = ERackPartKind::Cpu;
-
-	// GPU: 700 W급 가속기 1장. 콜드플레이트 UA는 700 W를 약 10 K로 뽑는 값이다.
-	// 열용량은 보드 + 콜드플레이트 약 2 kg.
-	FRackComponentParams& Gpu = Components[static_cast<int32>(ERackComponent::Gpu)];
-	Gpu.Name = TEXT("GPU");
-	Gpu.HeatCapacityJK = 800.0;
-	Gpu.ToCoolantUAWK = 70.0;
-	Gpu.ToAirUAWK = 0.0;
-	Gpu.ToAmbientUAWK = 0.2;
-	Gpu.Kind = ERackPartKind::Gpu;
-
-	// RAM: DDR5 RDIMM 16장. 공랭 UA는 120 W를 약 24 K 상승으로 버티는 값이다.
-	// 허용 온도 약 85 C로 공랭 부품 중 가장 낮아 체인 앞에 둔다.
-	FRackComponentParams& Ram = Components[static_cast<int32>(ERackComponent::Ram)];
-	Ram.Name = TEXT("RAM");
-	Ram.HeatCapacityJK = 500.0;
-	Ram.ToCoolantUAWK = 0.0;
-	Ram.ToAirUAWK = 5.0;
-	Ram.ToAmbientUAWK = 0.1;
-	Ram.Kind = ERackPartKind::Memory;
-
-	// VRM: 마더보드 전원부 파워스테이지. 허용 온도 약 125 C로 RAM보다 높아 체인 뒤다.
-	// 공랭 UA는 80 W를 약 27 K 상승으로 버티는 값이다.
-	FRackComponentParams& Vrm = Components[static_cast<int32>(ERackComponent::Vrm)];
-	Vrm.Name = TEXT("VRM");
-	Vrm.HeatCapacityJK = 300.0;
-	Vrm.ToCoolantUAWK = 0.0;
-	Vrm.ToAirUAWK = 3.0;
-	Vrm.ToAmbientUAWK = 0.1;
-	Vrm.Kind = ERackPartKind::Power;
-
-	return Components;
-}
-
-TArray<double> FRackThermalModel::DefaultSledHeatW()
-{
-	TArray<double> HeatW;
-	HeatW.SetNum(NumRackComponents);
-	// 유닛 1대 합계 1250 W. 슬롯 12개면 랙 15.0 kW로 CLAUDE.md의 S1 참고 발열과 같다.
-	HeatW[static_cast<int32>(ERackComponent::Cpu)] = 350.0;  // 상위 서버 CPU TDP 350 W급 1소켓
-	HeatW[static_cast<int32>(ERackComponent::Gpu)] = 700.0;  // 700 W급 가속기 1장
-	HeatW[static_cast<int32>(ERackComponent::Ram)] = 120.0;  // RDIMM 16장 x 약 7.5 W
-	HeatW[static_cast<int32>(ERackComponent::Vrm)] = 80.0;   // 위 1170 W를 효율 약 93%로 변환할 때의 손실
-	return HeatW;
-}
-
-TArray<double> FRackThermalModel::MakeUniformHeatW(int32 NumSleds)
-{
-	const TArray<double> SledHeatW = DefaultSledHeatW();
-	TArray<double> HeatW;
-	HeatW.Reserve(FMath::Max(0, NumSleds) * NumRackComponents);
-	for (int32 SledIndex = 0; SledIndex < NumSleds; ++SledIndex)
-	{
-		HeatW.Append(SledHeatW);
-	}
-	return HeatW;
-}
-
 int32 FRackThermalModel::NumSlotsOf(const FRackThermalParams& InParams)
 {
-	return InParams.Slots.Num() > 0 ? InParams.Slots.Num() : FMath::Max(1, InParams.NumSleds);
+	return InParams.Slots.Num();
 }
 
 void FRackThermalModel::ResolveLayout(const FRackThermalParams& InParams, TArray<FRackComponentParams>& OutNodeParams,
@@ -93,20 +13,10 @@ void FRackThermalModel::ResolveLayout(const FRackThermalParams& InParams, TArray
 	OutNodeParams.Reset(); OutSlotNodeStart.Reset();
 	const int32 NumSlots = NumSlotsOf(InParams);
 	OutSlotNodeStart.Reserve(NumSlots + 1);
-	if (InParams.Slots.Num() == 0)
+	for (const FRackSlot& Slot : InParams.Slots)
 	{
-		// Legacy uniform rack: node = Sled * 4 + Component, exactly as in S1.
-		const TArray<FRackComponentParams> Parts =
-			InParams.Components.Num() == NumRackComponents ? InParams.Components : DefaultComponents();
-		for (int32 S = 0; S < NumSlots; ++S) { OutSlotNodeStart.Add(OutNodeParams.Num()); OutNodeParams.Append(Parts); }
-	}
-	else
-	{
-		for (const FRackSlot& Slot : InParams.Slots)
-		{
-			OutSlotNodeStart.Add(OutNodeParams.Num());
-			if (InParams.DeviceTypes.IsValidIndex(Slot.DeviceType)) OutNodeParams.Append(InParams.DeviceTypes[Slot.DeviceType].Components);
-		}
+		OutSlotNodeStart.Add(OutNodeParams.Num());
+		if (InParams.DeviceTypes.IsValidIndex(Slot.DeviceType)) OutNodeParams.Append(InParams.DeviceTypes[Slot.DeviceType].Components);
 	}
 	OutSlotNodeStart.Add(OutNodeParams.Num());
 }
@@ -131,10 +41,6 @@ void FRackThermalModel::Initialize(const FRackThermalParams& InParams, const FRa
 {
 	Params = InParams;
 	Params.NumSleds = NumSlotsOf(Params);
-	if (Params.Slots.Num() == 0 && Params.Components.Num() != NumRackComponents)
-	{
-		Params.Components = DefaultComponents();
-	}
 	ResolveLayout(Params, NodeParams, SlotNodeStart);
 
 	const int32 NumNodes = GetNumNodes();
@@ -222,12 +128,6 @@ bool FRackThermalModel::IsDocked(const TArray<bool>& SledDocked, int32 SledIndex
 	return SledDocked.Num() != NumSleds || SledDocked[SledIndex];
 }
 
-double FRackThermalModel::GetComponentTempK(int32 SledIndex, ERackComponent Component) const
-{
-	const int32 Index = NodeIndex(SledIndex, Component);
-	return State.ComponentTempK.IsValidIndex(Index) ? State.ComponentTempK[Index] : 0.0;
-}
-
 double FRackThermalModel::AirEffectiveness(double ToAirUAWK, double AirCapacityRateWK)
 {
 	if (ToAirUAWK <= UE_DOUBLE_SMALL_NUMBER)
@@ -242,50 +142,6 @@ double FRackThermalModel::AirEffectiveness(double ToAirUAWK, double AirCapacityR
 	}
 	const double NTU = ToAirUAWK / AirCapacityRateWK;
 	return 1.0 - FMath::Exp(-NTU);
-}
-
-void FRackThermalModel::DistributeSlotAirMassFlowKgs(const FRackThermalParams& InParams,
-	const TArray<bool>& SledDocked, double TotalAirMassFlowKgs, TArray<double>& OutSlotFlowKgs)
-{
-	const int32 NumSleds = NumSlotsOf(InParams);
-	OutSlotFlowKgs.SetNum(NumSleds);
-
-	// 2차 손실 병렬 유로: 같은 dP에서 MassFlow_i = sqrt(dP / R_i).
-	// 총 유량이 주어지면 dP는 소거되고 배분 가중치는 1/sqrt(R_i)만 남는다.
-	double TotalWeight = 0.0;
-	for (int32 SledIndex = 0; SledIndex < NumSleds; ++SledIndex)
-	{
-		double DockedResistance = InParams.DockedSlotResistancePaS2Kg2;
-		if (InParams.Slots.IsValidIndex(SledIndex) && InParams.DeviceTypes.IsValidIndex(InParams.Slots[SledIndex].DeviceType)
-			&& InParams.DeviceTypes[InParams.Slots[SledIndex].DeviceType].DockedResistancePaS2Kg2 > 0.0)
-		{
-			DockedResistance = InParams.DeviceTypes[InParams.Slots[SledIndex].DeviceType].DockedResistancePaS2Kg2;
-		}
-		const double ResistancePaS2Kg2 = IsDocked(SledDocked, SledIndex, NumSleds)
-			? DockedResistance
-			: InParams.EmptySlotResistancePaS2Kg2;
-
-		const double Weight = ResistancePaS2Kg2 > UE_DOUBLE_SMALL_NUMBER
-			? 1.0 / FMath::Sqrt(ResistancePaS2Kg2)
-			: 0.0;
-
-		OutSlotFlowKgs[SledIndex] = Weight;
-		TotalWeight += Weight;
-	}
-
-	if (TotalWeight <= UE_DOUBLE_SMALL_NUMBER)
-	{
-		for (double& FlowKgs : OutSlotFlowKgs)
-		{
-			FlowKgs = 0.0;
-		}
-		return;
-	}
-
-	for (double& FlowKgs : OutSlotFlowKgs)
-	{
-		FlowKgs = TotalAirMassFlowKgs * FlowKgs / TotalWeight;
-	}
 }
 
 bool FRackThermalModel::IsStepStable(const FRackThermalInput& Input, double DeltaTimeS) const
@@ -386,9 +242,7 @@ void FRackThermalModel::Step(const FRackThermalInput& Input, double DeltaTimeS)
 	{
 		const bool bDocked = IsDocked(Input.SledDocked, SledIndex, NumSleds);
 
-		// 빈 슬롯에도 공기는 흐른다. 오히려 저항이 낮아 더 많이 흐른다.
-		// 다만 지나갈 하드웨어가 없으므로 아래에서 부품의 공기 UA를 0으로 둔다.
-		// 그래서 빈 슬롯 배기는 입구 온도 그대로 나오고(= 바이패스), 열은 오가지 않는다.
+		// 뽑힌 슬롯과 팬 없는 장비는 강제 공기가 없다 (ComputeSlotAirFlows).
 		const double AirCapacityRateWK = LastSlotAirMassFlowKgs[SledIndex] * Params.AirCpJKgK;
 
 		// 공랭 직렬 체인. 이 변수가 부품을 지나며 데워진다.
@@ -492,7 +346,6 @@ void FRackThermalModel::Step(const FRackThermalInput& Input, double DeltaTimeS)
 
 bool FRackThermalModel::IsFanMode(const FRackThermalParams& InParams)
 {
-	if (InParams.Slots.Num() == 0) return false;
 	for (const FRackDeviceType& D : InParams.DeviceTypes) if (D.Fans.HasFans()) return true;
 	return false;
 }
@@ -524,7 +377,7 @@ double FRackThermalModel::DockedResistanceOf(const FRackThermalParams& InParams,
 	{
 		return InParams.DeviceTypes[InParams.Slots[Slot].DeviceType].DockedResistancePaS2Kg2;
 	}
-	return InParams.DockedSlotResistancePaS2Kg2;
+	return 0.0;
 }
 
 const FRackFanSpec* FRackThermalModel::FansOf(const FRackThermalParams& InParams, int32 Slot)
@@ -536,7 +389,7 @@ const FRackFanSpec* FRackThermalModel::FansOf(const FRackThermalParams& InParams
 
 double FRackThermalModel::LoadFactor(const FRackComponentParams& Part, double Utilization)
 {
-	// f >= 1 returns exactly 1 so load-independent parts stay bit-identical to the S1 model.
+	// f >= 1 returns exactly 1 (load-independent part).
 	const double F = Part.IdleHeatFraction;
 	if (F >= 1.0) return 1.0;
 	return FMath::Max(F, 0.0) + (1.0 - FMath::Max(F, 0.0)) * FMath::Clamp(Utilization, 0.0, 1.0);
@@ -551,12 +404,7 @@ double FRackThermalModel::SlotUtilizationOf(const FRackThermalInput& Input, int3
 
 void FRackThermalModel::ComputeSlotAirFlows(const FRackThermalInput& Input, TArray<double>& OutSlotFlowKgs) const
 {
-	if (!bFanMode)
-	{
-		DistributeSlotAirMassFlowKgs(Params, Input.SledDocked, Input.TotalAirMassFlowKgs, OutSlotFlowKgs);
-		return;
-	}
-	// Fan mode: each device pulls its own air. An empty slot or a fanless device gets no forced flow.
+	// Each device pulls its own air. An empty slot or a fanless device gets no forced flow.
 	// (Recirculation through an open slot driven by a front/rear aisle pressure difference is not modelled:
 	// the rack front and rear are taken at the same static pressure.)
 	const int32 NumSleds = Params.NumSleds;
@@ -915,12 +763,6 @@ FRackThermalParams FRackThermalModel::MakeQuantumSpineParams(const TArray<double
 
 int32 FRackThermalModel::CountLiquidSlots(const FRackThermalParams& InParams, const TArray<bool>* Docked)
 {
-	if (InParams.Slots.Num() == 0)
-	{
-		const int32 N = FMath::Max(1, InParams.NumSleds);
-		if (!Docked || Docked->Num() != N) return N;
-		int32 C = 0; for (const bool b : *Docked) C += b; return C;
-	}
 	int32 C = 0;
 	for (int32 S = 0; S < InParams.Slots.Num(); ++S)
 	{
