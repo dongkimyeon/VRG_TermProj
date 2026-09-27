@@ -251,8 +251,6 @@ void ADataCenterDebugController::SetupInputComponent()
 		{ TEXT("RadiatorUp"),    EKeys::Eight,      &ADataCenterDebugController::OnRadiatorUp },
 		{ TEXT("UtilDown"),      EKeys::Nine,       &ADataCenterDebugController::OnUtilizationDown },
 		{ TEXT("UtilUp"),        EKeys::Zero,       &ADataCenterDebugController::OnUtilizationUp },
-		{ TEXT("PrevSled"),      EKeys::Left,       &ADataCenterDebugController::OnSelectPreviousSled },
-		{ TEXT("NextSled"),      EKeys::Right,      &ADataCenterDebugController::OnSelectNextSled },
 		{ TEXT("ToggleSled"),    EKeys::E,          &ADataCenterDebugController::OnToggleSelectedSled },
 		{ TEXT("ResetSim"),      EKeys::R,          &ADataCenterDebugController::OnResetSim },
 		{ TEXT("ToggleHelp"),    EKeys::H,          &ADataCenterDebugController::OnToggleHelp },
@@ -386,16 +384,16 @@ void ADataCenterDebugController::OnUtilizationUp()
 	ApplyUtilizationKnob();
 }
 
-ARackThermalActor* ADataCenterDebugController::FindLookedAtRack() const
+ARackThermalActor* ADataCenterDebugController::FindLookedAtRack(double& OutHitZM) const
 {
 	FVector EyeCm;
 	FRotator ViewRotation;
 	GetPlayerViewPoint(EyeCm, ViewRotation);
-	return PickRackAlongRay(Racks, EyeCm, ViewRotation.Vector(), MaxSelectDistanceM * 100.0);
+	return PickRackAlongRay(Racks, EyeCm, ViewRotation.Vector(), MaxSelectDistanceM * 100.0, &OutHitZM);
 }
 
 ARackThermalActor* ADataCenterDebugController::PickRackAlongRay(const TArray<TObjectPtr<ARackThermalActor>>& Racks,
-	const FVector& EyeCm, const FVector& Dir, double MaxDistanceCm)
+	const FVector& EyeCm, const FVector& Dir, double MaxDistanceCm, double* OutHitZM)
 {
 	// Slab test against each rack's box in its own frame (forward = depth, right = width, up = height from the base).
 	ARackThermalActor* Best = nullptr;
@@ -426,9 +424,22 @@ ARackThermalActor* ADataCenterDebugController::PickRackAlongRay(const TArray<TOb
 		{
 			BestT = TMin;
 			Best = Rack;
+			// Where the ray enters the box, as height above the rack base [m].
+			if (OutHitZM) *OutHitZM = FVector::DotProduct(Rel + Dir * TMin, Axes[2]) / 100.0;
 		}
 	}
 	return Best;
+}
+
+int32 ADataCenterDebugController::SlotAtHeight(const ARackThermalActor& Rack, double HeightM)
+{
+	for (int32 Slot = 0; Slot < Rack.Params.NumSleds; ++Slot)
+	{
+		double BottomM = 0.0, SlotHeightM = 0.0;
+		Rack.GetSlotHeightRangeM(Slot, BottomM, SlotHeightM);
+		if (SlotHeightM > 0.0 && HeightM >= BottomM && HeightM < BottomM + SlotHeightM) return Slot;
+	}
+	return INDEX_NONE;  // blank panel, frame or top of the rack
 }
 
 void ADataCenterDebugController::DrawTargetHighlight() const
@@ -440,7 +451,7 @@ void ADataCenterDebugController::DrawTargetHighlight() const
 	const FVector SizeCm = Rack->RackSizeM * 100.0;
 	DrawDebugBox(World, Rack->GetActorLocation() + Rack->GetActorUpVector() * .5 * SizeCm.Z, .5 * SizeCm, Rotation, FColor::Green, false, 0.0f, 0, 1.5f);
 	double BottomM = 0.0, HeightM = 0.0;
-	Rack->GetSlotHeightRangeM(SelectedSledIndex, BottomM, HeightM);
+	if (SelectedSledIndex != INDEX_NONE) Rack->GetSlotHeightRangeM(SelectedSledIndex, BottomM, HeightM);
 	if (HeightM > 0.0)
 	{
 		const FVector SlotCentre = Rack->GetActorLocation() + Rack->GetActorUpVector() * (BottomM + .5 * HeightM) * 100.0;
@@ -448,29 +459,11 @@ void ADataCenterDebugController::DrawTargetHighlight() const
 	}
 }
 
-void ADataCenterDebugController::OnSelectPreviousSled()
-{
-	if (const ARackThermalActor* Rack = TargetRack.Get())
-	{
-		const int32 NumSleds = FMath::Max(1, Rack->Params.NumSleds);
-		SelectedSledIndex = (SelectedSledIndex - 1 + NumSleds) % NumSleds;
-	}
-}
-
-void ADataCenterDebugController::OnSelectNextSled()
-{
-	if (const ARackThermalActor* Rack = TargetRack.Get())
-	{
-		const int32 NumSleds = FMath::Max(1, Rack->Params.NumSleds);
-		SelectedSledIndex = (SelectedSledIndex + 1) % NumSleds;
-	}
-}
-
 void ADataCenterDebugController::OnToggleSelectedSled()
 {
-	// Only the rack being looked at. Nothing happens when the view ray hits no rack.
+	// Only the unit being looked at. Nothing happens when the view ray hits no rack or no unit (blank, frame).
 	ARackThermalActor* Rack = TargetRack.Get();
-	if (Rack == nullptr)
+	if (Rack == nullptr || SelectedSledIndex == INDEX_NONE)
 	{
 		return;
 	}
@@ -516,13 +509,11 @@ void ADataCenterDebugController::Tick(float DeltaTime)
 
 	RefreshTargetsIfStale(DeltaTime);
 
-	ARackThermalActor* Looked = FindLookedAtRack();
-	if (Looked != TargetRack.Get())
-	{
-		TargetRack = Looked;
-		// Racks can differ in slot count (NVL72 37 slots vs hybrid 12); keep the index valid for the new rack.
-		if (Looked != nullptr) SelectedSledIndex = FMath::Clamp(SelectedSledIndex, 0, FMath::Max(1, Looked->Params.NumSleds) - 1);
-	}
+	// The unit under the crosshair: the rack the view ray enters first, the slot at the height where it enters.
+	double HitZM = 0.0;
+	ARackThermalActor* Looked = FindLookedAtRack(HitZM);
+	TargetRack = Looked;
+	SelectedSledIndex = Looked != nullptr ? SlotAtHeight(*Looked, HitZM) : INDEX_NONE;
 	DrawTargetHighlight();
 
 	if (bShowHelp)
@@ -541,14 +532,18 @@ void ADataCenterDebugController::DrawHelp() const
 	const uint64 BaseKey = static_cast<uint64>(GetUniqueID());
 
 	GEngine->AddOnScreenDebugMessage(BaseKey, 0.0f, FColor(180, 220, 255),
-		TEXT("[디버그 키] 1/2 CPU 발열  3/4 GPU 발열  5/6 펌프 회전수  7/8 라디에이터 UA  9/0 부하율  ←/→ 유닛 선택  E 뽑기/꽂기 (바라보는 랙만)  R 리셋  H 도움말"));
+		TEXT("[디버그 키] 1/2 CPU 발열  3/4 GPU 발열  5/6 펌프 회전수  7/8 라디에이터 UA  9/0 부하율  E 바라보는 유닛 뽑기/꽂기  R 리셋  H 도움말"));
 
 	const ARackThermalActor* Rack = TargetRack.Get();
-	FString Selection = TEXT("바라보는 랙 없음 - 랙을 조준하면 ←/→, E가 그 랙에만 적용된다");
-	if (Rack != nullptr)
+	FString Selection = TEXT("바라보는 유닛 없음 - 유닛을 조준하고 E");
+	if (Rack != nullptr && SelectedSledIndex == INDEX_NONE)
+	{
+		Selection = TEXT("랙의 빈 칸·프레임을 보고 있음 - 유닛을 조준하고 E");
+	}
+	else if (Rack != nullptr)
 	{
 		const FVector M = SimUnits::UnrealToMeters(Rack->GetActorLocation());
-		Selection = FString::Printf(TEXT("대상 랙 (%.2f, %.2f) m | 선택 유닛 U%d/%d %s | 꽂힌 유닛 %d"),
+		Selection = FString::Printf(TEXT("바라보는 유닛: 랙 (%.2f, %.2f) m U%d/%d %s | 이 랙 꽂힌 유닛 %d"),
 			M.X, M.Y, SelectedSledIndex, Rack->Params.NumSleds,
 			Rack->IsSledDocked(SelectedSledIndex) ? TEXT("[꽂힘]") : TEXT("[뽑힘]"), Rack->GetNumDockedSleds());
 	}
