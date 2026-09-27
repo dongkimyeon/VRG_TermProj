@@ -102,6 +102,10 @@ public:
 	UFUNCTION(BlueprintCallable, CallInEditor, Category = "Air")
 	void PauseSim();
 
+	// Layout mode (2026-09-27): no air results to show, so the volume, slice and summary are hidden.
+	void SetLayoutMode(bool bInLayout) { bLayoutMode = bInLayout; }
+	bool IsLayoutMode() const { return bLayoutMode; }
+
 	UFUNCTION(BlueprintCallable, CallInEditor, Category = "Air")
 	void ResetSim();
 
@@ -206,6 +210,7 @@ public:
 	// 둘 다 남겨 둔 이유는 같은 온도장을 두 방식으로 그려 비교하기 위해서다.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Visualization|Volume")
 	bool bDrawVolume = true;
+	bool bLayoutMode = false;
 
 	// 정규화 온도 1에서의 흡수 계수 [1/cm]. 키우면 진해진다.
 	// 도메인을 가로지르는 거리가 수백 cm라 0.001~0.02 정도가 쓸 만하다.

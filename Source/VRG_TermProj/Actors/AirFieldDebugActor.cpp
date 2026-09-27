@@ -565,7 +565,7 @@ void AAirFieldDebugActor::Tick(float DeltaTime)
 		}
 	}
 
-	if (ResolveDrawFlag(GVrgForceDrawSlice, bDrawSlice))
+	if (!bLayoutMode && ResolveDrawFlag(GVrgForceDrawSlice, bDrawSlice))
 	{
 		VRG_SCOPE_COST(STAT_VrgDebugDraw, DebugDrawMs);
 		DrawSlice();
@@ -577,7 +577,7 @@ void AAirFieldDebugActor::Tick(float DeltaTime)
 		UpdateVolumeRender();
 	}
 
-	if (bShowSummary)
+	if (bShowSummary && !bLayoutMode)
 	{
 		DrawSummaryText();
 	}
@@ -835,7 +835,7 @@ void AAirFieldDebugActor::DrawSummaryText() const
 
 void AAirFieldDebugActor::UpdateVolumeRender()
 {
-	const bool bVolumeOn = ResolveDrawFlag(GVrgForceDrawVolume, bDrawVolume);
+	const bool bVolumeOn = !bLayoutMode && ResolveDrawFlag(GVrgForceDrawVolume, bDrawVolume);
 	if (!VolumeExtension.IsValid())
 	{
 		if (!bVolumeOn)

@@ -96,8 +96,66 @@ static FAutoConsoleCommand GVrgSimContainmentCommand(
 void ADataCenterSimulationActor::BeginPlay()
 {
 	Super::BeginPlay();
+	if (bStartInLayoutMode)
+	{
+		EnterLayoutMode();
+		return;
+	}
+	Mode = ESimMode::Simulation;
 	RebuildCoupling();
 	StartSim();
+}
+
+void ADataCenterSimulationActor::HoldModelsForLayout()
+{
+	UWorld* World = GetWorld();
+	if (World == nullptr) return;
+	for (TActorIterator<ARackThermalActor> It(World); It; ++It)
+	{
+		It->bDrivenExternally = true;  // no standalone integration either
+		It->PauseSim();
+	}
+	for (TActorIterator<AAirFieldDebugActor> It(World); It; ++It)
+	{
+		It->bDrivenExternally = true;
+		It->PauseSim();
+		It->SetLayoutMode(true);
+	}
+}
+
+void ADataCenterSimulationActor::EnterLayoutMode()
+{
+	Mode = ESimMode::Layout;
+	bSimRunning = false;
+	PendingWarmupSteps = 0;
+	VrgPerf::PendingWarmupSteps() = 0;
+	HoldModelsForLayout();
+	UE_LOG(LogTemp, Display, TEXT("[VrgSim] 배치 모드: 물리 정지. 배치를 바꾼 뒤 시뮬레이션 모드로 들어가면 새로 구성한다."));
+}
+
+void ADataCenterSimulationActor::EnterSimulationMode()
+{
+	Mode = ESimMode::Simulation;
+	FindTargetActors();
+	// Rows and hydraulics first: the coupling reads the routed racks and branch pipes.
+	if (Room != nullptr) Room->RebuildRoomNow();
+	FindTargetActors();
+	if (AirField != nullptr)
+	{
+		AirField->SetLayoutMode(false);
+		if (AirField->bAutoFitToRacks) AirField->FitToRacks();
+		AirField->ResetSim();
+		AirField->StartSim();
+	}
+	for (ARackThermalActor* Rack : Racks)
+	{
+		if (Rack != nullptr) Rack->ResetSim();
+	}
+	BuildCoupling();
+	bNeedsRebuild = (Racks.Num() == 0);
+	bSimRunning = true;
+	UE_LOG(LogTemp, Display, TEXT("[VrgSim] 시뮬레이션 모드: 랙 %d대 / 스파인 %d대 / CRAH %d대로 구성하고 t=0부터 시작."),
+		Racks.Num(), Spines.Num(), CrahPlacements.Num());
 }
 
 #if WITH_EDITOR
@@ -1070,6 +1128,18 @@ void ADataCenterSimulationActor::Tick(float DeltaTime)
 {
 	Super::Tick(DeltaTime);
 
+	if (Mode == ESimMode::Layout)
+	{
+		// Racks placed or spawned while in layout must not start integrating on their own.
+		HoldModelsForLayout();
+		if (bShowSummary && GEngine != nullptr)
+		{
+			GEngine->AddOnScreenDebugMessage(static_cast<uint64>(GetUniqueID()), 0.0f, FColor(120, 220, 255),
+				TEXT("[배치 모드] 물리 정지 | Enter: 시뮬레이션 시작 | G: 바라보는 장비 잡기/놓기 | T: 90도 회전"));
+		}
+		return;
+	}
+
 	if (bNeedsRebuild)
 	{
 		BuildCoupling();
@@ -1241,6 +1311,10 @@ void ADataCenterSimulationActor::DrawSummary() const
 
 void ADataCenterSimulationActor::QueueWarmupSteps(int32 NumSteps)
 {
+	if (Mode == ESimMode::Layout)
+	{
+		EnterSimulationMode();
+	}
 	if (bNeedsRebuild)
 	{
 		BuildCoupling();

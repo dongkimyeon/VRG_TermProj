@@ -5,6 +5,11 @@
 #include "Actors/DataCenterRoomActor.h"
 #include "Actors/HydraulicNetworkDebugActor.h"
 #include "Actors/RackThermalActor.h"
+#include "Actors/CoolingDistributionUnitActor.h"
+#include "Actors/CrahUnitActor.h"
+#include "Actors/DataCenterSimulationActor.h"
+#include "Actors/SpineCabinetActor.h"
+#include "Visualization/GjRackLayout.h"
 #include "Simulation/Core/SimUnits.h"
 #include "Simulation/Thermal/RackThermalModel.h"
 
@@ -253,6 +258,9 @@ void ADataCenterDebugController::SetupInputComponent()
 		{ TEXT("UtilUp"),        EKeys::Zero,       &ADataCenterDebugController::OnUtilizationUp },
 		{ TEXT("ToggleSled"),    EKeys::E,          &ADataCenterDebugController::OnToggleSelectedSled },
 		{ TEXT("ResetSim"),      EKeys::R,          &ADataCenterDebugController::OnResetSim },
+		{ TEXT("ToggleSimMode"), EKeys::Enter,      &ADataCenterDebugController::OnToggleSimMode },
+		{ TEXT("GrabOrDrop"),    EKeys::G,          &ADataCenterDebugController::OnGrabOrDrop },
+		{ TEXT("RotatePlace"),   EKeys::T,          &ADataCenterDebugController::OnRotatePlaceable },
 		{ TEXT("ToggleHelp"),    EKeys::H,          &ADataCenterDebugController::OnToggleHelp },
 	};
 
@@ -442,6 +450,114 @@ int32 ADataCenterDebugController::SlotAtHeight(const ARackThermalActor& Rack, do
 	return INDEX_NONE;  // blank panel, frame or top of the rack
 }
 
+bool ADataCenterDebugController::PlaceableBoxM(const AActor* Actor, FVector& OutSizeM)
+{
+	if (const ARackThermalActor* Rack = Cast<ARackThermalActor>(Actor)) { OutSizeM = Rack->RackSizeM; return true; }
+	if (const ACrahUnitActor* Crah = Cast<ACrahUnitActor>(Actor)) { OutSizeM = Crah->SizeM; return true; }
+	if (const ACoolingDistributionUnitActor* Cdu = Cast<ACoolingDistributionUnitActor>(Actor)) { OutSizeM = Cdu->SizeM; return true; }
+	if (Cast<ASpineCabinetActor>(Actor)) { OutSizeM = FVector(GjRackLayout::FrameDepthM, GjRackLayout::FrameWidthM, GjRackLayout::FrameHeightM); return true; }
+	return false;
+}
+
+AActor* ADataCenterDebugController::PickPlaceableAlongRay(UWorld* World, const FVector& EyeCm, const FVector& Dir, double MaxDistanceCm)
+{
+	if (World == nullptr) return nullptr;
+	AActor* Best = nullptr;
+	double BestT = MaxDistanceCm;
+	for (TActorIterator<AActor> It(World); It; ++It)
+	{
+		FVector SizeM;
+		if (!PlaceableBoxM(*It, SizeM)) continue;
+		// Same slab test as the rack pick, in the actor's own (unscaled) frame.
+		const FVector Axes[3] = { It->GetActorForwardVector(), It->GetActorRightVector(), It->GetActorUpVector() };
+		const FVector SizeCm = SizeM * 100.0;
+		const double Lo[3] = { -.5 * SizeCm.X, -.5 * SizeCm.Y, 0.0 }, Hi[3] = { .5 * SizeCm.X, .5 * SizeCm.Y, SizeCm.Z };
+		const FVector Rel = EyeCm - It->GetActorLocation();
+		double TMin = 0.0, TMax = BestT;
+		bool bHit = true;
+		for (int32 A = 0; A < 3 && bHit; ++A)
+		{
+			const double O = FVector::DotProduct(Rel, Axes[A]), D = FVector::DotProduct(Dir, Axes[A]);
+			if (FMath::Abs(D) < 1e-9) { bHit = O >= Lo[A] && O <= Hi[A]; continue; }
+			double T0 = (Lo[A] - O) / D, T1 = (Hi[A] - O) / D;
+			if (T0 > T1) Swap(T0, T1);
+			TMin = FMath::Max(TMin, T0); TMax = FMath::Min(TMax, T1);
+			bHit = TMin <= TMax;
+		}
+		if (bHit && TMin < BestT) { BestT = TMin; Best = *It; }
+	}
+	return Best;
+}
+
+bool ADataCenterDebugController::FloorPointSnapped(const FVector& EyeCm, const FVector& Dir, double PlaneZCm, double SnapM, FVector& OutCm)
+{
+	if (Dir.Z > -1e-3) return false;  // looking level or up: the ray never meets the floor in front
+	const double T = (PlaneZCm - EyeCm.Z) / Dir.Z;
+	if (T < 0.0) return false;
+	OutCm = EyeCm + Dir * T;
+	if (SnapM > 0.0)
+	{
+		const double S = SnapM * 100.0;
+		OutCm.X = FMath::RoundToDouble(OutCm.X / S) * S;
+		OutCm.Y = FMath::RoundToDouble(OutCm.Y / S) * S;
+	}
+	OutCm.Z = PlaneZCm;
+	return true;
+}
+
+ADataCenterSimulationActor* ADataCenterDebugController::FindSimActor() const
+{
+	UWorld* World = GetWorld();
+	if (World == nullptr) return nullptr;
+	for (TActorIterator<ADataCenterSimulationActor> It(World); It; ++It) return *It;
+	return nullptr;
+}
+
+bool ADataCenterDebugController::IsLayoutMode() const
+{
+	const ADataCenterSimulationActor* Sim = FindSimActor();
+	return Sim != nullptr && Sim->GetSimMode() == ESimMode::Layout;
+}
+
+void ADataCenterDebugController::OnToggleSimMode()
+{
+	ADataCenterSimulationActor* Sim = FindSimActor();
+	if (Sim == nullptr) return;
+	if (Sim->GetSimMode() == ESimMode::Layout)
+	{
+		Grabbed.Reset();  // drop whatever is held where it is
+		Sim->EnterSimulationMode();
+	}
+	else
+	{
+		Sim->EnterLayoutMode();
+	}
+}
+
+void ADataCenterDebugController::OnGrabOrDrop()
+{
+	if (Grabbed.IsValid()) { Grabbed.Reset(); return; }
+	if (!IsLayoutMode()) return;  // moving equipment is a layout-mode action
+	FVector EyeCm; FRotator ViewRotation;
+	GetPlayerViewPoint(EyeCm, ViewRotation);
+	AActor* Picked = PickPlaceableAlongRay(GetWorld(), EyeCm, ViewRotation.Vector(), MaxSelectDistanceM * 100.0);
+	FVector FloorCm;
+	if (Picked == nullptr || !FloorPointSnapped(EyeCm, ViewRotation.Vector(), Picked->GetActorLocation().Z, 0.0, FloorCm)) return;
+	Grabbed = Picked;
+	GrabOffsetCm = Picked->GetActorLocation() - FloorCm;
+	GrabOffsetCm.Z = 0.0;
+}
+
+void ADataCenterDebugController::OnRotatePlaceable()
+{
+	if (!IsLayoutMode()) return;
+	AActor* Target = Grabbed.IsValid() ? Grabbed.Get() : HoveredPlaceable.Get();
+	if (Target == nullptr) return;
+	FRotator R = Target->GetActorRotation();
+	R.Yaw = FRotator::NormalizeAxis(FMath::RoundToDouble((R.Yaw + 90.0) / 90.0) * 90.0);
+	Target->SetActorRotation(R);
+}
+
 void ADataCenterDebugController::DrawTargetHighlight() const
 {
 	const ARackThermalActor* Rack = TargetRack.Get();
@@ -486,6 +602,13 @@ void ADataCenterDebugController::OnToggleSelectedSled()
 
 void ADataCenterDebugController::OnResetSim()
 {
+	// With the integrated actor: restart the simulation from the current layout, and do nothing in layout mode
+	// (resetting racks there would start their own standalone integration).
+	if (ADataCenterSimulationActor* Sim = FindSimActor())
+	{
+		if (Sim->GetSimMode() == ESimMode::Simulation) Sim->EnterSimulationMode();
+		return;
+	}
 	for (ARackThermalActor* Rack : Racks)
 	{
 		if (Rack != nullptr)
@@ -508,6 +631,42 @@ void ADataCenterDebugController::Tick(float DeltaTime)
 	Super::Tick(DeltaTime);
 
 	RefreshTargetsIfStale(DeltaTime);
+
+	// Layout mode: hover / move the equipment under the crosshair. The room re-routes pipes once it settles.
+	if (IsLayoutMode())
+	{
+		FVector EyeCm; FRotator ViewRotation;
+		GetPlayerViewPoint(EyeCm, ViewRotation);
+		if (AActor* Held = Grabbed.Get())
+		{
+			FVector FloorCm;
+			if (FloorPointSnapped(EyeCm, ViewRotation.Vector(), Held->GetActorLocation().Z, PlaceSnapM, FloorCm))
+			{
+				FVector Target = FloorCm + GrabOffsetCm;
+				if (PlaceSnapM > 0.0)
+				{
+					const double S = PlaceSnapM * 100.0;
+					Target.X = FMath::RoundToDouble(Target.X / S) * S;
+					Target.Y = FMath::RoundToDouble(Target.Y / S) * S;
+				}
+				Target.Z = Held->GetActorLocation().Z;
+				Held->SetActorLocation(Target);
+			}
+		}
+		HoveredPlaceable = Grabbed.IsValid() ? Grabbed : TWeakObjectPtr<AActor>(PickPlaceableAlongRay(GetWorld(), EyeCm, ViewRotation.Vector(), MaxSelectDistanceM * 100.0));
+		FVector SizeM;
+		if (const AActor* H = HoveredPlaceable.Get(); H != nullptr && PlaceableBoxM(H, SizeM))
+		{
+			const FVector HalfCm = SizeM * 50.0;
+			DrawDebugBox(GetWorld(), H->GetActorLocation() + H->GetActorUpVector() * HalfCm.Z, HalfCm, H->GetActorQuat(),
+				Grabbed.IsValid() ? FColor::Orange : FColor::Cyan, false, 0.0f, 0, 2.0f);
+		}
+	}
+	else
+	{
+		Grabbed.Reset();
+		HoveredPlaceable.Reset();
+	}
 
 	// The unit under the crosshair: the rack the view ray enters first, the slot at the height where it enters.
 	double HitZM = 0.0;
@@ -532,7 +691,7 @@ void ADataCenterDebugController::DrawHelp() const
 	const uint64 BaseKey = static_cast<uint64>(GetUniqueID());
 
 	GEngine->AddOnScreenDebugMessage(BaseKey, 0.0f, FColor(180, 220, 255),
-		TEXT("[디버그 키] 1/2 CPU 발열  3/4 GPU 발열  5/6 펌프 회전수  7/8 라디에이터 UA(랙별 모드)  9/0 부하율  E 바라보는 유닛 뽑기/꽂기  R 리셋  H 도움말"));
+		TEXT("[디버그 키] Enter 배치/시뮬레이션 전환  G 장비 잡기/놓기  T 90도 회전 (배치 모드) | 1/2 CPU 발열  3/4 GPU 발열  5/6 펌프 회전수  7/8 라디에이터 UA(랙별 모드)  9/0 부하율  E 바라보는 유닛 뽑기/꽂기  R 리셋  H 도움말"));
 
 	const ARackThermalActor* Rack = TargetRack.Get();
 	FString Selection = TEXT("바라보는 유닛 없음 - 유닛을 조준하고 E");

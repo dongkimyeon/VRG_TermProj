@@ -85,6 +85,18 @@ public:
 	// Slot whose height range (rack-local, m) contains HeightM, or INDEX_NONE (blank panel, frame).
 	static int32 SlotAtHeight(const ARackThermalActor& Rack, double HeightM);
 
+	// ---- Layout mode placement (2026-09-27) ----
+	// Racks, spines, CDUs and CRAH units: box of SizeM (depth, width, height) with the origin at the bottom centre.
+	static bool PlaceableBoxM(const AActor* Actor, FVector& OutSizeM);
+	// Nearest placeable whose box the ray enters within MaxDistanceCm, or null.
+	static AActor* PickPlaceableAlongRay(UWorld* World, const FVector& EyeCm, const FVector& Dir, double MaxDistanceCm);
+	// Where the ray meets the horizontal plane at PlaneZCm, snapped in X and Y to SnapM; false if it never does.
+	static bool FloorPointSnapped(const FVector& EyeCm, const FVector& Dir, double PlaneZCm, double SnapM, FVector& OutCm);
+
+	// Grid step of layout moves [m].
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Debug", meta = (ClampMin = "0.0"))
+	double PlaceSnapM = 0.05;
+
 	// 레벨에서 대상을 다시 훑는 주기 [s]. 방 액터가 랙을 늦게 띄우기 때문에 필요하다.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Debug")
 	float TargetRefreshIntervalS = 0.5f;
@@ -147,6 +159,14 @@ private:
 	void OnUtilizationDown();
 	void OnUtilizationUp();
 	void OnToggleSelectedSled();
+	void OnToggleSimMode();
+	void OnGrabOrDrop();
+	void OnRotatePlaceable();
+	class ADataCenterSimulationActor* FindSimActor() const;
+	bool IsLayoutMode() const;
+	TWeakObjectPtr<AActor> Grabbed;
+	FVector GrabOffsetCm = FVector::ZeroVector;  // actor origin minus the floor point it was grabbed at
+	TWeakObjectPtr<AActor> HoveredPlaceable;
 	void OnResetSim();
 	void OnToggleHelp();
 

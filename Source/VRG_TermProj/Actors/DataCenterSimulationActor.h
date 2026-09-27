@@ -15,6 +15,15 @@ class ASpineCabinetActor;
 class UStaticMesh;
 class UStaticMeshComponent;
 
+// Layout vs simulation (2026-09-27). Layout: nothing is integrated, cabinets can be moved freely. Simulation: the
+// coupling is built from the current layout in one go and the clock starts at 0.
+UENUM(BlueprintType)
+enum class ESimMode : uint8
+{
+	Layout,
+	Simulation,
+};
+
 // Where the rack coolant loops reject their heat (2026-09-27).
 UENUM(BlueprintType)
 enum class ECoolantRejection : uint8
@@ -91,6 +100,23 @@ public:
 
 	UFUNCTION(BlueprintCallable, Category = "Simulation")
 	FCouplingSnapshot GetSnapshot() const;
+
+	// ---- Layout / simulation mode ----
+	// Play starts in layout mode unless this is off (then it starts simulating at once, the pre-2026-09-27 way).
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Simulation")
+	bool bStartInLayoutMode = true;
+
+	// Builds everything from the current layout (rows and hydraulics, air grid fitted and reset, racks reset,
+	// coupling) and starts the clock at 0.
+	UFUNCTION(BlueprintCallable, Category = "Simulation")
+	void EnterSimulationMode();
+
+	// Stops integration and drops the simulated state (the next EnterSimulationMode starts fresh).
+	UFUNCTION(BlueprintCallable, Category = "Simulation")
+	void EnterLayoutMode();
+
+	UFUNCTION(BlueprintCallable, Category = "Simulation")
+	ESimMode GetSimMode() const { return Mode; }
 
 	// 화면 확인용으로 N스텝을 앞당긴다. 공기 액터의 같은 기능은 이 액터가 구동할 때
 	// 스스로 취소하므로(규약 4: 같은 구간을 두 번 적분하면 안 된다), 통합 구성에서는
@@ -245,6 +271,9 @@ private:
 	TArray<TObjectPtr<ASpineCabinetActor>> Spines;
 
 	bool bSimRunning = false;
+	ESimMode Mode = ESimMode::Simulation;
+	// Layout mode: keep every cabinet model and the air solver from integrating on their own.
+	void HoldModelsForLayout();
 	double EffectiveCoilUAWK = 0.0;
 	double DesignAirLoadW = 0.0;
 	bool bNeedsRebuild = true;

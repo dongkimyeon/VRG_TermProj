@@ -5,7 +5,7 @@
 #if WITH_DEV_AUTOMATION_TESTS
 namespace
 {
-	constexpr auto Flags = EAutomationTestFlags::EditorContext | EAutomationTestFlags::CommandletContext | EAutomationTestFlags::EngineFilter;
+	constexpr auto OctreeStepTestFlags = EAutomationTestFlags::EditorContext | EAutomationTestFlags::CommandletContext | EAutomationTestFlags::EngineFilter;
 	FAirGridParams Params()
 	{
 		FAirGridParams P; P.NumCellsX = 6; P.NumCellsY = 4; P.NumCellsZ = 4; P.CellSizeM = .25; return P;
@@ -13,7 +13,7 @@ namespace
 	TArray<FBox> Boxes() { return {FBox(FVector(.2,.2,.2), FVector(.7,.6,.6))}; }
 }
 
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FOctreeUniformStepTest, "VRG.Air.Octree.Step.UniformHeatReference", Flags)
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FOctreeUniformStepTest, "VRG.Air.Octree.Step.UniformHeatReference", OctreeStepTestFlags)
 bool FOctreeUniformStepTest::RunTest(const FString& Parameters)
 {
 	FAirSolver Uniform, Tree; Uniform.Initialize(Params(), 297.15); Tree.Initialize(Params(), 297.15);
@@ -34,7 +34,7 @@ bool FOctreeUniformStepTest::RunTest(const FString& Parameters)
 	return true;
 }
 
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FOctreeProjectionTest, "VRG.Air.Octree.Step.ProjectionAndRegrid", Flags)
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FOctreeProjectionTest, "VRG.Air.Octree.Step.ProjectionAndRegrid", OctreeStepTestFlags)
 bool FOctreeProjectionTest::RunTest(const FString& Parameters)
 {
 	FUniformAirGrid Source; Source.Initialize(Params()); Source.ResetToUniform(297.15);
@@ -69,7 +69,7 @@ bool FOctreeProjectionTest::RunTest(const FString& Parameters)
 	return true;
 }
 
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FOctreePlumeTest, "VRG.Air.Octree.Step.BuoyancyHeatAndSolids", Flags)
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FOctreePlumeTest, "VRG.Air.Octree.Step.BuoyancyHeatAndSolids", OctreeStepTestFlags)
 bool FOctreePlumeTest::RunTest(const FString& Parameters)
 {
 	FAirSolver Air; Air.Initialize(Params(), 297.15);
@@ -95,7 +95,7 @@ bool FOctreePlumeTest::RunTest(const FString& Parameters)
 	return true;
 }
 
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FOctreeAdaptFailureTest, "VRG.Air.Octree.Step.RegridFailureIsAtomic", Flags)
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FOctreeAdaptFailureTest, "VRG.Air.Octree.Step.RegridFailureIsAtomic", OctreeStepTestFlags)
 bool FOctreeAdaptFailureTest::RunTest(const FString& Parameters)
 {
 	FUniformAirGrid G; G.Initialize(Params()); G.ResetToUniform(300.0);
@@ -107,7 +107,7 @@ bool FOctreeAdaptFailureTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("Old energy retained"),S.GetGrid().TotalThermalEnergyJ(297.15),Energy);
 	return true;
 }
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FOctreeMgCompatibilityTest, "VRG.Air.Octree.Step.VolumeWeightedCompatibility", Flags)
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FOctreeMgCompatibilityTest, "VRG.Air.Octree.Step.VolumeWeightedCompatibility", OctreeStepTestFlags)
 bool FOctreeMgCompatibilityTest::RunTest(const FString& Parameters)
 {
 	FMultigridPoisson S; FMultigridPoisson::FLevelInput L;
@@ -121,7 +121,7 @@ bool FOctreeMgCompatibilityTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("Nonzero integral must report failure"),!Bad.bConverged && Bad.bIncompatibleRightHandSide);
 	return true;
 }
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FOctreeCoolingAnalyticTest, "VRG.Air.Octree.Step.CoolingAnalyticTimeRefinement", Flags)
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FOctreeCoolingAnalyticTest, "VRG.Air.Octree.Step.CoolingAnalyticTimeRefinement", OctreeStepTestFlags)
 bool FOctreeCoolingAnalyticTest::RunTest(const FString& Parameters)
 {
 	const auto P = Params();
