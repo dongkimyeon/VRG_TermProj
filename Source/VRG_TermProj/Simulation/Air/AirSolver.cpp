@@ -606,6 +606,32 @@ void FAirSolver::Step(const FAirSolverInput& Input, double DeltaTimeS)
 		bLastPressureRanOnGpu = false;
 		if (OctreeSolver.PressureFailures != BeforeFailures)
 			UE_LOG(LogTemp, Warning, TEXT("[OctreeAir] Pressure failure: residual %.3e"), LastPressureResult.NormalizedResidual);
+
+		// S5-D: after the step (same dt, the clock is untouched), let the indicators pick the refined roots. The
+		// split / merge itself is S5-C's conservative transfer and re-projection.
+		if (bAutoAdapt)
+		{
+			AdaptElapsedS += DeltaTimeS;
+			TArray<FBox> AutoBoxes;
+			if (AdaptController.Update(Grid, AdaptSettings, AdaptElapsedS, AutoBoxes))
+			{
+				TArray<FBox> Combined = OctreeUserBoxesM;
+				Combined.Append(AutoBoxes);
+				FString Error;
+				if (AdaptToBoxes(Combined, DeltaTimeS, Error))
+				{
+					AdaptController.Commit();
+				}
+				else
+				{
+					// Not silent (D5 spirit), and the old topology stays in force.
+					AdaptController.Discard();
+					if (NumAutoAdaptFailures++ == 0 || NumAutoAdaptFailures % 100 == 0)
+						UE_LOG(LogTemp, Warning, TEXT("[OctreeAir] 자동 적응 실패 %lld회: %s (기존 격자 유지)"), NumAutoAdaptFailures, *Error);
+					LastAutoAdaptError = Error;
+				}
+			}
+		}
 		return;
 	}
 
@@ -841,11 +867,36 @@ FAirSolverSnapshot FAirSolver::MakeSnapshot(double SimTimeS) const
 bool FAirSolver::ConfigureOctree(const FFixedOctreeSettings& Settings, const TArray<FBox>& BoxesM, FString& Error)
 {
 	if (!OctreeSolver.Initialize(Grid, Settings, BoxesM, Error)) return false;
-	OctreeSettings = Settings; OctreeBoxesM = BoxesM;
+	OctreeSettings = Settings; OctreeBoxesM = OctreeUserBoxesM = BoxesM;
+	AdaptController.Reset(Grid.GetNumCells());
+	AdaptElapsedS = 0.0;
+	NumAutoAdaptFailures = 0;
 	bUseOctree = true; bOctreeNeedsImport = false; return true;
 }
 
+bool FAirSolver::SetOctreeAutoAdapt(bool bEnable, const FOctreeAdaptSettings& Settings, FString& Error)
+{
+	Error = bEnable ? Settings.Validate() : FString();
+	if (!Error.IsEmpty()) { bAutoAdapt = false; return false; }
+	bAutoAdapt = bEnable;
+	AdaptSettings = Settings;
+	return true;
+}
+
 bool FAirSolver::AdaptOctree(const TArray<FBox>& BoxesM, double DtS, FString& Error)
+{
+	// Manual boxes replace the previous manual ones; the automatic ones currently in force stay.
+	TArray<FBox> Combined = BoxesM, AutoBoxes;
+	TArray<uint8> Flags; Flags.SetNum(Grid.GetNumCells());
+	for (int32 I = 0; I < Flags.Num(); ++I) Flags[I] = AdaptController.IsRefined(I) ? 1 : 0;
+	FOctreeAdaptController::MakeBoxes(Grid, Flags, AutoBoxes);
+	Combined.Append(AutoBoxes);
+	if (!AdaptToBoxes(Combined, DtS, Error)) return false;
+	OctreeUserBoxesM = BoxesM;
+	return true;
+}
+
+bool FAirSolver::AdaptToBoxes(const TArray<FBox>& BoxesM, double DtS, FString& Error)
 {
 	if (!bUseOctree || bOctreeNeedsImport) { Error = TEXT("Octree must be initialized before adaptation"); return false; }
 	OctreeSolver.PressureSettings = PressureSettings;

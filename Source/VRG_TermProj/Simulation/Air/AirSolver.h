@@ -7,6 +7,7 @@
 #include "Simulation/Air/MultigridPoissonSolver.h"
 #include "Simulation/Air/UniformAirGrid.h"
 #include "Simulation/Air/OctreeAirSolver.h"
+#include "Simulation/Air/OctreeAdaptController.h"
 #include "AirSolver.generated.h"
 
 // S3: 균일 격자 공기 해석.
@@ -220,7 +221,15 @@ public:
 	FAirSolverSnapshot MakeSnapshot(double SimTimeS) const;
 	// Uniform root grid remains the coupling/render interface; octree leaves integrate the physics.
 	bool ConfigureOctree(const FFixedOctreeSettings& Settings, const TArray<FBox>& BoxesM, FString& Error);
+	// Manual refinement boxes (solver-local m). With automatic adaptation on, the automatic boxes are added to them.
 	bool AdaptOctree(const TArray<FBox>& BoxesM, double DtS, FString& Error);
+	// S5-D: automatic adaptation from temperature / velocity indicators (see FOctreeAdaptController), evaluated inside
+	// Step() on the octree path. Invalid settings (no hysteresis) are refused and leave it off.
+	bool SetOctreeAutoAdapt(bool bEnable, const FOctreeAdaptSettings& Settings, FString& Error);
+	bool IsOctreeAutoAdapting() const { return bAutoAdapt; }
+	const FOctreeAdaptController& GetOctreeAdaptController() const { return AdaptController; }
+	int64 GetNumAutoAdaptFailures() const { return NumAutoAdaptFailures; }
+	const FString& GetLastAutoAdaptError() const { return LastAutoAdaptError; }
 	bool IsUsingOctree() const { return bUseOctree; }
 	const FOctreeAirSolver& GetOctreeSolver() const { return OctreeSolver; }
 
@@ -307,7 +316,14 @@ public:
 private:
 	FOctreeAirSolver OctreeSolver;
 	FFixedOctreeSettings OctreeSettings;
-	TArray<FBox> OctreeBoxesM;
+	TArray<FBox> OctreeBoxesM, OctreeUserBoxesM;
+	bool bAutoAdapt = false;
+	FOctreeAdaptSettings AdaptSettings;
+	FOctreeAdaptController AdaptController;
+	double AdaptElapsedS = 0.0;
+	int64 NumAutoAdaptFailures = 0;
+	FString LastAutoAdaptError;
+	bool AdaptToBoxes(const TArray<FBox>& BoxesM, double DtS, FString& Error);
 	bool bUseOctree = false, bOctreeNeedsImport = false;
 	FUniformAirGrid Grid;
 	FPoissonSolveSettings PressureSettings;

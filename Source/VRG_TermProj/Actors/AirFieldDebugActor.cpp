@@ -273,6 +273,9 @@ void AAirFieldDebugActor::ResetSim()
 		FFixedOctreeSettings Settings; Settings.MaxDepth = OctreeDepth; Settings.MaxLeaves = OctreeMaxLeaves;
 		if (!Solver.ConfigureOctree(Settings, OctreeRefinementBoxesM, OctreeStatus))
 			UE_LOG(LogTemp, Error, TEXT("Octree configuration failed: %s"), *OctreeStatus);
+		FString AdaptError;
+		if (!Solver.SetOctreeAutoAdapt(bAutoAdaptOctree, OctreeAdaptSettings, AdaptError))
+			UE_LOG(LogTemp, Error, TEXT("Octree auto adaptation refused: %s"), *AdaptError);
 	}
 
 	Input.GravityZMs2 = GravityZMs2;
@@ -738,6 +741,14 @@ void AAirFieldDebugActor::DrawSummaryText() const
 		GEngine->AddOnScreenDebugMessage(BaseKey + 9, 0.0f, FColor::Cyan,
 			FString::Printf(TEXT("[S5-C] %d leaves / %d hanging faces | MG residual %.3e | %s"),
 				Tree.GetNumLeaves(), Tree.GetNumHangingFaces(), Snapshot.PressureNormalizedResidual, *OctreeStatus));
+		if (Solver.IsOctreeAutoAdapting())
+		{
+			const FOctreeAdaptController& Adapt = Solver.GetOctreeAdaptController();
+			GEngine->AddOnScreenDebugMessage(BaseKey + 10, 0.0f, Solver.GetNumAutoAdaptFailures() > 0 ? FColor::Orange : FColor::Cyan,
+				FString::Printf(TEXT("[S5-D] 자동 적응: 정밀 루트 %d개 | 격자 변경 %lld회 (루트 전환 %lld) | 실패 %lld회%s"),
+					Adapt.GetNumRefined(), Adapt.GetNumTopologyChanges(), Adapt.GetNumRootFlips(), Solver.GetNumAutoAdaptFailures(),
+					Solver.GetNumAutoAdaptFailures() > 0 ? *FString::Printf(TEXT(" (%s)"), *Solver.GetLastAutoAdaptError()) : TEXT("")));
+		}
 	}
 
 	GEngine->AddOnScreenDebugMessage(BaseKey, 0.0f,

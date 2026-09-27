@@ -84,6 +84,12 @@ public:
 	TArray<FBox> OctreeRefinementBoxesM;
 	UFUNCTION(BlueprintCallable, CallInEditor, Category = "Air|Octree")
 	void ApplyOctreeRefinement();
+	// S5-D: refine / merge root cells automatically from temperature gradient and air speed (with hysteresis,
+	// hold time and an evaluation interval against chattering). Takes effect at ResetSim.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Air|Octree")
+	bool bAutoAdaptOctree = false;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Air|Octree")
+	FOctreeAdaptSettings OctreeAdaptSettings;
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Air|Octree")
 	FString OctreeStatus;
 	AAirFieldDebugActor();
