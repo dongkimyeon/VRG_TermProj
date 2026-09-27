@@ -1,6 +1,7 @@
 // Fill out your copyright notice in the Description page of Project Settings.
 
 #include "Simulation/Air/AirSolver.h"
+#include "Simulation/Core/VrgParallel.h"
 #include "Simulation/Core/VrgPerfCounters.h"
 #include "VrgPressureGpuSolver.h"
 
@@ -40,44 +41,35 @@ void FAirSolver::AdvectVelocity(double DeltaTimeS)
 
 	// 반라그랑주: 각 면에서 시간을 거슬러 올라가 그 자리의 속도를 가져온다.
 	// 읽기는 현재 버퍼, 쓰기는 다음 버퍼다 (규약 7: in-place 갱신 금지).
-	for (int32 Z = 0; Z < Grid.GetNumCellsZ(); ++Z)
+	VrgParallel::ForEachRow(0, Grid.GetNumCellsY(), 0, Grid.GetNumCellsZ(), [&](int32 Y, int32 Z)
 	{
-		for (int32 Y = 0; Y < Grid.GetNumCellsY(); ++Y)
+		for (int32 X = 0; X <= Grid.GetNumCellsX(); ++X)
 		{
-			for (int32 X = 0; X <= Grid.GetNumCellsX(); ++X)
-			{
-				const FVector FacePositionM(X * CellSizeM, (Y + 0.5) * CellSizeM, (Z + 0.5) * CellSizeM);
-				const FVector BackPositionM = FacePositionM - Grid.SampleVelocityMs(FacePositionM) * DeltaTimeS;
-				Grid.NextVelocityXMs[Grid.FaceXIndex(X, Y, Z)] = Grid.SampleVelocityMs(BackPositionM).X;
-			}
+			const FVector FacePositionM(X * CellSizeM, (Y + 0.5) * CellSizeM, (Z + 0.5) * CellSizeM);
+			const FVector BackPositionM = FacePositionM - Grid.SampleVelocityMs(FacePositionM) * DeltaTimeS;
+			Grid.NextVelocityXMs[Grid.FaceXIndex(X, Y, Z)] = Grid.SampleVelocityMs(BackPositionM).X;
 		}
-	}
+	});
 
-	for (int32 Z = 0; Z < Grid.GetNumCellsZ(); ++Z)
+	VrgParallel::ForEachRow(0, Grid.GetNumCellsY() + 1, 0, Grid.GetNumCellsZ(), [&](int32 Y, int32 Z)
 	{
-		for (int32 Y = 0; Y <= Grid.GetNumCellsY(); ++Y)
+		for (int32 X = 0; X < Grid.GetNumCellsX(); ++X)
 		{
-			for (int32 X = 0; X < Grid.GetNumCellsX(); ++X)
-			{
-				const FVector FacePositionM((X + 0.5) * CellSizeM, Y * CellSizeM, (Z + 0.5) * CellSizeM);
-				const FVector BackPositionM = FacePositionM - Grid.SampleVelocityMs(FacePositionM) * DeltaTimeS;
-				Grid.NextVelocityYMs[Grid.FaceYIndex(X, Y, Z)] = Grid.SampleVelocityMs(BackPositionM).Y;
-			}
+			const FVector FacePositionM((X + 0.5) * CellSizeM, Y * CellSizeM, (Z + 0.5) * CellSizeM);
+			const FVector BackPositionM = FacePositionM - Grid.SampleVelocityMs(FacePositionM) * DeltaTimeS;
+			Grid.NextVelocityYMs[Grid.FaceYIndex(X, Y, Z)] = Grid.SampleVelocityMs(BackPositionM).Y;
 		}
-	}
+	});
 
-	for (int32 Z = 0; Z <= Grid.GetNumCellsZ(); ++Z)
+	VrgParallel::ForEachRow(0, Grid.GetNumCellsY(), 0, Grid.GetNumCellsZ() + 1, [&](int32 Y, int32 Z)
 	{
-		for (int32 Y = 0; Y < Grid.GetNumCellsY(); ++Y)
+		for (int32 X = 0; X < Grid.GetNumCellsX(); ++X)
 		{
-			for (int32 X = 0; X < Grid.GetNumCellsX(); ++X)
-			{
-				const FVector FacePositionM((X + 0.5) * CellSizeM, (Y + 0.5) * CellSizeM, Z * CellSizeM);
-				const FVector BackPositionM = FacePositionM - Grid.SampleVelocityMs(FacePositionM) * DeltaTimeS;
-				Grid.NextVelocityZMs[Grid.FaceZIndex(X, Y, Z)] = Grid.SampleVelocityMs(BackPositionM).Z;
-			}
+			const FVector FacePositionM((X + 0.5) * CellSizeM, (Y + 0.5) * CellSizeM, Z * CellSizeM);
+			const FVector BackPositionM = FacePositionM - Grid.SampleVelocityMs(FacePositionM) * DeltaTimeS;
+			Grid.NextVelocityZMs[Grid.FaceZIndex(X, Y, Z)] = Grid.SampleVelocityMs(BackPositionM).Z;
 		}
-	}
+	});
 
 	Grid.SwapVelocityBuffers();
 }
@@ -247,19 +239,16 @@ void FAirSolver::ProjectToDivergenceFree(double DeltaTimeS)
 	// 여기서 p는 압력 [Pa]이고 우변의 단위는 Pa/m^2다.
 	const double RhoOverDt = Params.DensityKgM3 / DeltaTimeS;
 
-	for (int32 Z = 0; Z < Grid.GetNumCellsZ(); ++Z)
+	VrgParallel::ForEachRow(0, Grid.GetNumCellsY(), 0, Grid.GetNumCellsZ(), [&](int32 Y, int32 Z)
 	{
-		for (int32 Y = 0; Y < Grid.GetNumCellsY(); ++Y)
+		for (int32 X = 0; X < Grid.GetNumCellsX(); ++X)
 		{
-			for (int32 X = 0; X < Grid.GetNumCellsX(); ++X)
-			{
-				// 고체 셀에는 풀 방정식이 없다. 우변을 0으로 둬야 적합성이 깨지지 않는다.
-				DivergencePerS[Grid.CellIndex(X, Y, Z)] = Grid.IsFluidCell(X, Y, Z)
-					? RhoOverDt * Grid.CellDivergencePerS(X, Y, Z)
-					: 0.0;
-			}
+			// 고체 셀에는 풀 방정식이 없다. 우변을 0으로 둬야 적합성이 깨지지 않는다.
+			DivergencePerS[Grid.CellIndex(X, Y, Z)] = Grid.IsFluidCell(X, Y, Z)
+				? RhoOverDt * Grid.CellDivergencePerS(X, Y, Z)
+				: 0.0;
 		}
-	}
+	});
 
 	// 막힌 상자에서는 총 발산이 0이라 우변이 적합하다. 반올림으로 남는 평균만 덜어 낸다.
 	// 이걸 안 하면 Neumann Poisson이 풀리지 않아 수렴 실패로 보고된다.
@@ -287,57 +276,48 @@ void FAirSolver::ProjectToDivergenceFree(double DeltaTimeS)
 	const double DtOverRho = DeltaTimeS / Params.DensityKgM3;
 	const double InvCellSize = 1.0 / CellSizeM;
 
-	for (int32 Z = 0; Z < Grid.GetNumCellsZ(); ++Z)
+	VrgParallel::ForEachRow(0, Grid.GetNumCellsY(), 0, Grid.GetNumCellsZ(), [&](int32 Y, int32 Z)
 	{
-		for (int32 Y = 0; Y < Grid.GetNumCellsY(); ++Y)
+		for (int32 X = 1; X < Grid.GetNumCellsX(); ++X)
 		{
-			for (int32 X = 1; X < Grid.GetNumCellsX(); ++X)
+			// 고체가 막은 면은 손대지 않는다. 고체 셀의 압력은 해가 아니다.
+			if (Grid.IsSolidCell(X - 1, Y, Z) || Grid.IsSolidCell(X, Y, Z))
 			{
-				// 고체가 막은 면은 손대지 않는다. 고체 셀의 압력은 해가 아니다.
-				if (Grid.IsSolidCell(X - 1, Y, Z) || Grid.IsSolidCell(X, Y, Z))
-				{
-					continue;
-				}
-				const double GradPa = (Grid.PressurePa[Grid.CellIndex(X, Y, Z)]
-					- Grid.PressurePa[Grid.CellIndex(X - 1, Y, Z)]) * InvCellSize;
-				Grid.VelocityXMs[Grid.FaceXIndex(X, Y, Z)] -= DtOverRho * GradPa;
+				continue;
 			}
+			const double GradPa = (Grid.PressurePa[Grid.CellIndex(X, Y, Z)]
+				- Grid.PressurePa[Grid.CellIndex(X - 1, Y, Z)]) * InvCellSize;
+			Grid.VelocityXMs[Grid.FaceXIndex(X, Y, Z)] -= DtOverRho * GradPa;
 		}
-	}
+	});
 
-	for (int32 Z = 0; Z < Grid.GetNumCellsZ(); ++Z)
+	VrgParallel::ForEachRow(1, Grid.GetNumCellsY(), 0, Grid.GetNumCellsZ(), [&](int32 Y, int32 Z)
 	{
-		for (int32 Y = 1; Y < Grid.GetNumCellsY(); ++Y)
+		for (int32 X = 0; X < Grid.GetNumCellsX(); ++X)
 		{
-			for (int32 X = 0; X < Grid.GetNumCellsX(); ++X)
+			if (Grid.IsSolidCell(X, Y - 1, Z) || Grid.IsSolidCell(X, Y, Z))
 			{
-				if (Grid.IsSolidCell(X, Y - 1, Z) || Grid.IsSolidCell(X, Y, Z))
-				{
-					continue;
-				}
-				const double GradPa = (Grid.PressurePa[Grid.CellIndex(X, Y, Z)]
-					- Grid.PressurePa[Grid.CellIndex(X, Y - 1, Z)]) * InvCellSize;
-				Grid.VelocityYMs[Grid.FaceYIndex(X, Y, Z)] -= DtOverRho * GradPa;
+				continue;
 			}
+			const double GradPa = (Grid.PressurePa[Grid.CellIndex(X, Y, Z)]
+				- Grid.PressurePa[Grid.CellIndex(X, Y - 1, Z)]) * InvCellSize;
+			Grid.VelocityYMs[Grid.FaceYIndex(X, Y, Z)] -= DtOverRho * GradPa;
 		}
-	}
+	});
 
-	for (int32 Z = 1; Z < Grid.GetNumCellsZ(); ++Z)
+	VrgParallel::ForEachRow(0, Grid.GetNumCellsY(), 1, Grid.GetNumCellsZ(), [&](int32 Y, int32 Z)
 	{
-		for (int32 Y = 0; Y < Grid.GetNumCellsY(); ++Y)
+		for (int32 X = 0; X < Grid.GetNumCellsX(); ++X)
 		{
-			for (int32 X = 0; X < Grid.GetNumCellsX(); ++X)
+			if (Grid.IsSolidCell(X, Y, Z - 1) || Grid.IsSolidCell(X, Y, Z))
 			{
-				if (Grid.IsSolidCell(X, Y, Z - 1) || Grid.IsSolidCell(X, Y, Z))
-				{
-					continue;
-				}
-				const double GradPa = (Grid.PressurePa[Grid.CellIndex(X, Y, Z)]
-					- Grid.PressurePa[Grid.CellIndex(X, Y, Z - 1)]) * InvCellSize;
-				Grid.VelocityZMs[Grid.FaceZIndex(X, Y, Z)] -= DtOverRho * GradPa;
+				continue;
 			}
+			const double GradPa = (Grid.PressurePa[Grid.CellIndex(X, Y, Z)]
+				- Grid.PressurePa[Grid.CellIndex(X, Y, Z - 1)]) * InvCellSize;
+			Grid.VelocityZMs[Grid.FaceZIndex(X, Y, Z)] -= DtOverRho * GradPa;
 		}
-	}
+	});
 
 	// 벽면은 손대지 않았으므로 0 그대로다. 그래도 한 번 더 확실히 해 둔다.
 	ApplyWallBoundary();
@@ -365,76 +345,67 @@ void FAirSolver::AdvectTemperature(double DeltaTimeS)
 			: FaceVelocityMs * DownstreamTempK;
 	};
 
-	for (int32 Z = 0; Z < Grid.GetNumCellsZ(); ++Z)
+	VrgParallel::ForEachRow(0, Grid.GetNumCellsY(), 0, Grid.GetNumCellsZ(), [&](int32 Y, int32 Z)
 	{
-		for (int32 Y = 0; Y < Grid.GetNumCellsY(); ++Y)
+		for (int32 X = 0; X <= Grid.GetNumCellsX(); ++X)
 		{
-			for (int32 X = 0; X <= Grid.GetNumCellsX(); ++X)
+			const int32 FaceIndex = Grid.FaceXIndex(X, Y, Z);
+			const int32 UpstreamX = FMath::Max(X - 1, 0);
+			const int32 DownstreamX = FMath::Min(X, Grid.GetNumCellsX() - 1);
+
+			// 고체가 막은 면은 플럭스가 0이다. 속도도 0이라 값은 같지만,
+			// 고체 셀의 온도를 읽어 쓰지 않도록 여기서 끊는다.
+			if (Grid.IsSolidCell(UpstreamX, Y, Z) || Grid.IsSolidCell(DownstreamX, Y, Z))
 			{
-				const int32 FaceIndex = Grid.FaceXIndex(X, Y, Z);
-				const int32 UpstreamX = FMath::Max(X - 1, 0);
-				const int32 DownstreamX = FMath::Min(X, Grid.GetNumCellsX() - 1);
-
-				// 고체가 막은 면은 플럭스가 0이다. 속도도 0이라 값은 같지만,
-				// 고체 셀의 온도를 읽어 쓰지 않도록 여기서 끊는다.
-				if (Grid.IsSolidCell(UpstreamX, Y, Z) || Grid.IsSolidCell(DownstreamX, Y, Z))
-				{
-					TemperatureFluxX[FaceIndex] = 0.0;
-					continue;
-				}
-
-				TemperatureFluxX[FaceIndex] = UpwindFlux(Grid.VelocityXMs[FaceIndex],
-					Grid.TemperatureK[Grid.CellIndex(UpstreamX, Y, Z)],
-					Grid.TemperatureK[Grid.CellIndex(DownstreamX, Y, Z)]);
+				TemperatureFluxX[FaceIndex] = 0.0;
+				continue;
 			}
-		}
-	}
 
-	for (int32 Z = 0; Z < Grid.GetNumCellsZ(); ++Z)
+			TemperatureFluxX[FaceIndex] = UpwindFlux(Grid.VelocityXMs[FaceIndex],
+				Grid.TemperatureK[Grid.CellIndex(UpstreamX, Y, Z)],
+				Grid.TemperatureK[Grid.CellIndex(DownstreamX, Y, Z)]);
+		}
+	});
+
+	VrgParallel::ForEachRow(0, Grid.GetNumCellsY() + 1, 0, Grid.GetNumCellsZ(), [&](int32 Y, int32 Z)
 	{
-		for (int32 Y = 0; Y <= Grid.GetNumCellsY(); ++Y)
+		for (int32 X = 0; X < Grid.GetNumCellsX(); ++X)
 		{
-			for (int32 X = 0; X < Grid.GetNumCellsX(); ++X)
+			const int32 FaceIndex = Grid.FaceYIndex(X, Y, Z);
+			const int32 UpstreamY = FMath::Max(Y - 1, 0);
+			const int32 DownstreamY = FMath::Min(Y, Grid.GetNumCellsY() - 1);
+
+			if (Grid.IsSolidCell(X, UpstreamY, Z) || Grid.IsSolidCell(X, DownstreamY, Z))
 			{
-				const int32 FaceIndex = Grid.FaceYIndex(X, Y, Z);
-				const int32 UpstreamY = FMath::Max(Y - 1, 0);
-				const int32 DownstreamY = FMath::Min(Y, Grid.GetNumCellsY() - 1);
-
-				if (Grid.IsSolidCell(X, UpstreamY, Z) || Grid.IsSolidCell(X, DownstreamY, Z))
-				{
-					TemperatureFluxY[FaceIndex] = 0.0;
-					continue;
-				}
-
-				TemperatureFluxY[FaceIndex] = UpwindFlux(Grid.VelocityYMs[FaceIndex],
-					Grid.TemperatureK[Grid.CellIndex(X, UpstreamY, Z)],
-					Grid.TemperatureK[Grid.CellIndex(X, DownstreamY, Z)]);
+				TemperatureFluxY[FaceIndex] = 0.0;
+				continue;
 			}
-		}
-	}
 
-	for (int32 Z = 0; Z <= Grid.GetNumCellsZ(); ++Z)
+			TemperatureFluxY[FaceIndex] = UpwindFlux(Grid.VelocityYMs[FaceIndex],
+				Grid.TemperatureK[Grid.CellIndex(X, UpstreamY, Z)],
+				Grid.TemperatureK[Grid.CellIndex(X, DownstreamY, Z)]);
+		}
+	});
+
+	VrgParallel::ForEachRow(0, Grid.GetNumCellsY(), 0, Grid.GetNumCellsZ() + 1, [&](int32 Y, int32 Z)
 	{
-		for (int32 Y = 0; Y < Grid.GetNumCellsY(); ++Y)
+		for (int32 X = 0; X < Grid.GetNumCellsX(); ++X)
 		{
-			for (int32 X = 0; X < Grid.GetNumCellsX(); ++X)
+			const int32 FaceIndex = Grid.FaceZIndex(X, Y, Z);
+			const int32 UpstreamZ = FMath::Max(Z - 1, 0);
+			const int32 DownstreamZ = FMath::Min(Z, Grid.GetNumCellsZ() - 1);
+
+			if (Grid.IsSolidCell(X, Y, UpstreamZ) || Grid.IsSolidCell(X, Y, DownstreamZ))
 			{
-				const int32 FaceIndex = Grid.FaceZIndex(X, Y, Z);
-				const int32 UpstreamZ = FMath::Max(Z - 1, 0);
-				const int32 DownstreamZ = FMath::Min(Z, Grid.GetNumCellsZ() - 1);
-
-				if (Grid.IsSolidCell(X, Y, UpstreamZ) || Grid.IsSolidCell(X, Y, DownstreamZ))
-				{
-					TemperatureFluxZ[FaceIndex] = 0.0;
-					continue;
-				}
-
-				TemperatureFluxZ[FaceIndex] = UpwindFlux(Grid.VelocityZMs[FaceIndex],
-					Grid.TemperatureK[Grid.CellIndex(X, Y, UpstreamZ)],
-					Grid.TemperatureK[Grid.CellIndex(X, Y, DownstreamZ)]);
+				TemperatureFluxZ[FaceIndex] = 0.0;
+				continue;
 			}
+
+			TemperatureFluxZ[FaceIndex] = UpwindFlux(Grid.VelocityZMs[FaceIndex],
+				Grid.TemperatureK[Grid.CellIndex(X, Y, UpstreamZ)],
+				Grid.TemperatureK[Grid.CellIndex(X, Y, DownstreamZ)]);
 		}
-	}
+	});
 
 	// 2) 같은 플럭스를 양쪽 셀에 부호만 바꿔 적용한다.
 	//    내부 면은 들어가는 쪽과 나오는 쪽이 정확히 상쇄되므로 총 열량이 보존된다.
@@ -492,31 +463,28 @@ void FAirSolver::AdvectTemperature(double DeltaTimeS)
 
 	const double DtOverH = DeltaTimeS / CellSizeM;
 
-	for (int32 Z = 0; Z < Grid.GetNumCellsZ(); ++Z)
+	VrgParallel::ForEachRow(0, Grid.GetNumCellsY(), 0, Grid.GetNumCellsZ(), [&](int32 Y, int32 Z)
 	{
-		for (int32 Y = 0; Y < Grid.GetNumCellsY(); ++Y)
+		for (int32 X = 0; X < Grid.GetNumCellsX(); ++X)
 		{
-			for (int32 X = 0; X < Grid.GetNumCellsX(); ++X)
+			const int32 Index = Grid.CellIndex(X, Y, Z);
+
+			// A solid cell holds no air; with ducts its faces carry flux, but that enthalpy belongs to
+			// the duct transfer above, not to the body.
+			if (Grid.bSolidCell.IsValidIndex(Index) && Grid.bSolidCell[Index])
 			{
-				const int32 Index = Grid.CellIndex(X, Y, Z);
-
-				// A solid cell holds no air; with ducts its faces carry flux, but that enthalpy belongs to
-				// the duct transfer above, not to the body.
-				if (Grid.bSolidCell.IsValidIndex(Index) && Grid.bSolidCell[Index])
-				{
-					Grid.NextTemperatureK[Index] = Grid.TemperatureK[Index];
-					continue;
-				}
-
-				const double NetFlux =
-					(TemperatureFluxX[Grid.FaceXIndex(X + 1, Y, Z)] - TemperatureFluxX[Grid.FaceXIndex(X, Y, Z)])
-					+ (TemperatureFluxY[Grid.FaceYIndex(X, Y + 1, Z)] - TemperatureFluxY[Grid.FaceYIndex(X, Y, Z)])
-					+ (TemperatureFluxZ[Grid.FaceZIndex(X, Y, Z + 1)] - TemperatureFluxZ[Grid.FaceZIndex(X, Y, Z)]);
-
-				Grid.NextTemperatureK[Index] = Grid.TemperatureK[Index] - DtOverH * NetFlux;
+				Grid.NextTemperatureK[Index] = Grid.TemperatureK[Index];
+				continue;
 			}
+
+			const double NetFlux =
+				(TemperatureFluxX[Grid.FaceXIndex(X + 1, Y, Z)] - TemperatureFluxX[Grid.FaceXIndex(X, Y, Z)])
+				+ (TemperatureFluxY[Grid.FaceYIndex(X, Y + 1, Z)] - TemperatureFluxY[Grid.FaceYIndex(X, Y, Z)])
+				+ (TemperatureFluxZ[Grid.FaceZIndex(X, Y, Z + 1)] - TemperatureFluxZ[Grid.FaceZIndex(X, Y, Z)]);
+
+			Grid.NextTemperatureK[Index] = Grid.TemperatureK[Index] - DtOverH * NetFlux;
 		}
-	}
+	});
 
 	Grid.SwapTemperatureBuffers();
 }
@@ -662,10 +630,12 @@ void FAirSolver::Step(const FAirSolverInput& Input, double DeltaTimeS)
 	// 반라그랑주는 무조건 안정이라 터지지는 않지만 결과가 뭉개진다.
 	LastCourantNumber = Grid.MaxAbsVelocityMs() * DeltaTimeS / Grid.GetCellSizeM();
 
-	AdvectVelocity(DeltaTimeS);
-	ApplyBuoyancy(Input, DeltaTimeS);
-	ApplyWallBoundary();
-	ProjectToDivergenceFree(DeltaTimeS);
+	uint64 Mark = FPlatformTime::Cycles64();
+	auto Lap = [&](int32 Stage) { const uint64 Now = FPlatformTime::Cycles64(); StageMs[Stage] += FPlatformTime::ToMilliseconds64(Now - Mark); Mark = Now; };
+	AdvectVelocity(DeltaTimeS); Lap(0);
+	ApplyBuoyancy(Input, DeltaTimeS); Lap(1);
+	ApplyWallBoundary(); Lap(2);
+	ProjectToDivergenceFree(DeltaTimeS); Lap(3);
 
 	// Explicit upwind flux transport is stable while dt * (sum of outflow speeds) / h <= 1 in every cell.
 	// Three axes bound that sum by 3 * max|u|, so sub-step when 3 * Courant would exceed 0.9 (same velocity
@@ -676,8 +646,11 @@ void FAirSolver::Step(const FAirSolverInput& Input, double DeltaTimeS)
 	{
 		AdvectTemperature(DeltaTimeS / LastTemperatureSubsteps);
 	}
+	Lap(4);
 	InjectHeat(Input, DeltaTimeS);
 	ApplyCooling(Input, DeltaTimeS);
+	Lap(5);
+	++StageSteps;
 	// Duct coils removed their heat during transport (AdvectTemperature); book it with the cell coils.
 	LastDuctCoilRemovedW = DuctCoilRemovedJ / DeltaTimeS;
 	LastCoolingRemovedW += LastDuctCoilRemovedW;
@@ -686,6 +659,14 @@ void FAirSolver::Step(const FAirSolverInput& Input, double DeltaTimeS)
 	EnergyInJ += DuctFanHeatStepJ;
 	DuctFanHeatTotalJ += DuctFanHeatStepJ;
 	ActiveDucts = nullptr;
+}
+
+FString FAirSolver::DescribeStageTimes() const
+{
+	const double N = FMath::Max<double>(StageSteps, 1.0);
+	double Sum = 0.0; for (const double T : StageMs) Sum += T;
+	return FString::Printf(TEXT("공기 스텝 평균 %.2f ms (%lld스텝) = 속도 이류 %.2f + 부력 %.2f + 벽·덕트 %.2f + 투영(압력 포함) %.2f + 온도 수송 %.2f + 열원·냉각 %.2f | 셀 %d"),
+		Sum / N, StageSteps, StageMs[0] / N, StageMs[1] / N, StageMs[2] / N, StageMs[3] / N, StageMs[4] / N, StageMs[5] / N, Grid.GetNumCells());
 }
 
 FString FAirSolver::ValidateDucts(const FAirSolverInput& Input) const

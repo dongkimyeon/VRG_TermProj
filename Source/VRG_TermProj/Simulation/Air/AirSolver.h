@@ -310,6 +310,12 @@ public:
 	// 마지막 스텝의 CFL 수.
 	double GetCourantNumber() const { return LastCourantNumber; }
 
+	// Wall time per pipeline stage, summed since the last reset [ms] (measurement, D10; members, rule 5).
+	// Stages: 0 velocity advection, 1 buoyancy, 2 wall/ducts, 3 projection (incl. pressure), 4 temperature
+	// transport, 5 heat + cooling. Uniform path only.
+	void ResetStageTimes() { for (double& T : StageMs) T = 0.0; StageSteps = 0; }
+	FString DescribeStageTimes() const;
+
 	// Temperature-transport sub-steps used in the last step (1 unless the flow got fast for the cell size).
 	int32 GetLastTemperatureSubsteps() const { return LastTemperatureSubsteps; }
 
@@ -372,6 +378,8 @@ private:
 	int32 LastNumDuctFaces = 0;
 	bool bLastDuctsRejected = false;
 	int32 LastTemperatureSubsteps = 1;
+	double StageMs[6] = {0, 0, 0, 0, 0, 0};
+	int64 StageSteps = 0;
 	bool bOctreeDuctWarningLogged = false;
 	TArray<double>& FluxArray(uint8 Axis) { return Axis == 0 ? TemperatureFluxX : Axis == 1 ? TemperatureFluxY : TemperatureFluxZ; }
 	TArray<double>& VelocityArray(uint8 Axis) { return Axis == 0 ? Grid.VelocityXMs : Axis == 1 ? Grid.VelocityYMs : Grid.VelocityZMs; }

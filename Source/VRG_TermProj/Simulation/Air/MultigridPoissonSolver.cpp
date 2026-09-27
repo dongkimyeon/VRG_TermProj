@@ -1,17 +1,23 @@
 #include "Simulation/Air/MultigridPoissonSolver.h"
 #include "Simulation/Air/UniformAirGrid.h"
+#include "Simulation/Core/VrgParallel.h"
 
 namespace
 {
 	constexpr int32 PreSweeps = 2, PostSweeps = 2, CoarsestSweeps = 60, MaxCoarsestCells = 64;
+	// Cells per parallel block (VrgParallel): levels smaller than one block run serially.
+	constexpr int32 ParBlock = 2048;
 
 	// Hot loops use raw pointers: Development builds range-check every TArray index.
 	double Dot(const TArray<double>& A, const TArray<double>& B)
 	{
 		const double* PA = A.GetData(); const double* PB = B.GetData();
-		double S = 0.0;
-		for (int32 I = 0, N = A.Num(); I < N; ++I) S += PA[I] * PB[I];
-		return S;
+		return VrgParallel::Sum(A.Num(), ParBlock, [&](int32 Begin, int32 End)
+		{
+			double S = 0.0;
+			for (int32 I = Begin; I < End; ++I) S += PA[I] * PB[I];
+			return S;
+		});
 	}
 }
 
@@ -19,10 +25,14 @@ void FMultigridPoisson::RemoveMean(TArray<double>& X)
 {
 	// The constant vector is the null space of every level's operator (all-Neumann).
 	if (X.IsEmpty()) return;
-	double S = 0.0;
-	for (double V : X) S += V;
-	S /= X.Num();
-	for (double& V : X) V -= S;
+	double* PX = X.GetData();
+	const double S = VrgParallel::Sum(X.Num(), ParBlock, [&](int32 Begin, int32 End)
+	{
+		double Part = 0.0;
+		for (int32 I = Begin; I < End; ++I) Part += PX[I];
+		return Part;
+	}) / X.Num();
+	VrgParallel::ForRange(X.Num(), ParBlock, [&](int32 Begin, int32 End) { for (int32 I = Begin; I < End; ++I) PX[I] -= S; });
 }
 
 void FMultigridPoisson::Build(FLevelInput&& Fine)
@@ -112,12 +122,15 @@ void FMultigridPoisson::ApplyA(const FLevel& L, const TArray<double>& X, TArray<
 	const int32* RS = L.RowStart.GetData(); const int32* C = L.Col.GetData();
 	const double* T = L.Trans.GetData(); const double* D = L.Diag.GetData(); const double* PX = X.GetData();
 	double* O = Out.GetData();
-	for (int32 I = 0; I < N; ++I)
+	VrgParallel::ForRange(N, ParBlock, [&](int32 Begin, int32 End)
 	{
-		double S = D[I] * PX[I];
-		for (int32 K = RS[I], E = RS[I + 1]; K < E; ++K) S -= T[K] * PX[C[K]];
-		O[I] = S;
-	}
+		for (int32 I = Begin; I < End; ++I)
+		{
+			double S = D[I] * PX[I];
+			for (int32 K = RS[I], E = RS[I + 1]; K < E; ++K) S -= T[K] * PX[C[K]];
+			O[I] = S;
+		}
+	});
 }
 
 void FMultigridPoisson::ApplyLaplacian(const TArray<double>& X, TArray<double>& Out) const
@@ -138,13 +151,16 @@ void FMultigridPoisson::Smooth(FLevel& L, int32 Sweeps, double Omega)
 	for (int32 S = 0; S < Sweeps; ++S)
 	{
 		const double* X = L.X.GetData(); double* W = L.Tmp.GetData();
-		for (int32 I = 0; I < N; ++I)
+		VrgParallel::ForRange(N, ParBlock, [&](int32 Begin, int32 End)
 		{
-			if (D[I] <= 0.0) { W[I] = X[I]; continue; }  // isolated cell: nothing to solve
-			double Off = 0.0;
-			for (int32 K = RS[I], E = RS[I + 1]; K < E; ++K) Off += T[K] * X[C[K]];
-			W[I] = X[I] + Omega * ((F[I] + Off) / D[I] - X[I]);
-		}
+			for (int32 I = Begin; I < End; ++I)
+			{
+				if (D[I] <= 0.0) { W[I] = X[I]; continue; }  // isolated cell: nothing to solve
+				double Off = 0.0;
+				for (int32 K = RS[I], E = RS[I + 1]; K < E; ++K) Off += T[K] * X[C[K]];
+				W[I] = X[I] + Omega * ((F[I] + Off) / D[I] - X[I]);
+			}
+		});
 		Swap(L.X, L.Tmp);
 	}
 }
@@ -165,7 +181,12 @@ void FMultigridPoisson::VCycle(int32 Li, double Omega)
 	for (double& V : C.X) V = 0.0;
 	for (int32 I = 0; I < L.Volume.Num(); ++I) C.F[L.Parent[I]] += L.F[I] - L.R[I];  // restrict residual (sum)
 	VCycle(Li + 1, Omega);
-	for (int32 I = 0; I < L.Volume.Num(); ++I) L.X[I] += C.X[L.Parent[I]];           // constant prolongation
+	{
+		// Constant prolongation: each fine cell reads its parent (a gather, parallel safe). The restriction above
+		// scatters into shared parents and stays serial.
+		double* LX = L.X.GetData(); const double* CX = C.X.GetData(); const int32* Parent = L.Parent.GetData();
+		VrgParallel::ForRange(L.Volume.Num(), ParBlock, [&](int32 Begin, int32 End) { for (int32 I = Begin; I < End; ++I) LX[I] += CX[Parent[I]]; });
+	}
 	Smooth(L, PostSweeps, Omega);
 }
 
@@ -204,9 +225,13 @@ FPoissonSolveResult FMultigridPoisson::Solve(const TArray<double>& B, TArray<dou
 	TArray<double> R, Z, P, AppliedDirection; R.SetNumUninitialized(N);
 	auto Residual = [&]()  // normalized like JacobiPoissonSolver: max |L X - B| / max |B|
 	{
-		double M = 0.0;
-		for (int32 I = 0; I < N; ++I) M = FMath::Max(M, FMath::Abs(R[I] / L0.Volume[I]));
-		return M / Ref;
+		const double* PR = R.GetData(); const double* V = L0.Volume.GetData();
+		return VrgParallel::Max(N, ParBlock, [&](int32 Begin, int32 End)
+		{
+			double M = 0.0;
+			for (int32 I = Begin; I < End; ++I) M = FMath::Max(M, FMath::Abs(PR[I] / V[I]));
+			return M;
+		}) / Ref;
 	};
 	auto Precondition = [&](const TArray<double>& In, TArray<double>& Out)
 	{
@@ -247,7 +272,13 @@ FPoissonSolveResult FMultigridPoisson::Solve(const TArray<double>& B, TArray<dou
 		const double PQ = Dot(P, AppliedDirection);
 		if (PQ <= 0.0) break;  // breakdown (only at round-off): report the current residual
 		const double Alpha = RZ / PQ;
-		for (int32 I = 0; I < N; ++I) { X[I] += Alpha * P[I]; R[I] -= Alpha * AppliedDirection[I]; }
+		{
+			double* PX = X.GetData(); double* PR = R.GetData(); const double* PP = P.GetData(); const double* PQv = AppliedDirection.GetData();
+			VrgParallel::ForRange(N, ParBlock, [&](int32 Begin, int32 End)
+			{
+				for (int32 I = Begin; I < End; ++I) { PX[I] += Alpha * PP[I]; PR[I] -= Alpha * PQv[I]; }
+			});
+		}
 		Result.IterationsUsed = It;
 		Result.NormalizedResidual = Residual();
 		if (Result.NormalizedResidual <= Settings.NormalizedResidualTarget) { Result.bConverged = true; break; }
@@ -255,7 +286,10 @@ FPoissonSolveResult FMultigridPoisson::Solve(const TArray<double>& B, TArray<dou
 		const double RZNew = Dot(R, Z);
 		const double Beta = RZNew / RZ;
 		RZ = RZNew;
-		for (int32 I = 0; I < N; ++I) P[I] = Z[I] + Beta * P[I];
+		{
+			double* PP = P.GetData(); const double* PZ = Z.GetData();
+			VrgParallel::ForRange(N, ParBlock, [&](int32 Begin, int32 End) { for (int32 I = Begin; I < End; ++I) PP[I] = PZ[I] + Beta * PP[I]; });
+		}
 	}
 	RemoveMean(X);
 	return Result;

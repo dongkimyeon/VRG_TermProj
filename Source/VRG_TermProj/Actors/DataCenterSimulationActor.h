@@ -256,6 +256,7 @@ private:
 	// keeps fluctuating (plumes, fan jets), so one instant is not a fair basis for comparing layouts.
 	TArray<double> WarmupInletSumK, WarmupInletMaxK;
 	int32 WarmupInletSamples = 0;
+	double WarmupCouplingMs = 0.0, WarmupRackMs = 0.0;  // wall time over the warmup (measurement)
 	void DrainWarmupSteps();
 
 	// 연결이 성립했는지. 안 되면 화면에 이유를 띄운다.

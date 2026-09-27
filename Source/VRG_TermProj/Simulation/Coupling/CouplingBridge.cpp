@@ -514,6 +514,7 @@ void FCouplingBridge::Step(double DeltaTimeS, bool bHydraulicsResolved, bool bHy
 
 	// 4) 랙 열모델을 돌린다. 규약 4대로 모든 도메인이 같은 dt를 쓴다.
 	double ItHeatW = 0.0;
+	const uint64 RackStart = FPlatformTime::Cycles64();
 	for (int32 RackIndex = 0; RackIndex < Targets.Num(); ++RackIndex)
 	{
 		const FRackCouplingTarget& Target = Targets[RackIndex];
@@ -528,6 +529,7 @@ void FCouplingBridge::Step(double DeltaTimeS, bool bHydraulicsResolved, bool bHy
 		RackAirOutJ += Target.Model->GetLastTotalHeatToRoomAirW() * DeltaTimeS;
 	}
 	LastItHeatW = ItHeatW;
+	LastRackModelsMs = FPlatformTime::ToMilliseconds64(FPlatformTime::Cycles64() - RackStart);
 
 	// 5) 열 -> 공기: 랙이 공기로 내보낸 열을 체적 열원으로 민다 (D1: 합산해 하나로).
 	//    Fans: the slot flows the rack models just used become the duct face velocities (one exchange, rule 6).

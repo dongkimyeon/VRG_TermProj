@@ -1248,6 +1248,8 @@ void ADataCenterSimulationActor::QueueWarmupSteps(int32 NumSteps)
 	}
 	PendingWarmupSteps = FMath::Clamp(NumSteps, 1, 100000);
 	WarmupStepsReported = PendingWarmupSteps;
+	if (AirField != nullptr) AirField->GetMutableSolver().ResetStageTimes();
+	WarmupCouplingMs = WarmupRackMs = 0.0;
 	WarmupInletSumK.Reset(); WarmupInletMaxK.Reset();
 	WarmupInletSamples = 0;
 	VrgPerf::PendingWarmupSteps() = PendingWarmupSteps;
@@ -1278,7 +1280,10 @@ void ADataCenterSimulationActor::DrainWarmupSteps()
 		// 이후 실시간 프레임이 한참 동안 스텝을 못 만든다 (규약 4).
 		const bool bHydraulicsResolved = (Room != nullptr) && Room->ConsumeRebuiltFlag();
 		Clock.BeginFrame(Clock.GetFixedStepS());
+		const uint64 StepStart = FPlatformTime::Cycles64();
 		Bridge.Step(Clock.GetFixedStepS(), bHydraulicsResolved, bHydraulicsConverged);
+		WarmupCouplingMs += FPlatformTime::ToMilliseconds64(FPlatformTime::Cycles64() - StepStart);
+		WarmupRackMs += Bridge.GetLastRackModelsMs();
 		Clock.CompleteStep();
 		--PendingWarmupSteps;
 
@@ -1330,6 +1335,9 @@ void ADataCenterSimulationActor::DrainWarmupSteps()
 			Snap.TotalRadiatorRejectedW / 1000.0, Snap.TotalAirCoolingRemovedW / 1000.0, EffectiveCoilUAWK, DesignAirLoadW / 1000.0,
 			MinInK - 273.15, MaxInK - 273.15, Snap.NormalizedEnergyResidual);
 		UE_LOG(LogTemp, Display, TEXT("[VrgSim] %s"), *Bridge.DescribeEnergyLedger());
+		UE_LOG(LogTemp, Display, TEXT("[VrgSim] 스텝 평균 %.2f ms = 랙 모델 %.2f ms + 공기 + 나머지 | %s"),
+			WarmupCouplingMs / FMath::Max(WarmupStepsReported, 1), WarmupRackMs / FMath::Max(WarmupStepsReported, 1),
+			AirField ? *AirField->GetMutableSolver().DescribeStageTimes() : TEXT("-"));
 		// Which cabinet breathes the hottest air (racks first, then spines, as in the bridge).
 		int32 HottestIndex = 0;
 		for (int32 I = 1; I < Snap.RackAirInletTempK.Num(); ++I)
