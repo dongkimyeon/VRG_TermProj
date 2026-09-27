@@ -1,0 +1,48 @@
+{
+  "status": "PASS",
+  "cdus": [
+    {
+      "actor": "CoolingDistributionUnitActor",
+      "transform": {
+        "location_cm": [
+          570.0,
+          -250.0,
+          0.0
+        ],
+        "rotation_deg": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "ports_world_m": [
+        [
+          6.15,
+          -2.65,
+          0.25
+        ],
+        [
+          6.15,
+          -2.35,
+          0.25
+        ]
+      ],
+      "mesh": "SM_CDU_Reference",
+      "body_components": 3,
+      "materials": 6,
+      "inputs_preserved": true
+    }
+  ],
+  "level_saved": false,
+  "checks": [
+    "replacement mesh",
+    "fallback",
+    "unchanged transforms and inputs",
+    "adjustable port coordinates"
+  ]
+}

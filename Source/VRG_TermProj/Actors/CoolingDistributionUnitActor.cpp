@@ -7,6 +7,7 @@
 
 #include "Components/SceneComponent.h"
 #include "Components/StaticMeshComponent.h"
+#include "Engine/StaticMesh.h"
 
 namespace
 {
@@ -90,12 +91,23 @@ void ACoolingDistributionUnitActor::RebuildMeshes()
 		BodyMeshes.Add(Box);
 	};
 
-	// 몸통. 액터 위치가 바닥 중심이다.
-	AddBox(FVector(0.0, 0.0, SizeCm.Z * 0.5), SizeCm, CduBodyColor);
-
-	// 위쪽 띠 하나로 방향을 알아보게 한다.
-	AddBox(FVector(SizeCm.X * 0.5, 0.0, SizeCm.Z * 0.82),
-		FVector(2.0, SizeCm.Y * 0.8, SizeCm.Z * 0.06), CduTrimColor);
+	// The authored mesh uses +X front, a floor-centre pivot and baked centimetres.
+	// Match the existing actor envelope; hydraulic ports and inputs remain independent.
+	UStaticMesh* ReferenceMesh = bUseReferenceModel
+		? LoadObject<UStaticMesh>(nullptr, TEXT("/Game/Connections/SM_CDU_Reference.SM_CDU_Reference"))
+		: nullptr;
+	if (ReferenceMesh)
+	{
+		UStaticMeshComponent* Body = SimMeshBuilder::CreateMeshComponent(this, ReferenceMesh, nullptr, TEXT("CduReference"));
+		Body->SetRelativeScale3D(FVector(SizeM.X / 0.9, SizeM.Y / 0.8, SizeM.Z / 1.9));
+		BodyMeshes.Add(Body);
+	}
+	else
+	{
+		AddBox(FVector(0.0, 0.0, SizeCm.Z * 0.5), SizeCm, CduBodyColor);
+		AddBox(FVector(SizeCm.X * 0.5, 0.0, SizeCm.Z * 0.82),
+			FVector(2.0, SizeCm.Y * 0.8, SizeCm.Z * 0.06), CduTrimColor);
+	}
 
 	// 포트 두 개. 배관이 붙는 자리를 눈으로 알 수 있게 짧은 관으로 그린다.
 	const double PortDiameterCm = 12.0;

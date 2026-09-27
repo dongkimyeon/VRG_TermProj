@@ -2,7 +2,7 @@
   "scene": "VRG_Infrastructure",
   "units": "m",
   "rack_count": 8,
-  "object_count": 838,
+  "object_count": 832,
   "curve_count": 714,
   "counts_by_role": {
     "SUPPLY": 154,

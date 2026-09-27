@@ -337,6 +337,9 @@ def build_routes():
                 connectors.box((cx+.20,cy+sign*.59,.38+k*.035),(.024,.045,.023))
             connectors.finish(.001); clamps.finish(.002)
     build_crossover()
+    # Use the current CDU asset on regeneration as well as the saved scene.
+    import runpy
+    runpy.run_path(str(OUT.parent / "CDU" / "replace_infrastructure_cdu.py"), run_name="cdu_helpers")["replace"]()
     print("Created separate cold / warm / data / power routes, fittings and supports.")
 
 

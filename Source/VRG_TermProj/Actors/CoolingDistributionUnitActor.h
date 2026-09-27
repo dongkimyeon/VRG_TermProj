@@ -42,6 +42,13 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "CDU")
 	double ConnectionSpacingM = 0.30;
 
+	// Reference-inspired cabinet; use the original primitive body if disabled or unavailable.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Visualization")
+	bool bUseReferenceModel = true;
+
+	UFUNCTION(CallInEditor, BlueprintCallable, Category = "Visualization")
+	void RefreshVisuals() { RebuildMeshes(); bMeshesDirty = false; }
+
 	// ---- 수력 ----
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hydraulics")
 	double ReferencePressurePa = 2.0e5;

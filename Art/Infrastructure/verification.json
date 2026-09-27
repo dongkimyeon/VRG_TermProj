@@ -1,10 +1,10 @@
 {
   "source_scene": "VRG_Infrastructure",
-  "fbx_objects": 763,
-  "fbx_reimported_objects": 763,
+  "fbx_objects": 757,
+  "fbx_reimported_objects": 757,
   "bounds_expected_m": [
     [
-      -1.768220067024231,
+      -1.6500000953674316,
       -3.1059999465942383,
       0.0020000000949949026
     ],
@@ -16,7 +16,7 @@
   ],
   "bounds_reimported_m": [
     [
-      -1.768220067024231,
+      -1.6500000953674316,
       -3.1059999465942383,
       0.0020000000949949026
     ],
@@ -27,13 +27,13 @@
     ]
   ],
   "bounds_max_error_m": 2.384185791015625e-07,
-  "glb_mesh_objects": 832,
-  "glb_triangles": 604908,
+  "glb_mesh_objects": 826,
+  "glb_triangles": 621516,
   "source_curve_count": 714,
   "unit_scale_m": 1,
   "files": {
-    "VRG_Infrastructure.fbx": 8232956,
-    "VRG_Connections.glb": 21851896
+    "VRG_Infrastructure.fbx": 8358332,
+    "VRG_Connections.glb": 23090896
   },
   "limitations": [
     "No Unreal import or runtime performance test",

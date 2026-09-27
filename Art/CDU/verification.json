@@ -1,0 +1,35 @@
+{
+  "triangles": 11432,
+  "vertices": 5880,
+  "materials": [
+    "MC_CDU_Recess",
+    "MC_CDU_Charcoal",
+    "MC_CDU_Hardware",
+    "MC_CDU_Panel",
+    "MC_CDU_Screen",
+    "MC_CDU_Ink"
+  ],
+  "dimensions_m": [
+    0.9024999737739563,
+    0.8039999604225159,
+    1.899999976158142
+  ],
+  "origin_m": [
+    0.0,
+    0.0,
+    0.0
+  ],
+  "front_axis": "+X",
+  "port_centres_m": [
+    [
+      0.45,
+      -0.15,
+      0.25
+    ],
+    [
+      0.45,
+      0.15,
+      0.25
+    ]
+  ]
+}
