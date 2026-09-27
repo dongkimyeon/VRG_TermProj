@@ -27,6 +27,11 @@ public:
 	double LastCoolingRemovedW = 0, LastCourant = 0, LastPressureMs = 0;
 	int64 PressureSolves = 0, PressureFailures = 0;
 	double EnergyStoredJ() const { return Tree.TotalThermalEnergyJ(Tree.GetBaseParams().ReferenceTempK) - InitialEnergyJ; }
+	// S5 finish (2026-09-27): fan ducts. The root duct faces of FAirSolverInput (validated by FAirSolver) are mapped onto
+	// the octree faces that lie on them (solid leaf | fluid leaf). Last step's duct coil / fan rates and fan energy.
+	double LastDuctCoilRemovedW = 0, LastDuctFanHeatW = 0, LastDuctFanHeatJ = 0;
+	int32 LastNumMappedDuctFaces = 0;
+	FString LastDuctError;
 	double MaxDivergencePerS() const;
 	double NormalizedDivergence() const;
 private:
@@ -34,6 +39,16 @@ private:
 	FFixedOctreeSettings TreeSettings;
 	TArray<double> FaceVelocityMs, PressurePa;
 	TArray<int32> CompactOf, LeafOf;
+	struct FDuctFace { int32 Face = INDEX_NONE; int32 FluidLeaf = INDEX_NONE; bool bFluidLow = true; int32 Duct = 0; bool bExhaust = false; int32 InputFace = 0; };
+	TArray<FDuctFace> DuctFaces;
+	TArray<int32> DuctOfFace;          // octree face -> index into DuctFaces, or INDEX_NONE
+	uint32 DuctSignature = 0;
+	bool bDuctMapValid = false;
+	const FAirSolverInput* Ducts = nullptr;
+	double DuctCoilJ = 0, DuctFanJ = 0;
+	bool MapDucts(const FAirSolverInput& Input, FString& Error);
+	void ApplyDuctVelocities();
+	void AddDuctOutflowRates(TArray<double>& Rate) const;
 	FMultigridPoisson Pressure;
 	void BuildPressure();
 	bool IsOpen(const FFixedOctreeFace& F) const;

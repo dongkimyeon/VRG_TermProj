@@ -6,6 +6,84 @@ bool FOctreeAirSolver::IsOpen(const FFixedOctreeFace& F) const
 	return F.LeafLow != INDEX_NONE && F.LeafHigh != INDEX_NONE && Tree.IsLeafFluid(F.LeafLow) && Tree.IsLeafFluid(F.LeafHigh);
 }
 
+bool FOctreeAirSolver::MapDucts(const FAirSolverInput& Input, FString& Error)
+{
+	// Remap only when the topology or the duct face list changed (the velocities change every step, the faces do not).
+	uint32 Signature = HashCombineFast(uint32(Input.DuctFaceIndex.Num()), uint32(Tree.GetFaces().Num()));
+	for (int32 F = 0; F < Input.DuctFaceIndex.Num(); ++F)
+		Signature = HashCombineFast(Signature, HashCombineFast(uint32(Input.DuctFaceIndex[F]), uint32(Input.DuctFaceAxis[F])));
+	if (bDuctMapValid && Signature == DuctSignature) return true;
+	bDuctMapValid = false;
+	DuctFaces.Reset();
+	DuctOfFace.Init(INDEX_NONE, Tree.GetFaces().Num());
+	const FAirGridParams& P = Tree.GetBaseParams();
+	const int32 NX = P.NumCellsX, NY = P.NumCellsY, NZ = P.NumCellsZ;
+	const double H = P.CellSizeM;
+	auto RootFace = [&](int32 Axis, const FIntVector& C) -> int64
+	{
+		const int32 Index = Axis == 0 ? C.X + (NX + 1) * (C.Y + NY * C.Z) : Axis == 1 ? C.X + NX * (C.Y + (NY + 1) * C.Z) : C.X + NX * (C.Y + NY * C.Z);
+		return (int64(Axis) << 40) | int64(Index);
+	};
+	TMap<int64, int32> InputOf;
+	for (int32 F = 0; F < Input.DuctFaceIndex.Num(); ++F) InputOf.Add((int64(Input.DuctFaceAxis[F]) << 40) | int64(Input.DuctFaceIndex[F]), F);
+	TArray<int32> Covered; Covered.Init(0, Input.DuctFaceIndex.Num());
+	const TArray<FFixedOctreeFace>& Faces = Tree.GetFaces();
+	for (int32 K = 0; K < Faces.Num(); ++K)
+	{
+		const FFixedOctreeFace& F = Faces[K];
+		if (F.LeafLow == INDEX_NONE || F.LeafHigh == INDEX_NONE) continue;
+		const bool bLowFluid = Tree.IsLeafFluid(F.LeafLow), bHighFluid = Tree.IsLeafFluid(F.LeafHigh);
+		if (bLowFluid == bHighFluid) continue;
+		// The face centre on the finer side names the root face it lies on.
+		const int32 Fine = Tree.LeafSizeM(F.LeafLow) <= Tree.LeafSizeM(F.LeafHigh) ? F.LeafLow : F.LeafHigh;
+		FVector Pos = Tree.LeafCenterM(Fine);
+		Pos[F.Axis] += (Fine == F.LeafLow ? .5 : -.5) * Tree.LeafSizeM(Fine);
+		FIntVector C(FMath::FloorToInt32(Pos.X / H), FMath::FloorToInt32(Pos.Y / H), FMath::FloorToInt32(Pos.Z / H));
+		C[F.Axis] = FMath::RoundToInt32(Pos[F.Axis] / H);
+		const int32* Found = InputOf.Find(RootFace(F.Axis, C));
+		if (Found == nullptr) continue;
+		FDuctFace D;
+		D.Face = K; D.bFluidLow = bLowFluid; D.FluidLeaf = bLowFluid ? F.LeafLow : F.LeafHigh;
+		D.Duct = Input.DuctFaceDuct[*Found]; D.bExhaust = Input.DuctFaceIsExhaust[*Found] != 0; D.InputFace = *Found;
+		if (Tree.GetNodes()[Tree.GetLeafNodeIndices()[D.FluidLeaf]].RootCellIndex != Input.DuctFaceFluidCell[*Found])
+		{
+			Error = FString::Printf(TEXT("덕트 면 %d: 옥트리 공기 리프가 다른 루트 셀에 있다"), *Found);
+			return false;
+		}
+		DuctOfFace[K] = DuctFaces.Add(D);
+		++Covered[*Found];
+	}
+	for (int32 F = 0; F < Covered.Num(); ++F)
+	{
+		if (Covered[F] == 0)
+		{
+			Error = FString::Printf(TEXT("덕트 면 %d가 옥트리 면(고체|공기)에 없다"), F);
+			return false;
+		}
+	}
+	DuctSignature = Signature;
+	bDuctMapValid = true;
+	return true;
+}
+
+void FOctreeAirSolver::ApplyDuctVelocities()
+{
+	if (Ducts == nullptr) return;
+	for (const FDuctFace& D : DuctFaces) FaceVelocityMs[D.Face] = Ducts->DuctFaceVelocityMs[D.InputFace];
+}
+
+void FOctreeAirSolver::AddDuctOutflowRates(TArray<double>& Rate) const
+{
+	// Intake faces carry air out of their fluid leaf (the explicit upwind positivity bound counts it).
+	if (Ducts == nullptr) return;
+	for (const FDuctFace& D : DuctFaces)
+	{
+		const double U = FaceVelocityMs[D.Face];
+		const bool bLeaves = D.bFluidLow ? U > 0.0 : U < 0.0;
+		if (bLeaves) Rate[D.FluidLeaf] += FMath::Abs(U) * Tree.GetFaces()[D.Face].AreaM2 / Tree.LeafVolumeM3(D.FluidLeaf);
+	}
+}
+
 bool FOctreeAirSolver::Initialize(const FUniformAirGrid& Source, const FFixedOctreeSettings& Settings,
 	const TArray<FBox>& BoxesM, FString& Error)
 {
@@ -23,6 +101,7 @@ bool FOctreeAirSolver::Initialize(const FUniformAirGrid& Source, const FFixedOct
 		FaceVelocityMs[I] = Source.SampleVelocityMs(P)[F.Axis];
 	}
 	EnergyInJ = EnergyOutJ = LastCoolingRemovedW = LastCourant = 0.0;
+	bDuctMapValid = false;
 	InitialEnergyJ = Tree.TotalThermalEnergyJ(Tree.GetBaseParams().ReferenceTempK);
 	PressureSolves = PressureFailures = 0;
 	BuildPressure();
@@ -63,6 +142,15 @@ FPoissonSolveResult FOctreeAirSolver::Project(double DtS)
 	for (int32 I = 0; I < FaceVelocityMs.Num(); ++I)
 	{
 		const auto& F = Tree.GetFaces()[I];
+		const int32 DuctIndex = DuctOfFace.IsValidIndex(I) && Ducts != nullptr ? DuctOfFace[I] : INDEX_NONE;
+		if (DuctIndex != INDEX_NONE)
+		{
+			// Prescribed normal velocity on a solid|fluid face: only the fluid leaf has an equation.
+			const FDuctFace& D = DuctFaces[DuctIndex];
+			const double Flux = F.AreaM2 * FaceVelocityMs[I] * Rho / DtS;
+			B[CompactOf[D.FluidLeaf]] += (D.bFluidLow ? Flux : -Flux) / Tree.LeafVolumeM3(D.FluidLeaf);
+			continue;
+		}
 		if (!IsOpen(F)) { FaceVelocityMs[I] = 0.0; continue; }
 		const double Flux = F.AreaM2 * FaceVelocityMs[I] * Rho / DtS;
 		B[CompactOf[F.LeafLow]] += Flux / Tree.LeafVolumeM3(F.LeafLow);
@@ -123,6 +211,22 @@ void FOctreeAirSolver::AdvectMomentum(double DtS)
 		Delta[F.LeafLow] -= Transfer / Tree.LeafVolumeM3(F.LeafLow);
 		Delta[F.LeafHigh] += Transfer / Tree.LeafVolumeM3(F.LeafHigh);
 	}
+	// Fan ducts: the same upwind momentum flux through the duct faces. Air entering the fluid carries the duct velocity
+	// (normal to the face), air leaving carries the cell's velocity, so exhaust faces start jets as on the uniform path.
+	if (Ducts != nullptr)
+	{
+		for (const FDuctFace& D : DuctFaces)
+		{
+			const auto& F = Tree.GetFaces()[D.Face];
+			const double U = FaceVelocityMs[D.Face];
+			const double FluxM3 = U * F.AreaM2 * DtS;
+			const bool bInflow = D.bFluidLow ? FluxM3 < 0.0 : FluxM3 > 0.0;
+			FVector Carried = Old[D.FluidLeaf];
+			if (bInflow) { Carried = FVector::ZeroVector; Carried[F.Axis] = U; }
+			const FVector Transfer = FluxM3 * Carried;
+			Delta[D.FluidLeaf] += (D.bFluidLow ? -Transfer : Transfer) / Tree.LeafVolumeM3(D.FluidLeaf);
+		}
+	}
 	// Add interpolated momentum increment to old face field, rather than smoothing the entire
 	// velocity at every step (which would introduce dt-independent artificial viscosity).
 	const TArray<double> Before = FaceVelocityMs;
@@ -145,12 +249,68 @@ void FOctreeAirSolver::AdvectTemperature(double DtS)
 		Next[F.LeafLow] -= HeatVolumeK / Tree.LeafVolumeM3(F.LeafLow);
 		Next[F.LeafHigh] += HeatVolumeK / Tree.LeafVolumeM3(F.LeafHigh);
 	}
+	// Fan ducts (rule 6, as FAirSolver::AdvectTemperature): the intake enthalpy of each duct is summed once, the coil and
+	// fan act on the mixed stream, and the exhaust faces carry exactly that back into the fluid.
+	if (Ducts != nullptr && DuctFaces.Num() > 0)
+	{
+		const int32 NumDucts = Ducts->NumDucts;
+		TArray<double> Enthalpy, ExhaustFlow;
+		Enthalpy.Init(0.0, NumDucts); ExhaustFlow.Init(0.0, NumDucts);
+		for (const FDuctFace& D : DuctFaces)
+		{
+			const double FlowM3s = FMath::Abs(FaceVelocityMs[D.Face]) * Tree.GetFaces()[D.Face].AreaM2;
+			if (D.bExhaust) ExhaustFlow[D.Duct] += FlowM3s;
+			else Enthalpy[D.Duct] += FlowM3s * Old[D.FluidLeaf];
+		}
+		const FAirGridParams& P = Tree.GetBaseParams();
+		const bool bCoils = Ducts->DuctCoilUAWK.Num() == NumDucts, bFans = Ducts->DuctFanHeatW.Num() == NumDucts;
+		TArray<double> ExhaustK; ExhaustK.Init(0.0, NumDucts);
+		for (int32 K = 0; K < NumDucts; ++K)
+		{
+			const double MixK = ExhaustFlow[K] > 0.0 ? Enthalpy[K] / ExhaustFlow[K] : 0.0;
+			double OutK = MixK;
+			const double Capacity = P.DensityKgM3 * ExhaustFlow[K] * P.SpecificHeatJKgK;
+			if (bCoils && ExhaustFlow[K] > 0.0 && Ducts->DuctCoilUAWK[K] > 0.0)
+			{
+				const double Eps = 1.0 - FMath::Exp(-Ducts->DuctCoilUAWK[K] / Capacity);
+				OutK = MixK - Eps * (MixK - Ducts->DuctCoilWaterTempK[K]);
+				DuctCoilJ += Capacity * (MixK - OutK) * DtS;
+			}
+			if (bFans && ExhaustFlow[K] > 0.0 && Ducts->DuctFanHeatW[K] > 0.0)
+			{
+				OutK += Ducts->DuctFanHeatW[K] / Capacity;
+				DuctFanJ += Ducts->DuctFanHeatW[K] * DtS;
+			}
+			ExhaustK[K] = OutK;
+		}
+		for (const FDuctFace& D : DuctFaces)
+		{
+			const double Flux = FaceVelocityMs[D.Face] * Tree.GetFaces()[D.Face].AreaM2 * DtS;
+			const double CarriedK = D.bExhaust ? ExhaustK[D.Duct] : Old[D.FluidLeaf];
+			const double HeatVolumeK = Flux * (CarriedK - Ref);
+			Next[D.FluidLeaf] += (D.bFluidLow ? -HeatVolumeK : HeatVolumeK) / Tree.LeafVolumeM3(D.FluidLeaf);
+		}
+	}
 	Tree.GetMutableFields().TemperatureK = MoveTemp(Next);
 }
 
 bool FOctreeAirSolver::Step(const FAirSolverInput& Input, double DtS)
 {
 	if (!(DtS > 0) || !FMath::IsFinite(DtS) || !Tree.HasFields()) return false;
+	Ducts = nullptr;
+	LastDuctCoilRemovedW = LastDuctFanHeatW = LastDuctFanHeatJ = 0.0;
+	LastNumMappedDuctFaces = 0;
+	LastDuctError.Reset();
+	DuctCoilJ = DuctFanJ = 0.0;
+	if (Input.HasDucts())
+	{
+		if (MapDucts(Input, LastDuctError))
+		{
+			Ducts = &Input;
+			LastNumMappedDuctFaces = DuctFaces.Num();
+			ApplyDuctVelocities();
+		}
+	}
 	const auto& P = Tree.GetBaseParams();
 	const int32 Roots = P.NumCellsX * P.NumCellsY * P.NumCellsZ;
 	const double RootV = FMath::Pow(P.CellSizeM, 3), Capacity = P.DensityKgM3 * P.SpecificHeatJKgK;
@@ -167,6 +327,7 @@ bool FOctreeAirSolver::Step(const FAirSolverInput& Input, double DtS)
 			const int32 Up = FaceVelocityMs[I] >= 0 ? F.LeafLow : F.LeafHigh;
 			Rate[Up] += FMath::Abs(FaceVelocityMs[I]) * F.AreaM2 / Tree.LeafVolumeM3(Up);
 		}
+		AddDuctOutflowRates(Rate);
 		double Dt = Remaining;
 		for (int32 I : LeafOf)
 		{
@@ -196,6 +357,7 @@ bool FOctreeAirSolver::Step(const FAirSolverInput& Input, double DtS)
 			const int32 Up = FaceVelocityMs[I] >= 0 ? F.LeafLow : F.LeafHigh;
 			Rate[Up] += FMath::Abs(FaceVelocityMs[I]) * F.AreaM2 / Tree.LeafVolumeM3(Up);
 		}
+		AddDuctOutflowRates(Rate);
 		double MaxRate = 0; for (double R : Rate) MaxRate = FMath::Max(MaxRate, R);
 		const int32 Sub = FMath::Max(1, FMath::CeilToInt32(Dt * MaxRate / .5));
 		LastCourant = FMath::Max(LastCourant, Dt * MaxRate / Sub);
@@ -217,7 +379,14 @@ bool FOctreeAirSolver::Step(const FAirSolverInput& Input, double DtS)
 		Tree.GetMutableFields().TemperatureK = MoveTemp(Next);
 		Remaining -= Dt;
 	}
-	LastCoolingRemovedW = CoolingJ / DtS;
+	// Duct ledger (as the uniform path): the coil is an outflow of heat, the fan heat an inflow.
+	EnergyOutJ += DuctCoilJ;
+	EnergyInJ += DuctFanJ;
+	LastDuctCoilRemovedW = DuctCoilJ / DtS;
+	LastDuctFanHeatW = DuctFanJ / DtS;
+	LastDuctFanHeatJ = DuctFanJ;
+	LastCoolingRemovedW = CoolingJ / DtS + LastDuctCoilRemovedW;
+	Ducts = nullptr;
 	LastPressureMs = PressureMs; PressureResult.bConverged = bAllConverged;
 	return bAllConverged;
 }
@@ -227,8 +396,15 @@ double FOctreeAirSolver::MaxDivergencePerS() const
 	TArray<double> Flux; Flux.Init(0.0, Tree.GetNumLeaves());
 	for (int32 I = 0; I < FaceVelocityMs.Num(); ++I)
 	{
-		const auto& F = Tree.GetFaces()[I]; if (!IsOpen(F)) continue;
+		const auto& F = Tree.GetFaces()[I];
 		const double V = FaceVelocityMs[I] * F.AreaM2;
+		if (DuctOfFace.IsValidIndex(I) && DuctOfFace[I] != INDEX_NONE)
+		{
+			const FDuctFace& D = DuctFaces[DuctOfFace[I]];
+			Flux[D.FluidLeaf] += D.bFluidLow ? V : -V;
+			continue;
+		}
+		if (!IsOpen(F)) continue;
 		Flux[F.LeafLow] += V; Flux[F.LeafHigh] -= V;
 	}
 	double Max = 0; for (int32 I : LeafOf) Max = FMath::Max(Max, FMath::Abs(Flux[I]) / Tree.LeafVolumeM3(I));

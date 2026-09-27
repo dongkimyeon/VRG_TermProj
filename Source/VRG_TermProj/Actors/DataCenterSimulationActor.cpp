@@ -968,8 +968,8 @@ void ADataCenterSimulationActor::BuildCrahUnits()
 	const FUniformAirGrid& Grid = AirField->GetMutableSolver().GetGrid();
 	const FVector GridOriginM = SimUnits::UnrealToMeters(AirField->GetActorLocation());
 	const int32 NumCabinets = Racks.Num() + Spines.Num();
-	// The octree air path rejects ducts, so CRAH units there would leave the room with no cooling at all.
-	if (SolidOwner.Num() != Grid.GetNumCells() || AirField->GetMutableSolver().IsUsingOctree())
+	// (S5 finish, 2026-09-27: the octree path carries ducts now, so CRAH units no longer fall back to the coil there.)
+	if (SolidOwner.Num() != Grid.GetNumCells())
 	{
 		// Nothing marked solid (bMarkRacksAsSolid off): a unit has no body to push air through.
 		CrahUnitsDropped += CrahPlacements.Num();

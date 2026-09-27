@@ -131,6 +131,10 @@ namespace
 	static FAutoConsoleVariableRef CVarAirGpuStep(
 		TEXT("vrg.Air.Gpu"), GVrgAirGpuStep,
 		TEXT("공기 한 스텝 전체를 GPU(FP64, 상주 필드)에서 돈다. -1=셀 수로 자동(기본), 0=CPU, 1=GPU(없으면 CPU로 대체)"));
+	// S5 finish A/B (2026-09-27): octree refined around every rack / spine on the next reset (simulation entry), without
+	// editing the level. vrg.Air.Octree <depth> [padding m]; 0 = off (the actor's own octree settings apply).
+	static int32 GVrgOctreeAroundRacksDepth = 0;
+	static double GVrgOctreeAroundRacksPadM = 0.5;
 	static int32 GVrgAirGpuAutoCells = 100000;
 	static FAutoConsoleVariableRef CVarAirGpuAutoCells(
 		TEXT("vrg.Air.GpuAutoCells"), GVrgAirGpuAutoCells,
@@ -260,6 +264,16 @@ static FAutoConsoleCommand GVrgAirCellSizeCommand(
 		}
 	}));
 
+static FAutoConsoleCommand GVrgAirOctreeCommand(
+	TEXT("vrg.Air.Octree"),
+	TEXT("다음 시뮬레이션 진입 때 랙·스파인 주변을 옥트리로 정밀화한다. vrg.Air.Octree <깊이, 0=끔> [여유 m]"),
+	FConsoleCommandWithArgsDelegate::CreateLambda([](const TArray<FString>& Args)
+	{
+		GVrgOctreeAroundRacksDepth = Args.Num() > 0 ? FMath::Clamp(FCString::Atoi(*Args[0]), 0, 6) : 1;
+		GVrgOctreeAroundRacksPadM = Args.Num() > 1 ? FMath::Max(FCString::Atod(*Args[1]), 0.0) : 0.5;
+		UE_LOG(LogTemp, Display, TEXT("[VrgAir] 랙 주변 옥트리 깊이 %d, 여유 %.2f m (다음 시뮬레이션 진입 때)"), GVrgOctreeAroundRacksDepth, GVrgOctreeAroundRacksPadM);
+	}));
+
 // CPU FP64 해와 GPU FP32 해를 같은 입력에서 따로 구해 비교한다.
 // 비트 동일성은 검증이 아니므로 허용 오차로 본다 (검증 규칙).
 static FAutoConsoleCommand GVrgPressureValidateCommand(
@@ -350,6 +364,26 @@ void AAirFieldDebugActor::ResetSim()
 	Solver.GetMutablePressureSettings() = PressureSettings;
 	Solver.GetMutableTurbulenceSettings().bEnabled = GVrgAirTurbulence != 0;  // also before the first Tick (warm-up)
 	Solver.SetUseGpuStep(GVrgAirGpuStep > 0 || (GVrgAirGpuStep < 0 && Solver.GetGrid().GetNumCells() >= GVrgAirGpuAutoCells));
+	if (GVrgOctreeAroundRacksDepth > 0)
+	{
+		// Boxes in grid metres (origin = this actor). Rotation ignored: the larger footprint side both ways, as FitToRacks.
+		bUseOctreeSolver = true;
+		OctreeDepth = GVrgOctreeAroundRacksDepth;
+		OctreeMaxLeaves = 1000000;  // the FFixedOctreeSettings ceiling
+		OctreeRefinementBoxesM.Reset();
+		const FVector OriginM = SimUnits::UnrealToMeters(GetActorLocation());
+		const double Pad = GVrgOctreeAroundRacksPadM;
+		auto AddBox = [&](const FVector& BottomCentreM, double HalfSpanM, double HeightM)
+		{
+			OctreeRefinementBoxesM.Add(FBox(BottomCentreM - OriginM - FVector(HalfSpanM + Pad, HalfSpanM + Pad, 0.0),
+				BottomCentreM - OriginM + FVector(HalfSpanM + Pad, HalfSpanM + Pad, HeightM + Pad)));
+		};
+		for (TActorIterator<ARackThermalActor> It(GetWorld()); It; ++It)
+			AddBox(SimUnits::UnrealToMeters(It->GetActorLocation()), .5 * FMath::Max(It->RackSizeM.X, It->RackSizeM.Y), It->RackSizeM.Z);
+		for (TActorIterator<ASpineCabinetActor> It(GetWorld()); It; ++It)
+			AddBox(SimUnits::UnrealToMeters(It->GetActorLocation()), .5 * GjRackLayout::FrameDepthM, GjRackLayout::FrameHeightM);
+		UE_LOG(LogTemp, Display, TEXT("[VrgAir] 랙 주변 옥트리: 상자 %d개, 깊이 %d"), OctreeRefinementBoxesM.Num(), OctreeDepth);
+	}
 	if (bUseOctreeSolver)
 	{
 		FFixedOctreeSettings Settings; Settings.MaxDepth = OctreeDepth; Settings.MaxLeaves = OctreeMaxLeaves;

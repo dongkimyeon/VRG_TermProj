@@ -557,21 +557,42 @@ void FAirSolver::Step(const FAirSolverInput& Input, double DeltaTimeS)
 		return;
 	}
 	bLastDuctsRejected = false;
+	ActiveDucts = nullptr;  // an early return must not leave the previous step's input behind
 	LastDuctFlowM3s = 0.0;
 	LastNumDuctFaces = 0;
 	DuctCoilRemovedJ = LastDuctCoilRemovedW = 0.0;
 	DuctFanHeatStepJ = LastDuctFanHeatW = 0.0;
+	// Fan ducts are checked before anything moves: a bad duct would make the pressure problem incompatible.
+	if (Input.HasDucts())
+	{
+		const FString DuctError = ValidateDucts(Input);
+		if (DuctError.IsEmpty())
+		{
+			ActiveDucts = &Input;
+			LastNumDuctFaces = Input.DuctFaceIndex.Num();
+			const double FaceAreaM2 = Grid.GetCellSizeM() * Grid.GetCellSizeM();
+			for (int32 F = 0; F < Input.DuctFaceIndex.Num(); ++F)
+				if (Input.DuctFaceIsExhaust[F]) LastDuctFlowM3s += FMath::Abs(Input.DuctFaceVelocityMs[F]) * FaceAreaM2;
+		}
+		else
+		{
+			bLastDuctsRejected = true;
+			UE_LOG(LogTemp, Error, TEXT("[Air] 팬 덕트 입력 거부: %s"), *DuctError);
+		}
+	}
+
 	if (bUseOctree)
 	{
-		if (Input.HasDucts())
+		// S5 finish: the octree maps the validated root duct faces onto its own faces. A rejected duct set is not passed on.
+		FAirSolverInput WithoutDucts;
+		const FAirSolverInput* OctreeInput = &Input;
+		if (Input.HasDucts() && ActiveDucts == nullptr)
 		{
-			// Not silent (D5 spirit): the octree path has no duct faces yet, so rack fans are not driving air.
-			bLastDuctsRejected = true;
-			if (!bOctreeDuctWarningLogged)
-			{
-				UE_LOG(LogTemp, Warning, TEXT("[Air] 옥트리 경로는 팬 덕트(랙 관통 기류)를 아직 지원하지 않는다. 팬 기류 없이 적분한다."));
-				bOctreeDuctWarningLogged = true;
-			}
+			WithoutDucts = Input;
+			WithoutDucts.DuctFaceAxis.Reset(); WithoutDucts.DuctFaceIndex.Reset(); WithoutDucts.DuctFaceFluidCell.Reset();
+			WithoutDucts.DuctFaceDuct.Reset(); WithoutDucts.DuctFaceIsExhaust.Reset(); WithoutDucts.DuctFaceVelocityMs.Reset();
+			WithoutDucts.NumDucts = 0;
+			OctreeInput = &WithoutDucts;
 		}
 		if (bOctreeNeedsImport)
 		{
@@ -588,8 +609,23 @@ void FAirSolver::Step(const FAirSolverInput& Input, double DeltaTimeS)
 		const double BeforeIn = OctreeSolver.EnergyInJ, BeforeOut = OctreeSolver.EnergyOutJ;
 		const uint64 StepStartCycles = FPlatformTime::Cycles64();
 		const int64 BeforeSolves = OctreeSolver.PressureSolves, BeforeFailures = OctreeSolver.PressureFailures;
-		OctreeSolver.Step(Input, DeltaTimeS);
+		OctreeSolver.Step(*OctreeInput, DeltaTimeS);
 		OctreeSolver.ExportUniform(Grid);
+		if (!OctreeSolver.LastDuctError.IsEmpty())
+		{
+			// Not silent (D5 spirit): the ducts could not be mapped onto this octree, so the fans are not driving air.
+			bLastDuctsRejected = true;
+			if (!bOctreeDuctWarningLogged)
+			{
+				UE_LOG(LogTemp, Warning, TEXT("[Air] 옥트리 덕트 연결 실패: %s (팬 기류 없이 적분)"), *OctreeSolver.LastDuctError);
+				bOctreeDuctWarningLogged = true;
+			}
+		}
+		LastDuctCoilRemovedW = OctreeSolver.LastDuctCoilRemovedW;
+		LastDuctFanHeatW = OctreeSolver.LastDuctFanHeatW;
+		DuctFanHeatStepJ = OctreeSolver.LastDuctFanHeatJ;
+		DuctFanHeatTotalJ += DuctFanHeatStepJ;
+		ActiveDucts = nullptr;
 		// S5-E: the measured cost of this step (kept in the controller, rule 5: no game-thread globals).
 		if (bAutoAdapt) AdaptController.ReportStepCost(FPlatformTime::ToMilliseconds64(FPlatformTime::Cycles64() - StepStartCycles),
 			OctreeSolver.GetGrid().GetNumLeaves());
@@ -628,25 +664,6 @@ void FAirSolver::Step(const FAirSolverInput& Input, double DeltaTimeS)
 			}
 		}
 		return;
-	}
-
-	// Fan ducts are checked before anything moves: a bad duct would make the pressure problem incompatible.
-	if (Input.HasDucts())
-	{
-		const FString DuctError = ValidateDucts(Input);
-		if (DuctError.IsEmpty())
-		{
-			ActiveDucts = &Input;
-			LastNumDuctFaces = Input.DuctFaceIndex.Num();
-			const double FaceAreaM2 = Grid.GetCellSizeM() * Grid.GetCellSizeM();
-			for (int32 F = 0; F < Input.DuctFaceIndex.Num(); ++F)
-				if (Input.DuctFaceIsExhaust[F]) LastDuctFlowM3s += FMath::Abs(Input.DuctFaceVelocityMs[F]) * FaceAreaM2;
-		}
-		else
-		{
-			bLastDuctsRejected = true;
-			UE_LOG(LogTemp, Error, TEXT("[Air] 팬 덕트 입력 거부: %s"), *DuctError);
-		}
 	}
 
 	bLastStepRanOnGpu = false;
