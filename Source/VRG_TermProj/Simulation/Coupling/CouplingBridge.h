@@ -284,6 +284,11 @@ public:
 
 	// S7-0 계측. 직전 스텝의 공기 솔버 시간 [ms]. 게임 스레드 쪽이 읽어 누산한다.
 	double GetLastAirSolverMs() const { return LastAirSolverMs; }
+	// S6 evaluation: cheap per-step reads (no ledger pass over the air grid).
+	const TArray<double>& GetLastAirInletTempK() const { return LastAirInletTempK; }
+	double GetLastItHeatW() const { return LastItHeatW; }
+	double GetLastServerFanPowerW() const { return LastFanPowerW; }
+	double GetLastCrahFanPowerW() const { return AirSolver != nullptr && !AirSolver->WereDuctsRejected() ? AirSolver->GetLastDuctFanHeatW() : 0.0; }
 	// Wall time of the rack models in the last step [ms] (measurement).
 	double GetLastRackModelsMs() const { return LastRackModelsMs; }
 

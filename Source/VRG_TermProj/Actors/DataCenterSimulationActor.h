@@ -6,6 +6,7 @@
 #include "GameFramework/Actor.h"
 #include "Simulation/Core/SimClock.h"
 #include "Simulation/Coupling/CouplingBridge.h"
+#include "Simulation/Evaluation/VrgEvaluation.h"
 #include "DataCenterSimulationActor.generated.h"
 
 class AAirFieldDebugActor;
@@ -254,7 +255,22 @@ protected:
 	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
 #endif
 
+public:
+	// ---- S6 evaluation (2026-09-27) ----
+	FVrgEvaluationSettings EvalSettings;
+	struct FEvalEvent { double TimeS = 0.0; FString Kind; int32 Index = INDEX_NONE; double Value = 0.0; bool bApplied = false; };
+	TArray<FEvalEvent> EvalEvents;
+	// Written when the queued warm-up steps finish (vrg.Eval.ReportWhenDone), then cleared.
+	FString PendingReportName;
+	// Writes Saved/Reports/<Name>.json and .md from the running evaluation; false before any simulation step.
+	bool WriteEvaluationReport(const FString& Name, FString& OutSummary) const;
+	const FVrgEvaluation& GetEvaluation() const { return Eval; }
+
 private:
+	FVrgEvaluation Eval;
+	bool bEvalReady = false;
+	void EvalBeforeStep();
+	void EvalAfterStep();
 	// HUD only: the coupling snapshot walks the whole air grid for its ledger, so it is rebuilt once per sim time.
 	mutable FCouplingSnapshot DisplaySnapshot;
 	mutable double DisplaySnapshotSimTimeS = -1.0;

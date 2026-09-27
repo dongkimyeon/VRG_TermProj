@@ -1149,3 +1149,13 @@ void ADataCenterRoomActor::DrawSummary() const
 			PatchPlan.Summary());
 	}
 }
+
+double ADataCenterRoomActor::GetTotalPumpElectricalW() const
+{
+	double TotalW = 0.0;
+	for (const FRackRow& Row : Rows)
+	{
+		if (Row.PumpIndex != INDEX_NONE) TotalW += Network.GetPumpElectricalInputPowerW(Row.PumpIndex);
+	}
+	return TotalW;
+}

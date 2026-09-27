@@ -51,6 +51,9 @@ public:
 	// Rows and the hydraulic network now (the meshes follow over frames). Entering simulation mode needs the rows
 	// before the coupling is built; RebuildRoom() only flags it for the next tick.
 	// Only when something changed since the last rebuild, so entering simulation does not re-create every pipe mesh.
+	// S6: electrical input of every row pump at the last hydraulic solution [W] (operating point, D8).
+	double GetTotalPumpElectricalW() const;
+
 	void RebuildRoomNow() { if (bNeedsRebuild || Rows.Num() == 0 || GjLayoutHash() != LastGjLayoutHash) RebuildTimed(); }
 
 	// Immediate editor/script refresh; the numerical graph still comes from InRowLoopBuilder.

@@ -264,6 +264,7 @@ void ADataCenterDebugController::SetupInputComponent()
 		{ TEXT("ToggleSimMode"), EKeys::Enter,      &ADataCenterDebugController::OnToggleSimMode },
 		{ TEXT("GrabOrDrop"),    EKeys::G,          &ADataCenterDebugController::OnGrabOrDrop },
 		{ TEXT("RotatePlace"),   EKeys::T,          &ADataCenterDebugController::OnRotatePlaceable },
+		{ TEXT("Containment"),   EKeys::C,          &ADataCenterDebugController::OnCycleContainment },
 		{ TEXT("ToggleHelp"),    EKeys::H,          &ADataCenterDebugController::OnToggleHelp },
 	};
 
@@ -613,6 +614,15 @@ void ADataCenterDebugController::OnGrabOrDrop()
 	GrabOffsetCm.Z = 0.0;
 }
 
+void ADataCenterDebugController::OnCycleContainment()
+{
+	// S6: containment is part of the layout (none -> blanking -> blanking + cold-aisle roof); the next simulation entry builds it.
+	ADataCenterSimulationActor* Sim = FindSimActor();
+	if (Sim == nullptr || Sim->GetSimMode() != ESimMode::Layout) return;
+	Sim->Containment = static_cast<EAisleContainment>((int32(Sim->Containment) + 1) % 3);
+	UE_LOG(LogTemp, Display, TEXT("[VrgDebug] 컨테인먼트 %d (0 없음, 1 블랭킹, 2 블랭킹 + 콜드 아일 지붕) - 시뮬레이션 진입 때 적용"), int32(Sim->Containment));
+}
+
 void ADataCenterDebugController::OnRotatePlaceable()
 {
 	if (!IsLayoutMode()) return;
@@ -769,7 +779,7 @@ void ADataCenterDebugController::DrawHelp() const
 	const uint64 BaseKey = static_cast<uint64>(GetUniqueID());
 
 	GEngine->AddOnScreenDebugMessage(BaseKey, 0.0f, FColor(180, 220, 255),
-		TEXT("[디버그 키] Enter 배치/시뮬레이션 전환  G 장비 잡기/놓기  T 90도 회전 (배치 모드) | 1/2 CPU 발열  3/4 GPU 발열  5/6 펌프 회전수  7/8 라디에이터 UA(랙별 모드)  9/0 부하율  E 바라보는 유닛 뽑기/꽂기  R 리셋  H 도움말"));
+		TEXT("[디버그 키] Enter 배치/시뮬레이션 전환  G 장비 잡기/놓기  T 90도 회전  C 컨테인먼트 (배치 모드) | 1/2 CPU 발열  3/4 GPU 발열  5/6 펌프 회전수  7/8 라디에이터 UA(랙별 모드)  9/0 부하율  E 바라보는 유닛 뽑기/꽂기  R 리셋  H 도움말"));
 
 	const ARackThermalActor* Rack = TargetRack.Get();
 	FString Selection = TEXT("바라보는 유닛 없음 - 유닛을 조준하고 E");

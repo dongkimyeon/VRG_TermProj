@@ -1,6 +1,12 @@
 // Fill out your copyright notice in the Description page of Project Settings.
 
 #include "Actors/DataCenterSimulationActor.h"
+#include "Dom/JsonObject.h"
+#include "Misc/FileHelper.h"
+#include "Misc/Paths.h"
+#include "Serialization/JsonReader.h"
+#include "Serialization/JsonSerializer.h"
+#include "Serialization/JsonWriter.h"
 #include "Simulation/Core/VrgHud.h"
 #include "Simulation/Core/VrgPerfCounters.h"
 
@@ -137,6 +143,8 @@ void ADataCenterSimulationActor::EnterLayoutMode()
 void ADataCenterSimulationActor::EnterSimulationMode()
 {
 	bDisplaySnapshotValid = false;
+	bEvalReady = false;  // the evaluation starts with the run (reset at the first step, when the inlets exist)
+	for (FEvalEvent& E : EvalEvents) E.bApplied = false;
 	Mode = ESimMode::Simulation;
 	FindTargetActors();
 	// Rows and hydraulics first: the coupling reads the routed racks and branch pipes.
@@ -1137,7 +1145,8 @@ void ADataCenterSimulationActor::Tick(float DeltaTime)
 		if (bShowSummary && GEngine != nullptr)
 		{
 			GEngine->AddOnScreenDebugMessage(static_cast<uint64>(GetUniqueID()), 0.0f, FColor(120, 220, 255),
-				TEXT("[배치 모드] 물리 정지 | Enter: 시뮬레이션 시작 | G: 바라보는 장비 잡기/놓기 | T: 90도 회전"));
+				FString::Printf(TEXT("[배치 모드] 물리 정지 | Enter: 시뮬레이션 시작 | G: 바라보는 장비 잡기/놓기 | T: 90도 회전 | C: 컨테인먼트 %s"),
+					Containment == EAisleContainment::None ? TEXT("없음") : Containment == EAisleContainment::Blanking ? TEXT("블랭킹") : TEXT("블랭킹 + 지붕")));
 		}
 		return;
 	}
@@ -1177,9 +1186,11 @@ void ADataCenterSimulationActor::Tick(float DeltaTime)
 			{
 				// S7-0 계측. 통합 스텝 안에 랙·수력·공기가 모두 들어 있다.
 				VRG_SCOPE_COST(STAT_VrgCouplingStep, CouplingMs);
+				EvalBeforeStep();
 				Bridge.Step(Clock.GetFixedStepS(), bHydraulicsResolved && StepIndex == 0, bHydraulicsConverged);
 			}
 			Clock.CompleteStep();
+			EvalAfterStep();
 			VrgPerf::Accumulator().SolverSteps += 1;
 			VrgPerf::Accumulator().SolverMs += Bridge.GetLastAirSolverMs();
 			if (AirField != nullptr)
@@ -1363,10 +1374,12 @@ void ADataCenterSimulationActor::DrainWarmupSteps()
 		const bool bHydraulicsResolved = (Room != nullptr) && Room->ConsumeRebuiltFlag();
 		Clock.BeginFrame(Clock.GetFixedStepS());
 		const uint64 StepStart = FPlatformTime::Cycles64();
+		EvalBeforeStep();
 		Bridge.Step(Clock.GetFixedStepS(), bHydraulicsResolved, bHydraulicsConverged);
 		WarmupCouplingMs += FPlatformTime::ToMilliseconds64(FPlatformTime::Cycles64() - StepStart);
 		WarmupRackMs += Bridge.GetLastRackModelsMs();
 		Clock.CompleteStep();
+		EvalAfterStep();
 		--PendingWarmupSteps;
 
 		if (PendingWarmupSteps < WarmupStepsReported / 4)
@@ -1406,6 +1419,13 @@ void ADataCenterSimulationActor::DrainWarmupSteps()
 		AirField->SetExternalSimTimeS(Clock.GetSimTimeS());
 	}
 
+	if (PendingWarmupSteps == 0 && !PendingReportName.IsEmpty())
+	{
+		FString Summary;
+		const bool bOk = WriteEvaluationReport(PendingReportName, Summary);
+		UE_LOG(LogTemp, Display, TEXT("[VrgEval] 리포트 %s: %s"), bOk ? TEXT("성공") : TEXT("실패"), *Summary);
+		PendingReportName.Reset();
+	}
 	if (PendingWarmupSteps == 0)
 	{
 		const FCouplingSnapshot Snap = GetSnapshot();
@@ -1460,3 +1480,299 @@ void ADataCenterSimulationActor::DrainWarmupSteps()
 		}
 	}
 }
+
+// ---- S6 evaluation: events, per-step recording, reports (2026-09-27) ----
+
+void ADataCenterSimulationActor::EvalBeforeStep()
+{
+	// Events fire on the integrated clock (rule 4), in the order given, once per simulation run.
+	const double NowS = Clock.GetSimTimeS();
+	for (FEvalEvent& E : EvalEvents)
+	{
+		if (E.bApplied || NowS + 1e-9 < E.TimeS) continue;
+		E.bApplied = true;
+		if (E.Kind == TEXT("util"))
+		{
+			for (ARackThermalActor* Rack : Racks) if (Rack != nullptr) Rack->Input.Utilization = FMath::Clamp(E.Value, 0.0, 1.0);
+		}
+		else if (E.Kind == TEXT("rackutil") && Racks.IsValidIndex(E.Index) && Racks[E.Index] != nullptr)
+		{
+			Racks[E.Index]->Input.Utilization = FMath::Clamp(E.Value, 0.0, 1.0);
+		}
+		UE_LOG(LogTemp, Display, TEXT("[VrgEval] t=%.2f s 이벤트 %s %d %.3f"), NowS, *E.Kind, E.Index, E.Value);
+	}
+}
+
+void ADataCenterSimulationActor::EvalAfterStep()
+{
+	const TArray<double>& Inlets = Bridge.GetLastAirInletTempK();
+	if (!bEvalReady || Eval.GetNumInlets() != Inlets.Num())
+	{
+		Eval.Reset(EvalSettings, Inlets.Num(), Inlets);
+		bEvalReady = true;
+	}
+	FVrgEvaluationSample Power;
+	Power.ItW = Bridge.GetLastItHeatW();
+	Power.ServerFanW = Bridge.GetLastServerFanPowerW();
+	Power.CrahFanW = Bridge.GetLastCrahFanPowerW();
+	Power.PumpW = Room != nullptr ? Room->GetTotalPumpElectricalW() : 0.0;
+	Eval.AfterStep(Clock.GetSimTimeS(), Clock.GetFixedStepS(), Inlets, Power);
+}
+
+bool ADataCenterSimulationActor::WriteEvaluationReport(const FString& Name, FString& OutSummary) const
+{
+	if (!bEvalReady || Eval.GetNumInlets() == 0)
+	{
+		OutSummary = TEXT("시뮬레이션 스텝이 아직 없다(배치 모드에서는 리포트가 없다)");
+		return false;
+	}
+	const FVrgEvaluationSettings& S = Eval.GetSettings();
+	const FCouplingSnapshot Snap = GetSnapshot();
+	TSharedRef<FJsonObject> Root = MakeShared<FJsonObject>();
+	Root->SetStringField(TEXT("name"), Name);
+	Root->SetNumberField(TEXT("simTimeS"), Eval.GetSimTimeS());
+	Root->SetNumberField(TEXT("windowS"), Eval.GetWindowCoveredS());
+
+	TSharedRef<FJsonObject> Config = MakeShared<FJsonObject>();
+	if (AirField != nullptr)
+	{
+		const FAirSolver& Air = AirField->GetMutableSolver();
+		Config->SetNumberField(TEXT("cells"), Air.GetGrid().GetNumCells());
+		Config->SetNumberField(TEXT("cellSizeM"), Air.GetGrid().GetCellSizeM());
+		Config->SetBoolField(TEXT("turbulence"), Air.GetTurbulenceSettings().bEnabled);
+		Config->SetBoolField(TEXT("gpuStep"), Air.DidLastStepRunOnGpu());
+		Config->SetBoolField(TEXT("octree"), Air.IsUsingOctree());
+	}
+	Config->SetNumberField(TEXT("crahLayout"), int32(CrahLayout));
+	Config->SetNumberField(TEXT("containment"), int32(Containment));
+	Config->SetNumberField(TEXT("coolantRejection"), int32(CoolantRejection));
+	Config->SetNumberField(TEXT("sensorSeed"), S.Seed);
+	Root->SetObjectField(TEXT("config"), Config);
+
+	const FVrgEvaluationSample P = Eval.GetWindowPower();
+	TSharedRef<FJsonObject> Power = MakeShared<FJsonObject>();
+	Power->SetNumberField(TEXT("itW"), P.ItW);
+	Power->SetNumberField(TEXT("serverFanW"), P.ServerFanW);
+	Power->SetNumberField(TEXT("crahFanW"), P.CrahFanW);
+	Power->SetNumberField(TEXT("pumpW"), P.PumpW);
+	double Pue = 0.0;
+	const bool bPue = Eval.GetPartialPue(Pue);
+	if (bPue) Power->SetNumberField(TEXT("partialPue"), Pue); else Power->SetField(TEXT("partialPue"), MakeShared<FJsonValueNull>());
+	Power->SetStringField(TEXT("partialPueScope"), TEXT("(IT + CRAH fans + pumps) / IT; chillers, cooling towers, UPS/distribution losses and lighting are not modelled"));
+	Root->SetObjectField(TEXT("power"), Power);
+
+	TArray<TSharedPtr<FJsonValue>> InletItems;
+	int32 AboveRecommended = 0, AboveAllowable = 0, SensorAlarms = 0;
+	double MaxMeanK = 0.0, SumMeanK = 0.0, FirstDetectionS = -1.0;
+	for (int32 I = 0; I < Eval.GetNumInlets(); ++I)
+	{
+		const FVrgEvaluation::FInletStats St = Eval.GetInlet(I);
+		const AActor* Cabinet = I < Racks.Num() ? static_cast<const AActor*>(Racks[I].Get())
+			: Spines.IsValidIndex(I - Racks.Num()) ? static_cast<const AActor*>(Spines[I - Racks.Num()].Get()) : nullptr;
+		const FVector M = Cabinet ? SimUnits::UnrealToMeters(Cabinet->GetActorLocation()) : FVector::ZeroVector;
+		TSharedRef<FJsonObject> Item = MakeShared<FJsonObject>();
+		Item->SetNumberField(TEXT("index"), I);
+		Item->SetStringField(TEXT("name"), Cabinet ? Cabinet->GetName() : FString());
+		Item->SetNumberField(TEXT("x_m"), M.X); Item->SetNumberField(TEXT("y_m"), M.Y);
+		Item->SetNumberField(TEXT("windowMeanC"), St.WindowMeanK - 273.15);
+		Item->SetNumberField(TEXT("runMeanC"), St.RunMeanK - 273.15);
+		Item->SetNumberField(TEXT("peakC"), St.PeakK - 273.15);
+		Item->SetNumberField(TEXT("secondsAboveRecommended"), St.SecondsAboveRecommended);
+		Item->SetNumberField(TEXT("secondsAboveAllowable"), St.SecondsAboveAllowable);
+		Item->SetNumberField(TEXT("sensorLastC"), St.SensorLastK - 273.15);
+		Item->SetNumberField(TEXT("sensorFirstAlarmS"), St.SensorFirstAlarmS);
+		Item->SetNumberField(TEXT("sensorAlarms"), St.SensorAlarms);
+		InletItems.Add(MakeShared<FJsonValueObject>(Item));
+		AboveRecommended += St.WindowMeanK > S.RecommendedInletK ? 1 : 0;
+		AboveAllowable += St.WindowMeanK > S.AllowableInletK ? 1 : 0;
+		SensorAlarms += St.SensorAlarms > 0 ? 1 : 0;
+		if (St.SensorFirstAlarmS >= 0.0) FirstDetectionS = FirstDetectionS < 0.0 ? St.SensorFirstAlarmS : FMath::Min(FirstDetectionS, St.SensorFirstAlarmS);
+		MaxMeanK = FMath::Max(MaxMeanK, St.WindowMeanK); SumMeanK += St.WindowMeanK;
+	}
+	Root->SetArrayField(TEXT("inlets"), InletItems);
+	TSharedRef<FJsonObject> Summary = MakeShared<FJsonObject>();
+	Summary->SetNumberField(TEXT("inletWindowMeanMaxC"), MaxMeanK - 273.15);
+	Summary->SetNumberField(TEXT("inletWindowMeanAvgC"), SumMeanK / Eval.GetNumInlets() - 273.15);
+	Summary->SetNumberField(TEXT("inletsAboveRecommended"), AboveRecommended);
+	Summary->SetNumberField(TEXT("inletsAboveAllowable"), AboveAllowable);
+	Summary->SetNumberField(TEXT("inletsWithSensorAlarm"), SensorAlarms);
+	Summary->SetNumberField(TEXT("firstSensorAlarmS"), FirstDetectionS);
+	Root->SetObjectField(TEXT("summary"), Summary);
+
+	TSharedRef<FJsonObject> Checks = MakeShared<FJsonObject>();
+	Checks->SetNumberField(TEXT("globalNormalizedEnergyResidual"), Snap.NormalizedEnergyResidual);
+	Checks->SetStringField(TEXT("ledger"), Bridge.DescribeEnergyLedger());
+	if (AirField != nullptr)
+	{
+		Checks->SetNumberField(TEXT("pressureSolves"), double(AirField->GetMutableSolver().GetNumPressureSolves()));
+		Checks->SetNumberField(TEXT("pressureFailures"), double(AirField->GetMutableSolver().GetNumPressureFailures()));
+	}
+	Checks->SetBoolField(TEXT("hydraulicsConverged"), Snap.bHydraulicsConverged);
+	Root->SetObjectField(TEXT("checks"), Checks);
+
+	TArray<TSharedPtr<FJsonValue>> EventItems;
+	for (const FEvalEvent& E : EvalEvents)
+	{
+		TSharedRef<FJsonObject> Item = MakeShared<FJsonObject>();
+		Item->SetNumberField(TEXT("timeS"), E.TimeS); Item->SetStringField(TEXT("kind"), E.Kind);
+		Item->SetNumberField(TEXT("index"), E.Index); Item->SetNumberField(TEXT("value"), E.Value); Item->SetBoolField(TEXT("applied"), E.bApplied);
+		EventItems.Add(MakeShared<FJsonValueObject>(Item));
+	}
+	Root->SetArrayField(TEXT("events"), EventItems);
+
+	FString Json;
+	FJsonSerializer::Serialize(Root, TJsonWriterFactory<>::Create(&Json));
+	const FString Dir = FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("Reports"));
+	const FString JsonPath = FPaths::Combine(Dir, Name + TEXT(".json"));
+	FString Md = FString::Printf(TEXT("# 평가 리포트 %s\n\n시뮬 시각 %.1f s, 평균 창 %.0f s. 모의 계측값과 보정되지 않은 모델의 결과이며 실제 설비 값이 아니다(D9).\n\n"),
+		*Name, Eval.GetSimTimeS(), Eval.GetWindowCoveredS());
+	Md += FString::Printf(TEXT("## 전력 (창 평균)\n\n| IT | 서버 팬(IT에 포함) | CRAH 팬 | 펌프 | 부분 PUE |\n|---|---|---|---|---|\n| %.1f kW | %.1f kW | %.1f kW | %.2f kW | %s |\n\n"),
+		P.ItW / 1e3, P.ServerFanW / 1e3, P.CrahFanW / 1e3, P.PumpW / 1e3, bPue ? *FString::Printf(TEXT("%.4f"), Pue) : TEXT("계산 불가(IT 0)"));
+	Md += TEXT("부분 PUE = (IT + CRAH 팬 + 펌프) / IT. 칠러·냉각탑·UPS·배전 손실·조명은 모델에 없어 시설 PUE가 아니다(D8).\n\n");
+	Md += FString::Printf(TEXT("## 흡기\n\n창 평균 최고 %.2f C / 평균 %.2f C, 권장 27 C 초과 %d, 허용 32 C 초과 %d, 센서 경보 %d (첫 감지 %.1f s)\n\n| # | 위치 (m) | 창 평균 C | 최고 C | 27 C 초과 s | 센서 마지막 C | 첫 경보 s |\n|---|---|---|---|---|---|---|\n"),
+		MaxMeanK - 273.15, SumMeanK / Eval.GetNumInlets() - 273.15, AboveRecommended, AboveAllowable, SensorAlarms, FirstDetectionS);
+	for (int32 I = 0; I < Eval.GetNumInlets(); ++I)
+	{
+		const FVrgEvaluation::FInletStats St = Eval.GetInlet(I);
+		const TSharedPtr<FJsonObject> Item = InletItems[I]->AsObject();
+		Md += FString::Printf(TEXT("| %d | (%.2f, %.2f) | %.2f | %.2f | %.1f | %.1f | %s |\n"), I, Item->GetNumberField(TEXT("x_m")), Item->GetNumberField(TEXT("y_m")),
+			St.WindowMeanK - 273.15, St.PeakK - 273.15, St.SecondsAboveRecommended, St.SensorLastK - 273.15,
+			St.SensorFirstAlarmS >= 0.0 ? *FString::Printf(TEXT("%.1f"), St.SensorFirstAlarmS) : TEXT("-"));
+	}
+	Md += FString::Printf(TEXT("\n## 점검\n\n전역 정규화 열수지 잔차 %.3e. %s\n"), Snap.NormalizedEnergyResidual, *Bridge.DescribeEnergyLedger());
+	const bool bOk = FFileHelper::SaveStringToFile(Json, *JsonPath, FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM)
+		&& FFileHelper::SaveStringToFile(Md, *FPaths::Combine(Dir, Name + TEXT(".md")), FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM);
+	OutSummary = FString::Printf(TEXT("%s | 흡기 창 평균 최고 %.2f C, 권장 초과 %d, 허용 초과 %d, 센서 경보 %d | IT %.1f kW, 부분 PUE %s | 잔차 %.2e"),
+		*JsonPath, MaxMeanK - 273.15, AboveRecommended, AboveAllowable, SensorAlarms, P.ItW / 1e3,
+		bPue ? *FString::Printf(TEXT("%.4f"), Pue) : TEXT("계산 불가"), Snap.NormalizedEnergyResidual);
+	return bOk;
+}
+
+namespace
+{
+	TArray<ADataCenterSimulationActor*> EvalSimActors()
+	{
+		TArray<ADataCenterSimulationActor*> Out;
+		if (GEngine == nullptr) return Out;
+		for (const FWorldContext& Context : GEngine->GetWorldContexts())
+		{
+			UWorld* World = Context.World();
+			if (World == nullptr || !World->IsGameWorld()) continue;
+			for (TActorIterator<ADataCenterSimulationActor> It(World); It; ++It) Out.Add(*It);
+		}
+		return Out;
+	}
+
+	// A/B: the scalar results of two reports side by side and the per-inlet difference (matched by index).
+	bool CompareReports(const FString& NameA, const FString& NameB, FString& OutSummary)
+	{
+		auto Read = [](const FString& Name, TSharedPtr<FJsonObject>& Out)
+		{
+			FString Text;
+			return FFileHelper::LoadFileToString(Text, *FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("Reports"), Name + TEXT(".json")))
+				&& FJsonSerializer::Deserialize(TJsonReaderFactory<>::Create(Text), Out) && Out.IsValid();
+		};
+		TSharedPtr<FJsonObject> A, B;
+		if (!Read(NameA, A) || !Read(NameB, B)) { OutSummary = TEXT("리포트를 읽지 못했다"); return false; }
+		FString Md = FString::Printf(TEXT("# A/B: %s 대 %s\n\n같은 IT 부하·같은 시각 창에서 비교할 것(D8). 모의 계측값·보정되지 않은 모델의 결과다.\n\n| 항목 | A | B | B - A |\n|---|---|---|---|\n"), *NameA, *NameB);
+		auto Row = [&](const TCHAR* Label, const TSharedPtr<FJsonObject>& ObjA, const TSharedPtr<FJsonObject>& ObjB, const TCHAR* Field, double Scale, const TCHAR* Unit)
+		{
+			double VA = 0.0, VB = 0.0;
+			const bool bA = ObjA->TryGetNumberField(Field, VA), bB = ObjB->TryGetNumberField(Field, VB);
+			Md += FString::Printf(TEXT("| %s | %s | %s | %s |\n"), Label,
+				bA ? *FString::Printf(TEXT("%.4g %s"), VA * Scale, Unit) : TEXT("-"), bB ? *FString::Printf(TEXT("%.4g %s"), VB * Scale, Unit) : TEXT("-"),
+				bA && bB ? *FString::Printf(TEXT("%+.4g %s"), (VB - VA) * Scale, Unit) : TEXT("-"));
+		};
+		const TSharedPtr<FJsonObject> SA = A->GetObjectField(TEXT("summary")), SB = B->GetObjectField(TEXT("summary"));
+		const TSharedPtr<FJsonObject> PA = A->GetObjectField(TEXT("power")), PB = B->GetObjectField(TEXT("power"));
+		Row(TEXT("흡기 창 평균 최고"), SA, SB, TEXT("inletWindowMeanMaxC"), 1.0, TEXT("C"));
+		Row(TEXT("흡기 창 평균의 평균"), SA, SB, TEXT("inletWindowMeanAvgC"), 1.0, TEXT("C"));
+		Row(TEXT("권장 27 C 초과 흡기"), SA, SB, TEXT("inletsAboveRecommended"), 1.0, TEXT(""));
+		Row(TEXT("허용 32 C 초과 흡기"), SA, SB, TEXT("inletsAboveAllowable"), 1.0, TEXT(""));
+		Row(TEXT("센서 경보 흡기"), SA, SB, TEXT("inletsWithSensorAlarm"), 1.0, TEXT(""));
+		Row(TEXT("IT"), PA, PB, TEXT("itW"), 1e-3, TEXT("kW"));
+		Row(TEXT("CRAH 팬"), PA, PB, TEXT("crahFanW"), 1e-3, TEXT("kW"));
+		Row(TEXT("펌프"), PA, PB, TEXT("pumpW"), 1e-3, TEXT("kW"));
+		Row(TEXT("부분 PUE"), PA, PB, TEXT("partialPue"), 1.0, TEXT(""));
+		double ItA = 0.0, ItB = 0.0;
+		PA->TryGetNumberField(TEXT("itW"), ItA); PB->TryGetNumberField(TEXT("itW"), ItB);
+		if (FMath::Abs(ItA - ItB) > 1e-3 * FMath::Max(FMath::Abs(ItA), 1.0))
+			Md += FString::Printf(TEXT("\n**IT 부하가 다르다(%.1f 대 %.1f kW).** D8: 전력·PUE는 같은 IT 부하에서만 비교한다.\n"), ItA / 1e3, ItB / 1e3);
+		const TArray<TSharedPtr<FJsonValue>>& IA = A->GetArrayField(TEXT("inlets"));
+		const TArray<TSharedPtr<FJsonValue>>& IB = B->GetArrayField(TEXT("inlets"));
+		Md += TEXT("\n| 흡기 # | A 창 평균 C | B 창 평균 C | B - A |\n|---|---|---|---|\n");
+		double MaxAbs = 0.0;
+		for (int32 I = 0; I < FMath::Min(IA.Num(), IB.Num()); ++I)
+		{
+			const double VA = IA[I]->AsObject()->GetNumberField(TEXT("windowMeanC")), VB = IB[I]->AsObject()->GetNumberField(TEXT("windowMeanC"));
+			MaxAbs = FMath::Max(MaxAbs, FMath::Abs(VB - VA));
+			Md += FString::Printf(TEXT("| %d | %.2f | %.2f | %+.2f |\n"), I, VA, VB, VB - VA);
+		}
+		if (IA.Num() != IB.Num()) Md += FString::Printf(TEXT("\n흡기 수가 다르다(%d 대 %d) - 앞쪽만 짝지었다.\n"), IA.Num(), IB.Num());
+		const FString Path = FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("Reports"), FString::Printf(TEXT("AB_%s_vs_%s.md"), *NameA, *NameB));
+		FFileHelper::SaveStringToFile(Md, *Path, FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM);
+		OutSummary = FString::Printf(TEXT("%s | 흡기별 창 평균 최대 차 %.2f K"), *Path, MaxAbs);
+		return true;
+	}
+}
+
+static FAutoConsoleCommand GVrgEvalReportCommand(
+	TEXT("vrg.Eval.Report"),
+	TEXT("평가 리포트를 Saved/Reports/<이름>.json/.md로 쓴다. vrg.Eval.Report <이름>"),
+	FConsoleCommandWithArgsDelegate::CreateLambda([](const TArray<FString>& Args)
+	{
+		for (ADataCenterSimulationActor* Sim : EvalSimActors())
+		{
+			FString Summary;
+			const bool bOk = Sim->WriteEvaluationReport(Args.Num() > 0 ? Args[0] : FString(TEXT("report")), Summary);
+			UE_LOG(LogTemp, Display, TEXT("[VrgEval] 리포트 %s: %s"), bOk ? TEXT("성공") : TEXT("실패"), *Summary);
+		}
+	}));
+
+static FAutoConsoleCommand GVrgEvalEventCommand(
+	TEXT("vrg.Eval.Event"),
+	TEXT("시각 이벤트를 넣는다(시뮬레이션 진입마다 다시 적용). vrg.Eval.Event <t s> util <0~1> | <t s> rackutil <랙 번호> <0~1> | clear"),
+	FConsoleCommandWithArgsDelegate::CreateLambda([](const TArray<FString>& Args)
+	{
+		for (ADataCenterSimulationActor* Sim : EvalSimActors())
+		{
+			if (Args.Num() >= 1 && Args[0] == TEXT("clear")) { Sim->EvalEvents.Reset(); UE_LOG(LogTemp, Display, TEXT("[VrgEval] 이벤트 모두 지움")); continue; }
+			if (Args.Num() < 3) { UE_LOG(LogTemp, Warning, TEXT("[VrgEval] 사용법: vrg.Eval.Event <t> util <v> | <t> rackutil <i> <v> | clear")); continue; }
+			ADataCenterSimulationActor::FEvalEvent E;
+			E.TimeS = FCString::Atod(*Args[0]);
+			E.Kind = Args[1].ToLower();
+			if (E.Kind == TEXT("rackutil") && Args.Num() >= 4) { E.Index = FCString::Atoi(*Args[2]); E.Value = FCString::Atod(*Args[3]); }
+			else if (E.Kind == TEXT("util")) { E.Value = FCString::Atod(*Args[2]); }
+			else { UE_LOG(LogTemp, Warning, TEXT("[VrgEval] 모르는 이벤트: %s"), *E.Kind); continue; }
+			Sim->EvalEvents.Add(E);
+			Sim->EvalEvents.StableSort([](const ADataCenterSimulationActor::FEvalEvent& L, const ADataCenterSimulationActor::FEvalEvent& R) { return L.TimeS < R.TimeS; });
+			UE_LOG(LogTemp, Display, TEXT("[VrgEval] 이벤트 추가 t=%.2f s %s %d %.3f (총 %d개)"), E.TimeS, *E.Kind, E.Index, E.Value, Sim->EvalEvents.Num());
+		}
+	}));
+
+static FAutoConsoleCommand GVrgEvalReportWhenDoneCommand(
+	TEXT("vrg.Eval.ReportWhenDone"),
+	TEXT("예약된 스텝(vrg.Air.RunSteps)이 끝나면 리포트를 쓴다. vrg.Eval.ReportWhenDone <이름>"),
+	FConsoleCommandWithArgsDelegate::CreateLambda([](const TArray<FString>& Args)
+	{
+		for (ADataCenterSimulationActor* Sim : EvalSimActors()) Sim->PendingReportName = Args.Num() > 0 ? Args[0] : FString(TEXT("report"));
+	}));
+
+static FAutoConsoleCommand GVrgEvalSeedCommand(
+	TEXT("vrg.Eval.Seed"),
+	TEXT("센서 잡음 시드(다음 시뮬레이션 진입부터). vrg.Eval.Seed <n>"),
+	FConsoleCommandWithArgsDelegate::CreateLambda([](const TArray<FString>& Args)
+	{
+		for (ADataCenterSimulationActor* Sim : EvalSimActors()) if (Args.Num() > 0) Sim->EvalSettings.Seed = FCString::Atoi(*Args[0]);
+	}));
+
+static FAutoConsoleCommand GVrgEvalCompareCommand(
+	TEXT("vrg.Eval.Compare"),
+	TEXT("두 리포트를 비교해 Saved/Reports/AB_<A>_vs_<B>.md로 쓴다. vrg.Eval.Compare <A> <B>"),
+	FConsoleCommandWithArgsDelegate::CreateLambda([](const TArray<FString>& Args)
+	{
+		if (Args.Num() < 2) return;
+		FString Summary;
+		const bool bOk = CompareReports(Args[0], Args[1], Summary);
+		UE_LOG(LogTemp, Display, TEXT("[VrgEval] 비교 %s: %s"), bOk ? TEXT("성공") : TEXT("실패"), *Summary);
+	}));

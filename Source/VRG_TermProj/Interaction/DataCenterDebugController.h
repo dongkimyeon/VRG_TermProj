@@ -171,6 +171,7 @@ private:
 	void OnToggleSimMode();
 	void OnGrabOrDrop();
 	void OnRotatePlaceable();
+	void OnCycleContainment();
 	class ADataCenterSimulationActor* FindSimActor() const;
 	bool IsLayoutMode() const;
 	TWeakObjectPtr<AActor> Grabbed;
