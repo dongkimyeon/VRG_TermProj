@@ -292,6 +292,19 @@ private:
 	double LayoutChangedAtS = 0.0;
 	void RebuildTimed();
 
+	// Pipe routing around cabinets (display only; the solver's topology does not change). Boxes of every rack,
+	// spine and placed CRAH unit, in their own frames (cm, origin at the bottom centre).
+	struct FCabinetBox { FTransform ToWorld; FVector HalfCm; double HeightCm; };
+	TArray<FCabinetBox> CabinetBoxes;
+	void GatherCabinetBoxes();
+	bool SegmentHitsCabinet(const FVector& ACm, const FVector& BCm) const;
+	int32 CountCabinetHits(const TArray<FVector>& PointsCm) const;
+	// From / To in world cm; a non-zero lead direction adds a 30 cm straight lead at that end. Returns the preferred
+	// path if it is clear, else a floor-level L around the cabinets, else an overhead route above them.
+	TArray<FVector> RouteAroundCabinets(const TArray<FVector>& Preferred, const FVector& From, const FVector& FromLead,
+		const FVector& To, const FVector& ToLead) const;
+	int32 LastPipeCabinetHits = 0, LastRoutedAround = 0, LastPreferredHits = 0;
+
 	// GJ pipe and cable spans waiting to become components. Creating ~1300 spline meshes takes seconds, so Tick
 	// creates them MeshBuildBudgetMs at a time (the editor keeps responding and the curves fill in); a synchronous
 	// RefreshGjConnections() still finishes them at once.

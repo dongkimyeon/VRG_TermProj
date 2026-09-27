@@ -293,6 +293,13 @@ public:
 	UFUNCTION(BlueprintCallable, CallInEditor, Category = "Air")
 	void FitToRacks();
 
+	// Fit the grid to the racks, spines and placed CRAH units every time play starts, so a moved or added rack is
+	// always inside the air domain without pressing FitToRacks. Off = keep the grid exactly as set in the level.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Air")
+	bool bAutoFitToRacks = true;
+
+	virtual void OnConstruction(const FTransform& Transform) override;
+
 	// 랙마다 배기 열원 상자를 하나씩 놓는다.
 	// S4에서 랙 발열을 직접 받게 되면 이 버튼은 필요 없어진다.
 	UFUNCTION(BlueprintCallable, CallInEditor, Category = "Air")
@@ -324,6 +331,11 @@ protected:
 #endif
 
 private:
+	// Outline of the air domain (the grid box), visible in the editor only, so a fit can be checked without playing.
+	UPROPERTY(VisibleAnywhere, Category = "Air")
+	TObjectPtr<class UBoxComponent> DomainBounds;
+	void UpdateDomainBounds();
+
 	FSimClock Clock;
 	FAirSolver Solver;
 	FAirSolverInput Input;

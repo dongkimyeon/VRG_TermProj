@@ -4,6 +4,8 @@
 
 #include "Actors/DataCenterSimulationActor.h"
 #include "Actors/RackThermalActor.h"
+#include "Actors/CrahUnitActor.h"
+#include "Components/BoxComponent.h"
 #include "Actors/SpineCabinetActor.h"
 #include "Visualization/GjRackLayout.h"
 #include "Simulation/Core/SimUnits.h"
@@ -40,6 +42,12 @@ AAirFieldDebugActor::AAirFieldDebugActor()
 {
 	PrimaryActorTick.bCanEverTick = true;
 	RootComponent = CreateDefaultSubobject<USceneComponent>(TEXT("Root"));
+	DomainBounds = CreateDefaultSubobject<UBoxComponent>(TEXT("DomainBounds"));
+	DomainBounds->SetupAttachment(RootComponent);
+	DomainBounds->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	DomainBounds->SetHiddenInGame(true);
+	DomainBounds->ShapeColor = FColor(80, 200, 255);
+	DomainBounds->SetLineThickness(3.0f);
 
 	// 기본 구성은 랙 한 줄이 들어갈 만한 작은 방이다.
 	GridParams.NumCellsX = 24;
@@ -237,9 +245,28 @@ static FAutoConsoleCommand GVrgAirFrameDomainCommand(
 		}
 	}));
 
+void AAirFieldDebugActor::OnConstruction(const FTransform& Transform)
+{
+	Super::OnConstruction(Transform);
+	UpdateDomainBounds();
+}
+
+void AAirFieldDebugActor::UpdateDomainBounds()
+{
+	if (DomainBounds == nullptr) return;
+	// The actor origin is the outer corner of cell (0,0,0); m -> cm only here (rule 1).
+	const FVector HalfCm = FVector(GridParams.NumCellsX, GridParams.NumCellsY, GridParams.NumCellsZ) * GridParams.CellSizeM * 50.0;
+	DomainBounds->SetBoxExtent(HalfCm);
+	DomainBounds->SetRelativeLocation(HalfCm);
+}
+
 void AAirFieldDebugActor::BeginPlay()
 {
 	Super::BeginPlay();
+	if (bAutoFitToRacks)
+	{
+		FitToRacks();
+	}
 	ResetSim();
 	StartSim();
 }
@@ -383,6 +410,9 @@ void AAirFieldDebugActor::FitToRacks()
 		return;
 	}
 
+	// Editor button: record the change so the level is marked dirty (and saved) and it can be undone.
+	Modify();
+
 	FBox BoundsM(ForceInit);
 	for (const ARackThermalActor* Rack : Racks)
 	{
@@ -400,6 +430,14 @@ void AAirFieldDebugActor::FitToRacks()
 		const FVector M = SimUnits::UnrealToMeters(It->GetActorLocation());
 		const double Half = .5 * GjRackLayout::FrameDepthM;
 		BoundsM += FBox(M - FVector(Half, Half, 0), M + FVector(Half, Half, GjRackLayout::FrameHeightM));
+	}
+
+	// Hand-placed CRAH units must be inside too, or their faces are missing and they carry no air.
+	for (TActorIterator<ACrahUnitActor> It(GetWorld()); It; ++It)
+	{
+		const FVector M = SimUnits::UnrealToMeters(It->GetActorLocation());
+		const double Half = .5 * FMath::Max(It->SizeM.X, It->SizeM.Y);
+		BoundsM += FBox(M - FVector(Half, Half, 0), M + FVector(Half, Half, It->SizeM.Z));
 	}
 
 	// 배기 기둥이 랙 뒤와 위로 뻗으므로 넉넉하게 잡는다.
@@ -424,6 +462,7 @@ void AAirFieldDebugActor::FitToRacks()
 		GridParams.NumCellsX, GridParams.NumCellsY, GridParams.NumCellsZ,
 		GridParams.NumCellsX * GridParams.NumCellsY * GridParams.NumCellsZ);
 
+	UpdateDomainBounds();
 	bNeedsReset = true;
 }
 

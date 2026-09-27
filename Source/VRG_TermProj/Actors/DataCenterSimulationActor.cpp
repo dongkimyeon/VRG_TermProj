@@ -581,7 +581,7 @@ void ADataCenterSimulationActor::BuildCoupling()
 	}
 	else if (CrahUnitsDropped > 0)
 	{
-		Missing.Add(FString::Printf(TEXT("CRAH 유닛 %d대가 격자 밖이거나 면이 없어 빠짐"), CrahUnitsDropped));
+		Missing.Add(FString::Printf(TEXT("CRAH 유닛 %d대가 공기 격자 밖이거나 다른 장비·CRAH와 겹쳐 빠짐"), CrahUnitsDropped));
 	}
 
 	LastSetupMessage = Missing.Num() > 0
@@ -999,6 +999,15 @@ void ADataCenterSimulationActor::SpawnCrahActorsFromLayout()
 {
 	UWorld* World = GetWorld();
 	if (World == nullptr) return;
+	// Pressing twice used to stack a second set on the first (identical boxes: z-fighting, and the copies get no
+	// faces). Refuse while any unit is placed.
+	int32 Existing = 0;
+	for (TActorIterator<ACrahUnitActor> It(World); It; ++It) ++Existing;
+	if (Existing > 0)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("SpawnCrahActorsFromLayout: 레벨에 CRAH 액터가 이미 %d대 있습니다. 다시 만들려면 먼저 지우세요."), Existing);
+		return;
+	}
 	FindTargetActors();
 	if (AirField == nullptr || Racks.Num() == 0)
 	{

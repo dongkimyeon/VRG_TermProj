@@ -11,6 +11,7 @@
 #include "Visualization/GjConnectionMesh.h"
 #include "Visualization/GjRackLayout.h"
 #include "Actors/SpineCabinetActor.h"
+#include "Actors/CrahUnitActor.h"
 
 #include "Components/SceneComponent.h"
 #include "Components/StaticMeshComponent.h"
@@ -813,13 +814,95 @@ void ADataCenterRoomActor::RebuildTimed()
 	BuildPipeMeshes(); T[3] = FPlatformTime::Seconds();
 	BuildDecorMeshes(); T[4] = FPlatformTime::Seconds();
 	bNeedsRebuild = false; bRebuiltSinceLastQuery = true; LastGjLayoutHash = PendingLayoutHash = GjLayoutHash();
-	UE_LOG(LogTemp, Display, TEXT("[Room] 재구축 %.0f ms (줄 %.0f, 수력 %.0f, 배관 메시 %.0f, 케이블·장식 %.0f = 지우기 %.0f + 배선 계획 %.0f + 간섭 검사 %.0f + 케이블 메시 %.0f) | 컴포넌트 배관 %d, 장식 %d"),
+	UE_LOG(LogTemp, Display, TEXT("[Room] 재구축 %.0f ms (줄 %.0f, 수력 %.0f, 배관 메시 %.0f, 케이블·장식 %.0f = 지우기 %.0f + 배선 계획 %.0f + 간섭 검사 %.0f + 케이블 메시 %.0f) | 컴포넌트 배관 %d, 장식 %d | 캐비닛 관통 배관 구간 %d개 (돌려 간 CDU 연결 %d개, 원래 경로는 %d구간 관통)"),
 		(T[4] - T[0]) * 1e3, (T[1] - T[0]) * 1e3, (T[2] - T[1]) * 1e3, (T[3] - T[2]) * 1e3, (T[4] - T[3]) * 1e3,
-		DecorBuildTimesMs[0], DecorBuildTimesMs[1], DecorBuildTimesMs[2], DecorBuildTimesMs[3], PipeMeshes.Num(), DecorMeshes.Num());
+		DecorBuildTimesMs[0], DecorBuildTimesMs[1], DecorBuildTimesMs[2], DecorBuildTimesMs[3], PipeMeshes.Num(), DecorMeshes.Num(), LastPipeCabinetHits, LastRoutedAround, LastPreferredHits);
+}
+
+void ADataCenterRoomActor::GatherCabinetBoxes()
+{
+	CabinetBoxes.Reset();
+	UWorld* World = GetWorld();
+	if (World == nullptr) return;
+	auto Add = [&](const AActor* A, const FVector& SizeM)
+	{
+		// Unrotated, unscaled frame: the rack geometry uses RackSizeM, not the actor scale.
+		FCabinetBox Box;
+		Box.ToWorld = FTransform(A->GetActorQuat(), A->GetActorLocation());
+		Box.HalfCm = FVector(SizeM.X * 50.0, SizeM.Y * 50.0, 0.0);
+		Box.HeightCm = SizeM.Z * 100.0;
+		CabinetBoxes.Add(Box);
+	};
+	for (TActorIterator<ARackThermalActor> It(World); It; ++It) Add(*It, It->RackSizeM);
+	for (TActorIterator<ASpineCabinetActor> It(World); It; ++It)
+		Add(*It, FVector(GjRackLayout::FrameDepthM, GjRackLayout::FrameWidthM, GjRackLayout::FrameHeightM));
+	for (TActorIterator<ACrahUnitActor> It(World); It; ++It) Add(*It, It->SizeM);
+}
+
+bool ADataCenterRoomActor::SegmentHitsCabinet(const FVector& ACm, const FVector& BCm) const
+{
+	// Slab test in each box frame, shrunk 1 cm so a pipe touching a rear rail or a port does not count.
+	constexpr double ShrinkCm = 1.0;
+	for (const FCabinetBox& Box : CabinetBoxes)
+	{
+		const FVector A = Box.ToWorld.InverseTransformPosition(ACm), B = Box.ToWorld.InverseTransformPosition(BCm);
+		const FVector Lo(-Box.HalfCm.X + ShrinkCm, -Box.HalfCm.Y + ShrinkCm, ShrinkCm);
+		const FVector Hi(Box.HalfCm.X - ShrinkCm, Box.HalfCm.Y - ShrinkCm, Box.HeightCm - ShrinkCm);
+		double T0 = 0.0, T1 = 1.0;
+		bool bHit = true;
+		for (int32 Axis = 0; Axis < 3 && bHit; ++Axis)
+		{
+			const double D = B[Axis] - A[Axis];
+			if (FMath::Abs(D) < 1e-9) { bHit = A[Axis] > Lo[Axis] && A[Axis] < Hi[Axis]; continue; }
+			double U0 = (Lo[Axis] - A[Axis]) / D, U1 = (Hi[Axis] - A[Axis]) / D;
+			if (U0 > U1) Swap(U0, U1);
+			T0 = FMath::Max(T0, U0); T1 = FMath::Min(T1, U1);
+			bHit = T0 < T1;
+		}
+		if (bHit) return true;
+	}
+	return false;
+}
+
+int32 ADataCenterRoomActor::CountCabinetHits(const TArray<FVector>& PointsCm) const
+{
+	int32 Hits = 0;
+	for (int32 I = 0; I + 1 < PointsCm.Num(); ++I) Hits += SegmentHitsCabinet(PointsCm[I], PointsCm[I + 1]) ? 1 : 0;
+	return Hits;
+}
+
+TArray<FVector> ADataCenterRoomActor::RouteAroundCabinets(const TArray<FVector>& Preferred, const FVector& From,
+	const FVector& FromLead, const FVector& To, const FVector& ToLead) const
+{
+	if (CountCabinetHits(Preferred) == 0) return Preferred;
+	const FVector A1 = From + FromLead * 30.0, B1 = To + ToLead * 30.0;
+	auto Path = [&](std::initializer_list<FVector> Mid)
+	{
+		TArray<FVector> P; P.Add(From);
+		if (!FromLead.IsNearlyZero()) P.Add(A1);
+		for (const FVector& M : Mid) P.Add(M);
+		if (!ToLead.IsNearlyZero()) P.Add(B1);
+		P.Add(To);
+		return P;
+	};
+	// Floor-level L at the lead height, both corner orders.
+	for (const TArray<FVector>& Candidate : {Path({FVector(B1.X, A1.Y, A1.Z), FVector(B1.X, B1.Y, A1.Z)}),
+		Path({FVector(A1.X, B1.Y, A1.Z), FVector(B1.X, B1.Y, A1.Z)})})
+		if (CountCabinetHits(Candidate) == 0) return Candidate;
+	// Overhead, above every cabinet (overhead piping), both corner orders.
+	double TopCm = 0.0;
+	for (const FCabinetBox& Box : CabinetBoxes) TopCm = FMath::Max(TopCm, Box.ToWorld.GetLocation().Z + Box.HeightCm);
+	const double Z = TopCm + 25.0;
+	for (const TArray<FVector>& Candidate : {Path({FVector(A1.X, A1.Y, Z), FVector(B1.X, A1.Y, Z), FVector(B1.X, B1.Y, Z)}),
+		Path({FVector(A1.X, A1.Y, Z), FVector(A1.X, B1.Y, Z), FVector(B1.X, B1.Y, Z)})})
+		if (CountCabinetHits(Candidate) == 0) return Candidate;
+	return Preferred;  // nothing clear: keep it and let the count in the log show it
 }
 
 void ADataCenterRoomActor::BuildGjPipeMeshes()
 {
+	GatherCabinetBoxes();
+	LastPipeCabinetHits = LastRoutedAround = LastPreferredHits = 0;
 	UStaticMesh* Header=GjConnectionMesh::Mesh(TEXT("SM_Connection_Header"));
 	UStaticMesh* Riser=GjConnectionMesh::Mesh(TEXT("SM_Connection_Riser"));
 	UMaterialInterface* Surface=GjConnectionMesh::Material(TEXT("MC_FlowBody"));
@@ -829,6 +912,7 @@ void ADataCenterRoomActor::BuildGjPipeMeshes()
 	}
 	auto Add=[&](TArray<FVector> Points, bool Branch, int32 Edge, bool Supply)
 	{
+		LastPipeCabinetHits += CountCabinetHits(Points);
 		for (FVector& P:Points) P=GetActorTransform().InverseTransformPosition(P);
 		QueuePath(Points,Branch?Riser:Header,Surface,Branch?6.0:14.0,Branch?BranchDiameterM/.05:HeaderDiameterM/.11,true,Edge,Supply);
 	};
@@ -847,7 +931,10 @@ void ADataCenterRoomActor::BuildGjPipeMeshes()
 			for (const FRackRow& Row:Rows) if(Row.Cdu && B.Equals(SimUnits::MetersToUnreal(Row.Cdu->GetReturnPortWorldM()),.01))
 			{
 				const FVector D=Row.Cdu->GetActorForwardVector(), Lead=B+D*30;
-				Points={A,A-D*FVector::DotProduct(A-Lead,D),Lead,B}; break;
+				const TArray<FVector> Preferred={A,A-D*FVector::DotProduct(A-Lead,D),Lead,B};
+				Points=RouteAroundCabinets(Preferred,A,FVector::ZeroVector,B,D);
+				LastRoutedAround += Points!=Preferred ? 1 : 0; LastPreferredHits += CountCabinetHits(Preferred);
+				break;
 			}
 		}
 		Add(Points,Branch,I,bPipeIsSupplySide[I]);
@@ -855,7 +942,10 @@ void ADataCenterRoomActor::BuildGjPipeMeshes()
 	for (const FGjPumpRoute& R:GjPumpRoutes)
 	{
 		const FVector Lead=R.StartCm+R.Outward*30;
-		Add({R.StartCm,Lead,R.EndCm-R.Outward*FVector::DotProduct(R.EndCm-Lead,R.Outward),R.EndCm},false,-1-R.Pump,true);
+		const TArray<FVector> Preferred={R.StartCm,Lead,R.EndCm-R.Outward*FVector::DotProduct(R.EndCm-Lead,R.Outward),R.EndCm};
+		const TArray<FVector> Points=RouteAroundCabinets(Preferred,R.StartCm,R.Outward,R.EndCm,FVector::ZeroVector);
+		LastRoutedAround += Points!=Preferred ? 1 : 0; LastPreferredHits += CountCabinetHits(Preferred);
+		Add(Points,false,-1-R.Pump,true);
 	}
 }
 
