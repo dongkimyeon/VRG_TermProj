@@ -1,6 +1,7 @@
 // Fill out your copyright notice in the Description page of Project Settings.
 
 #include "Simulation/Air/AirSolver.h"
+#include "Simulation/Air/WallDistance.h"
 #include "Simulation/Core/VrgParallel.h"
 #include "Simulation/Core/VrgPerfCounters.h"
 #include "VrgPressureGpuSolver.h"
@@ -18,6 +19,10 @@ void FAirSolver::Initialize(const FAirGridParams& InGridParams, double InitialTe
 	EnergyOutJ = 0.0;
 	LastCoolingRemovedW = 0.0;
 	LastCourantNumber = 0.0;
+	bWallDistanceDirty = true;
+	TurbulentViscosityM2s.Reset();
+	LastMaxTurbulentViscosityM2s = LastMeanTurbulentViscosityM2s = 0.0;
+	LastMomentumDiffusionSubsteps = 0;
 
 	DivergencePerS.Init(0.0, Grid.GetNumCells());
 	PressureScratch.Init(0.0, Grid.GetNumCells());
@@ -125,6 +130,7 @@ void FAirSolver::ApplyBuoyancy(const FAirSolverInput& Input, double DeltaTimeS)
 void FAirSolver::OnSolidCellsChanged()
 {
 	if (bUseOctree) bOctreeNeedsImport = true;
+	bWallDistanceDirty = true;
 	// 고체 셀 안에 남아 있던 속도와 압력을 지운다.
 	ApplyWallBoundary();
 
@@ -345,6 +351,18 @@ void FAirSolver::AdvectTemperature(double DeltaTimeS)
 			: FaceVelocityMs * DownstreamTempK;
 	};
 
+	// Turbulent + molecular heat diffusion as part of the same face flux (rule 6): -alpha * dT/dn on fluid-fluid faces,
+	// alpha at the face = alpha_mol + mean nu_t of the two cells / Pr_t. Boundary faces have the same cell on both sides
+	// (no flux), and solid and duct faces never get here, so walls and bodies stay adiabatic.
+	const bool bDiffuse = Turbulence.bEnabled && TurbulentViscosityM2s.Num() == Grid.GetNumCells();
+	const double InvTurbulentPrandtl = 1.0 / Turbulence.TurbulentPrandtl;
+	auto DiffusiveFlux = [&](int32 Lower, int32 Upper) -> double
+	{
+		const double Alpha = Turbulence.MolecularDiffusivityM2s
+			+ 0.5 * (TurbulentViscosityM2s[Lower] + TurbulentViscosityM2s[Upper]) * InvTurbulentPrandtl;
+		return -Alpha * (Grid.TemperatureK[Upper] - Grid.TemperatureK[Lower]) / CellSizeM;
+	};
+
 	VrgParallel::ForEachRow(0, Grid.GetNumCellsY(), 0, Grid.GetNumCellsZ(), [&](int32 Y, int32 Z)
 	{
 		for (int32 X = 0; X <= Grid.GetNumCellsX(); ++X)
@@ -364,6 +382,7 @@ void FAirSolver::AdvectTemperature(double DeltaTimeS)
 			TemperatureFluxX[FaceIndex] = UpwindFlux(Grid.VelocityXMs[FaceIndex],
 				Grid.TemperatureK[Grid.CellIndex(UpstreamX, Y, Z)],
 				Grid.TemperatureK[Grid.CellIndex(DownstreamX, Y, Z)]);
+			if (bDiffuse) TemperatureFluxX[FaceIndex] += DiffusiveFlux(Grid.CellIndex(UpstreamX, Y, Z), Grid.CellIndex(DownstreamX, Y, Z));
 		}
 	});
 
@@ -384,6 +403,7 @@ void FAirSolver::AdvectTemperature(double DeltaTimeS)
 			TemperatureFluxY[FaceIndex] = UpwindFlux(Grid.VelocityYMs[FaceIndex],
 				Grid.TemperatureK[Grid.CellIndex(X, UpstreamY, Z)],
 				Grid.TemperatureK[Grid.CellIndex(X, DownstreamY, Z)]);
+			if (bDiffuse) TemperatureFluxY[FaceIndex] += DiffusiveFlux(Grid.CellIndex(X, UpstreamY, Z), Grid.CellIndex(X, DownstreamY, Z));
 		}
 	});
 
@@ -404,6 +424,7 @@ void FAirSolver::AdvectTemperature(double DeltaTimeS)
 			TemperatureFluxZ[FaceIndex] = UpwindFlux(Grid.VelocityZMs[FaceIndex],
 				Grid.TemperatureK[Grid.CellIndex(X, Y, UpstreamZ)],
 				Grid.TemperatureK[Grid.CellIndex(X, Y, DownstreamZ)]);
+			if (bDiffuse) TemperatureFluxZ[FaceIndex] += DiffusiveFlux(Grid.CellIndex(X, Y, UpstreamZ), Grid.CellIndex(X, Y, DownstreamZ));
 		}
 	});
 
@@ -632,8 +653,15 @@ void FAirSolver::Step(const FAirSolverInput& Input, double DeltaTimeS)
 
 	uint64 Mark = FPlatformTime::Cycles64();
 	auto Lap = [&](int32 Stage) { const uint64 Now = FPlatformTime::Cycles64(); StageMs[Stage] += FPlatformTime::ToMilliseconds64(Now - Mark); Mark = Now; };
+	const bool bTurbulence = Turbulence.bEnabled;
+	if (bTurbulence) { UpdateTurbulentViscosity(); Lap(6); }
 	AdvectVelocity(DeltaTimeS); Lap(0);
 	ApplyBuoyancy(Input, DeltaTimeS); Lap(1);
+	if (bTurbulence)
+	{
+		ApplyWallBoundary();  // walls and duct faces hold their Dirichlet values while momentum diffuses
+		DiffuseMomentum(DeltaTimeS); Lap(6);
+	}
 	ApplyWallBoundary(); Lap(2);
 	ProjectToDivergenceFree(DeltaTimeS); Lap(3);
 
@@ -641,7 +669,12 @@ void FAirSolver::Step(const FAirSolverInput& Input, double DeltaTimeS)
 	// Three axes bound that sum by 3 * max|u|, so sub-step when 3 * Courant would exceed 0.9 (same velocity
 	// field, same total dt - rule 4; conservation is unchanged because every sub-step is conservative).
 	const double TransportCourant = Grid.MaxAbsVelocityMs() * DeltaTimeS / Grid.GetCellSizeM();
-	LastTemperatureSubsteps = FMath::Clamp(FMath::CeilToInt32(3.0 * TransportCourant / 0.9), 1, 64);
+	// With turbulence the explicit diffusion adds 6 * alpha_max * dt / h^2 to the same positivity bound.
+	const double TransportLoad = bTurbulence
+		? 3.0 * TransportCourant + 6.0 * (Turbulence.MolecularDiffusivityM2s + LastMaxTurbulentViscosityM2s / Turbulence.TurbulentPrandtl)
+			* DeltaTimeS / (Grid.GetCellSizeM() * Grid.GetCellSizeM())
+		: 3.0 * TransportCourant;
+	LastTemperatureSubsteps = FMath::Clamp(FMath::CeilToInt32(TransportLoad / 0.9), 1, 64);
 	for (int32 Sub = 0; Sub < LastTemperatureSubsteps; ++Sub)
 	{
 		AdvectTemperature(DeltaTimeS / LastTemperatureSubsteps);
@@ -665,9 +698,134 @@ FString FAirSolver::DescribeStageTimes() const
 {
 	const double N = FMath::Max<double>(StageSteps, 1.0);
 	double Sum = 0.0; for (const double T : StageMs) Sum += T;
-	return FString::Printf(TEXT("공기 스텝 평균 %.2f ms (%lld스텝) = 속도 이류 %.2f + 부력 %.2f + 벽·덕트 %.2f + 투영(압력 포함) %.2f + 온도 수송 %.2f + 열원·냉각 %.2f | 셀 %d"),
-		Sum / N, StageSteps, StageMs[0] / N, StageMs[1] / N, StageMs[2] / N, StageMs[3] / N, StageMs[4] / N, StageMs[5] / N, Grid.GetNumCells());
+	FString Text = FString::Printf(TEXT("공기 스텝 평균 %.2f ms (%lld스텝) = 속도 이류 %.2f + 부력 %.2f + 벽·덕트 %.2f + 투영(압력 포함) %.2f + 온도 수송 %.2f + 열원·냉각 %.2f + 난류 %.2f | 셀 %d"),
+		Sum / N, StageSteps, StageMs[0] / N, StageMs[1] / N, StageMs[2] / N, StageMs[3] / N, StageMs[4] / N, StageMs[5] / N, StageMs[6] / N, Grid.GetNumCells());
+	if (Turbulence.bEnabled)
+		Text += FString::Printf(TEXT(" | 난류 nu_t 최대 %.3e / 평균 %.3e m2/s, 운동량 확산 부분 스텝 %d, 온도 부분 스텝 %d"),
+			LastMaxTurbulentViscosityM2s, LastMeanTurbulentViscosityM2s, LastMomentumDiffusionSubsteps, LastTemperatureSubsteps);
+	return Text;
 }
+
+void FAirSolver::UpdateTurbulentViscosity()
+{
+	const int32 N = Grid.GetNumCells();
+	if (bWallDistanceDirty || WallDistanceM.Num() != N)
+	{
+		AirWallDistance::Compute(Grid, WallDistanceM);
+		bWallDistanceDirty = false;
+	}
+	TurbulentViscosityM2s.SetNumUninitialized(N);
+	const double C = Turbulence.ChenXuCoefficient;
+	VrgParallel::ForEachRow(0, Grid.GetNumCellsY(), 0, Grid.GetNumCellsZ(), [&](int32 Y, int32 Z)
+	{
+		for (int32 X = 0; X < Grid.GetNumCellsX(); ++X)
+		{
+			const int32 Index = Grid.CellIndex(X, Y, Z);
+			TurbulentViscosityM2s[Index] = Grid.bSolidCell[Index] ? 0.0 : C * CellCenterVelocityMs(X, Y, Z).Size() * WallDistanceM[Index];
+		}
+	});
+	LastMaxTurbulentViscosityM2s = VrgParallel::Max(N, 4096, [&](int32 B, int32 E)
+	{
+		double M = 0.0;
+		for (int32 I = B; I < E; ++I) M = FMath::Max(M, TurbulentViscosityM2s[I]);
+		return M;
+	});
+	const int32 NumFluid = Grid.GetNumFluidCells();
+	LastMeanTurbulentViscosityM2s = NumFluid > 0 ? VrgParallel::Sum(N, 4096, [&](int32 B, int32 E)
+	{
+		double S = 0.0;
+		for (int32 I = B; I < E; ++I) S += TurbulentViscosityM2s[I];
+		return S;
+	}) / NumFluid : 0.0;
+}
+
+void FAirSolver::DiffuseMomentum(double DeltaTimeS)
+{
+	if (TurbulentViscosityM2s.Num() != Grid.GetNumCells()) UpdateTurbulentViscosity();
+	// Explicit: the diagonal of the operator is at most 10 nu_max / h^2 (two cells along the component, four tangential
+	// neighbours that may each be a no-slip ghost at twice the weight), so sub-step to keep dt * that below 0.9.
+	const double H = Grid.GetCellSizeM();
+	const double NuMax = Turbulence.MolecularViscosityM2s + LastMaxTurbulentViscosityM2s;
+	LastMomentumDiffusionSubsteps = FMath::Clamp(FMath::CeilToInt32(10.0 * NuMax * DeltaTimeS / (H * H) / 0.9), 1, 64);
+	const double SubDt = DeltaTimeS / LastMomentumDiffusionSubsteps;
+	for (int32 Sub = 0; Sub < LastMomentumDiffusionSubsteps; ++Sub)
+	{
+		for (int32 Axis = 0; Axis < 3; ++Axis) DiffuseFaceComponent(Axis, SubDt);
+		Grid.SwapVelocityBuffers();
+	}
+}
+
+void FAirSolver::DiffuseFaceComponent(int32 Axis, double DeltaTimeS)
+{
+	const int32 N[3] = { Grid.GetNumCellsX(), Grid.GetNumCellsY(), Grid.GetNumCellsZ() };
+	int32 NF[3] = { N[0], N[1], N[2] };
+	++NF[Axis];
+	const TArray<double>& U = VelocityArray(static_cast<uint8>(Axis));
+	TArray<double>& Out = Axis == 0 ? Grid.NextVelocityXMs : Axis == 1 ? Grid.NextVelocityYMs : Grid.NextVelocityZMs;
+	const double InvH2 = 1.0 / (Grid.GetCellSizeM() * Grid.GetCellSizeM());
+	const double NuMol = Turbulence.MolecularViscosityM2s;
+
+	auto FaceIndex = [&](const int32* C)
+	{
+		return Axis == 0 ? Grid.FaceXIndex(C[0], C[1], C[2]) : Axis == 1 ? Grid.FaceYIndex(C[0], C[1], C[2]) : Grid.FaceZIndex(C[0], C[1], C[2]);
+	};
+	auto CellNu = [&](const int32* C) { return NuMol + TurbulentViscosityM2s[Grid.CellIndex(C[0], C[1], C[2])]; };
+	// A face between two fluid cells (domain boundary, solid and duct faces are fixed by ApplyWallBoundary).
+	auto IsOpen = [&](const int32* C)
+	{
+		if (C[Axis] <= 0 || C[Axis] >= N[Axis]) return false;
+		const int32 L[3] = { C[0] - (Axis == 0), C[1] - (Axis == 1), C[2] - (Axis == 2) };
+		return Grid.IsFluidCell(L[0], L[1], L[2]) && Grid.IsFluidCell(C[0], C[1], C[2]);
+	};
+	auto FaceNu = [&](const int32* C)
+	{
+		const int32 L[3] = { C[0] - (Axis == 0), C[1] - (Axis == 1), C[2] - (Axis == 2) };
+		return 0.5 * (CellNu(L) + CellNu(C));
+	};
+
+	VrgParallel::ForEachRow(0, NF[1], 0, NF[2], [&](int32 Y, int32 Z)
+	{
+		for (int32 X = 0; X < NF[0]; ++X)
+		{
+			const int32 C[3] = { X, Y, Z };
+			const int32 F = FaceIndex(C);
+			const double UF = U[F];
+			if (!IsOpen(C))
+			{
+				Out[F] = UF;
+				continue;
+			}
+			const double NuF = FaceNu(C);
+			double Sum = 0.0;
+			for (int32 D = 0; D < 3; ++D)
+			{
+				for (int32 S = -1; S <= 1; S += 2)
+				{
+					int32 G[3] = { X, Y, Z };
+					G[D] += S;
+					if (D == Axis)
+					{
+						// Along the component: the two faces share a fluid cell, whose viscosity is the coefficient.
+						// The neighbour may be a wall or duct face; its value is the exact Dirichlet value there.
+						int32 Cell[3] = { X, Y, Z };
+						if (S < 0) --Cell[Axis];
+						Sum += CellNu(Cell) * (U[FaceIndex(G)] - UF);
+					}
+					else if (G[D] < 0 || G[D] >= N[D] || !IsOpen(G))
+					{
+						Sum += NuF * (-2.0 * UF);  // no-slip wall half a cell away: ghost value -u
+					}
+					else
+					{
+						Sum += 0.5 * (NuF + FaceNu(G)) * (U[FaceIndex(G)] - UF);
+					}
+				}
+			}
+			Out[F] = UF + DeltaTimeS * InvH2 * Sum;
+		}
+	});
+}
+
 
 FString FAirSolver::ValidateDucts(const FAirSolverInput& Input) const
 {

@@ -210,6 +210,25 @@ struct FAirSolverSnapshot
 	bool bDuctsRejected = false;
 };
 
+// Chen & Xu (1998) zero-equation turbulence model for indoor air (2026-09-27; Q. Chen, W. Xu, "A zero-equation
+// turbulence model for indoor airflow simulation", Energy and Buildings 28 (1998) 137-144):
+//   nu_t = 0.03874 * |V| * l,   l = distance to the nearest wall (AirWallDistance)
+// Momentum diffuses with nu_mol + nu_t (Laplacian form: the transpose term of the stress tensor is left out; tangential
+// no-slip at walls and solids, ghost value -u half a cell away). Temperature diffuses with alpha_mol + nu_t / Pr_t as a
+// face flux inside the conservative transport (rule 6; walls, solids and duct faces carry no diffusive flux).
+// Both are explicit and sub-stepped for stability. Off, nothing of this runs and the solver is unchanged bit for bit.
+// Uniform path only; the octree path ignores it.
+struct FAirTurbulenceSettings
+{
+	bool bEnabled = false;
+	double ChenXuCoefficient = 0.03874;
+	// Air at 300 K (Incropera & DeWitt, Fundamentals of Heat and Mass Transfer, Table A.4): nu 15.89e-6, alpha 22.5e-6 m^2/s.
+	double MolecularViscosityM2s = 15.89e-6;
+	double MolecularDiffusivityM2s = 22.5e-6;
+	// Turbulent Prandtl number, the common assumption for air (not from Chen & Xu).
+	double TurbulentPrandtl = 0.9;
+};
+
 class VRG_TERMPROJ_API FAirSolver
 {
 public:
@@ -243,6 +262,18 @@ public:
 	void AdvectTemperature(double DeltaTimeS);
 	void InjectHeat(const FAirSolverInput& Input, double DeltaTimeS);
 	void ApplyCooling(const FAirSolverInput& Input, double DeltaTimeS);
+	// Turbulence stages (only called when enabled): nu_t from the current velocity, then momentum diffusion.
+	void UpdateTurbulentViscosity();
+	void DiffuseMomentum(double DeltaTimeS);
+
+	FAirTurbulenceSettings& GetMutableTurbulenceSettings() { return Turbulence; }
+	const FAirTurbulenceSettings& GetTurbulenceSettings() const { return Turbulence; }
+	const TArray<double>& GetWallDistanceM() const { return WallDistanceM; }
+	// Per cell [m^2/s], 0 in solids; valid after UpdateTurbulentViscosity.
+	const TArray<double>& GetTurbulentViscosityM2s() const { return TurbulentViscosityM2s; }
+	double GetMaxTurbulentViscosityM2s() const { return LastMaxTurbulentViscosityM2s; }
+	double GetMeanTurbulentViscosityM2s() const { return LastMeanTurbulentViscosityM2s; }
+	int32 GetLastMomentumDiffusionSubsteps() const { return LastMomentumDiffusionSubsteps; }
 
 	const FUniformAirGrid& GetGrid() const { return Grid; }
 	FUniformAirGrid& GetMutableGrid() { return Grid; }
@@ -312,7 +343,7 @@ public:
 
 	// Wall time per pipeline stage, summed since the last reset [ms] (measurement, D10; members, rule 5).
 	// Stages: 0 velocity advection, 1 buoyancy, 2 wall/ducts, 3 projection (incl. pressure), 4 temperature
-	// transport, 5 heat + cooling. Uniform path only.
+	// transport, 5 heat + cooling, 6 turbulence (viscosity + momentum diffusion). Uniform path only.
 	void ResetStageTimes() { for (double& T : StageMs) T = 0.0; StageSteps = 0; }
 	FString DescribeStageTimes() const;
 
@@ -378,7 +409,13 @@ private:
 	int32 LastNumDuctFaces = 0;
 	bool bLastDuctsRejected = false;
 	int32 LastTemperatureSubsteps = 1;
-	double StageMs[6] = {0, 0, 0, 0, 0, 0};
+	double StageMs[7] = {0, 0, 0, 0, 0, 0, 0};
+	FAirTurbulenceSettings Turbulence;
+	TArray<double> WallDistanceM, TurbulentViscosityM2s;
+	bool bWallDistanceDirty = true;
+	double LastMaxTurbulentViscosityM2s = 0.0, LastMeanTurbulentViscosityM2s = 0.0;
+	int32 LastMomentumDiffusionSubsteps = 0;
+	void DiffuseFaceComponent(int32 Axis, double DeltaTimeS);
 	int64 StageSteps = 0;
 	bool bOctreeDuctWarningLogged = false;
 	TArray<double>& FluxArray(uint8 Axis) { return Axis == 0 ? TemperatureFluxX : Axis == 1 ? TemperatureFluxY : TemperatureFluxZ; }

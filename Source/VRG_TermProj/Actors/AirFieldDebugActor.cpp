@@ -115,6 +115,13 @@ namespace
 		TEXT("vrg.Pressure.Multigrid"), GVrgMultigridPressure,
 		TEXT("압력을 멀티그리드 전처리 CG로 푼다. 1=기본, 0=Jacobi 기준 경로"));
 
+	// 2026-09-27: Chen-Xu zero-equation turbulence (FAirTurbulenceSettings). The solver's own default stays off, so the
+	// automation tests that drive FAirSolver directly keep their inviscid reference.
+	static int32 GVrgAirTurbulence = 1;
+	static FAutoConsoleVariableRef CVarAirTurbulence(
+		TEXT("vrg.Air.Turbulence"), GVrgAirTurbulence,
+		TEXT("Chen-Xu 0-방정식 난류 모델(와점성·열확산). 1=켬(기본), 0=비점성 기준 경로"));
+
 	static int32 GVrgDrawFlow = -1;
 	static FAutoConsoleVariableRef CVarDrawFlow(
 		TEXT("vrg.Flow.Draw"), GVrgDrawFlow,
@@ -295,6 +302,7 @@ void AAirFieldDebugActor::ResetSim()
 	Clock.Reset(FixedStepS);
 	Solver.Initialize(GridParams, InitialTempK);
 	Solver.GetMutablePressureSettings() = PressureSettings;
+	Solver.GetMutableTurbulenceSettings().bEnabled = GVrgAirTurbulence != 0;  // also before the first Tick (warm-up)
 	if (bUseOctreeSolver)
 	{
 		FFixedOctreeSettings Settings; Settings.MaxDepth = OctreeDepth; Settings.MaxLeaves = OctreeMaxLeaves;
@@ -537,6 +545,7 @@ void AAirFieldDebugActor::Tick(float DeltaTime)
 	if (GVrgFlowStrength >= 0.0f) { FlowStrength = GVrgFlowStrength; }
 	Solver.SetUseGpuPressure(GVrgUseGpuPressure != 0);
 	Solver.SetUseMultigridPressure(GVrgMultigridPressure != 0);
+	Solver.GetMutableTurbulenceSettings().bEnabled = GVrgAirTurbulence != 0;
 
 	// 예약된 예열을 먼저 나눠 소화한다. 다 끝나면 평소 적분으로 돌아간다.
 	if (PendingWarmupSteps > 0)
