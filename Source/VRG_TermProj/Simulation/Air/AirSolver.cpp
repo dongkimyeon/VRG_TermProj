@@ -595,9 +595,13 @@ void FAirSolver::Step(const FAirSolverInput& Input, double DeltaTimeS)
 		}
 		OctreeSolver.PressureSettings = PressureSettings;
 		const double BeforeIn = OctreeSolver.EnergyInJ, BeforeOut = OctreeSolver.EnergyOutJ;
+		const uint64 StepStartCycles = FPlatformTime::Cycles64();
 		const int64 BeforeSolves = OctreeSolver.PressureSolves, BeforeFailures = OctreeSolver.PressureFailures;
 		OctreeSolver.Step(Input, DeltaTimeS);
 		OctreeSolver.ExportUniform(Grid);
+		// S5-E: the measured cost of this step (kept in the controller, rule 5: no game-thread globals).
+		if (bAutoAdapt) AdaptController.ReportStepCost(FPlatformTime::ToMilliseconds64(FPlatformTime::Cycles64() - StepStartCycles),
+			OctreeSolver.GetGrid().GetNumLeaves());
 		EnergyInJ += OctreeSolver.EnergyInJ - BeforeIn; EnergyOutJ += OctreeSolver.EnergyOutJ - BeforeOut;
 		LastCoolingRemovedW = OctreeSolver.LastCoolingRemovedW; LastCourantNumber = OctreeSolver.LastCourant;
 		LastPressureResult = OctreeSolver.PressureResult; LastPressureSolveMs = OctreeSolver.LastPressureMs;

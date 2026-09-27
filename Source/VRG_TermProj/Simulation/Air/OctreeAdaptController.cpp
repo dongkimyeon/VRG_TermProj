@@ -7,6 +7,7 @@ FString FOctreeAdaptSettings::Validate() const
 	if (!(CoarsenGradientKPerM < RefineGradientKPerM)) return TEXT("CoarsenGradientKPerM must be below RefineGradientKPerM (hysteresis)");
 	if (!(CoarsenSpeedMs < RefineSpeedMs)) return TEXT("CoarsenSpeedMs must be below RefineSpeedMs (hysteresis)");
 	if (MinHoldS < 0.0 || IntervalS < 0.0 || MaxRefinedRoots < 0) return TEXT("negative hold time, interval or budget");
+	if (TargetStepMs < 0.0 || LodBand <= 0.0 || LodBand >= 1.0) return TEXT("TargetStepMs must be >= 0 and LodBand in (0, 1)");
 	return FString();
 }
 
@@ -21,6 +22,35 @@ void FOctreeAdaptController::Reset(int32 NumRoots)
 	LastEvalS = TNumericLimits<double>::Lowest();
 	NumRefined = 0;
 	NumTopologyChanges = NumRootFlips = 0;
+	CostSumMs = 0.0; CostSamples = LastLeaves = 0;
+	EffectiveBudget = MAX_int32; NumBudgetChanges = 0;
+	LodHistory.Reset();
+}
+
+void FOctreeAdaptController::UpdateLodBudget(const FOctreeAdaptSettings& Settings, double NowS)
+{
+	const int32 Cap = Settings.MaxRefinedRoots > 0 ? Settings.MaxRefinedRoots : MAX_int32;
+	if (Settings.TargetStepMs <= 0.0)
+	{
+		EffectiveBudget = Cap;
+		return;
+	}
+	if (CostSamples == 0) return;
+	const double MeanMs = CostSumMs / CostSamples;
+	CostSumMs = 0.0; CostSamples = 0;
+	const int32 Before = EffectiveBudget;
+	if (MeanMs > Settings.TargetStepMs * (1.0 + Settings.LodBand))
+	{
+		EffectiveBudget = FMath::FloorToInt32(.8 * NumRefined);
+	}
+	else if (MeanMs < Settings.TargetStepMs * (1.0 - Settings.LodBand) && EffectiveBudget < Cap)
+	{
+		const int64 Grown = int64(FMath::CeilToInt32(1.25 * EffectiveBudget)) + 1;
+		EffectiveBudget = int32(FMath::Min<int64>(Grown, Cap));
+	}
+	EffectiveBudget = FMath::Min(EffectiveBudget, Cap);
+	if (EffectiveBudget != Before) ++NumBudgetChanges;
+	LodHistory.Add({NowS, LastLeaves, MeanMs, EffectiveBudget});
 }
 
 void FOctreeAdaptController::MeasureIndicators(const FUniformAirGrid& Grid)
@@ -59,9 +89,16 @@ void FOctreeAdaptController::MeasureIndicators(const FUniformAirGrid& Grid)
 bool FOctreeAdaptController::Update(const FUniformAirGrid& Grid, const FOctreeAdaptSettings& Settings, double NowS, TArray<FBox>& OutBoxesM)
 {
 	const int32 N = Grid.GetNumCells();
-	if (Refined.Num() != N) Reset(N);
+	if (Refined.Num() != N)
+	{
+		// First use (or a new grid): size the arrays but keep the step costs reported before this call.
+		const double KeptSumMs = CostSumMs; const int32 KeptSamples = CostSamples, KeptLeaves = LastLeaves;
+		Reset(N);
+		CostSumMs = KeptSumMs; CostSamples = KeptSamples; LastLeaves = KeptLeaves;
+	}
 	if (NowS < LastEvalS + Settings.IntervalS) return false;
 	LastEvalS = NowS;
+	UpdateLodBudget(Settings, NowS);
 	MeasureIndicators(Grid);
 
 	TArray<uint8> Desired = Refined;
@@ -79,15 +116,16 @@ bool FOctreeAdaptController::Update(const FUniformAirGrid& Grid, const FOctreeAd
 		Desired[I] = bWant ? 1 : 0;
 	}
 
-	// Budget (hard): keep the largest normalised indicators.
-	if (Settings.MaxRefinedRoots > 0)
+	// Budget (hard): keep the largest normalised indicators. MaxRefinedRoots, tightened by the S5-E LOD budget.
+	const int32 Budget = FMath::Min(Settings.MaxRefinedRoots > 0 ? Settings.MaxRefinedRoots : MAX_int32, EffectiveBudget);
+	if (Budget < MAX_int32)
 	{
 		TArray<int32> On;
 		for (int32 I = 0; I < N; ++I) if (Desired[I]) On.Add(I);
-		if (On.Num() > Settings.MaxRefinedRoots)
+		if (On.Num() > Budget)
 		{
 			On.Sort([&](int32 A, int32 B) { return Score[A] != Score[B] ? Score[A] > Score[B] : A < B; });
-			for (int32 K = Settings.MaxRefinedRoots; K < On.Num(); ++K) Desired[On[K]] = 0;
+			for (int32 K = Budget; K < On.Num(); ++K) Desired[On[K]] = 0;
 		}
 	}
 

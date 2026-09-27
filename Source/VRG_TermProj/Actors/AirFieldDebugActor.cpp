@@ -745,8 +745,12 @@ void AAirFieldDebugActor::DrawSummaryText() const
 		{
 			const FOctreeAdaptController& Adapt = Solver.GetOctreeAdaptController();
 			GEngine->AddOnScreenDebugMessage(BaseKey + 10, 0.0f, Solver.GetNumAutoAdaptFailures() > 0 ? FColor::Orange : FColor::Cyan,
-				FString::Printf(TEXT("[S5-D] 자동 적응: 정밀 루트 %d개 | 격자 변경 %lld회 (루트 전환 %lld) | 실패 %lld회%s"),
+				FString::Printf(TEXT("[S5-D] 자동 적응: 정밀 루트 %d개 | 격자 변경 %lld회 (루트 전환 %lld) | 실패 %lld회%s%s"),
 					Adapt.GetNumRefined(), Adapt.GetNumTopologyChanges(), Adapt.GetNumRootFlips(), Solver.GetNumAutoAdaptFailures(),
+					OctreeAdaptSettings.TargetStepMs > 0.0 && Adapt.GetLodHistory().Num() > 0
+						? *FString::Printf(TEXT(" | [S5-E] 목표 %.1f ms, 최근 %.2f ms / 리프 %d, 예산 %d루트 (변경 %d회)"), OctreeAdaptSettings.TargetStepMs,
+							Adapt.GetLodHistory().Last().MeanStepMs, Adapt.GetLodHistory().Last().NumLeaves, Adapt.GetEffectiveBudget(), Adapt.GetNumBudgetChanges())
+						: TEXT(""),
 					Solver.GetNumAutoAdaptFailures() > 0 ? *FString::Printf(TEXT(" (%s)"), *Solver.GetLastAutoAdaptError()) : TEXT("")));
 		}
 	}

@@ -24,6 +24,12 @@
 // Budget: at most MaxRefinedRoots refined (0 = no cap); when over, the largest normalised indicators win. The budget
 // overrides the hold time (it is a hard limit).
 //
+// S5-E performance LOD (optional, TargetStepMs > 0): the mean measured step cost since the last evaluation steers an
+// effective root budget. Above TargetStepMs * (1 + LodBand) the budget drops to 80% of the refined count; below
+// TargetStepMs * (1 - LodBand) it grows by 25% (up to MaxRefinedRoots). Inside the band nothing changes (hysteresis).
+// Every evaluation is recorded (time, leaves, cost, budget). The cost is wall-clock time, so with LOD on the topology
+// depends on the machine and the run: turn it off for comparisons that must repeat (S6 reruns). Default off.
+//
 // Plain C++, no UObject references: usable from worker threads with the solver.
 USTRUCT(BlueprintType)
 struct FOctreeAdaptSettings
@@ -56,13 +62,35 @@ struct FOctreeAdaptSettings
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Air|Octree|Adapt", meta = (ClampMin = "0"))
 	int32 MaxRefinedRoots = 0;
 
+	// S5-E: target mean step cost [ms] of the octree solver (0 = off) and the dead band around it (fraction).
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Air|Octree|Adapt", meta = (ClampMin = "0.0"))
+	double TargetStepMs = 0.0;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Air|Octree|Adapt", meta = (ClampMin = "0.01", ClampMax = "0.9"))
+	double LodBand = 0.2;
+
 	// Empty when usable; otherwise why not (Coarsen must be below Refine for the hysteresis to exist).
 	FString Validate() const;
+};
+
+// One S5-E record: at an evaluation, the leaves in force, the mean step cost since the previous one, the budget after.
+struct FOctreeLodSample
+{
+	double SimTimeS = 0.0;
+	int32 NumLeaves = 0;
+	double MeanStepMs = 0.0;
+	int32 BudgetRoots = 0;   // effective root budget after this evaluation (MAX_int32 = unlimited)
 };
 
 class VRG_TERMPROJ_API FOctreeAdaptController
 {
 public:
+	// S5-E input: the cost of one solver step [ms] and the leaves it ran on. Summed until the next evaluation.
+	void ReportStepCost(double StepMs, int32 NumLeaves) { CostSumMs += StepMs; ++CostSamples; LastLeaves = NumLeaves; }
+	int32 GetEffectiveBudget() const { return EffectiveBudget; }
+	const TArray<FOctreeLodSample>& GetLodHistory() const { return LodHistory; }
+	int32 GetNumBudgetChanges() const { return NumBudgetChanges; }
+
 	void Reset(int32 NumRoots);
 
 	// Evaluates at most once per Settings.IntervalS of NowS. Returns true when it proposes a different refined set;
@@ -93,6 +121,11 @@ private:
 	double LastEvalS = TNumericLimits<double>::Lowest();
 	int32 NumRefined = 0;
 	int64 NumTopologyChanges = 0, NumRootFlips = 0;
+	double CostSumMs = 0.0;
+	int32 CostSamples = 0, LastLeaves = 0;
+	int32 EffectiveBudget = MAX_int32, NumBudgetChanges = 0;
+	TArray<FOctreeLodSample> LodHistory;
+	void UpdateLodBudget(const FOctreeAdaptSettings& Settings, double NowS);
 
 	void MeasureIndicators(const FUniformAirGrid& Grid);
 };

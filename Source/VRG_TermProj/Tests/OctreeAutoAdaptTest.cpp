@@ -160,4 +160,71 @@ bool FOctreeAdaptPlumeTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+// S5-E: the step cost steers the root budget into a dead band and stays there; every evaluation is recorded.
+// The control law runs on a synthetic cost (0.01 ms per leaf) so it is deterministic; a real solver run then
+// records leaves and measured time without asserting on them (D10: measured, machine dependent).
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FOctreeLodTest, "VRG.Air.Octree.AutoAdapt.PerformanceLod", AdaptFlags)
+bool FOctreeLodTest::RunTest(const FString& Parameters)
+{
+	FUniformAirGrid G; G.Initialize(SmallGrid(8, 4, 4)); G.ResetToUniform(297.15);
+	SetSlope(G, 10.0);  // every root wants refining (above 8 K/m)
+	const int32 N = G.GetNumCells();
+	FOctreeAdaptSettings S; S.RefineGradientKPerM = 8.0; S.CoarsenGradientKPerM = 4.0; S.RefineSpeedMs = 100.0; S.CoarsenSpeedMs = 50.0;
+	S.MinHoldS = 2.0; S.IntervalS = .5; S.TargetStepMs = 4.0; S.LodBand = .2;
+	// Depth 1: a refined root is 8 leaves -> leaves = N + 7 R. Cost 0.01 ms per leaf -> band [3.2, 4.8] ms
+	// means R in [(320 - 128) / 7, (480 - 128) / 7] = [27.4, 50.3].
+	auto LeavesOf = [&](int32 R) { return N + 7 * R; };
+	FOctreeAdaptController C; TArray<FBox> Boxes;
+	TArray<int32> Refined;
+	int32 ChangesInLastHalf = 0;
+	for (int32 K = 0; K < 80; ++K)
+	{
+		const int32 Leaves = LeavesOf(C.GetNumRefined());
+		for (int32 Step = 0; Step < 25; ++Step) C.ReportStepCost(.01 * Leaves, Leaves);
+		const int32 BudgetChangesBefore = C.GetNumBudgetChanges();
+		if (C.Update(G, S, K * .5, Boxes)) C.Commit();
+		if (K >= 40) ChangesInLastHalf += C.GetNumBudgetChanges() - BudgetChangesBefore;
+		Refined.Add(C.GetNumRefined());
+	}
+	const int32 Final = C.GetNumRefined();
+	AddInfo(FString::Printf(TEXT("목표 4.0 ms ±20%%: 정밀 루트 %d개 (리프 %d, 비용 %.2f ms) | 예산 %d | 예산 변경 %d회 (뒤 절반 %d회) | 기록 %d개"),
+		Final, LeavesOf(Final), .01 * LeavesOf(Final), C.GetEffectiveBudget(), C.GetNumBudgetChanges(), ChangesInLastHalf, C.GetLodHistory().Num()));
+	TestTrue(TEXT("Settles inside the band"), Final >= 28 && Final <= 50);
+	TestEqual(TEXT("No budget changes once settled"), ChangesInLastHalf, 0);
+	TestEqual(TEXT("Every evaluation recorded"), C.GetLodHistory().Num(), 80);
+
+	// Off: no budget, no record.
+	{
+		FOctreeAdaptController Off; FOctreeAdaptSettings SO = S; SO.TargetStepMs = 0.0;
+		Off.ReportStepCost(100.0, 1000);
+		if (Off.Update(G, SO, 0.0, Boxes)) Off.Commit();
+		TestTrue(TEXT("LOD off: all refine, nothing recorded"), Off.GetNumRefined() == N && Off.GetLodHistory().Num() == 0);
+	}
+
+	// Real solver: record leaves and measured cost (not asserted; machine dependent).
+	{
+		const FAirGridParams P = SmallGrid(12, 6, 8);
+		FAirSolver Tree; Tree.Initialize(P, 297.15);
+		Tree.GetMutablePressureSettings().NormalizedResidualTarget = 1e-8;
+		FFixedOctreeSettings OS; OS.MaxDepth = 1; FString Error;
+		Tree.ConfigureOctree(OS, {}, Error);
+		FOctreeAdaptSettings SR; SR.RefineGradientKPerM = 2.0; SR.CoarsenGradientKPerM = 1.0; SR.RefineSpeedMs = .1; SR.CoarsenSpeedMs = .05;
+		SR.MinHoldS = .5; SR.IntervalS = .2; SR.TargetStepMs = 1.0;
+		Tree.SetOctreeAutoAdapt(true, SR, Error);
+		FAirSolverInput In; In.CellHeatW.Init(0.0, Tree.GetGrid().GetNumCells());
+		In.CellHeatW[Tree.GetGrid().CellIndex(6, 3, 1)] = 400.0;
+		for (int32 I = 0; I < 300; ++I) Tree.Step(In, .02);
+		const TArray<FOctreeLodSample>& H = Tree.GetOctreeAdaptController().GetLodHistory();
+		FString Trace;
+		for (int32 I = 0; I < H.Num(); I += FMath::Max(1, H.Num() / 6))
+			Trace += FString::Printf(TEXT(" [%.1f s 리프 %d, %.3f ms, 예산 %d]"), H[I].SimTimeS, H[I].NumLeaves, H[I].MeanStepMs, H[I].BudgetRoots);
+		AddInfo(FString::Printf(TEXT("실제 솔버(목표 1.0 ms, 측정값이며 보장값 아님):%s | 열수지 %.3e | 실패 %lld"),
+			*Trace, Tree.GetNormalizedEnergyResidual(), Tree.GetNumAutoAdaptFailures()));
+		TestTrue(TEXT("Real run recorded"), H.Num() > 0);
+		TestTrue(TEXT("Energy conserved with LOD regrids"), FMath::Abs(Tree.GetNormalizedEnergyResidual()) < 1e-10);
+		TestEqual(TEXT("No failed adaptation"), Tree.GetNumAutoAdaptFailures(), int64(0));
+	}
+	return true;
+}
+
 #endif // WITH_DEV_AUTOMATION_TESTS
