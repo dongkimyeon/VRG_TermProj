@@ -1054,6 +1054,45 @@ void FAirSolver::SolvePressure()
 	bLastPressureRanOnGpu = false;
 	if (bUseMultigridPressure)
 	{
+		if (bUseGpuMultigrid && IsInGameThread() && VrgAirGpu::IsAvailable())
+		{
+			// The hierarchy is built on the CPU (topology changes only) and uploaded when it was rebuilt.
+			if (!GpuMultigrid.IsValid()) GpuMultigrid = MakeUnique<FVrgAirGpuPressure>();
+			const bool bRebuilt = MultigridPoissonSolver::UpdateCache(Grid, MultigridCache);
+			bool bReady = GpuMultigrid->IsConfigured() && !bRebuilt;
+			if (!bReady)
+			{
+				FVrgMgHierarchy Hierarchy;
+				MultigridPoissonSolver::ExportHierarchy(Grid, MultigridCache, Hierarchy);
+				bReady = GpuMultigrid->Configure(Hierarchy);
+			}
+			if (bReady)
+			{
+				FVrgGpuPoissonSettings Settings;
+				Settings.NormalizedResidualTarget = PressureSettings.NormalizedResidualTarget;
+				Settings.MaxIterations = PressureSettings.MaxIterations;
+				Settings.Omega = PressureSettings.Relaxation;
+				const FVrgGpuPoissonResult R = GpuMultigrid->Solve(DivergencePerS, Grid.PressurePa, Settings);
+				if (R.bRan)
+				{
+					LastPressureResult = FPoissonSolveResult();
+					LastPressureResult.bConverged = R.bConverged;
+					LastPressureResult.IterationsUsed = R.IterationsUsed;
+					LastPressureResult.NormalizedResidual = R.NormalizedResidual;
+					LastPressureResult.ReferenceScale = R.ReferenceScale;
+					LastPressureResult.bIncompatibleRightHandSide = R.bIncompatibleRightHandSide;
+					LastPressureResult.MeanRightHandSide = R.MeanRightHandSide;
+					bLastPressureRanOnGpu = true;
+					return;
+				}
+			}
+			// Not silent (D5 spirit): say once that the CPU is solving instead.
+			if (!bGpuMultigridFallbackLogged)
+			{
+				UE_LOG(LogTemp, Warning, TEXT("[Air] GPU 압력(MG-PCG)을 쓰지 못해 CPU로 푼다."));
+				bGpuMultigridFallbackLogged = true;
+			}
+		}
 		LastPressureResult = MultigridPoissonSolver::Solve(Grid, DivergencePerS, Grid.PressurePa, MultigridCache,
 			PressureSettings);
 		return;

@@ -1,0 +1,310 @@
+// Fill out your copyright notice in the Description page of Project Settings.
+//
+// 4d (2026-09-27): pressure Poisson by multigrid-preconditioned CG on the GPU, FP64.
+// Follows FMultigridPoisson::Solve (EMode::ConjugateGradient) step by step; see VrgAirGpu.h for the host side.
+//
+// Every kernel reads one shared parameter set (FVrgMgParams). Level data is compact (fluid cells only), CSR rows.
+// Status (Scalars[SLOT_STATUS]): 0 running, 1 converged before the first iteration, 2 incompatible right-hand side,
+// 3 zero right-hand side, 4 finished inside the loop (converged or CG breakdown). Loop kernels return unless 0,
+// so iterations past convergence cost only an early exit (D5: the stop is decided on the GPU, reported to the host).
+// D6: every smoother is damped Jacobi reading one buffer and writing another (no ordering dependence).
+
+#include "/Engine/Public/Platform.ush"
+
+#define SLOT_REF 0
+#define SLOT_SUMVB 1
+#define SLOT_SUMV 2
+#define SLOT_SUMF 3
+#define SLOT_RZ 4
+#define SLOT_PQ 5
+#define SLOT_ALPHA 6
+#define SLOT_BETA 7
+#define SLOT_RESIDUAL 8
+#define SLOT_ITERATIONS 9
+#define SLOT_STATUS 10
+#define SLOT_CONVERGED 11
+#define SLOT_MEANRHS 12
+#define SLOT_REDUCE 13
+#define SLOT_TARGET 14
+#define SLOT_OMEGA 15
+
+StructuredBuffer<double> InA;
+StructuredBuffer<double> InB;
+StructuredBuffer<double> InC;
+StructuredBuffer<double> InD;
+StructuredBuffer<int> IdxA;
+StructuredBuffer<int> IdxB;
+StructuredBuffer<int> IdxC;
+RWStructuredBuffer<double> OutA;
+RWStructuredBuffer<double> OutB;
+RWStructuredBuffer<double> Scalars;
+RWStructuredBuffer<double> Partials;
+uint Count;
+uint Mode;
+uint Slot;
+uint Aux;
+
+bool Running() { return Scalars[SLOT_STATUS] == 0.0; }
+
+// ---- Gather: compact B and X from grid-sized arrays. InA = RHS grid, InB = field grid, IdxA = GridOf.
+[numthreads(64, 1, 1)]
+void GatherCS(uint3 Id : SV_DispatchThreadID)
+{
+	const uint I = Id.x;
+	if (I >= Count) return;
+	const int G = IdxA[I];
+	OutA[I] = InA[G];
+	OutB[I] = InB[G];
+}
+
+// ---- Reduction, pass 1: one partial per group of 256 into Partials.
+// Mode 0: sum InA*InB, 1: sum InA, 2: max |InA|, 3: max |InA / InB|.
+#define REDUCE_THREADS 256
+groupshared double Shared[REDUCE_THREADS];
+
+double ReduceTerm(uint I)
+{
+	if (Mode == 0) return InA[I] * InB[I];
+	if (Mode == 1) return InA[I];
+	if (Mode == 2) return abs(InA[I]);
+	return abs(InA[I] / InB[I]);
+}
+
+[numthreads(REDUCE_THREADS, 1, 1)]
+void ReducePartialCS(uint3 Group : SV_GroupID, uint3 Local : SV_GroupThreadID)
+{
+	// Aux = 1: only when the solve is still running (loop reductions).
+	if (Aux == 1 && !Running()) return;
+	const uint I = Group.x * REDUCE_THREADS + Local.x;
+	const bool bMax = Mode >= 2;
+	Shared[Local.x] = I < Count ? ReduceTerm(I) : 0.0;
+	GroupMemoryBarrierWithGroupSync();
+	for (uint Stride = REDUCE_THREADS / 2; Stride > 0; Stride >>= 1)
+	{
+		if (Local.x < Stride)
+		{
+			Shared[Local.x] = bMax ? max(Shared[Local.x], Shared[Local.x + Stride]) : Shared[Local.x] + Shared[Local.x + Stride];
+		}
+		GroupMemoryBarrierWithGroupSync();
+	}
+	if (Local.x == 0) Partials[Group.x] = Shared[0];
+}
+
+// ---- Reduction, pass 2: one group folds Count partials (fixed order per thread, then a tree) into Scalars[Slot].
+[numthreads(REDUCE_THREADS, 1, 1)]
+void ReduceFinalCS(uint3 Local : SV_GroupThreadID)
+{
+	if (Aux == 1 && !Running()) return;
+	const bool bMax = Mode >= 2;
+	double Acc = 0.0;
+	for (uint I = Local.x; I < Count; I += REDUCE_THREADS)
+	{
+		Acc = bMax ? max(Acc, Partials[I]) : Acc + Partials[I];
+	}
+	Shared[Local.x] = Acc;
+	GroupMemoryBarrierWithGroupSync();
+	for (uint Stride = REDUCE_THREADS / 2; Stride > 0; Stride >>= 1)
+	{
+		if (Local.x < Stride)
+		{
+			Shared[Local.x] = bMax ? max(Shared[Local.x], Shared[Local.x + Stride]) : Shared[Local.x] + Shared[Local.x + Stride];
+		}
+		GroupMemoryBarrierWithGroupSync();
+	}
+	if (Local.x == 0) Scalars[Slot] = Shared[0];
+}
+
+// ---- Scalar steps (one thread). Mode selects the step of Solve().
+[numthreads(1, 1, 1)]
+void ScalarCS()
+{
+	if (Mode == 0)
+	{
+		// After Ref, SumVB, SumV: zero or incompatible right-hand side.
+		const double Ref = Scalars[SLOT_REF];
+		const double Mean = Scalars[SLOT_SUMV] > 0.0 ? Scalars[SLOT_SUMVB] / Scalars[SLOT_SUMV] : 0.0;
+		Scalars[SLOT_MEANRHS] = Mean;
+		Scalars[SLOT_ITERATIONS] = 0.0;
+		Scalars[SLOT_CONVERGED] = 0.0;
+		Scalars[SLOT_RESIDUAL] = 0.0;
+		if (Ref <= 1e-8)  // UE_DOUBLE_SMALL_NUMBER
+		{
+			Scalars[SLOT_STATUS] = 3.0;
+			Scalars[SLOT_CONVERGED] = 1.0;
+		}
+		else if (abs(Mean) > 1.0e-10 * Ref)
+		{
+			Scalars[SLOT_STATUS] = 2.0;
+			Scalars[SLOT_RESIDUAL] = abs(Mean) / Ref;
+		}
+		else
+		{
+			Scalars[SLOT_STATUS] = 0.0;
+		}
+	}
+	else if (Mode == 1)
+	{
+		// Initial residual (Slot REDUCE holds max |R / V|).
+		if (!Running()) return;
+		const double Residual = Scalars[SLOT_REDUCE] / Scalars[SLOT_REF];
+		Scalars[SLOT_RESIDUAL] = Residual;
+		if (Residual <= Scalars[SLOT_TARGET]) { Scalars[SLOT_CONVERGED] = 1.0; Scalars[SLOT_STATUS] = 1.0; }
+	}
+	else if (Mode == 2)
+	{
+		// After PQ: breakdown or step length.
+		if (!Running()) return;
+		const double PQ = Scalars[SLOT_PQ];
+		if (PQ <= 0.0) { Scalars[SLOT_STATUS] = 4.0; return; }
+		Scalars[SLOT_ALPHA] = Scalars[SLOT_RZ] / PQ;
+	}
+	else if (Mode == 3)
+	{
+		// Residual inside the loop; Aux = iteration number.
+		if (!Running()) return;
+		Scalars[SLOT_ITERATIONS] = double(Aux);
+		const double Residual = Scalars[SLOT_REDUCE] / Scalars[SLOT_REF];
+		Scalars[SLOT_RESIDUAL] = Residual;
+		if (Residual <= Scalars[SLOT_TARGET]) { Scalars[SLOT_CONVERGED] = 1.0; Scalars[SLOT_STATUS] = 4.0; }
+	}
+	else if (Mode == 4)
+	{
+		// New RZ (in Slot REDUCE) -> beta.
+		if (!Running()) return;
+		const double RZNew = Scalars[SLOT_REDUCE];
+		Scalars[SLOT_BETA] = RZNew / Scalars[SLOT_RZ];
+		Scalars[SLOT_RZ] = RZNew;
+	}
+	else if (Mode == 5)
+	{
+		// First RZ.
+		if (!Running()) return;
+		Scalars[SLOT_RZ] = Scalars[SLOT_REDUCE];
+	}
+}
+
+// ---- Right-hand side in A-form. Mode 0: OutA = -InA(V) * InB(B). Mode 1: OutA -= V * SumF / SumV.
+[numthreads(64, 1, 1)]
+void BuildFCS(uint3 Id : SV_DispatchThreadID)
+{
+	const uint I = Id.x;
+	if (I >= Count || !Running()) return;
+	if (Mode == 0) OutA[I] = -InA[I] * InB[I];
+	else OutA[I] -= InA[I] * Scalars[SLOT_SUMF] / Scalars[SLOT_SUMV];
+}
+
+// ---- A x on one level: OutA = Diag*X - sum T*X_j. Mode 1: OutA = InC(F) - A x (residual). InA = X, InB = Trans,
+// InD = Diag, IdxA = RowStart, IdxB = Col. Aux = 1: gated on Running().
+[numthreads(64, 1, 1)]
+void ApplyACS(uint3 Id : SV_DispatchThreadID)
+{
+	const uint I = Id.x;
+	if (I >= Count) return;
+	if (Aux == 1 && !Running()) return;
+	double S = InD[I] * InA[I];
+	for (int K = IdxA[I], E = IdxA[I + 1]; K < E; ++K) S -= InB[K] * InA[IdxB[K]];
+	OutA[I] = Mode == 1 ? InC[I] - S : S;
+}
+
+// ---- One damped Jacobi sweep: OutA = X + w ((F + sum T X_j) / D - X). InA = X, InB = Trans, InC = F, InD = Diag.
+[numthreads(64, 1, 1)]
+void SmoothCS(uint3 Id : SV_DispatchThreadID)
+{
+	const uint I = Id.x;
+	if (I >= Count || !Running()) return;
+	const double X = InA[I];
+	const double D = InD[I];
+	if (D <= 0.0) { OutA[I] = X; return; }
+	double Off = 0.0;
+	for (int K = IdxA[I], E = IdxA[I + 1]; K < E; ++K) Off += InB[K] * InA[IdxB[K]];
+	OutA[I] = X + Scalars[SLOT_OMEGA] * ((InC[I] + Off) / D - X);
+}
+
+// ---- Restriction (a gather over each coarse cell's children): OutA = coarse F = sum (F - Ax) of the children,
+// OutB = coarse X = 0. InA = fine F, InB = fine Ax, IdxA = ChildStart, IdxB = Child.
+[numthreads(64, 1, 1)]
+void RestrictCS(uint3 Id : SV_DispatchThreadID)
+{
+	const uint I = Id.x;
+	if (I >= Count || !Running()) return;
+	double S = 0.0;
+	for (int K = IdxA[I], E = IdxA[I + 1]; K < E; ++K) { const int C = IdxB[K]; S += InA[C] - InB[C]; }
+	OutA[I] = S;
+	OutB[I] = 0.0;
+}
+
+// ---- Constant prolongation: OutA (fine X) += InA (coarse X)[Parent]. IdxA = Parent.
+[numthreads(64, 1, 1)]
+void ProlongCS(uint3 Id : SV_DispatchThreadID)
+{
+	const uint I = Id.x;
+	if (I >= Count || !Running()) return;
+	OutA[I] += InA[IdxA[I]];
+}
+
+// ---- Coarsest level in one group: Aux Jacobi sweeps (pairs X -> Tmp -> X), then subtract the mean.
+// OutA = X, OutB = Tmp, InB = Trans, InC = F, InD = Diag, IdxA = RowStart, IdxB = Col.
+[numthreads(REDUCE_THREADS, 1, 1)]
+void CoarsestCS(uint3 Local : SV_GroupThreadID)
+{
+	if (!Running()) return;
+	const double W = Scalars[SLOT_OMEGA];
+	for (uint Sweep = 0; Sweep < Aux; ++Sweep)
+	{
+		const bool bToTmp = (Sweep & 1u) == 0u;
+		for (uint I = Local.x; I < Count; I += REDUCE_THREADS)
+		{
+			const double X = bToTmp ? OutA[I] : OutB[I];
+			const double D = InD[I];
+			double Result = X;
+			if (D > 0.0)
+			{
+				double Off = 0.0;
+				for (int K = IdxA[I], E = IdxA[I + 1]; K < E; ++K) Off += InB[K] * (bToTmp ? OutA[IdxB[K]] : OutB[IdxB[K]]);
+				Result = X + W * ((InC[I] + Off) / D - X);
+			}
+			if (bToTmp) OutB[I] = Result; else OutA[I] = Result;
+		}
+		DeviceMemoryBarrierWithGroupSync();
+	}
+	// Mean over the level (unweighted, as FMultigridPoisson::RemoveMean).
+	double Acc = 0.0;
+	for (uint I = Local.x; I < Count; I += REDUCE_THREADS) Acc += OutA[I];
+	Shared[Local.x] = Acc;
+	GroupMemoryBarrierWithGroupSync();
+	for (uint Stride = REDUCE_THREADS / 2; Stride > 0; Stride >>= 1)
+	{
+		if (Local.x < Stride) Shared[Local.x] += Shared[Local.x + Stride];
+		GroupMemoryBarrierWithGroupSync();
+	}
+	const double Mean = Shared[0] / double(Count);
+	for (uint I = Local.x; I < Count; I += REDUCE_THREADS) OutA[I] -= Mean;
+}
+
+// ---- Vector steps. Mode 0: OutA = InA (copy), OutB = 0 (preconditioner start: level-0 F = R, X = 0).
+// Mode 1: OutA -= Scalars[Slot] / Count (subtract a mean held as a sum). Mode 2: X += alpha P (OutA, InA), R -= alpha Q
+// (OutB, InB). Mode 3: OutA (P) = InA (Z) + beta * OutA; Aux = 1 on the first use (P = Z). Mode 4: OutA = InA (copy).
+// Aux bit 2 (value 2): run even when not Running() (final mean removal and zero-RHS).
+[numthreads(64, 1, 1)]
+void VectorCS(uint3 Id : SV_DispatchThreadID)
+{
+	const uint I = Id.x;
+	if (I >= Count) return;
+	if ((Aux & 2u) == 0u && !Running()) return;
+	if (Mode == 0) { OutA[I] = InA[I]; OutB[I] = 0.0; }
+	else if (Mode == 1) { OutA[I] -= Scalars[Slot] / double(Count); }
+	else if (Mode == 2) { const double A = Scalars[SLOT_ALPHA]; OutA[I] += A * InA[I]; OutB[I] -= A * InB[I]; }
+	else if (Mode == 3) { OutA[I] = (Aux & 1u) != 0u ? InA[I] : InA[I] + Scalars[SLOT_BETA] * OutA[I]; }
+	else { OutA[I] = InA[I]; }
+}
+
+// ---- Final: status 3 (zero RHS) zeroes X; statuses 0 / 4 subtract the mean of X (the loop ran). Slot = Reduce slot.
+[numthreads(64, 1, 1)]
+void FinishCS(uint3 Id : SV_DispatchThreadID)
+{
+	const uint I = Id.x;
+	if (I >= Count) return;
+	const double Status = Scalars[SLOT_STATUS];
+	if (Status == 3.0) OutA[I] = 0.0;
+	else if (Status == 0.0 || Status == 4.0) OutA[I] -= Scalars[Slot] / double(Count);
+}

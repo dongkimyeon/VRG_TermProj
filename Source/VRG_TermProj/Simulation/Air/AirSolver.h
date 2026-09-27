@@ -8,6 +8,7 @@
 #include "Simulation/Air/UniformAirGrid.h"
 #include "Simulation/Air/OctreeAirSolver.h"
 #include "Simulation/Air/OctreeAdaptController.h"
+#include "VrgAirGpu.h"
 #include "AirSolver.generated.h"
 
 // S3: 균일 격자 공기 해석.
@@ -297,6 +298,10 @@ public:
 	// 2-1: multigrid-preconditioned CG (CPU FP64, damped-Jacobi smoother). Default on.
 	// When on it takes precedence over the GPU Jacobi path. Off = the S3 damped-Jacobi reference.
 	void SetUseMultigridPressure(bool bInUse) { bUseMultigridPressure = bInUse; }
+	// 4d (2026-09-27): the multigrid-CG pressure solve on the GPU in FP64 (FVrgAirGpuPressure), same algorithm and hierarchy
+	// as the CPU one; falls back to the CPU when there is no GPU or the GPU solve did not run. Game thread only when on.
+	void SetUseGpuMultigrid(bool bInUse) { bUseGpuMultigrid = bInUse; }
+	bool IsUsingGpuMultigrid() const { return bUseGpuMultigrid; }
 	bool IsUsingMultigridPressure() const { return bUseMultigridPressure; }
 	// Pressure solves since Initialize and how many of them missed the target (D5).
 	int64 GetNumPressureSolves() const { return NumPressureSolves; }
@@ -368,6 +373,9 @@ private:
 	double LastPressureSolveMs = 0.0;
 	bool bUseGpuPressure = false;
 	bool bUseMultigridPressure = true;
+	bool bUseGpuMultigrid = false;
+	TUniquePtr<FVrgAirGpuPressure> GpuMultigrid;
+	bool bGpuMultigridFallbackLogged = false;
 	int64 NumPressureSolves = 0, NumPressureFailures = 0;
 	MultigridPoissonSolver::FUniformCache MultigridCache;
 	bool bLastPressureRanOnGpu = false;

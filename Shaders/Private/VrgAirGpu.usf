@@ -1,0 +1,29 @@
+// Fill out your copyright notice in the Description page of Project Settings.
+//
+// 4단계 (2026-09-27): 공기 솔버 한 스텝의 컴퓨트 셰이더. 필드는 FP64다(이유는 VrgAirGpu.h).
+// 선형 인덱스는 CPU의 FUniformAirGrid와 같다: Cell = X + NX * (Y + NY * Z),
+// FaceX = X + (NX + 1) * (Y + NY * Z), FaceY = X + NX * (Y + (NY + 1) * Z), FaceZ = X + NX * (Y + NY * Z).
+
+#include "/Engine/Public/Platform.ush"
+
+// ---- 4a: FP64 가능성 확인 ----
+// CPU와 같은 식을 같은 순서로 계산한다. 덧셈·곱셈·나눗셈과 정수 변환만 쓴다
+// (HLSL은 double sqrt/exp/floor를 지원하지 않는다).
+StructuredBuffer<double> ProbeA;
+StructuredBuffer<double> ProbeB;
+RWStructuredBuffer<double> ProbeOut;
+StructuredBuffer<double> ProbeScalars;  // C, D
+uint ProbeCount;
+
+[numthreads(64, 1, 1)]
+void ProbeCS(uint3 Id : SV_DispatchThreadID)
+{
+	const uint I = Id.x;
+	if (I >= ProbeCount) return;
+	const double Product = ProbeA[I] * ProbeB[I];
+	const double Sum = Product + ProbeScalars[0];
+	const double Quotient = Sum / ProbeScalars[1];
+	// Truncation towards zero, as C++ (int) does, then back to double.
+	const int Whole = int(Quotient);
+	ProbeOut[I] = Quotient - double(Whole);
+}

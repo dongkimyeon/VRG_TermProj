@@ -828,6 +828,9 @@ IT 발열 1684.8 kW = 라디에이터 1262.8 kW + CRAH 28.43 kW + 축적
 | `Air.Turbulence.ClosedBoxConservation` 열수지 | 2.40e-14 | 유입 2000 W × 10 s 기준, 무차원 (고체·부력·난류 켬) | < 1e-12 |
 | 같은 테스트 발산 | 2.72e-11 | (최대 속도 / h) 기준, 무차원 | < 1e-6 |
 | 같은 테스트 nu_t 최대 | 2.14e-02 m2/s | 타당성 범위 (m2/s) | 1e-4 ~ 0.5 |
+| `Gpu.Air.DoubleArithmeticMatchesCpu` | 다른 값 0 / 4096 | CPU를 std::fma로 계산한 값과 비트 비교 (개수). 일반 C++ 대비 최대 1.14e-13 (몫 약 700의 1 ULP) | == 0 |
+| `Gpu.Air.PressureMatchesCpu` GPU 대 CPU MG-PCG 해 | 1.42e-15 / 1.78e-15 / 1.92e-15 | CPU 해 최대 2.19 / 6.47 / 6.47 기준, 무차원 (20x30x10·40x60x20 목표 1e-10, 40x60x20 목표 1e-6) | < 1e3 × 목표 |
+| 같은 테스트 반복 수·잔차 | 20/22/14회, 잔차 4자리까지 같음 | CPU 반복 수와의 차 (회) | <= 1 |
 
 **수력 솔버의 오차 하한은 수렴 목표가 정한다.** `SinglePipe`/`Parallel`의 해석해 오차
 3.5e-11은 방법의 정확도 한계가 아니라 `NormalizedResidualTarget`(기본 1e-10)에서
@@ -1810,3 +1813,38 @@ t=30 s 랙 흡기 20.28~22.68 C(끄고 20.14~22.73 C), 열수지 잔차 -1.31e-1
   결과 수치는 병렬/직렬이 같은 값을 내므로 영향이 없다.)
 - 측정값이며 보장값이 아니다. 보정되지 않은 모델의 격자 의존성 검사이지 실제 방 온도의 검증이 아니다.
 로그 `Saved/Logs/Grid_h{25,125}_{on,off}.log` (커밋 제외).
+
+
+## 4단계 진행: GPU FP64 압력 MG-PCG (2026-09-27)
+
+계획은 `Tools/인계_2026-09-27.md` "4단계 세부 계획". **필드도 FP64로 GPU에 둔다**(계획의 "필드 FP32"를 바꿈: FP32 온도는 300 K에서
+분해능 약 3e-5 K라 보존 자체가 깨진다). 순서를 바꿔 압력(4d)을 먼저 했다 — 0.125 m 스텝 50 ms 중 32 ms라 가장 크고 가장 어렵다.
+
+- **4a FP64 가능성**: UE 5.8 D3D12 SM6에서 `StructuredBuffer<double>` 셰이더가 컴파일·실행된다. FP64 덧셈·곱셈·나눗셈은 IEEE이고,
+  셰이더 컴파일러가 `A*B+C`를 FMA 하나로 합친다(CPU를 `std::fma`로 계산하면 4096개 전부 비트 동일). 셰이더 매개변수 구조체는
+  double 스칼라를 못 받으므로 스칼라도 버퍼로 넘긴다. HLSL은 double sqrt/exp/floor가 없다. 셰이더가 참조하는 매개변수는 분기에서
+  안 읽어도 전부 바인딩해야 한다(안 하면 치명 오류) — 기본값으로 1원소 더미 버퍼를 묶는다.
+- **4d 압력**: `VrgRender/VrgAirGpu.*` + `Shaders/Private/VrgAirMg.usf`. CPU `FMultigridPoisson`이 만든 계층(CSR)을 그대로 올리고
+  (`ExportHierarchy`, 위상 변경 때만) CG·V-cycle을 같은 순서로 따라간다. 스무더는 완화 Jacobi(D6), 제한은 자식 목록 gather.
+  수렴·파괴·부적합·영 우변 판정을 GPU 상태 스칼라가 하고, 그 뒤 커널은 조기 종료한다. 호스트는 덩어리(8회)마다 16개 스칼라만 읽는다(D5).
+  리덕션은 그룹당 부분합 → 한 그룹이 고정 순서로 접는 두 단계(원자 연산 없음, 실행마다 같은 순서).
+- 스위치: 액터 `vrg.Pressure.GpuMultigrid 0|1`(기본 **0**), 솔버 `SetUseGpuMultigrid`. GPU가 없거나 실패하면 CPU로 풀고 로그에 한 번 적는다.
+
+**측정 (L_Test 32랙, 1500스텝, 이 PC, 측정값이며 보장값 아님 D10).** 결과(흡기 범위·전역 잔차·CRAH 제거)는 CPU/GPU 두 경로가 출력 자리수까지 같다.
+
+| 격자 | 투영(압력 포함) CPU → GPU | 스텝 CPU → GPU | Draw (GPU 켬) |
+|---|---|---|---|
+| 0.25 m 33210셀 | 4.11 → **6.56 ms (느림)** | 8.81 → 11.34 ms | 5.8 → 10.6 ms |
+| 0.125 m 265680셀 | 26.09 → 15.56 ms | 48.31 → 37.74 ms | 5.3 → **49.6 ms** |
+
+단독 풀이(0에서 시작, 16회): CPU 50.0 ms / GPU 14.3 ms(`Gpu.Air.PressureTiming`). L_Test 0.125 m는 스텝당 7회.
+**그래서 기본값을 켜지 않았다.** 0.25 m에서는 디스패치(반복당 약 53개)·동기화 비용이 계산보다 크고, 0.125 m에서도 스텝마다 격자 크기
+배열을 올리고 내려받으며 렌더 스레드를 붙잡는다(Draw 49.6 ms). 20 ms 목표는 나머지 단계까지 GPU에 상주시키고(4b/4c/4e) 동기화를
+스텝당 1~2번으로 줄여야 닿는다. 다음 할 일은 인계 문서에 있다.
+
+GPU 테스트 실행(`-NullRHI` 없이, 창 없이):
+```
+D:\UE_5.8\Engine\Binaries\Win64\UnrealEditor-Cmd.exe "D:\VRG_TermProj\VRG_TermProj.uproject" -ExecCmds="Automation RunTests VRG.Gpu;Quit" -unattended -nopause -nosplash -RenderOffscreen -log
+```
+일반 `VRG` 실행(-NullRHI)에서는 `VRG.Gpu.*` 3건이 "GPU 없음 - 건너뜀"을 남기고 성공한다. 전체 **110 성공 / 실패 0**, GPU 3건 성공.
+`UnrealEditor.exe`를 `-log`와 함께 백그라운드로 띄우면 콘솔 제어 이벤트로 함께 죽는다(실제로 겪었다). 무인 측정은 `-log` 없이 `-abslog`만 쓴다.

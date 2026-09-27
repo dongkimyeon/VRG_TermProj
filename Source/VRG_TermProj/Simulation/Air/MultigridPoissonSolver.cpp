@@ -1,6 +1,7 @@
 #include "Simulation/Air/MultigridPoissonSolver.h"
 #include "Simulation/Air/UniformAirGrid.h"
 #include "Simulation/Core/VrgParallel.h"
+#include "VrgAirGpu.h"
 
 namespace
 {
@@ -295,12 +296,34 @@ FPoissonSolveResult FMultigridPoisson::Solve(const TArray<double>& B, TArray<dou
 	return Result;
 }
 
-FPoissonSolveResult MultigridPoissonSolver::Solve(const FUniformAirGrid& Grid, const TArray<double>& RightHandSide,
-	TArray<double>& OutField, FUniformCache& Cache, const FPoissonSolveSettings& Settings, FMultigridPoisson::EMode Mode)
+void FMultigridPoisson::ExportHierarchy(FVrgMgHierarchy& Out) const
+{
+	Out.Levels.Reset();
+	Out.PreSweeps = PreSweeps; Out.PostSweeps = PostSweeps; Out.CoarsestSweeps = CoarsestSweeps;
+	for (int32 Li = 0; Li < Levels.Num(); ++Li)
+	{
+		const FLevel& L = Levels[Li];
+		FVrgMgLevelData& D = Out.Levels.AddDefaulted_GetRef();
+		D.NumCells = L.Volume.Num();
+		D.RowStart = L.RowStart; D.Col = L.Col; D.Trans = L.Trans; D.Diag = L.Diag;
+		if (Li + 1 < Levels.Num()) D.Parent = L.Parent;
+		if (Li > 0)
+		{
+			// Children of each cell on the finer level, ascending (a CSR of Parent inverted).
+			const TArray<int32>& Parent = Levels[Li - 1].Parent;
+			D.ChildStart.Init(0, D.NumCells + 1);
+			for (const int32 P : Parent) ++D.ChildStart[P + 1];
+			for (int32 I = 0; I < D.NumCells; ++I) D.ChildStart[I + 1] += D.ChildStart[I];
+			TArray<int32> Fill(D.ChildStart);
+			D.Child.SetNumUninitialized(Parent.Num());
+			for (int32 C = 0; C < Parent.Num(); ++C) D.Child[Fill[Parent[C]]++] = C;
+		}
+	}
+}
+
+bool MultigridPoissonSolver::UpdateCache(const FUniformAirGrid& Grid, FUniformCache& Cache)
 {
 	const int32 NumCells = Grid.GetNumCells();
-	if (NumCells == 0 || RightHandSide.Num() != NumCells) return FPoissonSolveResult();
-	if (OutField.Num() != NumCells) OutField.Init(0.0, NumCells);
 	const FIntVector Dims(Grid.GetNumCellsX(), Grid.GetNumCellsY(), Grid.GetNumCellsZ());
 	const double H = Grid.GetCellSizeM();
 
@@ -328,7 +351,27 @@ FPoissonSolveResult MultigridPoissonSolver::Solve(const FUniformAirGrid& Grid, c
 			In.RowStart.Add(In.Col.Num());
 		}
 		Cache.Solver.Build(MoveTemp(In));
+		return true;
 	}
+	return false;
+}
+
+void MultigridPoissonSolver::ExportHierarchy(const FUniformAirGrid& Grid, const FUniformCache& Cache, FVrgMgHierarchy& Out)
+{
+	Cache.Solver.ExportHierarchy(Out);
+	const double H = Grid.GetCellSizeM();
+	Out.Volume0.Init(H * H * H, Cache.GridOf.Num());
+	Out.GridOf = Cache.GridOf;
+	Out.NumGridCells = Grid.GetNumCells();
+}
+
+FPoissonSolveResult MultigridPoissonSolver::Solve(const FUniformAirGrid& Grid, const TArray<double>& RightHandSide,
+	TArray<double>& OutField, FUniformCache& Cache, const FPoissonSolveSettings& Settings, FMultigridPoisson::EMode Mode)
+{
+	const int32 NumCells = Grid.GetNumCells();
+	if (NumCells == 0 || RightHandSide.Num() != NumCells) return FPoissonSolveResult();
+	if (OutField.Num() != NumCells) OutField.Init(0.0, NumCells);
+	UpdateCache(Grid, Cache);
 	const int32 N = Cache.GridOf.Num();
 	Cache.B.SetNumUninitialized(N); Cache.X.SetNumUninitialized(N);
 	for (int32 C = 0; C < N; ++C) { Cache.B[C] = RightHandSide[Cache.GridOf[C]]; Cache.X[C] = OutField[Cache.GridOf[C]]; }

@@ -4,6 +4,7 @@
 #include "Simulation/Air/JacobiPoissonSolver.h"
 
 class FUniformAirGrid;
+struct FVrgMgHierarchy;
 
 // Geometric (aggregation) multigrid for the pressure Poisson equation.
 //
@@ -60,6 +61,10 @@ public:
 	// (L X)_i in compact indexing. For verification.
 	void ApplyLaplacian(const TArray<double>& X, TArray<double>& Out) const;
 
+	// 4d (2026-09-27): the built hierarchy for the GPU twin (VrgAirGpu), with child lists for a gather restriction and
+	// the sweep counts this solver uses. Volume0 / GridOf / NumGridCells are left to the caller.
+	void ExportHierarchy(FVrgMgHierarchy& Out) const;
+
 private:
 	struct FLevel
 	{
@@ -96,6 +101,12 @@ namespace MultigridPoissonSolver
 		double CellSizeM = 0.0;
 		uint32 SolidHash = 0;
 	};
+
+	// Rebuilds the cache when the grid dimensions or the solid mask changed; returns true when it did.
+	VRG_TERMPROJ_API bool UpdateCache(const FUniformAirGrid& Grid, FUniformCache& Cache);
+
+	// 4d: the cache's hierarchy for FVrgAirGpuPressure (uniform grid: every fluid cell has volume h^3).
+	VRG_TERMPROJ_API void ExportHierarchy(const FUniformAirGrid& Grid, const FUniformCache& Cache, FVrgMgHierarchy& Out);
 
 	VRG_TERMPROJ_API FPoissonSolveResult Solve(const FUniformAirGrid& Grid, const TArray<double>& RightHandSide,
 		TArray<double>& OutField, FUniformCache& Cache, const FPoissonSolveSettings& Settings,
