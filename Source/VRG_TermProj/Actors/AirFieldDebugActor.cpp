@@ -215,6 +215,30 @@ static FAutoConsoleCommand GVrgAirResizeCommand(
 		}
 	}));
 
+// Grid convergence check (2026-09-27): sets the cell size [m]; takes effect at the next fit / reset, i.e. on entering
+// simulation mode (FitToRacks keeps the cell size and recomputes the counts over the same room bounds).
+// The optional quantum rounds the fitted span up to a multiple of it, so grids of h and h/2 cover the same room
+// (plain ceil(span / h) gives a different ceiling height at each h).
+static double GVrgFitSpanQuantumM = 0.0;
+static FAutoConsoleCommand GVrgAirCellSizeCommand(
+	TEXT("vrg.Air.CellSize"),
+	TEXT("셀 폭 [m]을 정한다. 다음 시뮬레이션 진입(격자 맞춤) 때 적용된다. vrg.Air.CellSize <m> [도메인 올림 단위 m]"),
+	FConsoleCommandWithArgsDelegate::CreateLambda([](const TArray<FString>& Args)
+	{
+		const double H = Args.Num() > 0 ? FCString::Atod(*Args[0]) : 0.0;
+		if (!FMath::IsFinite(H) || H < 0.01)
+		{
+			UE_LOG(LogTemp, Warning, TEXT("[VrgAir] 셀 폭은 0.01 m 이상이어야 한다."));
+			return;
+		}
+		GVrgFitSpanQuantumM = Args.Num() > 1 ? FMath::Max(FCString::Atod(*Args[1]), 0.0) : 0.0;
+		for (AAirFieldDebugActor* Actor : FindAirActors())
+		{
+			Actor->GridParams.CellSizeM = H;
+			UE_LOG(LogTemp, Display, TEXT("[VrgAir] 셀 폭 %.4f m, 도메인 올림 단위 %.4f m (다음 시뮬레이션 진입 때 적용)"), H, GVrgFitSpanQuantumM);
+		}
+	}));
+
 // CPU FP64 해와 GPU FP32 해를 같은 입력에서 따로 구해 비교한다.
 // 비트 동일성은 검증이 아니므로 허용 오차로 본다 (검증 규칙).
 static FAutoConsoleCommand GVrgPressureValidateCommand(
@@ -459,10 +483,22 @@ void AAirFieldDebugActor::FitToRacks()
 	// 도메인 원점은 격자 (0,0,0) 셀의 바깥 모서리다. 액터를 거기에 둔다.
 	SetActorLocation(SimUnits::MetersToUnreal(BoundsM.Min));
 
-	const FVector SpanM = BoundsM.GetSize();
-	GridParams.NumCellsX = FMath::Clamp(FMath::CeilToInt32(SpanM.X / CellSizeM), 1, 128);
-	GridParams.NumCellsY = FMath::Clamp(FMath::CeilToInt32(SpanM.Y / CellSizeM), 1, 128);
-	GridParams.NumCellsZ = FMath::Clamp(FMath::CeilToInt32(SpanM.Z / CellSizeM), 1, 128);
+	FVector SpanM = BoundsM.GetSize();
+	if (GVrgFitSpanQuantumM > 0.0)
+	{
+		// Same room at every resolution (vrg.Air.CellSize); the tolerance keeps 13.5 / (0.25 / 3) from rounding up to 163.
+		const double Q = GVrgFitSpanQuantumM;
+		SpanM = FVector(FMath::CeilToDouble(SpanM.X / Q - 1e-9), FMath::CeilToDouble(SpanM.Y / Q - 1e-9), FMath::CeilToDouble(SpanM.Z / Q - 1e-9)) * Q;
+		GridParams.NumCellsX = FMath::Clamp(FMath::CeilToInt32(SpanM.X / CellSizeM - 1e-9), 1, 128);
+		GridParams.NumCellsY = FMath::Clamp(FMath::CeilToInt32(SpanM.Y / CellSizeM - 1e-9), 1, 128);
+		GridParams.NumCellsZ = FMath::Clamp(FMath::CeilToInt32(SpanM.Z / CellSizeM - 1e-9), 1, 128);
+	}
+	else
+	{
+		GridParams.NumCellsX = FMath::Clamp(FMath::CeilToInt32(SpanM.X / CellSizeM), 1, 128);
+		GridParams.NumCellsY = FMath::Clamp(FMath::CeilToInt32(SpanM.Y / CellSizeM), 1, 128);
+		GridParams.NumCellsZ = FMath::Clamp(FMath::CeilToInt32(SpanM.Z / CellSizeM), 1, 128);
+	}
 
 	UE_LOG(LogTemp, Log,
 		TEXT("AirFieldDebugActor: 랙 %d대에 맞췄습니다. %.2f x %.2f x %.2f m -> 격자 %dx%dx%d (셀 %d개)."),
