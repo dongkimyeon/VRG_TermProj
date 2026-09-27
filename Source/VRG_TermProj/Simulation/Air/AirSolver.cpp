@@ -20,6 +20,7 @@ void FAirSolver::Initialize(const FAirGridParams& InGridParams, double InitialTe
 	LastCoolingRemovedW = 0.0;
 	LastCourantNumber = 0.0;
 	bWallDistanceDirty = true;
+	bGpuStateDirty = bGpuTopologyDirty = true;
 	TurbulentViscosityM2s.Reset();
 	LastMaxTurbulentViscosityM2s = LastMeanTurbulentViscosityM2s = 0.0;
 	LastMomentumDiffusionSubsteps = 0;
@@ -131,6 +132,7 @@ void FAirSolver::OnSolidCellsChanged()
 {
 	if (bUseOctree) bOctreeNeedsImport = true;
 	bWallDistanceDirty = true;
+	bGpuStateDirty = bGpuTopologyDirty = true;
 	// 고체 셀 안에 남아 있던 속도와 압력을 지운다.
 	ApplyWallBoundary();
 
@@ -647,6 +649,24 @@ void FAirSolver::Step(const FAirSolverInput& Input, double DeltaTimeS)
 		}
 	}
 
+	bLastStepRanOnGpu = false;
+	if (bUseGpuStep && IsInGameThread() && VrgAirGpu::IsAvailable())
+	{
+		if (StepOnGpu(Input, DeltaTimeS))
+		{
+			bLastStepRanOnGpu = true;
+			ActiveDucts = nullptr;
+			return;
+		}
+		// Not silent (D5 spirit). The CPU mirror still holds the state before this step, so the CPU step below is exact.
+		bGpuStateDirty = true;
+		if (!bGpuStepFallbackLogged)
+		{
+			UE_LOG(LogTemp, Warning, TEXT("[Air] GPU 스텝을 쓰지 못해 CPU로 적분한다."));
+			bGpuStepFallbackLogged = true;
+		}
+	}
+
 	// CFL을 먼저 재 둔다. 1을 넘으면 반라그랑주가 한 스텝에 한 셀을 건너뛴다.
 	// 반라그랑주는 무조건 안정이라 터지지는 않지만 결과가 뭉개진다.
 	LastCourantNumber = Grid.MaxAbsVelocityMs() * DeltaTimeS / Grid.GetCellSizeM();
@@ -693,6 +713,194 @@ void FAirSolver::Step(const FAirSolverInput& Input, double DeltaTimeS)
 	DuctFanHeatTotalJ += DuctFanHeatStepJ;
 	ActiveDucts = nullptr;
 }
+
+bool FAirSolver::StepOnGpu(const FAirSolverInput& Input, double DeltaTimeS)
+{
+	const int32 NumCells = Grid.GetNumCells();
+	const double H = Grid.GetCellSizeM();
+	const FAirGridParams& Params = Grid.GetParams();
+
+	// Topology: the pressure hierarchy (CPU-built, as the CPU path), solids, wall distance. Rebuilt only when changed.
+	const bool bRebuilt = MultigridPoissonSolver::UpdateCache(Grid, MultigridCache);
+	if (Turbulence.bEnabled && (bWallDistanceDirty || WallDistanceM.Num() != NumCells))
+	{
+		AirWallDistance::Compute(Grid, WallDistanceM);
+		bWallDistanceDirty = false;
+		bGpuTopologyDirty = true;
+	}
+	if (!GpuStep.IsValid()) GpuStep = MakeUnique<FVrgAirGpuSolver>();
+	if (bRebuilt || bGpuTopologyDirty || !GpuStep->IsConfigured() || (Turbulence.bEnabled && !bGpuHasWallDistance))
+	{
+		FVrgAirGpuGrid GpuGrid;
+		GpuGrid.Dims = FIntVector(Grid.GetNumCellsX(), Grid.GetNumCellsY(), Grid.GetNumCellsZ());
+		GpuGrid.CellSizeM = H; GpuGrid.DensityKgM3 = Params.DensityKgM3; GpuGrid.SpecificHeatJKgK = Params.SpecificHeatJKgK;
+		GpuGrid.ReferenceTempK = Params.ReferenceTempK;
+		GpuGrid.Solid.SetNumUninitialized(NumCells);
+		for (int32 I = 0; I < NumCells; ++I) GpuGrid.Solid[I] = Grid.bSolidCell.IsValidIndex(I) && Grid.bSolidCell[I] ? 1 : 0;
+		bGpuHasWallDistance = Turbulence.bEnabled && WallDistanceM.Num() == NumCells;
+		if (bGpuHasWallDistance) GpuGrid.WallDistanceM = WallDistanceM;
+		GpuGrid.NumFluidCells = Grid.GetNumFluidCells();
+		FVrgMgHierarchy Hierarchy;
+		MultigridPoissonSolver::ExportHierarchy(Grid, MultigridCache, Hierarchy);
+		if (!GpuStep->Configure(GpuGrid, Hierarchy)) return false;
+		bGpuTopologyDirty = false;
+		bGpuStateDirty = true;
+	}
+	if (bGpuStateDirty)
+	{
+		if (Grid.PressurePa.Num() != NumCells) Grid.PressurePa.Init(0.0, NumCells);
+		if (!GpuStep->UploadState(Grid.TemperatureK, Grid.VelocityXMs, Grid.VelocityYMs, Grid.VelocityZMs, Grid.PressurePa)) return false;
+		bGpuStateDirty = false;
+	}
+
+	// Ducts in GPU form (validated above; ActiveDucts is null when rejected or absent). Per-duct constants are the CPU's.
+	FVrgAirGpuDucts Ducts;
+	const double FaceAreaM2 = H * H;
+	if (ActiveDucts != nullptr)
+	{
+		const FAirSolverInput& D = *ActiveDucts;
+		const int32 NF = D.DuctFaceIndex.Num();
+		Ducts.NumDucts = D.NumDucts;
+		Ducts.Packed.SetNumUninitialized(NF); Ducts.Face = D.DuctFaceIndex; Ducts.FluidCell = D.DuctFaceFluidCell; Ducts.Duct = D.DuctFaceDuct;
+		Ducts.Velocity = D.DuctFaceVelocityMs;
+		TArray<double> SpeedSum; SpeedSum.Init(0.0, D.NumDucts);
+		Ducts.IntakeStart.Init(0, D.NumDucts + 1);
+		for (int32 F = 0; F < NF; ++F)
+		{
+			Ducts.Packed[F] = int32(D.DuctFaceAxis[F]) | (D.DuctFaceIsExhaust[F] ? 4 : 0);
+			if (D.DuctFaceIsExhaust[F]) SpeedSum[D.DuctFaceDuct[F]] += FMath::Abs(D.DuctFaceVelocityMs[F]);
+			else ++Ducts.IntakeStart[D.DuctFaceDuct[F] + 1];
+		}
+		for (int32 K = 0; K < D.NumDucts; ++K) Ducts.IntakeStart[K + 1] += Ducts.IntakeStart[K];
+		TArray<int32> Fill(Ducts.IntakeStart);
+		Ducts.IntakeFaces.SetNumUninitialized(Ducts.IntakeStart.Last());
+		for (int32 F = 0; F < NF; ++F) if (!D.DuctFaceIsExhaust[F]) Ducts.IntakeFaces[Fill[D.DuctFaceDuct[F]]++] = F;
+		const bool bCoils = D.DuctCoilUAWK.Num() == D.NumDucts, bFans = D.DuctFanHeatW.Num() == D.NumDucts;
+		Ducts.Params.Init(0.0, 6 * D.NumDucts);
+		for (int32 K = 0; K < D.NumDucts; ++K)
+		{
+			const double Capacity = Params.DensityKgM3 * SpeedSum[K] * FaceAreaM2 * Params.SpecificHeatJKgK;
+			double* P = &Ducts.Params[6 * K];
+			P[0] = SpeedSum[K];
+			P[4] = Capacity;
+			if (bCoils && SpeedSum[K] > 0.0 && D.DuctCoilUAWK[K] > 0.0)
+			{
+				P[1] = 1.0 - FMath::Exp(-D.DuctCoilUAWK[K] / Capacity);
+				P[2] = D.DuctCoilWaterTempK[K];
+				P[5] = 1.0;
+			}
+			if (bFans && SpeedSum[K] > 0.0 && D.DuctFanHeatW[K] > 0.0) P[3] = D.DuctFanHeatW[K] / Capacity;
+		}
+	}
+
+	uint64 Mark = FPlatformTime::Cycles64();
+	auto Lap = [&](int32 Stage) { const uint64 Now = FPlatformTime::Cycles64(); StageMs[Stage] += FPlatformTime::ToMilliseconds64(Now - Mark); Mark = Now; };
+
+	// Stage A: maxima of the state at the start of the step (and nu_t).
+	double MaxU = 0.0, MaxNu = 0.0, SumNu = 0.0;
+	if (!GpuStep->PreStep(Turbulence.bEnabled, Turbulence.ChenXuCoefficient, MaxU, MaxNu, SumNu)) return false;
+	LastCourantNumber = MaxU * DeltaTimeS / H;
+	int32 MomentumSubsteps = 1;
+	if (Turbulence.bEnabled)
+	{
+		LastMaxTurbulentViscosityM2s = MaxNu;
+		const int32 NumFluid = Grid.GetNumFluidCells();
+		LastMeanTurbulentViscosityM2s = NumFluid > 0 ? SumNu / NumFluid : 0.0;
+		const double NuMax = Turbulence.MolecularViscosityM2s + LastMaxTurbulentViscosityM2s;
+		MomentumSubsteps = LastMomentumDiffusionSubsteps = FMath::Clamp(FMath::CeilToInt32(10.0 * NuMax * DeltaTimeS / (H * H) / 0.9), 1, 64);
+	}
+	Lap(6);
+
+	// Stage B: velocity and projection.
+	FVrgAirGpuVelocityInput Vel;
+	Vel.DtS = DeltaTimeS; Vel.GravityZMs2 = Input.GravityZMs2; Vel.bBuoyancy = Input.bEnableBuoyancy;
+	Vel.bTurbulence = Turbulence.bEnabled; Vel.MolecularViscosityM2s = Turbulence.MolecularViscosityM2s;
+	Vel.MomentumSubsteps = MomentumSubsteps; Vel.Ducts = Ducts.HasFaces() ? &Ducts : nullptr;
+	Vel.Pressure.NormalizedResidualTarget = PressureSettings.NormalizedResidualTarget;
+	Vel.Pressure.MaxIterations = PressureSettings.MaxIterations;
+	Vel.Pressure.Omega = PressureSettings.Relaxation;
+	FVrgGpuPoissonResult Pressure;
+	double MaxUAfter = 0.0;
+	const uint64 PressureStart = FPlatformTime::Cycles64();
+	if (!GpuStep->Velocity(Vel, Pressure, MaxUAfter)) return false;
+	LastPressureSolveMs = FPlatformTime::ToMilliseconds64(FPlatformTime::Cycles64() - PressureStart);
+	LastPressureResult = FPoissonSolveResult();
+	LastPressureResult.bConverged = Pressure.bConverged;
+	LastPressureResult.IterationsUsed = Pressure.IterationsUsed;
+	LastPressureResult.NormalizedResidual = Pressure.NormalizedResidual;
+	LastPressureResult.ReferenceScale = Pressure.ReferenceScale;
+	LastPressureResult.bIncompatibleRightHandSide = Pressure.bIncompatibleRightHandSide;
+	LastPressureResult.MeanRightHandSide = Pressure.MeanRightHandSide;
+	bLastPressureRanOnGpu = true;
+	++NumPressureSolves;
+	if (!LastPressureResult.bConverged && (++NumPressureFailures == 1 || NumPressureFailures % 100 == 0))
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[Air] 압력 수렴 실패 %lld/%lld 스텝 | 반복 %d | 정규화 잔차 %.3e (GPU)"),
+			NumPressureFailures, NumPressureSolves, LastPressureResult.IterationsUsed, LastPressureResult.NormalizedResidual);
+	}
+	Lap(3);
+
+	// Stage C: temperature transport (same sub-step rule as the CPU), heat, cooling; the mirror is refreshed.
+	const double TransportCourant = MaxUAfter * DeltaTimeS / H;
+	const double TransportLoad = Turbulence.bEnabled
+		? 3.0 * TransportCourant + 6.0 * (Turbulence.MolecularDiffusivityM2s + LastMaxTurbulentViscosityM2s / Turbulence.TurbulentPrandtl)
+			* DeltaTimeS / (H * H)
+		: 3.0 * TransportCourant;
+	LastTemperatureSubsteps = FMath::Clamp(FMath::CeilToInt32(TransportLoad / 0.9), 1, 64);
+	FVrgAirGpuTransportInput Tr;
+	Tr.DtS = DeltaTimeS; Tr.TemperatureSubsteps = LastTemperatureSubsteps; Tr.bDiffusion = Turbulence.bEnabled;
+	Tr.MolecularDiffusivityM2s = Turbulence.MolecularDiffusivityM2s; Tr.InverseTurbulentPrandtl = 1.0 / Turbulence.TurbulentPrandtl;
+	Tr.Ducts = Ducts.HasFaces() ? &Ducts : nullptr;
+	double InjectedJ = 0.0;
+	if (Input.CellHeatW.Num() == NumCells && Params.DensityKgM3 * Grid.GetCellVolumeM3() * Params.SpecificHeatJKgK > UE_DOUBLE_SMALL_NUMBER)
+	{
+		for (int32 I = 0; I < NumCells; ++I)
+		{
+			const double HeatW = Input.CellHeatW[I];
+			if (HeatW == 0.0 || (Grid.bSolidCell.IsValidIndex(I) && Grid.bSolidCell[I])) continue;
+			Tr.HeatCell.Add(I); Tr.HeatW.Add(HeatW);
+			InjectedJ += HeatW * DeltaTimeS;  // as InjectHeat on the CPU
+		}
+	}
+	if (Input.CellCoolingUAWK.Num() == NumCells)
+	{
+		for (int32 I = 0; I < NumCells; ++I)
+		{
+			if (Input.CellCoolingUAWK[I] <= 0.0 || (Grid.bSolidCell.IsValidIndex(I) && Grid.bSolidCell[I])) continue;
+			Tr.CoolCell.Add(I); Tr.CoolUAWK.Add(Input.CellCoolingUAWK[I]);
+		}
+	}
+	Tr.CoolingSupplyTempK = Input.CoolingSupplyTempK;
+	FVrgAirGpuTransportOutput TrOut;
+	if (!GpuStep->Transport(Tr, TrOut, Grid.TemperatureK, Grid.VelocityXMs, Grid.VelocityYMs, Grid.VelocityZMs))
+	{
+		// The GPU state advanced but the mirror did not: re-upload the (pre-step) mirror before the CPU runs this step.
+		return false;
+	}
+	Lap(4);
+
+	// Ledger, exactly as the CPU path books it.
+	EnergyInJ += InjectedJ;
+	LastCoolingRemovedW = TrOut.CellCoolingRemovedW;
+	EnergyOutJ += LastCoolingRemovedW * DeltaTimeS;
+	DuctCoilRemovedJ = TrOut.DuctCoilRemovedJ;
+	if (ActiveDucts != nullptr && ActiveDucts->DuctFanHeatW.Num() == ActiveDucts->NumDucts)
+	{
+		const double SubDt = DeltaTimeS / LastTemperatureSubsteps;
+		for (int32 Sub = 0; Sub < LastTemperatureSubsteps; ++Sub)
+			for (int32 K = 0; K < ActiveDucts->NumDucts; ++K)
+				if (Ducts.Params[6 * K] > 0.0 && ActiveDucts->DuctFanHeatW[K] > 0.0) DuctFanHeatStepJ += ActiveDucts->DuctFanHeatW[K] * SubDt;
+	}
+	++StageSteps;
+	LastDuctCoilRemovedW = DuctCoilRemovedJ / DeltaTimeS;
+	LastCoolingRemovedW += LastDuctCoilRemovedW;
+	EnergyOutJ += DuctCoilRemovedJ;
+	LastDuctFanHeatW = DuctFanHeatStepJ / DeltaTimeS;
+	EnergyInJ += DuctFanHeatStepJ;
+	DuctFanHeatTotalJ += DuctFanHeatStepJ;
+	return true;
+}
+
 
 FString FAirSolver::DescribeStageTimes() const
 {

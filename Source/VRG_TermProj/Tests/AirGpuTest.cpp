@@ -5,6 +5,7 @@
 #include "Simulation/Air/JacobiPoissonSolver.h"
 #include "Simulation/Air/MultigridPoissonSolver.h"
 #include "Simulation/Air/UniformAirGrid.h"
+#include "Simulation/Air/AirSolver.h"
 #include <cmath>
 
 #if WITH_DEV_AUTOMATION_TESTS
@@ -187,6 +188,75 @@ bool FAirGpuPressureTimingTest::RunTest(const FString& Parameters)
 	AddInfo(FString::Printf(TEXT("108x82x30 = %d셀(유체 %d, %d층), 0에서 시작, 목표 1e-6 | CPU %d회 %.2f ms | GPU %d회 %.2f ms (제출 %d번) | 측정값, 보장 아님"),
 		Grid.GetNumCells(), H.Levels[0].NumCells, H.Levels.Num(), RCpu.IterationsUsed, CpuMs, RGpu.IterationsUsed, GpuMs, RGpu.Submissions));
 	TestTrue(TEXT("Both converge"), RCpu.bConverged && RGpu.bConverged);
+	return true;
+}
+
+// 4b/4c (2026-09-27): the whole step on the GPU against the CPU step, same input. Solids, a fan duct through a body with a
+// coil and fan heat, heat sources, cell coils, buoyancy; turbulence off and on. Rounding-level differences grow through a
+// buoyant flow, so the comparison is a tolerance measured here; the GPU run's own ledger must close like the CPU's.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FAirGpuStepTest, "VRG.Gpu.Air.StepMatchesCpu", AirGpuTestFlags)
+bool FAirGpuStepTest::RunTest(const FString& Parameters)
+{
+	if (SkipWithoutGpu(*this)) return true;
+	constexpr int32 NX = 40, NY = 24, NZ = 12, Steps = 150;
+	constexpr double H = .25, Q = .6;
+	struct FRun { TArray<double> T, U, V, W; double Residual = 0; int32 PressureIters = 0; bool bGpu = false; double CoolW = 0, CoilW = 0; };
+	auto Run = [&](bool bGpu, bool bTurbulence)
+	{
+		FRun Out;
+		FAirGridParams GP; GP.NumCellsX = NX; GP.NumCellsY = NY; GP.NumCellsZ = NZ; GP.CellSizeM = H;
+		FAirSolver Air; Air.Initialize(GP, 297.15);
+		Air.GetMutablePressureSettings().NormalizedResidualTarget = 1e-8;
+		Air.GetMutableTurbulenceSettings().bEnabled = bTurbulence;
+		Air.SetUseGpuStep(bGpu);
+		FUniformAirGrid& G = Air.GetMutableGrid();
+		for (int32 Z = 0; Z <= 8; ++Z) for (int32 Y = 4; Y <= 7; ++Y) for (int32 X = 10; X <= 11; ++X) G.bSolidCell[G.CellIndex(X, Y, Z)] = true;
+		for (int32 Z = 0; Z <= 8; ++Z) for (int32 Y = 12; Y <= 20; ++Y) G.bSolidCell[G.CellIndex(25, Y, Z)] = true;
+		Air.OnSolidCellsChanged();
+		FAirSolverInput In; In.CellHeatW.Init(0.0, G.GetNumCells()); In.CellCoolingUAWK.Init(0.0, G.GetNumCells());
+		for (int32 Z = 0; Z <= 8; ++Z) for (int32 Y = 12; Y <= 20; ++Y) In.CellHeatW[G.CellIndex(26, Y, Z)] = 60.0;
+		for (int32 Y = 2; Y < 22; ++Y) for (int32 X = 30; X < 38; ++X) In.CellCoolingUAWK[G.CellIndex(X, Y, NZ - 1)] = 25.0;
+		In.CoolingSupplyTempK = 291.15;
+		In.NumDucts = 1; In.DuctCoilUAWK = {800.0}; In.DuctCoilWaterTempK = {291.15}; In.DuctFanHeatW = {300.0};
+		for (int32 Z = 0; Z <= 8; ++Z) for (int32 Y = 4; Y <= 7; ++Y)
+		{
+			const double V = Q / (36 * H * H);
+			In.DuctFaceAxis.Add(0); In.DuctFaceIndex.Add(G.FaceXIndex(10, Y, Z)); In.DuctFaceFluidCell.Add(G.CellIndex(9, Y, Z));
+			In.DuctFaceDuct.Add(0); In.DuctFaceIsExhaust.Add(0); In.DuctFaceVelocityMs.Add(V);
+			In.DuctFaceAxis.Add(0); In.DuctFaceIndex.Add(G.FaceXIndex(12, Y, Z)); In.DuctFaceFluidCell.Add(G.CellIndex(12, Y, Z));
+			In.DuctFaceDuct.Add(0); In.DuctFaceIsExhaust.Add(1); In.DuctFaceVelocityMs.Add(V);
+		}
+		for (int32 S = 0; S < Steps; ++S)
+		{
+			Air.Step(In, .02);
+			Out.PressureIters += Air.GetLastPressureResult().IterationsUsed;
+		}
+		Out.bGpu = Air.DidLastStepRunOnGpu();
+		Out.T = Air.GetGrid().TemperatureK; Out.U = Air.GetGrid().VelocityXMs; Out.V = Air.GetGrid().VelocityYMs; Out.W = Air.GetGrid().VelocityZMs;
+		Out.Residual = Air.GetNormalizedEnergyResidual();
+		Out.CoilW = Air.GetLastDuctCoilRemovedW();
+		return Out;
+	};
+	auto MaxDiff = [](const TArray<double>& A, const TArray<double>& B)
+	{
+		double M = 0.0;
+		for (int32 I = 0; I < A.Num(); ++I) M = FMath::Max(M, FMath::Abs(A[I] - B[I]));
+		return M;
+	};
+	for (const bool bTurbulence : { false, true })
+	{
+		const FRun Cpu = Run(false, bTurbulence), Gpu = Run(true, bTurbulence);
+		const double DT = MaxDiff(Cpu.T, Gpu.T);
+		const double DV = FMath::Max3(MaxDiff(Cpu.U, Gpu.U), MaxDiff(Cpu.V, Gpu.V), MaxDiff(Cpu.W, Gpu.W));
+		double TMin = 1e9, TMax = 0; for (const double T : Cpu.T) { TMin = FMath::Min(TMin, T); TMax = FMath::Max(TMax, T); }
+		double VMax = 0; for (const double V : Cpu.W) VMax = FMath::Max(VMax, FMath::Abs(V));
+		AddInfo(FString::Printf(TEXT("난류 %d, %d스텝 | GPU로 돌았나 %d | 온도 최대 차 %.3e K (온도 폭 %.2f K) | 속도 최대 차 %.3e m/s (최대 %.3f) | 압력 반복 합 CPU %d / GPU %d | 열수지 CPU %.3e / GPU %.3e | 덕트 코일 CPU %.4f / GPU %.4f W"),
+			bTurbulence, Steps, Gpu.bGpu, DT, TMax - TMin, DV, VMax, Cpu.PressureIters, Gpu.PressureIters, Cpu.Residual, Gpu.Residual, Cpu.CoilW, Gpu.CoilW));
+		TestTrue(TEXT("Ran on the GPU"), Gpu.bGpu);
+		TestTrue(TEXT("GPU ledger closes"), FMath::Abs(Gpu.Residual) < 1e-12);
+		TestTrue(TEXT("Temperature agrees"), DT < 1e-6);
+		TestTrue(TEXT("Velocity agrees"), DV < 1e-6);
+	}
 	return true;
 }
 

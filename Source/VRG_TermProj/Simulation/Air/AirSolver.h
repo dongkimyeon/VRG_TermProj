@@ -277,7 +277,8 @@ public:
 	int32 GetLastMomentumDiffusionSubsteps() const { return LastMomentumDiffusionSubsteps; }
 
 	const FUniformAirGrid& GetGrid() const { return Grid; }
-	FUniformAirGrid& GetMutableGrid() { return Grid; }
+	// Any caller may edit the fields through this; the GPU copy is re-uploaded before the next GPU step.
+	FUniformAirGrid& GetMutableGrid() { bGpuStateDirty = true; return Grid; }
 
 	FPoissonSolveSettings& GetMutablePressureSettings() { return PressureSettings; }
 	const FPoissonSolveResult& GetLastPressureResult() const { return LastPressureResult; }
@@ -301,6 +302,12 @@ public:
 	// 4d (2026-09-27): the multigrid-CG pressure solve on the GPU in FP64 (FVrgAirGpuPressure), same algorithm and hierarchy
 	// as the CPU one; falls back to the CPU when there is no GPU or the GPU solve did not run. Game thread only when on.
 	void SetUseGpuMultigrid(bool bInUse) { bUseGpuMultigrid = bInUse; }
+	// 4b/4c (2026-09-27): the whole uniform-grid step resident on the GPU in FP64 (FVrgAirGpuSolver). The CPU grid stays a
+	// mirror (temperature and face velocities are downloaded every step), so coupling, rendering and the ledger are unchanged.
+	// Falls back to the CPU step when there is no GPU or a stage fails. Game thread only when on.
+	void SetUseGpuStep(bool bInUse) { bUseGpuStep = bInUse; }
+	bool IsUsingGpuStep() const { return bUseGpuStep; }
+	bool DidLastStepRunOnGpu() const { return bLastStepRanOnGpu; }
 	bool IsUsingGpuMultigrid() const { return bUseGpuMultigrid; }
 	bool IsUsingMultigridPressure() const { return bUseMultigridPressure; }
 	// Pressure solves since Initialize and how many of them missed the target (D5).
@@ -376,6 +383,10 @@ private:
 	bool bUseGpuMultigrid = false;
 	TUniquePtr<FVrgAirGpuPressure> GpuMultigrid;
 	bool bGpuMultigridFallbackLogged = false;
+	bool bUseGpuStep = false, bLastStepRanOnGpu = false, bGpuStepFallbackLogged = false;
+	bool bGpuStateDirty = true, bGpuTopologyDirty = true, bGpuHasWallDistance = false;
+	TUniquePtr<FVrgAirGpuSolver> GpuStep;
+	bool StepOnGpu(const FAirSolverInput& Input, double DeltaTimeS);
 	int64 NumPressureSolves = 0, NumPressureFailures = 0;
 	MultigridPoissonSolver::FUniformCache MultigridCache;
 	bool bLastPressureRanOnGpu = false;

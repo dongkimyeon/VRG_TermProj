@@ -122,6 +122,12 @@ namespace
 		TEXT("vrg.Pressure.GpuMultigrid"), GVrgGpuMultigrid,
 		TEXT("압력 MG-PCG를 GPU(FP64)에서 푼다. 0=CPU, 1=GPU(없으면 CPU로 대체)"));
 
+	// 4b/4c (2026-09-27): the whole uniform-grid air step on the GPU in FP64 (the CPU grid stays a mirror). 0 = CPU.
+	static int32 GVrgAirGpuStep = 0;
+	static FAutoConsoleVariableRef CVarAirGpuStep(
+		TEXT("vrg.Air.Gpu"), GVrgAirGpuStep,
+		TEXT("공기 한 스텝 전체를 GPU(FP64, 상주 필드)에서 돈다. 0=CPU, 1=GPU(없으면 CPU로 대체)"));
+
 	// 2026-09-27: Chen-Xu zero-equation turbulence (FAirTurbulenceSettings). The solver's own default stays off, so the
 	// automation tests that drive FAirSolver directly keep their inviscid reference.
 	static int32 GVrgAirTurbulence = 1;
@@ -589,6 +595,7 @@ void AAirFieldDebugActor::Tick(float DeltaTime)
 	Solver.SetUseGpuPressure(GVrgUseGpuPressure != 0);
 	Solver.SetUseMultigridPressure(GVrgMultigridPressure != 0);
 	Solver.SetUseGpuMultigrid(GVrgGpuMultigrid != 0);
+	Solver.SetUseGpuStep(GVrgAirGpuStep != 0);
 	Solver.GetMutableTurbulenceSettings().bEnabled = GVrgAirTurbulence != 0;
 
 	// 예약된 예열을 먼저 나눠 소화한다. 다 끝나면 평소 적분으로 돌아간다.

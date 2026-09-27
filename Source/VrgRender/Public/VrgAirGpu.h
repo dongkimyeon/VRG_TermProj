@@ -86,6 +86,92 @@ public:
 
 	// Opaque GPU state (pooled buffers); declared public only so the graph helpers in the .cpp can name it.
 	struct FImpl;
+	FImpl& GetImpl() { return *Impl; }
+
+private:
+	TUniquePtr<FImpl> Impl;
+};
+
+// ---- 4b/4c: the whole uniform-grid air step resident on the GPU (FAirSolver drives it stage by stage) ----
+
+struct FVrgAirGpuGrid
+{
+	FIntVector Dims = FIntVector::ZeroValue;
+	double CellSizeM = 0.25, DensityKgM3 = 1.184, SpecificHeatJKgK = 1005.0, ReferenceTempK = 297.15;
+	TArray<int32> Solid;           // per cell, 1 = solid
+	TArray<double> WallDistanceM;  // per cell; empty = zeros (turbulence off)
+	int32 NumFluidCells = 0;
+};
+
+// Fan ducts in GPU form (FAirSolverInput's duct faces plus what the CPU derives per step).
+struct FVrgAirGpuDucts
+{
+	int32 NumDucts = 0;
+	TArray<int32> Packed;          // per face: axis | (exhaust << 2)
+	TArray<int32> Face, FluidCell, Duct;
+	TArray<double> Velocity;       // per face [m/s]
+	TArray<int32> IntakeStart;     // NumDucts + 1: intake faces of each duct, in input order
+	TArray<int32> IntakeFaces;
+	TArray<double> Params;         // 6 per duct: exhaust speed sum, eps, water T, fan dT, capacity W/K, coil flag
+	bool HasFaces() const { return Face.Num() > 0; }
+};
+
+struct FVrgAirGpuVelocityInput
+{
+	double DtS = 0.02;
+	double GravityZMs2 = -9.81;
+	bool bBuoyancy = true;
+	bool bTurbulence = false;
+	double MolecularViscosityM2s = 0.0;
+	int32 MomentumSubsteps = 1;
+	const FVrgAirGpuDucts* Ducts = nullptr;
+	FVrgGpuPoissonSettings Pressure;
+};
+
+struct FVrgAirGpuTransportInput
+{
+	double DtS = 0.02;
+	int32 TemperatureSubsteps = 1;
+	bool bDiffusion = false;
+	double MolecularDiffusivityM2s = 0.0, InverseTurbulentPrandtl = 1.0;
+	const FVrgAirGpuDucts* Ducts = nullptr;
+	TArray<int32> HeatCell;  TArray<double> HeatW;   // non-zero fluid cells only
+	TArray<int32> CoolCell;  TArray<double> CoolUAWK; // UA > 0 fluid cells only
+	double CoolingSupplyTempK = 291.15;
+};
+
+struct FVrgAirGpuTransportOutput
+{
+	double CellCoolingRemovedW = 0.0;   // sum of the applied cell-coil rates
+	double DuctCoilRemovedJ = 0.0;      // over the step's sub-steps
+};
+
+class VRGRENDER_API FVrgAirGpuSolver
+{
+public:
+	FVrgAirGpuSolver();
+	~FVrgAirGpuSolver();
+
+	// Grid, solids, wall distance and the pressure hierarchy. Topology changes only.
+	bool Configure(const FVrgAirGpuGrid& Grid, const FVrgMgHierarchy& Hierarchy);
+	bool IsConfigured() const;
+	void Reset();
+
+	// Replaces the resident fields (after a reset or any CPU-side edit).
+	bool UploadState(const TArray<double>& TemperatureK, const TArray<double>& VelocityX, const TArray<double>& VelocityY,
+		const TArray<double>& VelocityZ, const TArray<double>& PressurePa);
+
+	// Stage A (sync): nu_t from the current velocity when bTurbulence, and the maxima the host needs before the step.
+	bool PreStep(bool bTurbulence, double ChenXuCoefficient, double& OutMaxAbsVelocityMs, double& OutMaxNuTM2s, double& OutSumNuTM2s);
+
+	// Stage B (sync): advection, buoyancy, [diffusion], walls/ducts, projection. Pressure result and max |u| after it.
+	bool Velocity(const FVrgAirGpuVelocityInput& Input, FVrgGpuPoissonResult& OutPressure, double& OutMaxAbsVelocityMs);
+
+	// Stage C (sync): temperature sub-steps, heat, cooling; downloads temperature and face velocities.
+	bool Transport(const FVrgAirGpuTransportInput& Input, FVrgAirGpuTransportOutput& Out, TArray<double>& OutTemperatureK,
+		TArray<double>& OutVelocityX, TArray<double>& OutVelocityY, TArray<double>& OutVelocityZ);
+
+	struct FImpl;
 
 private:
 	TUniquePtr<FImpl> Impl;

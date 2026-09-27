@@ -308,3 +308,12 @@ void FinishCS(uint3 Id : SV_DispatchThreadID)
 	if (Status == 3.0) OutA[I] = 0.0;
 	else if (Status == 0.0 || Status == 4.0) OutA[I] -= Scalars[Slot] / double(Count);
 }
+
+// ---- Resident use (4b/4c): write the compact solution back into the grid-sized field. InA = X, IdxA = GridOf, OutA = field.
+[numthreads(64, 1, 1)]
+void ScatterCS(uint3 Id : SV_DispatchThreadID)
+{
+	const uint I = Id.x;
+	if (I >= Count) return;
+	OutA[IdxA[I]] = InA[I];
+}

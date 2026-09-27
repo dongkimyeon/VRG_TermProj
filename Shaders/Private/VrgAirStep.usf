@@ -1,0 +1,374 @@
+// Fill out your copyright notice in the Description page of Project Settings.
+//
+// 4b/4c (2026-09-27): the uniform-grid air step on the GPU, FP64, resident fields.
+// Each kernel follows the named FAirSolver function on the CPU (same formulas, same order of operations where it matters).
+// Differences from the CPU are rounding level only (fused multiply-adds, reduction order).
+//
+// Linear indices as FUniformAirGrid: Cell = X + NX (Y + NY Z), FaceX = X + (NX+1)(Y + NY Z), FaceY = X + NX (Y + (NY+1) Z),
+// FaceZ = X + NX (Y + NY Z). Solid mask: IdxA (1 = solid). Slot meanings are written at each kernel.
+
+#include "/Engine/Public/Platform.ush"
+
+#define C_DT_STEP 0
+#define C_DT_MOM 1
+#define C_DT_TEMP 2
+#define C_H 3
+#define C_RHO 4
+#define C_CP 5
+#define C_GRAVITY_Z 6
+#define C_REF_T 7
+#define C_NU_MOL 8
+#define C_ALPHA_MOL 9
+#define C_INV_PRT 10
+#define C_CHENXU 11
+#define C_COOL_SUPPLY_T 12
+#define C_CELL_HEAT_CAP 13
+#define C_NUM_FLUID 14
+
+StructuredBuffer<double> Consts;
+StructuredBuffer<double> InA;
+StructuredBuffer<double> InB;
+StructuredBuffer<double> InC;
+StructuredBuffer<double> InD;
+StructuredBuffer<int> IdxA;
+StructuredBuffer<int> IdxB;
+StructuredBuffer<int> IdxC;
+StructuredBuffer<int> IdxD;
+StructuredBuffer<int> IdxE;
+RWStructuredBuffer<double> OutA;
+RWStructuredBuffer<double> OutB;
+RWStructuredBuffer<double> OutC;
+uint Count;
+uint Axis;
+uint NX;
+uint NY;
+uint NZ;
+uint Mode;
+uint DtSlot;
+
+uint CellIndex(int X, int Y, int Z) { return uint(X) + NX * (uint(Y) + NY * uint(Z)); }
+uint FaceIndex(uint A, int X, int Y, int Z)
+{
+	if (A == 0) return uint(X) + (NX + 1) * (uint(Y) + NY * uint(Z));
+	if (A == 1) return uint(X) + NX * (uint(Y) + (NY + 1) * uint(Z));
+	return uint(X) + NX * (uint(Y) + NY * uint(Z));
+}
+int3 CellCount() { return int3(NX, NY, NZ); }
+int3 FaceCount(uint A) { int3 C = CellCount(); C[A] += 1; return C; }
+int3 Unflatten(uint I, int3 C) { return int3(int(I % uint(C.x)), int((I / uint(C.x)) % uint(C.y)), int(I / uint(C.x * C.y))); }
+bool IsValid(int3 P) { return all(P >= 0) && P.x < int(NX) && P.y < int(NY) && P.z < int(NZ); }
+bool IsSolid(int3 P) { return IdxA[CellIndex(P.x, P.y, P.z)] != 0; }
+bool IsFluid(int3 P) { return IsValid(P) && !IsSolid(P); }
+double Lerp(double A, double B, double T) { return A + T * (B - A); }  // FMath::Lerp
+
+// sqrt is not available for double in HLSL: a float guess refined by two Newton steps in double.
+double SqrtD(double X)
+{
+	if (X <= 0.0) return 0.0;
+	double Y = double(sqrt(float(X)));
+	Y = 0.5 * (Y + X / Y);
+	Y = 0.5 * (Y + X / Y);
+	return Y;
+}
+
+double FaceValue(uint A, int3 P)
+{
+	const uint I = FaceIndex(A, P.x, P.y, P.z);
+	return A == 0 ? InA[I] : (A == 1 ? InB[I] : InC[I]);
+}
+
+// ---- UpdateTurbulentViscosity: nu_t = C |V_centre| l. InA/B/C = Vx/Vy/Vz, InD = wall distance, OutA = nu_t.
+[numthreads(64, 1, 1)]
+void NuTCS(uint3 Id : SV_DispatchThreadID)
+{
+	const uint I = Id.x;
+	if (I >= Count) return;
+	const int3 P = Unflatten(I, CellCount());
+	if (IsSolid(P)) { OutA[I] = 0.0; return; }
+	const double U = 0.5 * (InA[FaceIndex(0, P.x, P.y, P.z)] + InA[FaceIndex(0, P.x + 1, P.y, P.z)]);
+	const double V = 0.5 * (InB[FaceIndex(1, P.x, P.y, P.z)] + InB[FaceIndex(1, P.x, P.y + 1, P.z)]);
+	const double W = 0.5 * (InC[FaceIndex(2, P.x, P.y, P.z)] + InC[FaceIndex(2, P.x, P.y, P.z + 1)]);
+	OutA[I] = Consts[C_CHENXU] * SqrtD(U * U + V * V + W * W) * InD[I];
+}
+
+// ---- AdvectVelocity (semi-Lagrangian, FUniformAirGrid::SampleFaceComponent). InA/B/C = Vx/Vy/Vz, OutA = next of Axis.
+double SampleFace(uint Comp, double3 PosM)
+{
+	const double H = Consts[C_H];
+	const double InvH = 1.0 / H;
+	const int3 C = FaceCount(Comp);
+	double3 G = PosM * InvH;
+	[unroll] for (uint K = 0; K < 3; ++K) { if (K != Comp) G[K] -= 0.5; }
+	int3 P0, P1;
+	double3 T;
+	[unroll] for (uint K = 0; K < 3; ++K)
+	{
+		const double Clamped = clamp(G[K], 0.0, double(C[K] - 1));
+		P0[K] = clamp(int(Clamped), 0, C[K] - 1);  // Clamped >= 0, so truncation is floor
+		P1[K] = min(P0[K] + 1, C[K] - 1);
+		T[K] = Clamped - double(P0[K]);
+	}
+	#define AT(PX, PY, PZ) (Comp == 0 ? InA[uint(PX) + uint(C.x) * (uint(PY) + uint(C.y) * uint(PZ))] : \
+		(Comp == 1 ? InB[uint(PX) + uint(C.x) * (uint(PY) + uint(C.y) * uint(PZ))] : InC[uint(PX) + uint(C.x) * (uint(PY) + uint(C.y) * uint(PZ))]))
+	const double C00 = Lerp(AT(P0.x, P0.y, P0.z), AT(P1.x, P0.y, P0.z), T.x);
+	const double C10 = Lerp(AT(P0.x, P1.y, P0.z), AT(P1.x, P1.y, P0.z), T.x);
+	const double C01 = Lerp(AT(P0.x, P0.y, P1.z), AT(P1.x, P0.y, P1.z), T.x);
+	const double C11 = Lerp(AT(P0.x, P1.y, P1.z), AT(P1.x, P1.y, P1.z), T.x);
+	#undef AT
+	return Lerp(Lerp(C00, C10, T.y), Lerp(C01, C11, T.y), T.z);
+}
+
+[numthreads(64, 1, 1)]
+void AdvectCS(uint3 Id : SV_DispatchThreadID)
+{
+	const uint I = Id.x;
+	if (I >= Count) return;
+	const int3 P = Unflatten(I, FaceCount(Axis));
+	const double H = Consts[C_H];
+	double3 Pos = (double3(P) + 0.5) * H;
+	Pos[Axis] = double(P[Axis]) * H;
+	const double Dt = Consts[DtSlot];
+	const double3 Vel = double3(SampleFace(0, Pos), SampleFace(1, Pos), SampleFace(2, Pos));
+	const double3 Back = Pos - Vel * Dt;
+	OutA[I] = SampleFace(Axis, Back);
+}
+
+// ---- ApplyBuoyancy (interior Z faces between two fluid cells). InA = T, OutA = Vz.
+[numthreads(64, 1, 1)]
+void BuoyancyCS(uint3 Id : SV_DispatchThreadID)
+{
+	const uint I = Id.x;
+	if (I >= Count) return;
+	const int3 P = Unflatten(I, FaceCount(2));
+	if (P.z < 1 || P.z >= int(NZ)) return;
+	if (IsSolid(int3(P.x, P.y, P.z - 1)) || IsSolid(P)) return;
+	const double RefT = Consts[C_REF_T];
+	const double ExpansionPerK = 1.0 / RefT;
+	const double FaceT = 0.5 * (InA[CellIndex(P.x, P.y, P.z - 1)] + InA[CellIndex(P.x, P.y, P.z)]);
+	const double Acceleration = -Consts[C_GRAVITY_Z] * ExpansionPerK * (FaceT - RefT);
+	OutA[I] += Acceleration * Consts[DtSlot];
+}
+
+// ---- ApplyWallBoundary: domain faces and faces touching a solid get zero normal velocity. OutA = V of Axis.
+[numthreads(64, 1, 1)]
+void WallCS(uint3 Id : SV_DispatchThreadID)
+{
+	const uint I = Id.x;
+	if (I >= Count) return;
+	const int3 P = Unflatten(I, FaceCount(Axis));
+	const int N = int(Axis == 0 ? NX : (Axis == 1 ? NY : NZ));
+	if (P[Axis] == 0 || P[Axis] == N) { OutA[I] = 0.0; return; }
+	int3 L = P; L[Axis] -= 1;
+	if (IsSolid(L) || IsSolid(P)) OutA[I] = 0.0;
+}
+
+// ---- Duct faces: prescribed normal velocity. IdxB = packed (axis | exhaust << 2), IdxC = face index, InA = velocity,
+// OutA/B/C = Vx/Vy/Vz. (IdxA stays the solid mask.)
+[numthreads(64, 1, 1)]
+void DuctVelocityCS(uint3 Id : SV_DispatchThreadID)
+{
+	const uint I = Id.x;
+	if (I >= Count) return;
+	const uint A = uint(IdxB[I]) & 3u;
+	const uint F = uint(IdxC[I]);
+	if (A == 0) OutA[F] = InA[I]; else if (A == 1) OutB[F] = InA[I]; else OutC[F] = InA[I];
+}
+
+// ---- DiffuseFaceComponent (explicit, no-slip ghosts). InA = U of Axis, InB = nu_t, OutA = next U.
+double CellNu(int3 P) { return Consts[C_NU_MOL] + InB[CellIndex(P.x, P.y, P.z)]; }
+bool IsOpenFace(int3 P)
+{
+	const int N = int(Axis == 0 ? NX : (Axis == 1 ? NY : NZ));
+	if (P[Axis] <= 0 || P[Axis] >= N) return false;
+	int3 L = P; L[Axis] -= 1;
+	return IsFluid(L) && IsFluid(P);
+}
+double FaceNu(int3 P) { int3 L = P; L[Axis] -= 1; return 0.5 * (CellNu(L) + CellNu(P)); }
+
+[numthreads(64, 1, 1)]
+void DiffuseCS(uint3 Id : SV_DispatchThreadID)
+{
+	const uint I = Id.x;
+	if (I >= Count) return;
+	const int3 C = FaceCount(Axis);
+	const int3 P = Unflatten(I, C);
+	const double UF = InA[I];
+	if (!IsOpenFace(P)) { OutA[I] = UF; return; }
+	const double NuF = FaceNu(P);
+	const int3 N = CellCount();
+	double Sum = 0.0;
+	[unroll] for (uint D = 0; D < 3; ++D)
+	{
+		[unroll] for (int S = -1; S <= 1; S += 2)
+		{
+			int3 G = P; G[D] += S;
+			if (D == Axis)
+			{
+				int3 Cell = P; if (S < 0) Cell[Axis] -= 1;
+				Sum += CellNu(Cell) * (InA[FaceIndex(Axis, G.x, G.y, G.z)] - UF);
+			}
+			else if (G[D] < 0 || G[D] >= N[D] || !IsOpenFace(G))
+			{
+				Sum += NuF * (-2.0 * UF);
+			}
+			else
+			{
+				Sum += 0.5 * (NuF + FaceNu(G)) * (InA[FaceIndex(Axis, G.x, G.y, G.z)] - UF);
+			}
+		}
+	}
+	const double InvH2 = 1.0 / (Consts[C_H] * Consts[C_H]);
+	OutA[I] = UF + Consts[DtSlot] * InvH2 * Sum;
+}
+
+// ---- ProjectToDivergenceFree, right-hand side: rho/dt * div(u) on fluid cells, 0 in solids. InA/B/C = Vx/Vy/Vz, OutA = rhs.
+[numthreads(64, 1, 1)]
+void DivergenceCS(uint3 Id : SV_DispatchThreadID)
+{
+	const uint I = Id.x;
+	if (I >= Count) return;
+	const int3 P = Unflatten(I, CellCount());
+	if (IsSolid(P)) { OutA[I] = 0.0; return; }
+	const double InvH = 1.0 / Consts[C_H];
+	const double DuDx = (InA[FaceIndex(0, P.x + 1, P.y, P.z)] - InA[FaceIndex(0, P.x, P.y, P.z)]) * InvH;
+	const double DvDy = (InB[FaceIndex(1, P.x, P.y + 1, P.z)] - InB[FaceIndex(1, P.x, P.y, P.z)]) * InvH;
+	const double DwDz = (InC[FaceIndex(2, P.x, P.y, P.z + 1)] - InC[FaceIndex(2, P.x, P.y, P.z)]) * InvH;
+	const double RhoOverDt = Consts[C_RHO] / Consts[DtSlot];
+	OutA[I] = RhoOverDt * (DuDx + DvDy + DwDz);
+}
+
+// ---- RemoveFluidMean: OutA -= InA[Mode] / NumFluid on fluid cells (InA = the reduction scalars, the sum sits in slot Mode).
+[numthreads(64, 1, 1)]
+void SubtractFluidMeanCS(uint3 Id : SV_DispatchThreadID)
+{
+	const uint I = Id.x;
+	if (I >= Count) return;
+	if (IdxA[I] != 0) return;
+	OutA[I] -= InA[Mode] / Consts[C_NUM_FLUID];
+}
+
+// ---- Velocity correction u -= dt/rho grad p on interior faces between fluid cells. InA = p, OutA = V of Axis.
+[numthreads(64, 1, 1)]
+void GradientCS(uint3 Id : SV_DispatchThreadID)
+{
+	const uint I = Id.x;
+	if (I >= Count) return;
+	const int3 P = Unflatten(I, FaceCount(Axis));
+	const int N = int(Axis == 0 ? NX : (Axis == 1 ? NY : NZ));
+	if (P[Axis] < 1 || P[Axis] >= N) return;
+	int3 L = P; L[Axis] -= 1;
+	if (IsSolid(L) || IsSolid(P)) return;
+	const double DtOverRho = Consts[DtSlot] / Consts[C_RHO];
+	const double InvH = 1.0 / Consts[C_H];
+	const double GradPa = (InA[CellIndex(P.x, P.y, P.z)] - InA[CellIndex(L.x, L.y, L.z)]) * InvH;
+	OutA[I] -= DtOverRho * GradPa;
+}
+
+// ---- AdvectTemperature face flux (upwind + turbulent diffusion; zero-gradient at the domain boundary; 0 at solids).
+// InA = T, InB = V of Axis, InC = nu_t, OutA = flux of Axis. Mode 1: add diffusion.
+[numthreads(64, 1, 1)]
+void TemperatureFluxCS(uint3 Id : SV_DispatchThreadID)
+{
+	const uint I = Id.x;
+	if (I >= Count) return;
+	const int3 P = Unflatten(I, FaceCount(Axis));
+	const int N = int(Axis == 0 ? NX : (Axis == 1 ? NY : NZ));
+	int3 Up = P; Up[Axis] = max(P[Axis] - 1, 0);
+	int3 Down = P; Down[Axis] = min(P[Axis], N - 1);
+	if (IsSolid(Up) || IsSolid(Down)) { OutA[I] = 0.0; return; }
+	const uint IU = CellIndex(Up.x, Up.y, Up.z), ID = CellIndex(Down.x, Down.y, Down.z);
+	const double Vel = InB[I];
+	double Flux = Vel >= 0.0 ? Vel * InA[IU] : Vel * InA[ID];
+	if (Mode == 1)
+	{
+		const double Alpha = Consts[C_ALPHA_MOL] + 0.5 * (InC[IU] + InC[ID]) * Consts[C_INV_PRT];
+		Flux += -Alpha * (InA[ID] - InA[IU]) / Consts[C_H];
+	}
+	OutA[I] = Flux;
+}
+
+// ---- Duct mixing, one thread per duct. IdxB/IdxC = intake face CSR (start, face list), IdxD = fluid cell per face,
+// InA = face velocity, InB = T, InC = duct parameters (6 per duct: exhaust speed sum, eps, water T, fan dT, capacity W/K,
+// coil flag), OutA = exhaust temperature, OutB = coil heat removed [J] (accumulated over sub-steps).
+[numthreads(64, 1, 1)]
+void DuctMixCS(uint3 Id : SV_DispatchThreadID)
+{
+	const uint D = Id.x;
+	if (D >= Count) return;
+	double Enthalpy = 0.0;
+	for (int K = IdxB[D], E = IdxB[D + 1]; K < E; ++K)
+	{
+		const int F = IdxC[K];
+		Enthalpy += abs(InA[F]) * InB[IdxD[F]];
+	}
+	const double SpeedSum = InC[6 * D + 0];
+	const double MixK = SpeedSum > 0.0 ? Enthalpy / SpeedSum : 0.0;
+	double ExhaustK = MixK;
+	if (InC[6 * D + 5] != 0.0)
+	{
+		ExhaustK = MixK - InC[6 * D + 1] * (MixK - InC[6 * D + 2]);
+		OutB[D] += InC[6 * D + 4] * (MixK - ExhaustK) * Consts[DtSlot];
+	}
+	ExhaustK += InC[6 * D + 3];
+	OutA[D] = ExhaustK;
+}
+
+// ---- Duct face fluxes (overwrite after the regular flux). IdxB = packed axis|exhaust<<2, IdxC = face index,
+// IdxD = fluid cell, IdxE = duct, InA = velocity, InB = T, InC = exhaust temperature per duct,
+// OutA/B/C = flux X/Y/Z.
+[numthreads(64, 1, 1)]
+void DuctFluxCS(uint3 Id : SV_DispatchThreadID)
+{
+	const uint I = Id.x;
+	if (I >= Count) return;
+	const uint Packed = uint(IdxB[I]);
+	const uint A = Packed & 3u;
+	const bool bExhaust = (Packed & 4u) != 0u;
+	const double Carried = bExhaust ? InC[IdxE[I]] : InB[IdxD[I]];
+	const double Flux = InA[I] * Carried;
+	const uint F = uint(IdxC[I]);
+	if (A == 0) OutA[F] = Flux; else if (A == 1) OutB[F] = Flux; else OutC[F] = Flux;
+}
+
+// ---- Conservative temperature update. InA = T, InB/C/D = flux X/Y/Z, OutA = next T. Solids keep their value.
+[numthreads(64, 1, 1)]
+void TemperatureUpdateCS(uint3 Id : SV_DispatchThreadID)
+{
+	const uint I = Id.x;
+	if (I >= Count) return;
+	const int3 P = Unflatten(I, CellCount());
+	if (IsSolid(P)) { OutA[I] = InA[I]; return; }
+	const double NetFlux =
+		(InB[FaceIndex(0, P.x + 1, P.y, P.z)] - InB[FaceIndex(0, P.x, P.y, P.z)])
+		+ (InC[FaceIndex(1, P.x, P.y + 1, P.z)] - InC[FaceIndex(1, P.x, P.y, P.z)])
+		+ (InD[FaceIndex(2, P.x, P.y, P.z + 1)] - InD[FaceIndex(2, P.x, P.y, P.z)]);
+	const double DtOverH = Consts[DtSlot] / Consts[C_H];
+	OutA[I] = InA[I] - DtOverH * NetFlux;
+}
+
+// ---- InjectHeat over the non-zero fluid cells. IdxB = cell, InA = heat [W], OutA = T.
+[numthreads(64, 1, 1)]
+void InjectHeatCS(uint3 Id : SV_DispatchThreadID)
+{
+	const uint I = Id.x;
+	if (I >= Count) return;
+	OutA[IdxB[I]] += InA[I] * Consts[DtSlot] / Consts[C_CELL_HEAT_CAP];
+}
+
+// ---- ApplyCooling over cells with UA > 0 (fluid). IdxB = cell, InA = UA [W/K], OutA = T, OutB = applied [W] per entry.
+[numthreads(64, 1, 1)]
+void CoolingCS(uint3 Id : SV_DispatchThreadID)
+{
+	const uint I = Id.x;
+	if (I >= Count) return;
+	const uint Cell = uint(IdxB[I]);
+	const double T = OutA[Cell];
+	const double Supply = Consts[C_COOL_SUPPLY_T];
+	const double Cap = Consts[C_CELL_HEAT_CAP];
+	const double Dt = Consts[DtSlot];
+	const double HeatW = InA[I] * (T - Supply);
+	const double MaxRemovableW = (T - Supply) * Cap / Dt;
+	const double AppliedW = HeatW >= 0.0 ? min(HeatW, max(MaxRemovableW, 0.0)) : max(HeatW, min(MaxRemovableW, 0.0));
+	OutA[Cell] = T - AppliedW * Dt / Cap;
+	OutB[I] = AppliedW;
+}
