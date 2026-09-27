@@ -97,6 +97,15 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Debug", meta = (ClampMin = "0.0"))
 	double PlaceSnapM = 0.05;
 
+	// Start view (2026-09-27): the level's PlayerStart is inside the racks, so on the first frame with a pawn the view
+	// is moved to see every rack / spine / CDU / CRAH box, from the same oblique direction as vrg.Air.FrameDomain.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Debug")
+	bool bFrameEquipmentOnStart = true;
+
+	// Eye point and look rotation that fit all placeable boxes in a view of the given full horizontal FOV and aspect
+	// (width / height); false if the world has no equipment.
+	static bool EquipmentViewpoint(UWorld* World, double HorizontalFovDeg, double Aspect, FVector& OutEyeCm, FRotator& OutLook);
+
 	// 레벨에서 대상을 다시 훑는 주기 [s]. 방 액터가 랙을 늦게 띄우기 때문에 필요하다.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Debug")
 	float TargetRefreshIntervalS = 0.5f;
@@ -167,6 +176,8 @@ private:
 	TWeakObjectPtr<AActor> Grabbed;
 	FVector GrabOffsetCm = FVector::ZeroVector;  // actor origin minus the floor point it was grabbed at
 	TWeakObjectPtr<AActor> HoveredPlaceable;
+	int32 StartFrameAttempts = 0;
+	bool TryFrameEquipment();
 	void OnResetSim();
 	void OnToggleHelp();
 

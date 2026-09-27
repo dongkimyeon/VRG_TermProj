@@ -86,4 +86,55 @@ bool FSimModeTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+// Start view (2026-09-27): every corner of every equipment box is inside the view (both half-angles) and in front of it.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FStartViewTest, "VRG.Interaction.SimMode.StartViewSeesAllEquipment",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::CommandletContext | EAutomationTestFlags::EngineFilter)
+bool FStartViewTest::RunTest(const FString& Parameters)
+{
+	UWorld* World = UWorld::CreateWorld(EWorldType::Game, false);
+	if (!TestNotNull(TEXT("World"), World)) return false;
+	TArray<AActor*> Placed;
+	for (int32 Row = 0; Row < 4; ++Row)
+		for (int32 I = 0; I < 8; ++I)
+		{
+			ARackThermalActor* Rack = World->SpawnActor<ARackThermalActor>(FVector(Row * 300.0, I * 60.0, 0), FRotator(0, Row % 2 ? 180 : 0, 0));
+			Rack->RackSizeM = FVector(1.068, .6, 2.236);
+			Placed.Add(Rack);
+		}
+	Placed.Add(World->SpawnActor<ACrahUnitActor>(FVector(-400, 200, 0), FRotator(0, 90, 0)));
+
+	constexpr double Fov = 90.0, Aspect = 16.0 / 9.0;
+	FVector Eye; FRotator Look;
+	const bool bFound = ADataCenterDebugController::EquipmentViewpoint(World, Fov, Aspect, Eye, Look);
+	TestTrue(TEXT("Viewpoint found"), bFound);
+	const FVector F = Look.Vector(), R = FRotationMatrix(Look).GetScaledAxis(EAxis::Y), U = FRotationMatrix(Look).GetScaledAxis(EAxis::Z);
+	const double TanH = FMath::Tan(FMath::DegreesToRadians(Fov * .5)), TanV = TanH / Aspect;
+	double WorstH = 0.0, WorstV = 0.0;
+	bool bInFront = true;
+	for (const AActor* A : Placed)
+	{
+		FVector SizeM;
+		ADataCenterDebugController::PlaceableBoxM(A, SizeM);
+		const FVector HalfCm = SizeM * 50.0;
+		for (int32 C = 0; C < 8; ++C)
+		{
+			const FVector P = A->GetActorTransform().TransformPositionNoScale(FVector((C & 1 ? 1 : -1) * HalfCm.X, (C & 2 ? 1 : -1) * HalfCm.Y, C & 4 ? 2.0 * HalfCm.Z : 0.0));
+			const FVector D = P - Eye;
+			const double Depth = FVector::DotProduct(D, F);
+			bInFront &= Depth > 0.0;
+			WorstH = FMath::Max(WorstH, FMath::Abs(FVector::DotProduct(D, R)) / (Depth * TanH));
+			WorstV = FMath::Max(WorstV, FMath::Abs(FVector::DotProduct(D, U)) / (Depth * TanV));
+		}
+	}
+	AddInfo(FString::Printf(TEXT("시점 %s, 가장 바깥 모서리가 화면 폭의 %.2f / 높이의 %.2f (1 = 화면 끝)"), *Eye.ToCompactString(), WorstH, WorstV));
+	TestTrue(TEXT("All equipment in front of the camera"), bInFront);
+	TestTrue(TEXT("All equipment inside the view"), WorstH < 1.0 && WorstV < 1.0);
+	FVector E2; FRotator L2;
+	UWorld* Empty = UWorld::CreateWorld(EWorldType::Game, false);
+	TestFalse(TEXT("No equipment: no viewpoint"), ADataCenterDebugController::EquipmentViewpoint(Empty, Fov, Aspect, E2, L2));
+	Empty->DestroyWorld(false);
+	World->DestroyWorld(false);
+	return true;
+}
+
 #endif // WITH_DEV_AUTOMATION_TESTS

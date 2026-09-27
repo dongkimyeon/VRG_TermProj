@@ -13,7 +13,9 @@
 #include "Simulation/Core/SimUnits.h"
 #include "Simulation/Thermal/RackThermalModel.h"
 
+#include "Camera/PlayerCameraManager.h"
 #include "DrawDebugHelpers.h"
+#include "Engine/GameViewportClient.h"
 #include "EnhancedInputComponent.h"
 #include "EnhancedInputSubsystems.h"
 #include "Engine/Engine.h"
@@ -505,6 +507,67 @@ bool ADataCenterDebugController::FloorPointSnapped(const FVector& EyeCm, const F
 	return true;
 }
 
+bool ADataCenterDebugController::EquipmentViewpoint(UWorld* World, double HorizontalFovDeg, double Aspect, FVector& OutEyeCm, FRotator& OutLook)
+{
+	if (World == nullptr) return false;
+	TArray<FVector> Corners;
+	for (TActorIterator<AActor> It(World); It; ++It)
+	{
+		FVector SizeM;
+		if (!PlaceableBoxM(*It, SizeM)) continue;
+		const FVector HalfCm = SizeM * 50.0;
+		for (int32 C = 0; C < 8; ++C)
+		{
+			const FVector Local((C & 1 ? 1 : -1) * HalfCm.X, (C & 2 ? 1 : -1) * HalfCm.Y, C & 4 ? 2.0 * HalfCm.Z : 0.0);
+			Corners.Add(It->GetActorTransform().TransformPositionNoScale(Local));
+		}
+	}
+	if (Corners.Num() == 0) return false;
+	const FBox Bounds(Corners);
+	const FVector Center = Bounds.GetCenter();
+	// Oblique view from above (the direction vrg.Air.FrameDomain uses), looking at the centre. The distance is the
+	// smallest at which every corner is inside the frustum: with offsets x, y across the view and s along Dir,
+	// the corner's depth is D - s, so it needs D >= s + |x| / tan(half H) and D >= s + |y| / tan(half V).
+	const FVector Dir = FVector(-0.75, -0.55, 0.45).GetSafeNormal();
+	OutLook = (-Dir).Rotation();
+	const FRotationMatrix View(OutLook);
+	const FVector Right = View.GetScaledAxis(EAxis::Y), Up = View.GetScaledAxis(EAxis::Z);
+	const double TanH = FMath::Tan(FMath::DegreesToRadians(FMath::Clamp(HorizontalFovDeg, 10.0, 170.0)) * 0.5);
+	const double TanV = TanH / FMath::Max(Aspect, 0.1);
+	double Distance = 0.0;
+	for (const FVector& P : Corners)
+	{
+		const FVector D = P - Center;
+		const double S = FVector::DotProduct(D, Dir);
+		Distance = FMath::Max3(Distance, S + FMath::Abs(FVector::DotProduct(D, Right)) / TanH, S + FMath::Abs(FVector::DotProduct(D, Up)) / TanV);
+	}
+	Distance *= 1.08;  // a small margin so the outermost cabinets are not cut by the screen edge
+	OutEyeCm = Center + Dir * Distance;
+	return true;
+}
+
+bool ADataCenterDebugController::TryFrameEquipment()
+{
+	APawn* ViewPawn = GetPawn();
+	if (ViewPawn == nullptr) return false;
+	double Aspect = 16.0 / 9.0;
+	if (GEngine != nullptr && GEngine->GameViewport != nullptr)
+	{
+		FVector2D Size;
+		GEngine->GameViewport->GetViewportSize(Size);
+		if (Size.X > 0.0 && Size.Y > 0.0) Aspect = Size.X / Size.Y;
+	}
+	const double Fov = PlayerCameraManager != nullptr ? PlayerCameraManager->GetFOVAngle() : 90.0;
+	FVector Eye;
+	FRotator Look;
+	if (!EquipmentViewpoint(GetWorld(), Fov, Aspect, Eye, Look)) return false;
+	ViewPawn->SetActorLocation(Eye, false, nullptr, ETeleportType::TeleportPhysics);
+	ViewPawn->SetActorRotation(Look);
+	SetControlRotation(Look);
+	UE_LOG(LogTemp, Display, TEXT("[VrgDebug] 시작 시점: 장비 전체가 보이게 %s (FOV %.0f, 화면비 %.2f)"), *Eye.ToCompactString(), Fov, Aspect);
+	return true;
+}
+
 ADataCenterSimulationActor* ADataCenterDebugController::FindSimActor() const
 {
 	UWorld* World = GetWorld();
@@ -631,6 +694,12 @@ void ADataCenterDebugController::Tick(float DeltaTime)
 	Super::Tick(DeltaTime);
 
 	RefreshTargetsIfStale(DeltaTime);
+
+	// Start view: retried for a few frames (the pawn is possessed after BeginPlay), then given up.
+	if (bFrameEquipmentOnStart && StartFrameAttempts >= 0 && StartFrameAttempts < 30)
+	{
+		StartFrameAttempts = TryFrameEquipment() ? -1 : StartFrameAttempts + 1;
+	}
 
 	// Layout mode: hover / move the equipment under the crosshair. The room re-routes pipes once it settles.
 	if (IsLayoutMode())
