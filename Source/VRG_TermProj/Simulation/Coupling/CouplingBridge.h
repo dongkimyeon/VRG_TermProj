@@ -6,6 +6,7 @@
 #include "Simulation/Air/AirSolver.h"
 #include "Simulation/Thermal/RackThermalTypes.h"
 #include "Simulation/Thermal/RadiatorModel.h"
+#include "Simulation/Thermal/CduHeatExchanger.h"
 #include "CouplingBridge.generated.h"
 
 class FHydraulicNetwork;
@@ -105,7 +106,6 @@ struct FRackCouplingLink
 // exhaust faces through a chilled-water coil. It becomes one air-solver duct with a coil (FAirSolverInput::DuctCoil*),
 // so the room air really circulates through it and its capacity saturates with airflow instead of a lumped UA.
 // Face arrays mean the same as a rack's fan faces; Sign points from the intake side to the exhaust side.
-// Fan electric input is not modelled (it would be one more heat source in the ledger).
 struct FCrahCouplingUnit
 {
 	TArray<uint8> FaceAxis;
@@ -116,8 +116,19 @@ struct FCrahCouplingUnit
 	double VolumeFlowM3s = 0.0;
 	double CoilUAWK = 0.0;
 	double WaterSupplyTempK = 291.15;
+	// Fan electric input at this airflow [W] (D8: already the electric input, not divided by an efficiency again).
+	// Becomes heat in the supply air and a global ledger input next to the IT heat.
+	double FanPowerW = 0.0;
 
 	bool HasBothSides() const { return FaceIsExhaust.Contains(0) && FaceIsExhaust.Contains(1); }
+};
+
+// One CDU and the racks (target indices) whose coolant it serves (2026-09-27). Those racks no longer use their own
+// radiator: their returns mix, pass the CDU heat exchanger, and all get the CDU supply temperature back.
+struct FCduCouplingGroup
+{
+	TArray<int32> RackIndices;
+	FCduHeatExchangerParams Hx;
 };
 
 // 한 스텝에 실제로 오간 값. 화면에 그대로 띄워 어디서 끊겼는지 볼 수 있게 한다.
@@ -161,8 +172,22 @@ struct FCouplingSnapshot
 	UPROPERTY(BlueprintReadOnly, Category = "Coupling")
 	double TotalItHeatW = 0.0;
 
+	// Heat leaving the coolant loops [W]: per-rack radiators plus CDU heat exchangers (both go to the facility).
 	UPROPERTY(BlueprintReadOnly, Category = "Coupling")
 	double TotalRadiatorRejectedW = 0.0;
+
+	// Per CDU group: duty [W], mixed return [K], supply to the racks [K], facility water return [K].
+	UPROPERTY(BlueprintReadOnly, Category = "Coupling")
+	TArray<double> CduDutyW;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Coupling")
+	TArray<double> CduReturnTempK;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Coupling")
+	TArray<double> CduSupplyTempK;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Coupling")
+	TArray<double> CduFacilityReturnTempK;
 
 	UPROPERTY(BlueprintReadOnly, Category = "Coupling")
 	double TotalAirCoolingRemovedW = 0.0;
@@ -173,6 +198,10 @@ struct FCouplingSnapshot
 
 	UPROPERTY(BlueprintReadOnly, Category = "Coupling")
 	double CrahFlowM3s = 0.0;
+
+	// CRAH fan electric input [W]. Not IT heat, but it enters the air and the global ledger's input.
+	UPROPERTY(BlueprintReadOnly, Category = "Coupling")
+	double CrahFanPowerW = 0.0;
 
 	// 누적값 [J].
 	UPROPERTY(BlueprintReadOnly, Category = "Coupling")
@@ -211,6 +240,10 @@ public:
 	// 수력망과 공기 격자를 붙인다. nullptr이면 그 도메인은 쓰지 않는다.
 	void SetHydraulicNetwork(FHydraulicNetwork* InNetwork) { HydraulicNetwork = InNetwork; }
 	void SetAirSolver(FAirSolver* InAirSolver) { if (AirSolver != InAirSolver) bLedgerBaselineTaken = false; AirSolver = InAirSolver; }
+
+	// Racks served by a CDU heat exchanger instead of their own radiator. Call after Initialize (it clears them).
+	void SetCduGroups(const TArray<FCduCouplingGroup>& InGroups);
+	int32 GetNumCduGroups() const { return CduGroups.Num(); }
 
 	// CRAH units become ducts after the racks' ones. Call after Initialize (Initialize clears them).
 	void SetCrahUnits(const TArray<FCrahCouplingUnit>& InUnits) { CrahUnits = InUnits; BuildDuctFaces(); }
@@ -280,6 +313,9 @@ private:
 	// built once in Initialize; only the velocities change per step.
 	TArray<int32> DuctBase;
 	TArray<FCrahCouplingUnit> CrahUnits;
+	TArray<FCduCouplingGroup> CduGroups;
+	TArray<int32> RackCduGroup;  // per target: CDU group index or INDEX_NONE (own radiator)
+	TArray<double> LastCduDutyW, LastCduReturnK, LastCduSupplyK, LastCduFacilityReturnK;
 	int32 CrahDuctBase = 0;  // duct id of CrahUnits[0]
 	TArray<double> ScratchLayerFlowKgs, ScratchLayerIntakeK;
 	TArray<int32> ScratchLayerIntakeCount, ScratchLayerExhaustCount;
@@ -306,7 +342,7 @@ private:
 	// retries until the room has found its racks). The global ledger counts only what happened since the
 	// first coupled step, so those earlier standalone steps cannot show up as a constant residual.
 	bool bLedgerBaselineTaken = false;
-	double BaselineModelInJ = 0.0, BaselineStoredJ = 0.0, BaselineAirOutJ = 0.0;
+	double BaselineModelInJ = 0.0, BaselineStoredJ = 0.0, BaselineAirOutJ = 0.0, BaselineFanHeatJ = 0.0;
 	double GetRawEnergyStoredJ() const;
 
 	// 수력에서 랙별 냉각수 질량유량을 읽는다. 없으면 예비값을 쓴다.

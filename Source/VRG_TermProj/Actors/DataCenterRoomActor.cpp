@@ -98,6 +98,16 @@ int32 ADataCenterRoomActor::GetNumRoutedRacks() const
 	return Count;
 }
 
+TArray<int32> ADataCenterRoomActor::GetRoutedRackRows() const
+{
+	// Same walk and the same null skip as GetRoutedRacks(), so the two arrays line up.
+	TArray<int32> Result;
+	for (int32 RowIndex = 0; RowIndex < Rows.Num(); ++RowIndex)
+		for (const TObjectPtr<ARackThermalActor>& Rack : Rows[RowIndex].Racks)
+			if (Rack != nullptr) Result.Add(RowIndex);
+	return Result;
+}
+
 TArray<ARackThermalActor*> ADataCenterRoomActor::GetRoutedRacks() const
 {
 	TArray<ARackThermalActor*> Result;

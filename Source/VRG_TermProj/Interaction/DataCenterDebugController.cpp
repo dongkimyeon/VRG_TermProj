@@ -532,7 +532,7 @@ void ADataCenterDebugController::DrawHelp() const
 	const uint64 BaseKey = static_cast<uint64>(GetUniqueID());
 
 	GEngine->AddOnScreenDebugMessage(BaseKey, 0.0f, FColor(180, 220, 255),
-		TEXT("[디버그 키] 1/2 CPU 발열  3/4 GPU 발열  5/6 펌프 회전수  7/8 라디에이터 UA  9/0 부하율  E 바라보는 유닛 뽑기/꽂기  R 리셋  H 도움말"));
+		TEXT("[디버그 키] 1/2 CPU 발열  3/4 GPU 발열  5/6 펌프 회전수  7/8 라디에이터 UA(랙별 모드)  9/0 부하율  E 바라보는 유닛 뽑기/꽂기  R 리셋  H 도움말"));
 
 	const ARackThermalActor* Rack = TargetRack.Get();
 	FString Selection = TEXT("바라보는 유닛 없음 - 유닛을 조준하고 E");

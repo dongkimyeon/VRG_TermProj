@@ -93,6 +93,8 @@ public:
 	// Design-point heat that leaves through air [W]: docked components' heat times their air share
 	// ToAirUAWK / (ToAirUAWK + ToCoolantUAWK). Used to size the room's air cooling (2-2), not by Step().
 	static double DesignHeatToAirW(const FRackThermalParams& Params, const FRackThermalInput& Input);
+	// The rest of the docked design heat: the coolant share of every part (sizes the CDU heat exchanger).
+	static double DesignHeatToCoolantW(const FRackThermalParams& Params, const FRackThermalInput& Input);
 
 	// ---- NVIDIA GB200 NVL72 preset (device- and chip-level, sources in the .cpp) ----
 	// 48U: 18 compute trays (Grace x2, LPDDR5X x2, Blackwell x4, NICs, DPUs, drives, PDB, 8 fans each),
@@ -240,5 +242,6 @@ private:
 	double SlotControlTempK(int32 Slot) const;
 
 	static double HeatAt(const TArray<double>& HeatW, int32 Index);
+	static double DesignHeatShareW(const FRackThermalParams& Params, const FRackThermalInput& Input, bool bAir);
 	static bool IsDocked(const TArray<bool>& SledDocked, int32 SledIndex, int32 NumSleds);
 };

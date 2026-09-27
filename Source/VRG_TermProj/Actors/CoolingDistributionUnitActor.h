@@ -61,6 +61,27 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hydraulics", meta = (ClampMin = "0.0", ClampMax = "1.5"))
 	double PumpSpeedRatio = 1.0;
 
+	// ---- Heat exchanger to facility water (2026-09-27, used when the integrated actor runs CDU mode) ----
+	// Facility water (FWS) supply temperature [K]. 22 C keeps the per-rack radiators' ambient for comparison;
+	// warm-water liquid cooling plants often run higher. A site value, not a product rating.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Heat Exchanger")
+	double FacilitySupplyTempK = 295.15;
+
+	// Facility water flow [kg/s] and exchanger UA [W/K]. 0 = size from the row's design coolant load:
+	// flow carries it at FacilityDesignRiseK; UA reaches the supply HxDesignApproachK above the facility water.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Heat Exchanger", meta = (ClampMin = "0.0"))
+	double FacilityMassFlowKgs = 0.0;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Heat Exchanger", meta = (ClampMin = "0.0"))
+	double HxUAWK = 0.0;
+
+	// Design assumptions for the sizing above (not measured): facility water rise [K], supply approach [K].
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Heat Exchanger", meta = (ClampMin = "1.0"))
+	double FacilityDesignRiseK = 10.0;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Heat Exchanger", meta = (ClampMin = "0.5"))
+	double HxDesignApproachK = 4.0;
+
 	// 공급 토출구 / 회수 흡입구의 월드 좌표 [m].
 	// 배관을 잇는 쪽이 이 두 점을 쓴다. 단위는 m이므로 그리는 쪽이 cm로 바꾼다 (규약 1).
 	UFUNCTION(BlueprintCallable, Category = "CDU")

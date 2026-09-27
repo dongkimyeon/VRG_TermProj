@@ -18,6 +18,9 @@ void FCouplingBridge::Initialize(const TArray<FRackCouplingTarget>& InTargets,
 	Targets.SetNum(NumRacks);
 	Links.SetNum(NumRacks);
 	CrahUnits.Reset();
+	CduGroups.Reset();
+	RackCduGroup.Init(INDEX_NONE, NumRacks);
+	LastCduDutyW.Reset(); LastCduReturnK.Reset(); LastCduSupplyK.Reset(); LastCduFacilityReturnK.Reset();
 
 	EnergyInJ = 0.0;
 	EnergyOutJ = 0.0;
@@ -78,14 +81,16 @@ void FCouplingBridge::BuildDuctFaces()
 		}
 		++NumDucts;
 	}
-	In.DuctCoilUAWK.Reset(); In.DuctCoilWaterTempK.Reset();
+	In.DuctCoilUAWK.Reset(); In.DuctCoilWaterTempK.Reset(); In.DuctFanHeatW.Reset();
 	if (CrahUnits.Num() > 0)
 	{
-		In.DuctCoilUAWK.Init(0.0, NumDucts); In.DuctCoilWaterTempK.Init(291.15, NumDucts);
+		In.DuctCoilUAWK.Init(0.0, NumDucts); In.DuctCoilWaterTempK.Init(291.15, NumDucts); In.DuctFanHeatW.Init(0.0, NumDucts);
 		for (int32 U = 0; U < CrahUnits.Num(); ++U)
 		{
 			In.DuctCoilUAWK[CrahDuctBase + U] = CrahUnits[U].CoilUAWK;
 			In.DuctCoilWaterTempK[CrahDuctBase + U] = CrahUnits[U].WaterSupplyTempK;
+			// A unit that cannot carry air (faces on one side only) runs no fan.
+			In.DuctFanHeatW[CrahDuctBase + U] = CrahUnits[U].HasBothSides() ? CrahUnits[U].FanPowerW : 0.0;
 		}
 	}
 	In.NumDucts = NumDucts;
@@ -300,14 +305,69 @@ void FCouplingBridge::PullAirInletTemperature()
 	}
 }
 
+void FCouplingBridge::SetCduGroups(const TArray<FCduCouplingGroup>& InGroups)
+{
+	CduGroups.Reset();
+	RackCduGroup.Init(INDEX_NONE, Targets.Num());
+	for (const FCduCouplingGroup& Group : InGroups)
+	{
+		FCduCouplingGroup& Kept = CduGroups.AddDefaulted_GetRef();
+		Kept.Hx = Group.Hx;
+		for (const int32 R : Group.RackIndices)
+		{
+			// A rack belongs to one CDU at most; a bad or repeated index is ignored rather than double-counted.
+			if (RackCduGroup.IsValidIndex(R) && RackCduGroup[R] == INDEX_NONE)
+			{
+				RackCduGroup[R] = CduGroups.Num() - 1;
+				Kept.RackIndices.Add(R);
+			}
+		}
+	}
+	LastCduDutyW.Init(0.0, CduGroups.Num()); LastCduReturnK.Init(0.0, CduGroups.Num());
+	LastCduSupplyK.Init(0.0, CduGroups.Num()); LastCduFacilityReturnK.Init(0.0, CduGroups.Num());
+}
+
 void FCouplingBridge::CloseCoolantLoop(double DeltaTimeS)
 {
 	double RejectedW = 0.0;
 
+	// CDU groups: mix the returns, one exchanger duty, one supply temperature for the whole row (rule 6).
+	for (int32 G = 0; G < CduGroups.Num(); ++G)
+	{
+		const FCduCouplingGroup& Group = CduGroups[G];
+		double HotWK = 0.0, MixSum = 0.0;
+		for (const int32 R : Group.RackIndices)
+		{
+			const FRackCouplingTarget& Target = Targets[R];
+			if (Target.Model == nullptr || Target.Input == nullptr) continue;
+			const double C = FMath::Max(Target.Input->CoolantMassFlowKgs, 0.0) * Target.Model->GetParams().CoolantCpJKgK;
+			HotWK += C;
+			MixSum += C * Target.Model->GetState().CoolantTempK;
+		}
+		// No flow: nothing is carried, so nothing is exchanged; the racks keep their inlet as it was (D2).
+		if (HotWK <= UE_DOUBLE_SMALL_NUMBER)
+		{
+			LastCduDutyW[G] = 0.0;
+			continue;
+		}
+		const double MixK = MixSum / HotWK;
+		const double DutyW = CduHeatExchanger::DutyW(Group.Hx, HotWK, MixK);
+		const double SupplyK = MixK - DutyW / HotWK;
+		for (const int32 R : Group.RackIndices)
+			if (Targets[R].Input) Targets[R].Input->CoolantInletTempK = SupplyK;
+		const double FacilityWK = Group.Hx.FacilityMassFlowKgs * Group.Hx.FacilityCpJKgK;
+		LastCduDutyW[G] = DutyW;
+		LastCduReturnK[G] = MixK;
+		LastCduSupplyK[G] = SupplyK;
+		LastCduFacilityReturnK[G] = FacilityWK > 0.0 ? Group.Hx.FacilitySupplyTempK + DutyW / FacilityWK : Group.Hx.FacilitySupplyTempK;
+		RejectedW += DutyW;
+	}
+
 	for (int32 RackIndex = 0; RackIndex < Targets.Num(); ++RackIndex)
 	{
 		const FRackCouplingTarget& Target = Targets[RackIndex];
-		if (Target.Model == nullptr || Target.Input == nullptr || Target.Radiator == nullptr)
+		if (Target.Model == nullptr || Target.Input == nullptr || Target.Radiator == nullptr
+			|| (RackCduGroup.IsValidIndex(RackIndex) && RackCduGroup[RackIndex] != INDEX_NONE))
 		{
 			continue;
 		}
@@ -438,6 +498,7 @@ void FCouplingBridge::Step(double DeltaTimeS, bool bHydraulicsResolved, bool bHy
 		for (const FRackCouplingTarget& Target : Targets) if (Target.Model) BaselineModelInJ += Target.Model->GetEnergyInJ();
 		BaselineStoredJ = GetRawEnergyStoredJ();
 		BaselineAirOutJ = AirSolver ? AirSolver->GetEnergyOutJ() : 0.0;
+		BaselineFanHeatJ = AirSolver ? AirSolver->GetDuctFanHeatJ() : 0.0;
 		RadiatorRejectedJ = RackCoolantOutJ = RackAirOutJ = DroppedAirHeatJ = 0.0;
 		bLedgerBaselineTaken = true;
 	}
@@ -508,6 +569,9 @@ void FCouplingBridge::Step(double DeltaTimeS, bool bHydraulicsResolved, bool bHy
 		}
 	}
 
+	// CRAH fan heat is an input too: electric power that ends up in the room air (not IT heat).
+	if (AirSolver != nullptr) EnergyInJ += AirSolver->GetDuctFanHeatJ() - BaselineFanHeatJ;
+
 	// 유출은 계 밖으로 나간 것만이다: 라디에이터(냉각수)와 CRAH 코일(공기).
 	// 랙에서 공기로 넘어간 열은 계 안에서의 이동이라 여기 넣지 않는다.
 	EnergyOutJ = RadiatorRejectedJ + (AirSolver != nullptr ? AirSolver->GetEnergyOutJ() - BaselineAirOutJ : 0.0);
@@ -566,10 +630,15 @@ FCouplingSnapshot FCouplingBridge::MakeSnapshot(double SimTimeS) const
 
 	Snapshot.TotalItHeatW = LastItHeatW;
 	Snapshot.TotalRadiatorRejectedW = LastRadiatorRejectedW;
+	Snapshot.CduDutyW = LastCduDutyW;
+	Snapshot.CduReturnTempK = LastCduReturnK;
+	Snapshot.CduSupplyTempK = LastCduSupplyK;
+	Snapshot.CduFacilityReturnTempK = LastCduFacilityReturnK;
 	Snapshot.TotalAirCoolingRemovedW = LastAirCoolingRemovedW;
 	if (AirSolver != nullptr && !AirSolver->WereDuctsRejected())
 	{
 		Snapshot.CrahCoilRemovedW = AirSolver->GetLastDuctCoilRemovedW();
+		Snapshot.CrahFanPowerW = AirSolver->GetLastDuctFanHeatW();
 		for (const FCrahCouplingUnit& U : CrahUnits) Snapshot.CrahFlowM3s += U.HasBothSides() ? U.VolumeFlowM3s : 0.0;
 	}
 
@@ -591,8 +660,8 @@ FString FCouplingBridge::DescribeEnergyLedger() const
 	double RackResidualJ = 0.0;
 	for (const FRackCouplingTarget& Target : Targets) if (Target.Model) RackResidualJ += Target.Model->GetEnergyResidualJ();
 	const double AirResidualJ = AirSolver ? AirSolver->GetEnergyResidualJ() : 0.0;
-	const double AirInJ = AirSolver ? AirSolver->GetEnergyInJ() : 0.0;
-	return FString::Printf(TEXT("전역 잔차 %.3e J = 랙 %.3e + 공기 %.3e + 결합 %.3e | 결합: 냉각수(랙 반출 %.6e - 라디에이터 %.6e = %.3e), ")
+	const double AirInJ = AirSolver ? AirSolver->GetEnergyInJ() - AirSolver->GetDuctFanHeatJ() : 0.0;  // rack heat only
+	return FString::Printf(TEXT("전역 잔차 %.3e J = 랙 %.3e + 공기 %.3e + 결합 %.3e | 결합: 냉각수(랙 반출 %.6e - 방출(라디에이터·CDU) %.6e = %.3e), ")
 		TEXT("공기(랙 반출 %.6e - 공기 주입 %.6e = %.3e, 고체 셀 버림 %.3e)"),
 		GetEnergyResidualJ(), RackResidualJ, AirResidualJ, GetEnergyResidualJ() - RackResidualJ - AirResidualJ,
 		RackCoolantOutJ, RadiatorRejectedJ, RackCoolantOutJ - RadiatorRejectedJ, RackAirOutJ, AirInJ, RackAirOutJ - AirInJ, DroppedAirHeatJ);

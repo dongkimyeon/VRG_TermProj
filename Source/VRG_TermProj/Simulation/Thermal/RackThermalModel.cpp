@@ -932,7 +932,19 @@ int32 FRackThermalModel::CountLiquidSlots(const FRackThermalParams& InParams, co
 	return C;
 }
 
+double FRackThermalModel::DesignHeatToCoolantW(const FRackThermalParams& InParams, const FRackThermalInput& Input)
+{
+	return DesignHeatShareW(InParams, Input, false);
+}
+
 double FRackThermalModel::DesignHeatToAirW(const FRackThermalParams& InParams, const FRackThermalInput& Input)
+{
+	return DesignHeatShareW(InParams, Input, true);
+}
+
+// Docked design heat split by each part's UA share; bAir picks the air share, else the coolant share.
+// A part with no UA to either goes to air (it can only leave through the case).
+double FRackThermalModel::DesignHeatShareW(const FRackThermalParams& InParams, const FRackThermalInput& Input, bool bAir)
 {
 	TArray<FRackComponentParams> Nodes; TArray<int32> Starts;
 	ResolveLayout(InParams, Nodes, Starts);
@@ -951,7 +963,8 @@ double FRackThermalModel::DesignHeatToAirW(const FRackThermalParams& InParams, c
 			const FRackComponentParams& P = Nodes[I];
 			const double Heat = P.LossFractionOfRackLoad > 0.0 ? P.LossFractionOfRackLoad * DcLoadW : HeatAt(Input.ComponentHeatW, I);
 			const double Total = P.ToAirUAWK + P.ToCoolantUAWK;
-			HeatW += Heat * (Total > 0.0 ? P.ToAirUAWK / Total : 1.0);
+			const double AirShare = Total > 0.0 ? P.ToAirUAWK / Total : 1.0;
+			HeatW += Heat * (bAir ? AirShare : 1.0 - AirShare);
 		}
 	}
 	return HeatW;

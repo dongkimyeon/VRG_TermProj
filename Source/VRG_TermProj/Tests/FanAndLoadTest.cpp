@@ -359,7 +359,31 @@ bool FAirDuctCoilTest::RunTest(const FString& Parameters)
 		TestTrue(TEXT("Pressure converged"), Snap.bPressureConverged);
 	}
 
-	// 5) Coil arrays of the wrong length are rejected like any bad duct.
+	// 5) Fan heat (draw-through, after the coil): uniform air, no coil. One step adds exactly P*dt to the air,
+	//    the supply is P/(mdot cp) warmer than the intake, and the ledger counts it as an input.
+	{
+		FAirSolver Air; FAirSolverInput In; Setup(Air, In, 297.15, 0.0, Q);
+		constexpr double FanW = 1500.0;
+		In.DuctFanHeatW = {FanW};
+		Air.Step(In, .02);
+		const FUniformAirGrid& G = Air.GetGrid();
+		const double RiseK = G.TemperatureK[G.CellIndex(4, 2, 2)] - 297.15;
+		const double StoredErr = FMath::Abs(Air.GetEnergyStoredJ() - FanW * .02) / (FanW * .02);
+		const double InErr = FMath::Abs(Air.GetDuctFanHeatJ() - FanW * .02) / (FanW * .02);
+		// The exhaust cell took one step of supply at +P/C over dt; its own volume dilutes it (checked loosely).
+		AddInfo(FString::Printf(TEXT("팬 1500 W 한 스텝: 축적 오차 %.3e, 입력 장부 오차 %.3e (기준 %.1f J) | 토출 셀 상승 %.4e K, P/(mdot cp) = %.4f K | 열수지 %.3e"),
+			StoredErr, InErr, FanW * .02, RiseK, FanW / CapacityWK, Air.GetNormalizedEnergyResidual()));
+		TestTrue(TEXT("Fan heat reaches the air exactly"), StoredErr < 1e-12);
+		TestTrue(TEXT("Fan heat booked as input"), InErr < 1e-12 && FMath::Abs(Air.GetNormalizedEnergyResidual()) < 1e-12);
+		TestTrue(TEXT("Supply side warmed"), RiseK > 0.0);
+		// No flow, no fan: nothing is added.
+		FAirSolver Air0; FAirSolverInput In0; Setup(Air0, In0, 297.15, 0.0, 0.0);
+		In0.DuctFanHeatW = {FanW};
+		Air0.Step(In0, .02);
+		TestTrue(TEXT("Stopped fan adds nothing"), Air0.GetDuctFanHeatJ() == 0.0 && Air0.GetEnergyStoredJ() == 0.0);
+	}
+
+	// 6) Coil arrays of the wrong length are rejected like any bad duct.
 	{
 		FAirSolver Air; FAirSolverInput In; Setup(Air, In, 305.15, CapacityWK, Q);
 		In.DuctCoilWaterTempK.Add(WaterK);
@@ -524,6 +548,8 @@ bool FCrahCouplingTest::RunTest(const FString& Parameters)
 	Crah.VolumeFlowM3s = DesignAirW / (GP.DensityKgM3 * GP.SpecificHeatJKgK * DesignDeltaTK);
 	Crah.CoilUAWK = -FMath::Loge(1.0 - DesignDeltaTK / (DesignDeltaTK + ApproachK)) * GP.DensityKgM3 * Crah.VolumeFlowM3s * GP.SpecificHeatJKgK;
 	Crah.WaterSupplyTempK = WaterK;
+	// Operating-point fan input (D8), the actor's estimates: 250 Pa, efficiency 0.6.
+	Crah.FanPowerW = 250.0 * Crah.VolumeFlowM3s / .6;
 
 	FCouplingBridge Bridge;
 	Bridge.Initialize({{&Model, &Input, &Radiator}}, {Link});
@@ -550,15 +576,17 @@ bool FCrahCouplingTest::RunTest(const FString& Parameters)
 		ReturnK - 273.15, SupplyK - 273.15, WaterK - 273.15, MinInletK - 273.15, MaxInletK - 273.15, Snap.NormalizedEnergyResidual, Snap.EnergyInJ,
 		AirSnap.NormalizedDivergence, AirSnap.bPressureConverged ? TEXT("수렴") : TEXT("실패")));
 	AddInfo(Bridge.DescribeEnergyLedger());
+	AddInfo(FString::Printf(TEXT("CRAH 팬 %.1f W (스냅샷 %.1f W) | 전역 유입 %.6e J = IT + 팬"), Crah.FanPowerW, Snap.CrahFanPowerW, Snap.EnergyInJ));
 
 	TestTrue(TEXT("Global ledger closes"), FMath::Abs(Snap.NormalizedEnergyResidual) < 1e-9);
+	TestTrue(TEXT("CRAH fan power reported"), FMath::Abs(Snap.CrahFanPowerW - Crah.FanPowerW) < 1e-9 * Crah.FanPowerW);
 	TestTrue(TEXT("Only the CRAH cools the air"), Snap.CrahCoilRemovedW > 0.0 && FMath::Abs(Snap.TotalAirCoolingRemovedW - Snap.CrahCoilRemovedW) < 1e-9 * Snap.CrahCoilRemovedW);
 	TestTrue(TEXT("CRAH flow reported"), FMath::Abs(Snap.CrahFlowM3s - Crah.VolumeFlowM3s) < 1e-12);
 	TestTrue(TEXT("Divergence free"), AirSnap.NormalizedDivergence < 1e-5);
 	TestTrue(TEXT("Pressure converged"), AirSnap.bPressureConverged);
 	// Plausibility (not physics): near steady state the unit carries the rack's air heat; supply between the
 	// water and the return; slot inlets within 15~35 C.
-	TestTrue(TEXT("CRAH carries the air heat"), FMath::Abs(Snap.CrahCoilRemovedW / RackAirW - 1.0) < .05);
+	TestTrue(TEXT("CRAH carries the air heat and its own fan heat"), FMath::Abs(Snap.CrahCoilRemovedW / (RackAirW + Crah.FanPowerW) - 1.0) < .05);
 	TestTrue(TEXT("Supply between water and return"), SupplyK > WaterK && SupplyK < ReturnK);
 	TestTrue(TEXT("Slot inlets 15~35 C"), MinInletK > 288.15 && MaxInletK < 308.15);
 	return true;

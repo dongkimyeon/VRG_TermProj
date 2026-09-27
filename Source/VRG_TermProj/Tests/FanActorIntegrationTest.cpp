@@ -85,4 +85,69 @@ bool FFanActorIntegrationTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+// Blanking and a cold-aisle roof around real rack actors: row A has a 1.4 m gap, the gap and the roof layer become
+// solid, the aisle below the roof stays air, and the coupled step still conserves energy and converges.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FContainmentActorTest, "VRG.Coupling.ContainmentSolids",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::CommandletContext | EAutomationTestFlags::EngineFilter)
+bool FContainmentActorTest::RunTest(const FString& Parameters)
+{
+	UWorld* World = UWorld::CreateWorld(EWorldType::Game, false);
+	if (!TestNotNull(TEXT("World"), World)) return false;
+
+	TArray<ARackThermalActor*> All;
+	for (const double Y : {0.0, 200.0}) All.Add(World->SpawnActor<ARackThermalActor>(FVector(-150, Y, 0), FRotator(0, 0, 0)));
+	for (const double Y : {0.0, 66.0}) All.Add(World->SpawnActor<ARackThermalActor>(FVector(150, Y, 0), FRotator(0, 180, 0)));
+	for (ARackThermalActor* Rack : All)
+	{
+		Rack->Params = FRackThermalModel::MakeGb200Nvl72Params();
+		Rack->Input = FRackThermalInput();
+		Rack->RackSizeM = FVector(1.068, .6, 2.236);
+		Rack->bShowReadout = false;
+		Rack->ResetSim(); Rack->PauseSim();
+	}
+	AAirFieldDebugActor* Air = World->SpawnActor<AAirFieldDebugActor>();
+	Air->FitToRacks();
+	Air->ResetSim();
+	ADataCenterSimulationActor* Sim = World->SpawnActor<ADataCenterSimulationActor>();
+	Sim->bShowSummary = false;
+	Sim->MaxStepsPerFrame = 16;
+	Sim->Containment = EAisleContainment::BlankingAndColdAisleRoof;
+	Sim->RebuildCoupling();
+	Sim->StartSim();
+	for (int32 Frame = 0; Frame < 50; ++Frame) Sim->Tick(.32f);  // 16 s
+
+	const FUniformAirGrid& G = Air->GetMutableSolver().GetGrid();
+	const FVector OriginM = Air->GetActorLocation() / 100.0;
+	auto SolidAt = [&](const FVector& PM)
+	{
+		const FVector L = PM - OriginM;
+		const int32 X = FMath::FloorToInt32(L.X / G.GetCellSizeM()), Y = FMath::FloorToInt32(L.Y / G.GetCellSizeM()), Z = FMath::FloorToInt32(L.Z / G.GetCellSizeM());
+		return G.IsValidCell(X, Y, Z) && G.IsSolidCell(X, Y, Z);
+	};
+	// Gap of row A: racks span y -0.3..0.3 and 1.7..2.3; the row centre line is x = -1.5 m.
+	const bool bGapClosed = SolidAt(FVector(-1.5, 1.0, 1.0));
+	// Roof: one cell above the rack tops (2.236 m) over the aisle centre; the aisle below it is air.
+	const double RoofZ = 2.236 + .5 * G.GetCellSizeM();
+	const bool bRoof = SolidAt(FVector(0.0, .3, RoofZ)), bAisleAir = !SolidAt(FVector(0.0, .3, 1.0));
+	// The aisle ends stay open (partial containment): beyond the rows along y the roof layer is air.
+	const bool bEndOpen = !SolidAt(FVector(0.0, 2.8, RoofZ));
+
+	const FCouplingSnapshot Snap = Sim->GetSnapshot();
+	const FAirSolverSnapshot AirSnap = Air->GetMutableSolver().MakeSnapshot(Snap.SimTimeS);
+	AddInfo(FString::Printf(TEXT("차단 셀 %d개 | 틈 막힘 %d, 지붕 %d, 통로 공기 %d, 끝 열림 %d | t=%.1f s | 전역 잔차 %.3e | 발산 %.3e | 압력 %s | CRAH %d대"),
+		Sim->GetNumContainmentCells(), bGapClosed, bRoof, bAisleAir, bEndOpen, Snap.SimTimeS, Snap.NormalizedEnergyResidual,
+		AirSnap.NormalizedDivergence, AirSnap.bPressureConverged ? TEXT("수렴") : TEXT("실패"), Sim->GetNumCrahUnits()));
+	TestTrue(TEXT("Containment cells marked"), Sim->GetNumContainmentCells() > 0);
+	TestTrue(TEXT("Row gap closed"), bGapClosed);
+	TestTrue(TEXT("Cold-aisle roof"), bRoof);
+	TestTrue(TEXT("Aisle below the roof is air"), bAisleAir);
+	TestTrue(TEXT("Aisle ends open"), bEndOpen);
+	TestTrue(TEXT("Global ledger closes"), FMath::Abs(Snap.NormalizedEnergyResidual) < 1e-9);
+	TestTrue(TEXT("Divergence free"), AirSnap.NormalizedDivergence < 1e-5);
+	TestTrue(TEXT("Pressure converged"), AirSnap.bPressureConverged);
+
+	World->DestroyWorld(false);
+	return true;
+}
+
 #endif // WITH_DEV_AUTOMATION_TESTS

@@ -123,6 +123,11 @@ struct FAirSolverInput
 	TArray<double> DuctCoilUAWK;
 	TArray<double> DuctCoilWaterTempK;
 
+	// Optional fan electric input per duct [W] (length NumDucts, or empty). It all ends up as heat in the air the
+	// duct delivers, added after the coil (draw-through fan): T_exhaust += P / (mdot * cp). Booked once as an
+	// air-side input (GetDuctFanHeatJ). A duct carrying no flow adds nothing (its fan is not running).
+	TArray<double> DuctFanHeatW;
+
 	bool HasDucts() const { return DuctFaceIndex.Num() > 0; }
 };
 
@@ -289,6 +294,10 @@ public:
 	// Heat duct coils (CRAH units) removed in the last step [W]; included in the cooling ledger.
 	double GetLastDuctCoilRemovedW() const { return LastDuctCoilRemovedW; }
 
+	// Duct fan heat: last step [W] and cumulative [J]. Part of GetEnergyInJ (an input to the air, like CellHeatW).
+	double GetLastDuctFanHeatW() const { return LastDuctFanHeatW; }
+	double GetDuctFanHeatJ() const { return DuctFanHeatTotalJ; }
+
 	// 마지막 스텝의 CFL 수.
 	double GetCourantNumber() const { return LastCourantNumber; }
 
@@ -343,6 +352,7 @@ private:
 	TArray<double> DuctIntakeEnthalpy, DuctExhaustSpeedSum;
 	double LastDuctFlowM3s = 0.0;
 	double DuctCoilRemovedJ = 0.0, LastDuctCoilRemovedW = 0.0;  // this step (sum over sub-steps) / its rate
+	double DuctFanHeatStepJ = 0.0, LastDuctFanHeatW = 0.0, DuctFanHeatTotalJ = 0.0;
 	int32 LastNumDuctFaces = 0;
 	bool bLastDuctsRejected = false;
 	int32 LastTemperatureSubsteps = 1;

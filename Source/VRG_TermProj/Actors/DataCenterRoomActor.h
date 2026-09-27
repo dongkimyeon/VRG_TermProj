@@ -212,6 +212,10 @@ public:
 	// 수력이 랙에 유량을 넘길 때 이 인덱스로 찾는다.
 	const TArray<int32>& GetRackBranchPipeIndices() const { return RackBranchPipeIndices; }
 
+	// Row index of every rack, in GetRoutedRacks() order, and the CDU serving a row (null if none).
+	TArray<int32> GetRoutedRackRows() const;
+	ACoolingDistributionUnitActor* GetRowCdu(int32 RowIndex) const { return Rows.IsValidIndex(RowIndex) ? Rows[RowIndex].Cdu.Get() : nullptr; }
+
 	// 배관을 다시 이었는지. 통합 액터가 이번 스텝에 유량이 바뀌었는지 알아야 한다.
 	bool ConsumeRebuiltFlag();
 

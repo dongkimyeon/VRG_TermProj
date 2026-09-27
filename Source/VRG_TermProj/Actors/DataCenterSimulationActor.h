@@ -15,6 +15,28 @@ class ASpineCabinetActor;
 class UStaticMesh;
 class UStaticMeshComponent;
 
+// Where the rack coolant loops reject their heat (2026-09-27).
+UENUM(BlueprintType)
+enum class ECoolantRejection : uint8
+{
+	// Legacy: one radiator per rack straight to ambient (FRadiatorParams on the rack). No shared capacity.
+	PerRackRadiator,
+	// Each row's CDU: returns mix, one liquid-to-liquid exchanger against facility water, one supply temperature.
+	// Rows without a CDU keep their racks' radiators.
+	CduHeatExchanger,
+};
+
+// Passive air barriers (2026-09-27). Only the air grid sees them (solid cells).
+UENUM(BlueprintType)
+enum class EAisleContainment : uint8
+{
+	None,
+	// Blanking: the gaps between cabinets and the slivers between neighbours in every row are closed.
+	Blanking,
+	// Blanking plus a roof over every cold aisle at rack-top height. Aisle ends stay open (partial containment).
+	BlankingAndColdAisleRoof,
+};
+
 // How the room air is cooled (2026-09-27).
 UENUM(BlueprintType)
 enum class ECrahLayout : uint8
@@ -160,12 +182,32 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Cooling|CRAH")
 	FVector CrahPerimeterSizeM = FVector(0.9, 2.0, 2.0);
 
+	// CRAH fan electric input at the operating point (D8): P = FanPressurePa * flow / FanEfficiency.
+	// 250 Pa (coil + filter + casing) and 0.6 (EC fan and motor, wire to air) are ESTIMATES for a chilled-water
+	// cooler, not a product rating. The power becomes heat in the supply air and a ledger input (not IT heat).
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Cooling|CRAH", meta = (ClampMin = "0.0"))
+	double CrahFanPressurePa = 250.0;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Cooling|CRAH", meta = (ClampMin = "0.05", ClampMax = "1.0"))
+	double CrahFanEfficiency = 0.6;
+
 	// Gap between a perimeter unit and the ends of the rows it serves [m].
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Cooling|CRAH")
 	double CrahPerimeterClearanceM = 0.4;
 
 	UFUNCTION(BlueprintCallable, Category = "Cooling|CRAH")
 	int32 GetNumCrahUnits() const { return CrahPlacements.Num(); }
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Cooling|Coolant")
+	ECoolantRejection CoolantRejection = ECoolantRejection::CduHeatExchanger;
+
+	// Blanking / cold-aisle roof. Default off: the level's own layout (gaps and all) is the reference.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Cooling|Containment")
+	EAisleContainment Containment = EAisleContainment::None;
+
+	// Air-grid cells turned solid by Containment at the last rebuild.
+	UFUNCTION(BlueprintCallable, Category = "Cooling|Containment")
+	int32 GetNumContainmentCells() const { return PassiveSolidCells; }
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Visualization")
 	bool bShowSummary = true;
@@ -228,6 +270,38 @@ private:
 	// 천장 쪽 한 층을 CRAH 코일로 잡는다.
 	void BuildCoolingCoil();
 
+	// ---- CDU heat exchangers ----
+	struct FCduSummary
+	{
+		FString Name;
+		int32 NumRacks = 0;
+		double DesignDutyW = 0.0, UAWK = 0.0, FacilityMassFlowKgs = 0.0, FacilitySupplyTempK = 0.0;
+	};
+	TArray<FCduSummary> CduSummaries;
+	// Groups the racks of every row that has a CDU and sizes the exchanger (after Bridge.Initialize).
+	void BuildCduGroups();
+
+	// ---- Rows and cold aisles (from the cabinets, every rebuild) ----
+	struct FCabinetRow
+	{
+		FVector Forward, Along;
+		double Across = 0.0, Depth = 0.0, Height = 0.0, BaseZ = 0.0;
+		double MinAlong = TNumericLimits<double>::Max(), MaxAlong = TNumericLimits<double>::Lowest();
+		TArray<FVector2D> Spans;  // (start, end) along the row of every cabinet, sorted after grouping
+	};
+	struct FColdAisle
+	{
+		int32 RowA = 0, RowB = 0;    // RowA's forward points into the aisle
+		FVector Forward, Along, Centre;
+		double MinAlong = 0.0, MaxAlong = 0.0, BaseZ = 0.0, TopZ = 0.0;
+	};
+	TArray<FCabinetRow> CabinetRows;
+	TArray<FColdAisle> ColdAisles;
+	int32 NumUnpairedRows = 0;
+	void GroupCabinetRows();
+	static constexpr int32 PassiveSolidOwner = -2;
+	int32 PassiveSolidCells = 0;
+
 	// ---- CRAH units ----
 	struct FCrahPlacement
 	{
@@ -238,7 +312,7 @@ private:
 	};
 	TArray<FCrahPlacement> CrahPlacements;
 	TArray<FCrahCouplingUnit> CrahUnits;
-	double CrahUnitFlowM3s = 0.0, CrahUnitUAWK = 0.0;
+	double CrahUnitFlowM3s = 0.0, CrahUnitUAWK = 0.0, CrahUnitFanW = 0.0;
 	int32 CrahUnitsDropped = 0;
 	bool bCrahFellBackToCoil = false;
 	// Places units from the rack rows (CrahLayout). Units that leave the air grid are dropped and counted.
@@ -251,6 +325,10 @@ private:
 	UPROPERTY(Transient)
 	TArray<TObjectPtr<UStaticMeshComponent>> CrahMeshes;
 	void UpdateCrahMeshes();
+	UPROPERTY(Transient)
+	TArray<TObjectPtr<UStaticMeshComponent>> ContainmentMeshes;
+	// Blanking panels in row gaps wider than 5 cm and the cold-aisle roofs (a thin plate; the grid blocks one cell).
+	void UpdateContainmentMeshes();
 
 	void DrawSummary() const;
 };
