@@ -1050,6 +1050,23 @@ bool FVrgAirGpuSolver::Transport(const FVrgAirGpuTransportInput& In, FVrgAirGpuT
 			W.Dispatch<FVrgStepCoolingCS>(P);
 			W.Reduce(1, Applied, In.CoolCell.Num(), SSCoolW);
 		}
+		if (In.bPrepareNext)
+		{
+			TArray<double> NextConsts = Consts;
+			NextConsts[CChenXu] = In.ChenXuNext;
+			FRDGBufferRef NextConstBuf = W.Transient(TEXT("VrgAirConstsNext"), 8, NumConsts, NextConsts.GetData());
+			for (int32 Axis = 0; Axis < 3; ++Axis) W.Reduce(2, A.V[Axis], A.NumFaces[Axis], SSMaxU0 + Axis);
+			if (In.bTurbulenceNext)
+			{
+				FVrgStepParams* P = W.Params(uint32(A.NumCells));
+				P->Consts = GB.CreateSRV(NextConstBuf);
+				P->InA = G.Srv(A.V[0]); P->InB = G.Srv(A.V[1]); P->InC = G.Srv(A.V[2]); P->InD = G.Srv(A.WallDist);
+				P->OutA = G.Uav(A.NuT);
+				W.Dispatch<FVrgStepNuTCS>(P);
+				W.Reduce(2, A.NuT, A.NumCells, SSMaxNu);
+				W.Reduce(1, A.NuT, A.NumCells, SSSumNu);
+			}
+		}
 		Reads.Add({ G.Reg(A.T), A.NumCells * int32(sizeof(double)) });
 		for (int32 Axis = 0; Axis < 3; ++Axis) Reads.Add({ G.Reg(A.V[Axis]), A.NumFaces[Axis] * int32(sizeof(double)) });
 		Reads.Add({ G.Reg(A.Scalars), NumStepScalars * int32(sizeof(double)) });
@@ -1066,6 +1083,12 @@ bool FVrgAirGpuSolver::Transport(const FVrgAirGpuTransportInput& In, FVrgAirGpuT
 	}
 	const double* Sc = reinterpret_cast<const double*>(ScalarBytes.GetData());
 	Out.CellCoolingRemovedW = In.CoolCell.Num() > 0 ? Sc[SSCoolW] : 0.0;
+	if (In.bPrepareNext)
+	{
+		Out.NextMaxAbsVelocityMs = FMath::Max3(Sc[SSMaxU0], Sc[SSMaxU1], Sc[SSMaxU2]);
+		Out.NextMaxNuTM2s = In.bTurbulenceNext ? Sc[SSMaxNu] : 0.0;
+		Out.NextSumNuTM2s = In.bTurbulenceNext ? Sc[SSSumNu] : 0.0;
+	}
 	Out.DuctCoilRemovedJ = 0.0;
 	if (Ducts)
 	{

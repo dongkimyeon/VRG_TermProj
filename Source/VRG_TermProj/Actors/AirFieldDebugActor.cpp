@@ -16,6 +16,7 @@
 #include "Components/SceneComponent.h"
 #include "DrawDebugHelpers.h"
 #include "Simulation/Core/VrgPerfCounters.h"
+#include "Simulation/Core/VrgParallel.h"
 #include "HAL/IConsoleManager.h"
 #include "SceneViewExtension.h"
 #include "VrgVolumeSceneViewExtension.h"
@@ -122,11 +123,17 @@ namespace
 		TEXT("vrg.Pressure.GpuMultigrid"), GVrgGpuMultigrid,
 		TEXT("압력 MG-PCG를 GPU(FP64)에서 푼다. 0=CPU, 1=GPU(없으면 CPU로 대체)"));
 
-	// 4b/4c (2026-09-27): the whole uniform-grid air step on the GPU in FP64 (the CPU grid stays a mirror). 0 = CPU.
-	static int32 GVrgAirGpuStep = 0;
+	// 4b/4c (2026-09-27): the whole uniform-grid air step on the GPU in FP64 (the CPU grid stays a mirror).
+	// -1 (default) = GPU from GVrgAirGpuAutoCells cells up. Measured on L_Test: 33210 cells the CPU is faster
+	// (frame 6 vs 19 ms), 265680 cells the GPU (step 48 vs 14 ms). The threshold between them is a choice, not measured.
+	static int32 GVrgAirGpuStep = -1;
 	static FAutoConsoleVariableRef CVarAirGpuStep(
 		TEXT("vrg.Air.Gpu"), GVrgAirGpuStep,
-		TEXT("공기 한 스텝 전체를 GPU(FP64, 상주 필드)에서 돈다. 0=CPU, 1=GPU(없으면 CPU로 대체)"));
+		TEXT("공기 한 스텝 전체를 GPU(FP64, 상주 필드)에서 돈다. -1=셀 수로 자동(기본), 0=CPU, 1=GPU(없으면 CPU로 대체)"));
+	static int32 GVrgAirGpuAutoCells = 100000;
+	static FAutoConsoleVariableRef CVarAirGpuAutoCells(
+		TEXT("vrg.Air.GpuAutoCells"), GVrgAirGpuAutoCells,
+		TEXT("vrg.Air.Gpu -1일 때 이 셀 수 이상이면 GPU 스텝을 쓴다 (두 측정점 사이에서 고른 값)"));
 
 	// 2026-09-27: Chen-Xu zero-equation turbulence (FAirTurbulenceSettings). The solver's own default stays off, so the
 	// automation tests that drive FAirSolver directly keep their inviscid reference.
@@ -336,10 +343,12 @@ void AAirFieldDebugActor::PauseSim()
 
 void AAirFieldDebugActor::ResetSim()
 {
+	bDisplaySnapshotValid = false;
 	Clock.Reset(FixedStepS);
 	Solver.Initialize(GridParams, InitialTempK);
 	Solver.GetMutablePressureSettings() = PressureSettings;
 	Solver.GetMutableTurbulenceSettings().bEnabled = GVrgAirTurbulence != 0;  // also before the first Tick (warm-up)
+	Solver.SetUseGpuStep(GVrgAirGpuStep > 0 || (GVrgAirGpuStep < 0 && Solver.GetGrid().GetNumCells() >= GVrgAirGpuAutoCells));
 	if (bUseOctreeSolver)
 	{
 		FFixedOctreeSettings Settings; Settings.MaxDepth = OctreeDepth; Settings.MaxLeaves = OctreeMaxLeaves;
@@ -360,6 +369,19 @@ void AAirFieldDebugActor::ResetSim()
 	}
 
 	bNeedsReset = false;
+}
+
+const FAirSolverSnapshot& AAirFieldDebugActor::GetDisplaySnapshot() const
+{
+	// HUD and volume colours only: rebuilt when the sim time moves (a 265k-cell snapshot every frame cost the frame).
+	const double SimTimeS = bDrivenExternally ? ExternalSimTimeS : Clock.GetSimTimeS();
+	if (!bDisplaySnapshotValid || SimTimeS != DisplaySnapshotSimTimeS)
+	{
+		DisplaySnapshot = GetSnapshot();
+		DisplaySnapshotSimTimeS = SimTimeS;
+		bDisplaySnapshotValid = true;
+	}
+	return DisplaySnapshot;
 }
 
 FAirSolverSnapshot AAirFieldDebugActor::GetSnapshot() const
@@ -595,7 +617,7 @@ void AAirFieldDebugActor::Tick(float DeltaTime)
 	Solver.SetUseGpuPressure(GVrgUseGpuPressure != 0);
 	Solver.SetUseMultigridPressure(GVrgMultigridPressure != 0);
 	Solver.SetUseGpuMultigrid(GVrgGpuMultigrid != 0);
-	Solver.SetUseGpuStep(GVrgAirGpuStep != 0);
+	Solver.SetUseGpuStep(GVrgAirGpuStep > 0 || (GVrgAirGpuStep < 0 && Solver.GetGrid().GetNumCells() >= GVrgAirGpuAutoCells));
 	Solver.GetMutableTurbulenceSettings().bEnabled = GVrgAirTurbulence != 0;
 
 	// 예약된 예열을 먼저 나눠 소화한다. 다 끝나면 평소 적분으로 돌아간다.
@@ -824,7 +846,7 @@ void AAirFieldDebugActor::DrawSummaryText() const
 		return;
 	}
 
-	const FAirSolverSnapshot Snapshot = GetSnapshot();
+	const FAirSolverSnapshot& Snapshot = GetDisplaySnapshot();
 	const FUniformAirGrid& Grid = Solver.GetGrid();
 
 	double TotalHeatW = 0.0;
@@ -933,12 +955,15 @@ void AAirFieldDebugActor::UpdateVolumeRender()
 	// 셰이더가 건너뛰게 한다. 정규화해서 담으면 표시 범위를 바꿀 때마다 다시 올려야 한다.
 	TArray<float> VoxelsK;
 	VoxelsK.SetNumUninitialized(NumCells);
-	for (int32 Index = 0; Index < NumCells; ++Index)
+	VrgParallel::ForRange(NumCells, 8192, [&](int32 Begin, int32 End)
 	{
-		VoxelsK[Index] = Grid.bSolidCell.IsValidIndex(Index) && Grid.bSolidCell[Index]
-			? -1.0f
-			: float(Grid.TemperatureK[Index]);
-	}
+		for (int32 Index = Begin; Index < End; ++Index)
+		{
+			VoxelsK[Index] = Grid.bSolidCell.IsValidIndex(Index) && Grid.bSolidCell[Index]
+				? -1.0f
+				: float(Grid.TemperatureK[Index]);
+		}
+	});
 
 	const FVector OriginCm = GetActorLocation();
 	const FVector DomainSizeCm = SimUnits::MetersToUnreal(Grid.GetDomainSizeM());
@@ -950,7 +975,7 @@ void AAirFieldDebugActor::UpdateVolumeRender()
 	double DisplayMaxK = ColorMaxCelsius + 273.15;
 	if (bAutoColorRange)
 	{
-		const FAirSolverSnapshot Snapshot = Solver.MakeSnapshot(0.0);
+		const FAirSolverSnapshot& Snapshot = GetDisplaySnapshot();
 		DisplayMinK = Snapshot.MinTemperatureK;
 		// 가장 뜨거운 셀에 상한을 맞추면 그 한 셀만 빨강이고 나머지는 파랗다.
 		// 폭을 좁혀 중간 온도가 초록~노랑으로 올라오게 한다 (표시용 대비 조정).
@@ -974,23 +999,20 @@ void AAirFieldDebugActor::UpdateVolumeRender()
 	}
 	TArray<FVector4f> VelocityMs;
 	VelocityMs.SetNumUninitialized(NumCells);
-	for (int32 Z = 0; Z < GridSize.Z; ++Z)
+	VrgParallel::ForEachRow(0, GridSize.Y, 0, GridSize.Z, [&](int32 Y, int32 Z)
 	{
-		for (int32 Y = 0; Y < GridSize.Y; ++Y)
+		for (int32 X = 0; X < GridSize.X; ++X)
 		{
-			for (int32 X = 0; X < GridSize.X; ++X)
-			{
-				const double Vx = 0.5 * (Grid.VelocityXMs[Grid.FaceXIndex(X, Y, Z)]
-					+ Grid.VelocityXMs[Grid.FaceXIndex(X + 1, Y, Z)]);
-				const double Vy = 0.5 * (Grid.VelocityYMs[Grid.FaceYIndex(X, Y, Z)]
-					+ Grid.VelocityYMs[Grid.FaceYIndex(X, Y + 1, Z)]);
-				const double Vz = 0.5 * (Grid.VelocityZMs[Grid.FaceZIndex(X, Y, Z)]
-					+ Grid.VelocityZMs[Grid.FaceZIndex(X, Y, Z + 1)]);
-				VelocityMs[Grid.CellIndex(X, Y, Z)] =
-					FVector4f(float(Vx), float(Vy), float(Vz), 0.0f);
-			}
+			const double Vx = 0.5 * (Grid.VelocityXMs[Grid.FaceXIndex(X, Y, Z)]
+				+ Grid.VelocityXMs[Grid.FaceXIndex(X + 1, Y, Z)]);
+			const double Vy = 0.5 * (Grid.VelocityYMs[Grid.FaceYIndex(X, Y, Z)]
+				+ Grid.VelocityYMs[Grid.FaceYIndex(X, Y + 1, Z)]);
+			const double Vz = 0.5 * (Grid.VelocityZMs[Grid.FaceZIndex(X, Y, Z)]
+				+ Grid.VelocityZMs[Grid.FaceZIndex(X, Y, Z + 1)]);
+			VelocityMs[Grid.CellIndex(X, Y, Z)] =
+				FVector4f(float(Vx), float(Vy), float(Vz), 0.0f);
 		}
-	}
+	});
 
 	// 정규화 기준은 지금 장의 최대 속도다. 고정값을 쓰면 느린 구성에서 무늬가 안 보인다.
 	const double MaxSpeedMs = FMath::Max(Grid.MaxAbsVelocityMs(), 0.05);

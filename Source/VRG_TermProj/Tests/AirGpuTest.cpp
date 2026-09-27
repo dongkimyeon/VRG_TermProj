@@ -201,14 +201,15 @@ bool FAirGpuStepTest::RunTest(const FString& Parameters)
 	constexpr int32 NX = 40, NY = 24, NZ = 12, Steps = 150;
 	constexpr double H = .25, Q = .6;
 	struct FRun { TArray<double> T, U, V, W; double Residual = 0; int32 PressureIters = 0; bool bGpu = false; double CoolW = 0, CoilW = 0; };
-	auto Run = [&](bool bGpu, bool bTurbulence)
+	// Mode 0: CPU, 1: GPU, 2: GPU and CPU alternating every 10 steps (the mirror must hand over the state both ways).
+	auto Run = [&](int32 Mode, bool bTurbulence)
 	{
 		FRun Out;
 		FAirGridParams GP; GP.NumCellsX = NX; GP.NumCellsY = NY; GP.NumCellsZ = NZ; GP.CellSizeM = H;
 		FAirSolver Air; Air.Initialize(GP, 297.15);
 		Air.GetMutablePressureSettings().NormalizedResidualTarget = 1e-8;
 		Air.GetMutableTurbulenceSettings().bEnabled = bTurbulence;
-		Air.SetUseGpuStep(bGpu);
+		Air.SetUseGpuStep(Mode != 0);
 		FUniformAirGrid& G = Air.GetMutableGrid();
 		for (int32 Z = 0; Z <= 8; ++Z) for (int32 Y = 4; Y <= 7; ++Y) for (int32 X = 10; X <= 11; ++X) G.bSolidCell[G.CellIndex(X, Y, Z)] = true;
 		for (int32 Z = 0; Z <= 8; ++Z) for (int32 Y = 12; Y <= 20; ++Y) G.bSolidCell[G.CellIndex(25, Y, Z)] = true;
@@ -228,6 +229,7 @@ bool FAirGpuStepTest::RunTest(const FString& Parameters)
 		}
 		for (int32 S = 0; S < Steps; ++S)
 		{
+			if (Mode == 2) Air.SetUseGpuStep((S / 10) % 2 == 0);
 			Air.Step(In, .02);
 			Out.PressureIters += Air.GetLastPressureResult().IterationsUsed;
 		}
@@ -245,7 +247,11 @@ bool FAirGpuStepTest::RunTest(const FString& Parameters)
 	};
 	for (const bool bTurbulence : { false, true })
 	{
-		const FRun Cpu = Run(false, bTurbulence), Gpu = Run(true, bTurbulence);
+		const FRun Cpu = Run(0, bTurbulence), Gpu = Run(1, bTurbulence), Mixed = Run(2, bTurbulence);
+		const double DTMixed = MaxDiff(Cpu.T, Mixed.T);
+		const double DVMixed = FMath::Max3(MaxDiff(Cpu.U, Mixed.U), MaxDiff(Cpu.V, Mixed.V), MaxDiff(Cpu.W, Mixed.W));
+		AddInfo(FString::Printf(TEXT("난류 %d, GPU/CPU 10스텝마다 교대: 온도 차 %.3e K, 속도 차 %.3e m/s, 열수지 %.3e"), bTurbulence, DTMixed, DVMixed, Mixed.Residual));
+		TestTrue(TEXT("Alternating GPU / CPU agrees with the CPU"), DTMixed < 1e-6 && DVMixed < 1e-6 && FMath::Abs(Mixed.Residual) < 1e-12);
 		const double DT = MaxDiff(Cpu.T, Gpu.T);
 		const double DV = FMath::Max3(MaxDiff(Cpu.U, Gpu.U), MaxDiff(Cpu.V, Gpu.V), MaxDiff(Cpu.W, Gpu.W));
 		double TMin = 1e9, TMax = 0; for (const double T : Cpu.T) { TMin = FMath::Min(TMin, T); TMax = FMath::Max(TMax, T); }

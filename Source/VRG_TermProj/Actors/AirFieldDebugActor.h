@@ -336,6 +336,11 @@ protected:
 #endif
 
 private:
+	// HUD / volume colours: one snapshot per sim time (see GetDisplaySnapshot).
+	const FAirSolverSnapshot& GetDisplaySnapshot() const;
+	mutable FAirSolverSnapshot DisplaySnapshot;
+	mutable double DisplaySnapshotSimTimeS = -1.0;
+	mutable bool bDisplaySnapshotValid = false;
 	// Outline of the air domain (the grid box), visible in the editor only, so a fit can be checked without playing.
 	UPROPERTY(VisibleAnywhere, Category = "Air")
 	TObjectPtr<class UBoxComponent> DomainBounds;

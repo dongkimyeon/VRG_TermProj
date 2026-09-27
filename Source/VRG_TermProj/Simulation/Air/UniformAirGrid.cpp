@@ -1,6 +1,7 @@
 // Fill out your copyright notice in the Description page of Project Settings.
 
 #include "Simulation/Air/UniformAirGrid.h"
+#include "Simulation/Core/VrgParallel.h"
 
 void FUniformAirGrid::Initialize(const FAirGridParams& InParams)
 {
@@ -116,11 +117,14 @@ double FUniformAirGrid::CellDivergencePerS(int32 X, int32 Y, int32 Z) const
 
 double FUniformAirGrid::MaxAbsDivergencePerS() const
 {
-	double MaxAbs = 0.0;
-	for (int32 Z = 0; Z < Params.NumCellsZ; ++Z)
+	// Fixed blocks over whole rows (VrgParallel): a max is order independent, so this equals the serial loop exactly.
+	const int32 NumRows = Params.NumCellsY * Params.NumCellsZ;
+	return VrgParallel::Max(NumRows, 64, [&](int32 Begin, int32 End)
 	{
-		for (int32 Y = 0; Y < Params.NumCellsY; ++Y)
+		double MaxAbs = 0.0;
+		for (int32 Row = Begin; Row < End; ++Row)
 		{
+			const int32 Y = Row % Params.NumCellsY, Z = Row / Params.NumCellsY;
 			for (int32 X = 0; X < Params.NumCellsX; ++X)
 			{
 				// Only air cells carry the continuity equation. A solid cell has no unknown; with fan ducts its
@@ -132,16 +136,23 @@ double FUniformAirGrid::MaxAbsDivergencePerS() const
 				MaxAbs = FMath::Max(MaxAbs, FMath::Abs(CellDivergencePerS(X, Y, Z)));
 			}
 		}
-	}
-	return MaxAbs;
+		return MaxAbs;
+	});
 }
 
 double FUniformAirGrid::MaxAbsVelocityMs() const
 {
 	double MaxAbs = 0.0;
-	for (const double Value : VelocityXMs) { MaxAbs = FMath::Max(MaxAbs, FMath::Abs(Value)); }
-	for (const double Value : VelocityYMs) { MaxAbs = FMath::Max(MaxAbs, FMath::Abs(Value)); }
-	for (const double Value : VelocityZMs) { MaxAbs = FMath::Max(MaxAbs, FMath::Abs(Value)); }
+	for (const TArray<double>* Field : { &VelocityXMs, &VelocityYMs, &VelocityZMs })
+	{
+		const double* V = Field->GetData();
+		MaxAbs = FMath::Max(MaxAbs, VrgParallel::Max(Field->Num(), 8192, [&](int32 Begin, int32 End)
+		{
+			double M = 0.0;
+			for (int32 I = Begin; I < End; ++I) M = FMath::Max(M, FMath::Abs(V[I]));
+			return M;
+		}));
+	}
 	return MaxAbs;
 }
 
@@ -165,15 +176,20 @@ double FUniformAirGrid::TotalThermalEnergyJ(double DatumTempK) const
 	// 밀도는 Boussinesq 기준값 하나를 쓴다. 부력에만 온도 의존을 남긴다.
 	const double CellMassKg = Params.DensityKgM3 * GetCellVolumeM3();
 
-	double EnergyJ = 0.0;
-	for (int32 Index = 0; Index < TemperatureK.Num(); ++Index)
+	// Fixed-block sum (VrgParallel): the same value on any core count, run to run.
+	const bool bHasSolids = bSolidCell.Num() == TemperatureK.Num();
+	return VrgParallel::Sum(TemperatureK.Num(), 8192, [&](int32 Begin, int32 End)
 	{
-		// 고체 셀에는 공기가 없다. 세면 장부가 어긋난다.
-		if (bSolidCell.IsValidIndex(Index) && bSolidCell[Index])
+		double EnergyJ = 0.0;
+		for (int32 Index = Begin; Index < End; ++Index)
 		{
-			continue;
+			// 고체 셀에는 공기가 없다. 세면 장부가 어긋난다.
+			if (bHasSolids && bSolidCell[Index])
+			{
+				continue;
+			}
+			EnergyJ += CellMassKg * Params.SpecificHeatJKgK * (TemperatureK[Index] - DatumTempK);
 		}
-		EnergyJ += CellMassKg * Params.SpecificHeatJKgK * (TemperatureK[Index] - DatumTempK);
-	}
-	return EnergyJ;
+		return EnergyJ;
+	});
 }

@@ -386,6 +386,9 @@ private:
 	bool bUseGpuStep = false, bLastStepRanOnGpu = false, bGpuStepFallbackLogged = false;
 	bool bGpuStateDirty = true, bGpuTopologyDirty = true, bGpuHasWallDistance = false;
 	TUniquePtr<FVrgAirGpuSolver> GpuStep;
+	// The previous GPU step already computed this step's PreStep values (valid while nothing re-uploaded the state).
+	bool bGpuPreparedValid = false, bGpuPreparedTurbulence = false;
+	double GpuPreparedChenXu = 0.0, GpuPreparedMaxU = 0.0, GpuPreparedMaxNu = 0.0, GpuPreparedSumNu = 0.0;
 	bool StepOnGpu(const FAirSolverInput& Input, double DeltaTimeS);
 	int64 NumPressureSolves = 0, NumPressureFailures = 0;
 	MultigridPoissonSolver::FUniformCache MultigridCache;

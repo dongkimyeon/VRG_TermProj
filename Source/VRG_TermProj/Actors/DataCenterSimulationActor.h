@@ -255,6 +255,10 @@ protected:
 #endif
 
 private:
+	// HUD only: the coupling snapshot walks the whole air grid for its ledger, so it is rebuilt once per sim time.
+	mutable FCouplingSnapshot DisplaySnapshot;
+	mutable double DisplaySnapshotSimTimeS = -1.0;
+	mutable bool bDisplaySnapshotValid = false;
 	FSimClock Clock;
 	FCouplingBridge Bridge;
 

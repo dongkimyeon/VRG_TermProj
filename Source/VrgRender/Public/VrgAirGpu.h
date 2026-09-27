@@ -138,12 +138,19 @@ struct FVrgAirGpuTransportInput
 	TArray<int32> HeatCell;  TArray<double> HeatW;   // non-zero fluid cells only
 	TArray<int32> CoolCell;  TArray<double> CoolUAWK; // UA > 0 fluid cells only
 	double CoolingSupplyTempK = 291.15;
+	// Also compute what the next step's PreStep would (nu_t and maxima of the final state) and read it back with the
+	// fields, so the next step needs no start-of-step sync. Same kernels on the same velocity, so the same values.
+	bool bPrepareNext = false;
+	bool bTurbulenceNext = false;
+	double ChenXuNext = 0.0;
 };
 
 struct FVrgAirGpuTransportOutput
 {
 	double CellCoolingRemovedW = 0.0;   // sum of the applied cell-coil rates
 	double DuctCoilRemovedJ = 0.0;      // over the step's sub-steps
+	// With bPrepareNext: the next step's PreStep results.
+	double NextMaxAbsVelocityMs = 0.0, NextMaxNuTM2s = 0.0, NextSumNuTM2s = 0.0;
 };
 
 class VRGRENDER_API FVrgAirGpuSolver

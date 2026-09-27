@@ -666,6 +666,8 @@ void FAirSolver::Step(const FAirSolverInput& Input, double DeltaTimeS)
 			bGpuStepFallbackLogged = true;
 		}
 	}
+	// The CPU step below changes the mirror: a later GPU step must upload it first (also after vrg.Air.Gpu 1 -> 0 -> 1).
+	bGpuStateDirty = true;
 
 	// CFL을 먼저 재 둔다. 1을 넘으면 반라그랑주가 한 스텝에 한 셀을 건너뛴다.
 	// 반라그랑주는 무조건 안정이라 터지지는 않지만 결과가 뭉개진다.
@@ -748,6 +750,7 @@ bool FAirSolver::StepOnGpu(const FAirSolverInput& Input, double DeltaTimeS)
 	}
 	if (bGpuStateDirty)
 	{
+		bGpuPreparedValid = false;
 		if (Grid.PressurePa.Num() != NumCells) Grid.PressurePa.Init(0.0, NumCells);
 		if (!GpuStep->UploadState(Grid.TemperatureK, Grid.VelocityXMs, Grid.VelocityYMs, Grid.VelocityZMs, Grid.PressurePa)) return false;
 		bGpuStateDirty = false;
@@ -798,7 +801,15 @@ bool FAirSolver::StepOnGpu(const FAirSolverInput& Input, double DeltaTimeS)
 
 	// Stage A: maxima of the state at the start of the step (and nu_t).
 	double MaxU = 0.0, MaxNu = 0.0, SumNu = 0.0;
-	if (!GpuStep->PreStep(Turbulence.bEnabled, Turbulence.ChenXuCoefficient, MaxU, MaxNu, SumNu)) return false;
+	if (bGpuPreparedValid && bGpuPreparedTurbulence == Turbulence.bEnabled && GpuPreparedChenXu == Turbulence.ChenXuCoefficient)
+	{
+		MaxU = GpuPreparedMaxU; MaxNu = GpuPreparedMaxNu; SumNu = GpuPreparedSumNu;  // no sync: the last step computed them
+	}
+	else if (!GpuStep->PreStep(Turbulence.bEnabled, Turbulence.ChenXuCoefficient, MaxU, MaxNu, SumNu))
+	{
+		return false;
+	}
+	bGpuPreparedValid = false;
 	LastCourantNumber = MaxU * DeltaTimeS / H;
 	int32 MomentumSubsteps = 1;
 	if (Turbulence.bEnabled)
@@ -871,6 +882,9 @@ bool FAirSolver::StepOnGpu(const FAirSolverInput& Input, double DeltaTimeS)
 		}
 	}
 	Tr.CoolingSupplyTempK = Input.CoolingSupplyTempK;
+	Tr.bPrepareNext = true;
+	Tr.bTurbulenceNext = Turbulence.bEnabled;
+	Tr.ChenXuNext = Turbulence.ChenXuCoefficient;
 	FVrgAirGpuTransportOutput TrOut;
 	if (!GpuStep->Transport(Tr, TrOut, Grid.TemperatureK, Grid.VelocityXMs, Grid.VelocityYMs, Grid.VelocityZMs))
 	{
@@ -878,6 +892,10 @@ bool FAirSolver::StepOnGpu(const FAirSolverInput& Input, double DeltaTimeS)
 		return false;
 	}
 	Lap(4);
+	bGpuPreparedValid = true;
+	bGpuPreparedTurbulence = Tr.bTurbulenceNext;
+	GpuPreparedChenXu = Tr.ChenXuNext;
+	GpuPreparedMaxU = TrOut.NextMaxAbsVelocityMs; GpuPreparedMaxNu = TrOut.NextMaxNuTM2s; GpuPreparedSumNu = TrOut.NextSumNuTM2s;
 
 	// Ledger, exactly as the CPU path books it.
 	EnergyInJ += InjectedJ;
@@ -1163,28 +1181,36 @@ FAirSolverSnapshot FAirSolver::MakeSnapshot(double SimTimeS) const
 	Snapshot.MinTemperatureK = TNumericLimits<double>::Max();
 	Snapshot.MaxTemperatureK = TNumericLimits<double>::Lowest();
 
-	for (int32 Z = 0; Z < Grid.GetNumCellsZ(); ++Z)
+	// Rows in parallel (each row writes only its own speeds); the extrema are combined per row afterwards
+	// (min / max are order independent, so the result equals the serial loop).
+	const int32 NY = Grid.GetNumCellsY(), NZ = Grid.GetNumCellsZ(), NumRows = NY * NZ;
+	TArray<double> RowMaxSpeed, RowMinT, RowMaxT;
+	RowMaxSpeed.Init(0.0, NumRows); RowMinT.Init(TNumericLimits<double>::Max(), NumRows); RowMaxT.Init(TNumericLimits<double>::Lowest(), NumRows);
+	VrgParallel::ForEachRow(0, NY, 0, NZ, [&](int32 Y, int32 Z)
 	{
-		for (int32 Y = 0; Y < Grid.GetNumCellsY(); ++Y)
+		const int32 Row = Y + NY * Z;
+		for (int32 X = 0; X < Grid.GetNumCellsX(); ++X)
 		{
-			for (int32 X = 0; X < Grid.GetNumCellsX(); ++X)
+			const int32 Index = Grid.CellIndex(X, Y, Z);
+			const double SpeedMs = CellCenterVelocityMs(X, Y, Z).Length();
+			Snapshot.SpeedMs[Index] = SpeedMs;
+
+			// 고체 셀은 공기가 아니다. 통계에 넣으면 최저/최고 온도가 엉뚱해진다.
+			if (!Grid.IsFluidCell(X, Y, Z))
 			{
-				const int32 Index = Grid.CellIndex(X, Y, Z);
-				const double SpeedMs = CellCenterVelocityMs(X, Y, Z).Length();
-				Snapshot.SpeedMs[Index] = SpeedMs;
-
-				// 고체 셀은 공기가 아니다. 통계에 넣으면 최저/최고 온도가 엉뚱해진다.
-				if (!Grid.IsFluidCell(X, Y, Z))
-				{
-					continue;
-				}
-				Snapshot.MaxSpeedMs = FMath::Max(Snapshot.MaxSpeedMs, SpeedMs);
-
-				const double TempK = Grid.TemperatureK[Index];
-				Snapshot.MinTemperatureK = FMath::Min(Snapshot.MinTemperatureK, TempK);
-				Snapshot.MaxTemperatureK = FMath::Max(Snapshot.MaxTemperatureK, TempK);
+				continue;
 			}
+			RowMaxSpeed[Row] = FMath::Max(RowMaxSpeed[Row], SpeedMs);
+			const double TempK = Grid.TemperatureK[Index];
+			RowMinT[Row] = FMath::Min(RowMinT[Row], TempK);
+			RowMaxT[Row] = FMath::Max(RowMaxT[Row], TempK);
 		}
+	});
+	for (int32 Row = 0; Row < NumRows; ++Row)
+	{
+		Snapshot.MaxSpeedMs = FMath::Max(Snapshot.MaxSpeedMs, RowMaxSpeed[Row]);
+		Snapshot.MinTemperatureK = FMath::Min(Snapshot.MinTemperatureK, RowMinT[Row]);
+		Snapshot.MaxTemperatureK = FMath::Max(Snapshot.MaxTemperatureK, RowMaxT[Row]);
 	}
 
 	Snapshot.MaxAbsDivergencePerS = Grid.MaxAbsDivergencePerS();

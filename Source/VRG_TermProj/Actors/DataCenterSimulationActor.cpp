@@ -135,6 +135,7 @@ void ADataCenterSimulationActor::EnterLayoutMode()
 
 void ADataCenterSimulationActor::EnterSimulationMode()
 {
+	bDisplaySnapshotValid = false;
 	Mode = ESimMode::Simulation;
 	FindTargetActors();
 	// Rows and hydraulics first: the coupling reads the routed racks and branch pipes.
@@ -1216,7 +1217,13 @@ void ADataCenterSimulationActor::DrawSummary() const
 	}
 
 	const uint64 BaseKey = static_cast<uint64>(GetUniqueID());
-	const FCouplingSnapshot Snapshot = GetSnapshot();
+	if (!bDisplaySnapshotValid || Clock.GetSimTimeS() != DisplaySnapshotSimTimeS)
+	{
+		DisplaySnapshot = GetSnapshot();
+		DisplaySnapshotSimTimeS = Clock.GetSimTimeS();
+		bDisplaySnapshotValid = true;
+	}
+	const FCouplingSnapshot& Snapshot = DisplaySnapshot;
 
 	if (!LastSetupMessage.IsEmpty())
 	{
