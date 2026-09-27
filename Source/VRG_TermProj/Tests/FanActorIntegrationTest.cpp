@@ -2,6 +2,7 @@
 
 #include "Misc/AutomationTest.h"
 #include "Actors/AirFieldDebugActor.h"
+#include "Actors/CrahUnitActor.h"
 #include "Actors/DataCenterSimulationActor.h"
 #include "Actors/RackThermalActor.h"
 #include "Engine/World.h"
@@ -81,6 +82,53 @@ bool FFanActorIntegrationTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("Rack A exhausts toward -X"), VA < -.05);
 	TestTrue(TEXT("Rack B exhausts toward +X"), VB > .05);
 
+	World->DestroyWorld(false);
+	return true;
+}
+
+// Hand-placed CRAH actors replace the automatic layout: two units next to the racks, one with a set airflow and one
+// sharing the rest of the design airflow; both carry air through the grid and the ledger closes.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FPlacedCrahTest, "VRG.Coupling.PlacedCrahActors",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::CommandletContext | EAutomationTestFlags::EngineFilter)
+bool FPlacedCrahTest::RunTest(const FString& Parameters)
+{
+	UWorld* World = UWorld::CreateWorld(EWorldType::Game, false);
+	if (!TestNotNull(TEXT("World"), World)) return false;
+	ARackThermalActor* A = World->SpawnActor<ARackThermalActor>(FVector(-150, 0, 0), FRotator(0, 0, 0));
+	ARackThermalActor* B = World->SpawnActor<ARackThermalActor>(FVector(150, 0, 0), FRotator(0, 180, 0));
+	for (ARackThermalActor* Rack : {A, B})
+	{
+		Rack->Params = FRackThermalModel::MakeGb200Nvl72Params();
+		Rack->Input = FRackThermalInput();
+		Rack->RackSizeM = FVector(1.068, .6, 2.236);
+		Rack->bShowReadout = false;
+		Rack->ResetSim(); Rack->PauseSim();
+	}
+	// Units beside each rack, same depth line, supplying the cold aisle between the racks.
+	ACrahUnitActor* U1 = World->SpawnActor<ACrahUnitActor>(FVector(-150, 60, 0), FRotator(0, 0, 0));
+	World->SpawnActor<ACrahUnitActor>(FVector(150, -60, 0), FRotator(0, 180, 0));  // flow 0 = shares the rest
+	U1->VolumeFlowM3s = 1.0;  // set
+	AAirFieldDebugActor* Air = World->SpawnActor<AAirFieldDebugActor>();
+	Air->FitToRacks();
+	Air->ResetSim();
+	ADataCenterSimulationActor* Sim = World->SpawnActor<ADataCenterSimulationActor>();
+	Sim->bShowSummary = false;
+	Sim->MaxStepsPerFrame = 16;
+	Sim->RebuildCoupling();
+	Sim->StartSim();
+	for (int32 Frame = 0; Frame < 25; ++Frame) Sim->Tick(.32f);  // 8 s
+
+	const FCouplingSnapshot Snap = Sim->GetSnapshot();
+	const FAirGridParams& GP = Air->GetMutableSolver().GetGrid().GetParams();
+	const double DesignFlow = Sim->GetDesignAirLoadW() / (GP.DensityKgM3 * GP.SpecificHeatJKgK * Sim->CrahDesignAirDeltaTK);
+	const double Expected = 1.0 + FMath::Max(DesignFlow - 1.0, 0.0);
+	AddInfo(FString::Printf(TEXT("놓은 CRAH 사용 %d | 유닛 %d대 | 풍량 %.4f m3/s (기대 %.4f = 1.0 + 나머지) | 코일 %.2f kW, 팬 %.3f kW | 전역 잔차 %.3e"),
+		Sim->IsUsingPlacedCrahs(), Sim->GetNumCrahUnits(), Snap.CrahFlowM3s, Expected, Snap.CrahCoilRemovedW / 1000.0, Snap.CrahFanPowerW / 1000.0,
+		Snap.NormalizedEnergyResidual));
+	TestTrue(TEXT("Placed units used instead of the automatic layout"), Sim->IsUsingPlacedCrahs() && Sim->GetNumCrahUnits() == 2);
+	TestTrue(TEXT("Set airflow kept, the other shares the rest"), FMath::Abs(Snap.CrahFlowM3s - Expected) < 1e-9);
+	TestTrue(TEXT("The units cool"), Snap.CrahCoilRemovedW > 0.0);
+	TestTrue(TEXT("Global ledger closes"), FMath::Abs(Snap.NormalizedEnergyResidual) < 1e-9);
 	World->DestroyWorld(false);
 	return true;
 }

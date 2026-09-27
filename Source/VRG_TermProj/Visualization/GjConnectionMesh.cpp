@@ -18,7 +18,16 @@ UMaterialInterface* GjConnectionMesh::Material(const TCHAR* Name)
 void GjConnectionMesh::AddPath(AActor* Owner, const TArray<FVector>& Points, UStaticMesh* Body,
     UMaterialInterface* Surface, double BendCm, TArray<TObjectPtr<UStaticMeshComponent>>& Out, double DiameterScale)
 {
-    if (!Owner || !Body || Points.Num()<2) return;
+    if (!Owner || !Body) return;
+    TArray<FSplineSegment> Segments;
+    BuildSegments(Points, BendCm, Segments);
+    for (const FSplineSegment& S:Segments) if (USplineMeshComponent* M=AddSegment(Owner,S,Body,Surface,DiameterScale)) Out.Add(M);
+}
+
+void GjConnectionMesh::BuildSegments(const TArray<FVector>& Points, double BendCm, TArray<FSplineSegment>& Out)
+{
+    Out.Reset();
+    if (Points.Num()<2) return;
     struct FKnot { FVector P, Left, Right; };
     TArray<FVector> Clean;
     for (const FVector& P:Points) if(Clean.IsEmpty() || !P.Equals(Clean.Last(),.001)) Clean.Add(P);
@@ -44,18 +53,29 @@ void GjConnectionMesh::AddPath(AActor* Owner, const TArray<FVector>& Points, USt
         if (A.P.Equals(A.Right,.0001) && B.P.Equals(B.Left,.0001))
         { const FVector D=(B.P-A.P)/3; A.Right=A.P+D; B.Left=B.P-D; }
         if (A.P.Equals(B.P,.001)) continue;
+        Out.Add({A.P,(A.Right-A.P)*3,B.P,(B.P-B.Left)*3});
+    }
+}
+
+USplineMeshComponent* GjConnectionMesh::AddSegment(AActor* Owner, const FSplineSegment& S, UStaticMesh* Body,
+    UMaterialInterface* Surface, double DiameterScale)
+{
+    if (!Owner || !Body) return nullptr;
+    {
         auto* M=NewObject<USplineMeshComponent>(Owner,NAME_None,RF_Transient);
         M->SetupAttachment(Owner->GetRootComponent()); M->SetMobility(EComponentMobility::Movable);
         M->SetStaticMesh(Body); M->SetCollisionEnabled(ECollisionEnabled::NoCollision); M->SetCastShadow(false);
         M->SetForwardAxis(ESplineMeshAxis::X,false); M->SetBoundaryMin(0,false); M->SetBoundaryMax(100,false);
-        const FVector Direction=(B.P-A.P).GetSafeNormal();
+        const FVector Direction=(S.End-S.Start).GetSafeNormal();
         M->SetSplineUpDir(FMath::Abs(Direction.Z)>.85?FVector::RightVector:FVector::UpVector,false);
         M->SetStartScale(FVector2D(DiameterScale),false); M->SetEndScale(FVector2D(DiameterScale),false);
-        M->SetStartAndEnd(A.P,(A.Right-A.P)*3,B.P,(B.P-B.Left)*3,false);
+        M->SetStartAndEnd(S.Start,S.StartTangent,S.End,S.EndTangent,false);
         if(Surface) M->SetMaterial(0,Surface);
-        M->RegisterComponent(); M->UpdateMesh();
+        // Registration builds the render state from the spline parameters set above; a following UpdateMesh()
+        // rebuilt it a second time (a third of a room rebuild, measured).
+        M->RegisterComponent();
         if(Surface) M->CreateDynamicMaterialInstance(0,Surface);
-        Out.Add(M);
+        return M;
     }
 }
 

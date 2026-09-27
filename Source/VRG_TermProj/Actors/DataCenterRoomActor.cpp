@@ -14,6 +14,7 @@
 
 #include "Components/SceneComponent.h"
 #include "Components/StaticMeshComponent.h"
+#include "Components/SplineMeshComponent.h"
 #include "Engine/Engine.h"
 #include "Engine/World.h"
 #include "EngineUtils.h"
@@ -411,6 +412,7 @@ void ADataCenterRoomActor::BuildNetwork()
 
 
 	LastResult = Network.Solve(SolveSettings);
+	bPipeColorsDirty = true;
 
 	if (!LastResult.bConverged)
 	{
@@ -474,7 +476,9 @@ void ADataCenterRoomActor::BuildPipeMeshes()
 
 void ADataCenterRoomActor::BuildDecorMeshes()
 {
+	const double TDestroy=FPlatformTime::Seconds();
 	DestroyMeshes(DecorMeshes);
+	DecorBuildTimesMs[0]=(FPlatformTime::Seconds()-TDestroy)*1e3;
 	if (bUseGjConnections) { BuildGjDecorMeshes(); return; }
 
 	UStaticMesh* CylinderMesh = SimMeshBuilder::LoadCylinderMesh();
@@ -559,6 +563,13 @@ void ADataCenterRoomActor::BuildDecorMeshes()
 
 void ADataCenterRoomActor::UpdatePipeColors() const
 {
+	// Colours follow the solved flows, which change only when the network is solved again. Recolouring every pipe
+	// segment every editor frame cost time for nothing.
+	if (!bPipeColorsDirty)
+	{
+		return;
+	}
+	bPipeColorsDirty = false;
 	double MaxFlowMagnitudeM3s = 0.0;
 	for (int32 PipeIndex = 0; PipeIndex < Network.GetNumPipes(); ++PipeIndex)
 	{
@@ -671,18 +682,33 @@ void ADataCenterRoomActor::DestroySpawnedRackGrid()
 void ADataCenterRoomActor::Tick(float DeltaTime)
 {
 	Super::Tick(DeltaTime);
-	if (bUseGjConnections && GjLayoutHash() != LastGjLayoutHash) bNeedsRebuild = true;
+	// A moved rack / CDU changes the layout hash every frame while it is dragged. Rebuilding on each of those
+	// frames froze the editor (a full rebuild takes seconds with the GJ meshes), so wait until the layout has
+	// stopped changing for LayoutSettleS of real time, then rebuild once. Explicit RebuildRoom() stays immediate.
+	if (bUseGjConnections)
+	{
+		const uint32 Hash = GjLayoutHash();
+		const double NowS = FPlatformTime::Seconds();
+		if (Hash == LastGjLayoutHash)
+		{
+			PendingLayoutHash = Hash;
+		}
+		else if (Hash != PendingLayoutHash)
+		{
+			PendingLayoutHash = Hash;
+			LayoutChangedAtS = NowS;
+		}
+		else if (NowS - LayoutChangedAtS >= LayoutSettleS)
+		{
+			bNeedsRebuild = true;
+		}
+	}
 
 	if (bNeedsRebuild)
 	{
-		DiscoverRows();
-		BuildNetwork();
-		BuildPipeMeshes();
-		BuildDecorMeshes();
-		bNeedsRebuild = false;
-		bRebuiltSinceLastQuery = true;
-		LastGjLayoutHash = GjLayoutHash();
+		RebuildTimed();
 	}
+	DrainPendingSegments(MeshBuildBudgetMs);
 
 	UpdatePipeColors();
 
@@ -721,8 +747,75 @@ uint32 ADataCenterRoomActor::GjLayoutHash() const
 
 void ADataCenterRoomActor::RefreshGjConnections()
 {
-	DiscoverRows(); BuildNetwork(); BuildPipeMeshes(); BuildDecorMeshes(); UpdatePipeColors();
-	bNeedsRebuild=false; bRebuiltSinceLastQuery=true; LastGjLayoutHash=GjLayoutHash();
+	RebuildTimed();
+	DrainPendingSegments(0.0);
+	UpdatePipeColors();
+}
+
+int32 ADataCenterRoomActor::AddPendingAsset(UStaticMesh* Body, UMaterialInterface* Surface)
+{
+	for (int32 I = 0; I + 1 < PendingAssets.Num(); I += 2)
+		if (PendingAssets[I] == Body && PendingAssets[I + 1] == Surface) return I;
+	PendingAssets.Add(Body); PendingAssets.Add(Surface);
+	return PendingAssets.Num() - 2;
+}
+
+void ADataCenterRoomActor::QueuePath(const TArray<FVector>& LocalPointsCm, UStaticMesh* Body, UMaterialInterface* Surface,
+	double BendCm, double Scale, bool bPipe, int32 Edge, bool bSupply)
+{
+	TArray<GjConnectionMesh::FSplineSegment> Segments;
+	GjConnectionMesh::BuildSegments(LocalPointsCm, BendCm, Segments);
+	const int32 Asset = AddPendingAsset(Body, Surface);
+	for (const GjConnectionMesh::FSplineSegment& S : Segments)
+		PendingSegments.Add({S, Asset, Scale, bPipe, Edge, bSupply});
+}
+
+void ADataCenterRoomActor::DrainPendingSegments(double BudgetMs)
+{
+	if (PendingCursor >= PendingSegments.Num()) return;
+	const double StartS = FPlatformTime::Seconds();
+	++PendingFrames;
+	bool bAnyPipe = false;
+	while (PendingCursor < PendingSegments.Num())
+	{
+		const FPendingSegment& P = PendingSegments[PendingCursor++];
+		UStaticMesh* Body = Cast<UStaticMesh>(PendingAssets[P.Asset]);
+		UMaterialInterface* Surface = Cast<UMaterialInterface>(PendingAssets[P.Asset + 1]);
+		if (UStaticMeshComponent* M = GjConnectionMesh::AddSegment(this, P.Segment, Body, Surface, P.Scale))
+		{
+			if (P.bPipe)
+			{
+				PipeMeshes.Add(M); PipeMeshFlowIndices.Add(P.Edge); PipeMeshSupply.Add(P.bSupply);
+				M->ComponentTags.Add(*FString::Printf(TEXT("HydraulicEdge_%d"), P.Edge));
+				bAnyPipe = true;
+			}
+			else DecorMeshes.Add(M);
+		}
+		if (BudgetMs > 0.0 && (FPlatformTime::Seconds() - StartS) * 1e3 >= BudgetMs) break;
+	}
+	if (bAnyPipe) bPipeColorsDirty = true;
+	if (PendingCursor >= PendingSegments.Num())
+	{
+		UE_LOG(LogTemp, Display, TEXT("[Room] 배관·케이블 메시 %d개 생성 완료 (%.0f ms, %d프레임에 나눔)"),
+			PendingSegments.Num(), (FPlatformTime::Seconds() - PendingStartS) * 1e3, PendingFrames);
+		PendingSegments.Reset(); PendingCursor = 0; PendingAssets.Reset();
+	}
+}
+
+void ADataCenterRoomActor::RebuildTimed()
+{
+	PendingSegments.Reset(); PendingCursor = 0; PendingAssets.Reset(); PendingFrames = 0;
+	PendingStartS = FPlatformTime::Seconds();
+	// Stage timing in the log: a full rebuild takes seconds with the GJ meshes, so it is worth knowing where.
+	double T[5]; T[0] = FPlatformTime::Seconds();
+	DiscoverRows(); T[1] = FPlatformTime::Seconds();
+	BuildNetwork(); T[2] = FPlatformTime::Seconds();
+	BuildPipeMeshes(); T[3] = FPlatformTime::Seconds();
+	BuildDecorMeshes(); T[4] = FPlatformTime::Seconds();
+	bNeedsRebuild = false; bRebuiltSinceLastQuery = true; LastGjLayoutHash = PendingLayoutHash = GjLayoutHash();
+	UE_LOG(LogTemp, Display, TEXT("[Room] 재구축 %.0f ms (줄 %.0f, 수력 %.0f, 배관 메시 %.0f, 케이블·장식 %.0f = 지우기 %.0f + 배선 계획 %.0f + 간섭 검사 %.0f + 케이블 메시 %.0f) | 컴포넌트 배관 %d, 장식 %d"),
+		(T[4] - T[0]) * 1e3, (T[1] - T[0]) * 1e3, (T[2] - T[1]) * 1e3, (T[3] - T[2]) * 1e3, (T[4] - T[3]) * 1e3,
+		DecorBuildTimesMs[0], DecorBuildTimesMs[1], DecorBuildTimesMs[2], DecorBuildTimesMs[3], PipeMeshes.Num(), DecorMeshes.Num());
 }
 
 void ADataCenterRoomActor::BuildGjPipeMeshes()
@@ -737,14 +830,7 @@ void ADataCenterRoomActor::BuildGjPipeMeshes()
 	auto Add=[&](TArray<FVector> Points, bool Branch, int32 Edge, bool Supply)
 	{
 		for (FVector& P:Points) P=GetActorTransform().InverseTransformPosition(P);
-		const int32 Before=PipeMeshes.Num();
-		GjConnectionMesh::AddPath(this,Points,Branch?Riser:Header,Surface,Branch?6.0:14.0,PipeMeshes,
-			Branch?BranchDiameterM/.05:HeaderDiameterM/.11);
-		for (int32 I=Before;I<PipeMeshes.Num();++I)
-		{
-			PipeMeshFlowIndices.Add(Edge); PipeMeshSupply.Add(Supply);
-			PipeMeshes[I]->ComponentTags.Add(*FString::Printf(TEXT("HydraulicEdge_%d"),Edge));
-		}
+		QueuePath(Points,Branch?Riser:Header,Surface,Branch?6.0:14.0,Branch?BranchDiameterM/.05:HeaderDiameterM/.11,true,Edge,Supply);
 	};
 	for (int32 I=0;I<Network.GetNumPipes();++I)
 	{
@@ -829,10 +915,15 @@ void ADataCenterRoomActor::BuildGjDecorMeshes()
 		}
 		In.Devices.Add(MoveTemp(D));
 	}
+	const double TPlan0=FPlatformTime::Seconds();
+	DecorBuildTimesMs[3]=0.0;
 	PatchPlan=Patch::PlanPatches(In);
 	PatchDevices=In.Devices;
+	const double TPlan1=FPlatformTime::Seconds();
 	// Authored diameter, Art/GJ_PIPE&CABLE/reports/connection_manifest.json (estimated visual asset).
 	PatchPlan.Interferences=Patch::FindInterferences(PatchPlan.Cables,.0048);
+	const double TPlan2=FPlatformTime::Seconds();
+	DecorBuildTimesMs[1]=(TPlan1-TPlan0)*1e3; DecorBuildTimesMs[2]=(TPlan2-TPlan1)*1e3;
 
 	UMaterialInterface* Uplink=GjConnectionMesh::Material(TEXT("MC_Cyan"));
 	UMaterialInterface* Trunk=GjConnectionMesh::Material(TEXT("MC_White"));
@@ -840,9 +931,10 @@ void ADataCenterRoomActor::BuildGjDecorMeshes()
 	{
 		TArray<FVector> Points;
 		for (const FVector& P:C.PointsM) Points.Add(GetActorTransform().InverseTransformPosition(SimUnits::MetersToUnreal(P)));
-		GjConnectionMesh::AddPath(this,Points,Cable,C.bSpineToSpine?Trunk:Uplink,6,DecorMeshes);
+		QueuePath(Points,Cable,C.bSpineToSpine?Trunk:Uplink,6,1.0,false,INDEX_NONE,false);
 		Fit(Plug,SimUnits::MetersToUnreal(C.PointsM[0]),In.Devices[C.FromDevice].Outward);
 		Fit(Plug,SimUnits::MetersToUnreal(C.PointsM.Last()),In.Devices[C.ToDevice].Outward);
+		DecorBuildTimesMs[3]=(FPlatformTime::Seconds()-TPlan2)*1e3;
 	}
 	// Ladder tray just under the lowest cable layer: two rails and rungs every 0.5 m.
 	UStaticMesh* Cylinder=SimMeshBuilder::LoadCylinderMesh();

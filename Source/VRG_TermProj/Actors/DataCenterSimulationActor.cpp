@@ -5,6 +5,7 @@
 
 #include "Actors/AirFieldDebugActor.h"
 #include "Actors/CoolingDistributionUnitActor.h"
+#include "Actors/CrahUnitActor.h"
 #include "Actors/DataCenterRoomActor.h"
 #include "Actors/RackThermalActor.h"
 #include "Actors/SpineCabinetActor.h"
@@ -808,15 +809,8 @@ void ADataCenterSimulationActor::UpdateContainmentMeshes()
 		}
 }
 
-void ADataCenterSimulationActor::PlanCrahUnits()
+void ADataCenterSimulationActor::PlanAutoCrahUnits()
 {
-	CrahPlacements.Reset();
-	CrahUnitsDropped = 0;
-	if (CrahLayout == ECrahLayout::CeilingCoil || AirField == nullptr)
-	{
-		return;
-	}
-
 	auto Place = [&](const FVector& BaseM, const FVector& Forward, const FVector& SizeM, bool bTopIntake)
 	{
 		CrahPlacements.Add({BaseM, Forward, SizeM, bTopIntake});
@@ -846,6 +840,45 @@ void ADataCenterSimulationActor::PlanCrahUnits()
 		if (NumUnpairedRows > 0) UE_LOG(LogTemp, Warning, TEXT("DataCenterSimulationActor: 마주 보는 줄이 없는 줄 %d개에는 벽면 CRAH를 붙이지 않는다."), NumUnpairedRows);
 	}
 
+}
+
+void ADataCenterSimulationActor::PlanCrahUnits()
+{
+	CrahPlacements.Reset();
+	CrahUnitsDropped = 0;
+	bUsingPlacedCrahs = false;
+	if (CrahLayout == ECrahLayout::CeilingCoil || AirField == nullptr)
+	{
+		return;
+	}
+
+	// Hand-placed units win over the automatic layout. The airflow axis snaps to the nearest grid axis.
+	if (UWorld* World = GetWorld())
+	{
+		for (TActorIterator<ACrahUnitActor> It(World); It; ++It)
+		{
+			const FVector F2 = It->GetActorForwardVector().GetSafeNormal2D();
+			const bool bAlongY = FMath::Abs(F2.X) < FMath::Abs(F2.Y);
+			if (FMath::Abs(bAlongY ? F2.Y : F2.X) < .99)
+				UE_LOG(LogTemp, Warning, TEXT("%s: 격자 축에 맞춰 90도 단위로 돌려 놓으세요. 가까운 축으로 맞춥니다."), *It->GetName());
+			FCrahPlacement P;
+			P.BaseM = SimUnits::UnrealToMeters(It->GetActorLocation());
+			P.ForwardM = bAlongY ? FVector(0.0, FMath::Sign(F2.Y), 0.0) : FVector(FMath::Sign(F2.X), 0.0, 0.0);
+			P.SizeM = It->SizeM;
+			P.bTopIntake = It->Kind == ECrahUnitKind::Perimeter;
+			P.FlowM3s = It->VolumeFlowM3s;
+			P.bPlaced = true;
+			CrahPlacements.Add(P);
+		}
+	}
+	if (CrahPlacements.Num() > 0)
+	{
+		bUsingPlacedCrahs = true;
+	}
+	else
+	{
+		PlanAutoCrahUnits();
+	}
 	// Units must sit inside the air grid, otherwise their faces are missing and they would carry no air.
 	const FUniformAirGrid& Grid = AirField->GetMutableSolver().GetGrid();
 	const FVector GridMinM = SimUnits::UnrealToMeters(AirField->GetActorLocation());
@@ -927,6 +960,7 @@ void ADataCenterSimulationActor::BuildCrahUnits()
 					}
 				}
 		Unit.WaterSupplyTempK = CoilSupplyTempK;
+		Unit.VolumeFlowM3s = P.FlowM3s;  // 0 = share of the design airflow (sized below)
 		if (Unit.HasBothSides()) CrahUnits.Add(MoveTemp(Unit));
 		else ++CrahUnitsDropped;
 	}
@@ -939,19 +973,61 @@ void ADataCenterSimulationActor::BuildCrahUnits()
 
 	// Design sizing (assumptions, see the property comments): total airflow carries the design air load at
 	// CrahDesignAirDeltaTK; the coil reaches CrahDesignApproachK above the water at that flow.
+	// Units with a set airflow keep it; the rest share what the design airflow still needs (never below 0).
 	const FAirGridParams& Air = Grid.GetParams();
 	const double TotalFlowM3s = DesignAirLoadW / (Air.DensityKgM3 * Air.SpecificHeatJKgK * CrahDesignAirDeltaTK);
-	CrahUnitFlowM3s = TotalFlowM3s / CrahUnits.Num();
+	double SetFlowM3s = 0.0; int32 NumShared = 0;
+	for (const FCrahCouplingUnit& Unit : CrahUnits) { SetFlowM3s += Unit.VolumeFlowM3s; NumShared += Unit.VolumeFlowM3s > 0.0 ? 0 : 1; }
+	const double SharedFlowM3s = NumShared > 0 ? FMath::Max(TotalFlowM3s - SetFlowM3s, 0.0) / NumShared : 0.0;
 	const double Effectiveness = CrahDesignAirDeltaTK / (CrahDesignAirDeltaTK + CrahDesignApproachK);
-	CrahUnitUAWK = -FMath::Loge(1.0 - Effectiveness) * Air.DensityKgM3 * CrahUnitFlowM3s * Air.SpecificHeatJKgK;
-	// D8: electric input from the operating point, divided by the efficiency exactly once here.
-	CrahUnitFanW = CrahFanPressurePa * CrahUnitFlowM3s / CrahFanEfficiency;
+	double SumFlow = 0.0, SumUA = 0.0, SumFan = 0.0;
 	for (FCrahCouplingUnit& Unit : CrahUnits)
 	{
-		Unit.VolumeFlowM3s = CrahUnitFlowM3s;
-		Unit.CoilUAWK = CrahUnitUAWK;
-		Unit.FanPowerW = CrahUnitFanW;
+		if (Unit.VolumeFlowM3s <= 0.0) Unit.VolumeFlowM3s = SharedFlowM3s;
+		// Coil sized at this unit's own flow; D8: fan electric input from its operating point, divided once.
+		Unit.CoilUAWK = -FMath::Loge(1.0 - Effectiveness) * Air.DensityKgM3 * Unit.VolumeFlowM3s * Air.SpecificHeatJKgK;
+		Unit.FanPowerW = CrahFanPressurePa * Unit.VolumeFlowM3s / CrahFanEfficiency;
+		SumFlow += Unit.VolumeFlowM3s; SumUA += Unit.CoilUAWK; SumFan += Unit.FanPowerW;
 	}
+	// Per-unit means, for the summary.
+	CrahUnitFlowM3s = SumFlow / CrahUnits.Num();
+	CrahUnitUAWK = SumUA / CrahUnits.Num();
+	CrahUnitFanW = SumFan / CrahUnits.Num();
+}
+
+void ADataCenterSimulationActor::SpawnCrahActorsFromLayout()
+{
+	UWorld* World = GetWorld();
+	if (World == nullptr) return;
+	FindTargetActors();
+	if (AirField == nullptr || Racks.Num() == 0)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("SpawnCrahActorsFromLayout: 랙이나 공기 격자를 찾지 못했습니다. 방 액터가 줄을 파악한 뒤 다시 누르세요."));
+		return;
+	}
+	const ECrahLayout Layout = CrahLayout == ECrahLayout::CeilingCoil ? ECrahLayout::InRow : CrahLayout;
+	const ECrahLayout Saved = CrahLayout;
+	CrahLayout = Layout;
+	GroupCabinetRows();
+	CrahPlacements.Reset();
+	PlanAutoCrahUnits();
+	CrahLayout = Saved;
+	int32 Spawned = 0;
+	for (const FCrahPlacement& P : CrahPlacements)
+	{
+		FActorSpawnParameters Params;
+		Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+		ACrahUnitActor* Unit = World->SpawnActor<ACrahUnitActor>(SimUnits::MetersToUnreal(P.BaseM), P.ForwardM.Rotation(), Params);
+		if (Unit == nullptr) continue;
+		Unit->Kind = P.bTopIntake ? ECrahUnitKind::Perimeter : ECrahUnitKind::InRow;
+		Unit->SizeM = P.SizeM;
+		Unit->RerunConstructionScripts();
+		++Spawned;
+	}
+	CrahPlacements.Reset();
+	bNeedsRebuild = true;
+	UE_LOG(LogTemp, Display, TEXT("SpawnCrahActorsFromLayout: CRAH 액터 %d대를 놓았습니다 (%s 배치 기준). 옮긴 뒤 레벨을 저장하세요."),
+		Spawned, Layout == ECrahLayout::InRow ? TEXT("인로우") : TEXT("벽면"));
 }
 
 void ADataCenterSimulationActor::UpdateCrahMeshes()
@@ -969,6 +1045,7 @@ void ADataCenterSimulationActor::UpdateCrahMeshes()
 	// no air but still blocks it as a solid, and the summary reports it (what is shown is what is computed).
 	for (const FCrahPlacement& P : CrahPlacements)
 	{
+		if (P.bPlaced) continue;  // an ACrahUnitActor draws itself
 		UStaticMeshComponent* Mesh = NewObject<UStaticMeshComponent>(this);
 		Mesh->SetStaticMesh(CrahMesh);
 		Mesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
@@ -1128,8 +1205,8 @@ void ADataCenterSimulationActor::DrawSummary() const
 	// Air cooling: which device carries it. The CRAH figures are design sizing (assumptions), not a product.
 	GEngine->AddOnScreenDebugMessage(BaseKey + 6, 0.0f, bCrahFellBackToCoil ? FColor::Orange : FColor(180, 220, 255),
 		CrahUnits.Num() > 0
-			? FString::Printf(TEXT("CRAH %s %d대 | 대당 풍량 %.2f m3/s, 코일 UA %.0f W/K (설계 dT %.0f K, 접근 %.0f K 가정) | 코일 제거 %.1f kW | 팬 %.1f kW (추정 %.0f Pa, 효율 %.2f)"),
-				CrahLayout == ECrahLayout::InRow ? TEXT("인로우") : TEXT("벽면"), CrahUnits.Num(), CrahUnitFlowM3s, CrahUnitUAWK,
+			? FString::Printf(TEXT("CRAH %s %d대 | 대당 평균 풍량 %.2f m3/s, 코일 UA %.0f W/K (설계 dT %.0f K, 접근 %.0f K 가정) | 코일 제거 %.1f kW | 팬 %.1f kW (추정 %.0f Pa, 효율 %.2f)"),
+				bUsingPlacedCrahs ? TEXT("(레벨에 놓은 액터)") : CrahLayout == ECrahLayout::InRow ? TEXT("인로우") : TEXT("벽면"), CrahUnits.Num(), CrahUnitFlowM3s, CrahUnitUAWK,
 				CrahDesignAirDeltaTK, CrahDesignApproachK, Snapshot.CrahCoilRemovedW / 1000.0, Snapshot.CrahFanPowerW / 1000.0,
 				CrahFanPressurePa, CrahFanEfficiency)
 			: FString::Printf(TEXT("공기 냉각: 천장 뭉친 코일 UA %.0f W/K (풍량 없음, 포화 없음)%s"), EffectiveCoilUAWK,

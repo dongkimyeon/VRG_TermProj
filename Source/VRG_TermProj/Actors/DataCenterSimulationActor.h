@@ -198,6 +198,15 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Cooling|CRAH")
 	int32 GetNumCrahUnits() const { return CrahPlacements.Num(); }
 
+	// Hand placement: ACrahUnitActor units in the level are used instead of the automatic layout (any layout but
+	// CeilingCoil). This button spawns such actors where the automatic layout (CrahLayout) would put them, as a
+	// starting point to drag around. Run it in the editor, then save the level.
+	UFUNCTION(BlueprintCallable, CallInEditor, Category = "Cooling|CRAH")
+	void SpawnCrahActorsFromLayout();
+
+	// True when the last rebuild used hand-placed ACrahUnitActor units.
+	bool IsUsingPlacedCrahs() const { return bUsingPlacedCrahs; }
+
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Cooling|Coolant")
 	ECoolantRejection CoolantRejection = ECoolantRejection::CduHeatExchanger;
 
@@ -309,7 +318,12 @@ private:
 		FVector ForwardM;   // supply direction (grid axis)
 		FVector SizeM;      // depth, width, height
 		bool bTopIntake;    // perimeter: intake through the top face; in-row: through the rear face
+		double FlowM3s = 0.0;  // set airflow (placed actor); 0 = share of the design airflow
+		bool bPlaced = false;  // from an ACrahUnitActor (it draws itself)
 	};
+	bool bUsingPlacedCrahs = false;
+	// The automatic layout only (ignores placed actors).
+	void PlanAutoCrahUnits();
 	TArray<FCrahPlacement> CrahPlacements;
 	TArray<FCrahCouplingUnit> CrahUnits;
 	double CrahUnitFlowM3s = 0.0, CrahUnitUAWK = 0.0, CrahUnitFanW = 0.0;

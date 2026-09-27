@@ -5,6 +5,7 @@
 #include "CoreMinimal.h"
 #include "GameFramework/Actor.h"
 #include "Simulation/Hydraulics/HydraulicNetwork.h"
+#include "Visualization/GjConnectionMesh.h"
 #include "Visualization/PatchManager.h"
 #include "DataCenterRoomActor.generated.h"
 
@@ -138,6 +139,15 @@ public:
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Routing")
 	double CableTrayHeightM = 2.85;
+
+	// After a rack or CDU moves, wait until nothing has moved for this long [s, real time] before rebuilding the
+	// pipes and cables (a rebuild takes seconds; doing it every drag frame froze the editor).
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Routing", meta = (ClampMin = "0.0"))
+	double LayoutSettleS = 0.4;
+
+	// Per-frame time for creating pipe / cable meshes after a rebuild [ms, real time].
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Visualization|GJ", meta = (ClampMin = "1.0"))
+	double MeshBuildBudgetMs = 8.0;
 
 	// ---- 굵기 (m) ----
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Visualization")
@@ -277,6 +287,35 @@ private:
 	struct FGjPumpRoute { int32 Pump; FVector StartCm, EndCm, Outward; };
 	TArray<FGjPumpRoute> GjPumpRoutes;
 	uint32 LastGjLayoutHash = 0;
+	// Debounce of layout changes (see Tick): the hash seen last frame and when it last changed [s, real time].
+	uint32 PendingLayoutHash = 0;
+	double LayoutChangedAtS = 0.0;
+	void RebuildTimed();
+
+	// GJ pipe and cable spans waiting to become components. Creating ~1300 spline meshes takes seconds, so Tick
+	// creates them MeshBuildBudgetMs at a time (the editor keeps responding and the curves fill in); a synchronous
+	// RefreshGjConnections() still finishes them at once.
+	struct FPendingSegment
+	{
+		GjConnectionMesh::FSplineSegment Segment;
+		int32 Asset = 0;           // index into PendingAssets (mesh, material)
+		double Scale = 1.0;
+		bool bPipe = false;
+		int32 Edge = INDEX_NONE;   // pipe only: hydraulic edge (>= 0) or -1 - pump
+		bool bSupply = false;
+	};
+	TArray<FPendingSegment> PendingSegments;
+	int32 PendingCursor = 0;
+	double PendingStartS = 0.0;
+	int32 PendingFrames = 0;
+	UPROPERTY(Transient)
+	TArray<TObjectPtr<UObject>> PendingAssets;  // body mesh, surface material pairs; kept alive while pending
+	int32 AddPendingAsset(UStaticMesh* Body, UMaterialInterface* Surface);
+	void QueuePath(const TArray<FVector>& LocalPointsCm, UStaticMesh* Body, UMaterialInterface* Surface, double BendCm,
+		double Scale, bool bPipe, int32 Edge, bool bSupply);
+	// BudgetMs <= 0: everything now.
+	void DrainPendingSegments(double BudgetMs);
+	double DecorBuildTimesMs[4] = {0, 0, 0, 0};  // destroy, patch plan, interference check, cable meshes
 	uint32 GjLayoutHash() const;
 	void BuildGjPipeMeshes();
 	void BuildGjDecorMeshes();
@@ -299,6 +338,7 @@ private:
 	void DestroyMeshes(TArray<TObjectPtr<UStaticMeshComponent>>& Meshes);
 
 	void UpdatePipeColors() const;
+	mutable bool bPipeColorsDirty = true;
 	void DrawSummary() const;
 
 	// 랙 뒷면 바깥의 배관 기준점 [m].

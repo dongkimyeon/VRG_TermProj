@@ -109,9 +109,14 @@ bool FGjVisualIntegrationTest::RunTest(const FString& Parameters)
     };
     TestTrue(TEXT("Real rotated CDU supply port"),HasEndpoint(Cdu->GetSupplyPortWorldM()*100));
     TestTrue(TEXT("Real rotated CDU return port"),HasEndpoint(Cdu->GetReturnPortWorldM()*100));
+    // A move is rebuilt once the layout has stopped changing (debounce), not on the frame it changes; the meshes
+    // are then created over frames within MeshBuildBudgetMs.
     Room->ConsumeRebuiltFlag(); Cdu->AddActorWorldOffset(FVector(25,0,0)); Room->Tick(0);
+    TestFalse(TEXT("No rebuild while the layout is still changing"),Room->ConsumeRebuiltFlag());
+    Room->LayoutSettleS=0.0; Room->Tick(0);
+    TestTrue(TEXT("Settled move triggers automatic rebuild"),Room->ConsumeRebuiltFlag());
+    for (int32 Frame=0; Frame<10000; ++Frame) { const int32 N=Room->GetComponents().Num(); Room->Tick(0); if (Frame>0 && Room->GetComponents().Num()==N) break; }
     Curves.Reset(); Room->GetComponents(Curves);
-    TestTrue(TEXT("Move triggers automatic rebuild"),Room->ConsumeRebuiltFlag());
     TestTrue(TEXT("Moved CDU endpoint follows"),HasEndpoint(Cdu->GetSupplyPortWorldM()*100));
     // Runtime rebuild must not leak stale generated components.
     const int32 Before=Curves.Num(); Room->RefreshGjConnections(); Curves.Reset(); Room->GetComponents(Curves);
