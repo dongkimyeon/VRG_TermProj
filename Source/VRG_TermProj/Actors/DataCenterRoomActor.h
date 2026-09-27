@@ -229,6 +229,8 @@ public:
 	// GetRoutedRacks()와 같은 순서로 늘어놓은 랙별 공급 분기 파이프 인덱스.
 	// 수력이 랙에 유량을 넘길 때 이 인덱스로 찾는다.
 	const TArray<int32>& GetRackBranchPipeIndices() const { return RackBranchPipeIndices; }
+	// Game-thread diagnostic: only rack branches have a thermal sample. Headers/pumps are unknown.
+	bool TryGetPipeTemperatureK(int32 PipeIndex, double& OutTempK) const;
 
 	// Row index of every rack, in GetRoutedRacks() order, and the CDU serving a row (null if none).
 	TArray<int32> GetRoutedRackRows() const;
@@ -273,6 +275,7 @@ private:
 
 	// 랙 자리별 공급 분기 파이프 인덱스. 줄 순서대로 펼친 평탄 배열.
 	TArray<int32> RackBranchPipeIndices;
+	TArray<int32> RackReturnPipeIndices;
 
 	// 파이프마다 공급 쪽인지. 표시용이며 계산에 쓰이지 않는다.
 	TArray<bool> bPipeIsSupplySide;
@@ -360,6 +363,8 @@ private:
 
 	void UpdatePipeColors() const;
 	mutable bool bPipeColorsDirty = true;
+	mutable bool bLastPipeTemperatureMode = false;
+	mutable double LastPipeTemperatureDisplayS = -1.0;
 	void DrawSummary() const;
 
 	// 랙 뒷면 바깥의 배관 기준점 [m].

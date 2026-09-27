@@ -2,6 +2,8 @@
 
 #pragma once
 
+#include "Visualization/PipeTemperatureDisplay.h"
+
 #include "CoreMinimal.h"
 #include "GameFramework/Actor.h"
 #include "Simulation/Core/SimClock.h"
@@ -43,6 +45,13 @@ public:
 
 	UFUNCTION(BlueprintCallable, Category = "Rack")
 	FRackThermalSnapshot GetSnapshot() const;
+
+	FRackCoolantDisplaySnapshot GetCoolantDisplaySnapshot() const
+	{
+		const FRackThermalState& State = Model.GetState();
+		return { Input.CoolantInletTempK, State.CoolantTempK,
+			!State.ComponentTempK.IsEmpty() && Input.CoolantMassFlowKgs > 0.0 };
+	}
 
 	// 유닛을 뽑거나 꽂는다. 물리 상태는 즉시 바뀌고(퀵디스커넥트가 바로 끊긴다),
 	// 메쉬는 SledSlideSpeed로 따라간다.

@@ -20,9 +20,12 @@
 #include "Engine/Engine.h"
 #include "Engine/World.h"
 #include "EngineUtils.h"
+#include "HAL/IConsoleManager.h"
 
 namespace
 {
+	TAutoConsoleVariable<int32> PipeTemperatureMode(TEXT("vrg.Pipes.Temperature"), 0,
+		TEXT("0: supply/return + flow brightness (default). 1: rack branch temperature, blue 20 C to red 60 C; unknown grey."));
 	// 케이블 색. 실제 데이터센터의 용도 구분(관리망/데이터/전원)을 흉내 낸 것이며
 	// 계산 결과가 아니다.
 	const FLinearColor CableColors[] = {
@@ -289,6 +292,7 @@ void ADataCenterRoomActor::BuildNetwork()
 	Network.Reset();
 	NodePositionM.Reset();
 	RackBranchPipeIndices.Reset();
+	RackReturnPipeIndices.Reset();
 	bPipeIsSupplySide.Reset();
 	PipeStartOverrideCm.Reset();
 	PipeEndOverrideCm.Reset();
@@ -380,6 +384,7 @@ void ADataCenterRoomActor::BuildNetwork()
 			}
 
 			RackBranchPipeIndices.Add(Handles.RackBranchPipeIndices[ColumnIndex]);
+			RackReturnPipeIndices.Add(Handles.RackReturnPipeIndices[ColumnIndex]);
 			if (bUseGjConnections && Rack->bUseGjModels && Handles.RackNodeIndices[ColumnIndex] != INDEX_NONE)
 			{
 				// The single lumped rack node has two distinct visual manifold ports.
@@ -563,15 +568,60 @@ void ADataCenterRoomActor::BuildDecorMeshes()
 	}
 }
 
+bool ADataCenterRoomActor::TryGetPipeTemperatureK(int32 PipeIndex, double& OutTempK) const
+{
+	OutTempK = 0;
+	if (!GetWorld() || !GetWorld()->IsGameWorld() || !LastResult.bConverged ||
+		PipeIndex < 0 || PipeIndex >= Network.GetNumPipes() || Network.GetPipeFlowM3s(PipeIndex) <= 0) return false;
+	int32 RackIndex = RackBranchPipeIndices.IndexOfByKey(PipeIndex);
+	const bool bSupply = RackIndex != INDEX_NONE;
+	if (!bSupply) RackIndex = RackReturnPipeIndices.IndexOfByKey(PipeIndex);
+	if (RackIndex == INDEX_NONE) return false;
+	int32 Index = 0;
+	for (const FRackRow& Row : Rows)
+		for (const auto& Rack : Row.Racks)
+		{
+			if (Index++ != RackIndex) continue;
+			if (!IsValid(Rack)) return false;
+			const FRackCoolantDisplaySnapshot Snapshot = Rack->GetCoolantDisplaySnapshot();
+			OutTempK = bSupply ? Snapshot.InletTempK : Snapshot.OutletTempK;
+			return Snapshot.bValid && FMath::IsFinite(OutTempK) && OutTempK > 0;
+		}
+	return false;
+}
+
 void ADataCenterRoomActor::UpdatePipeColors() const
 {
+	const bool bTemperatureMode = PipeTemperatureMode.GetValueOnGameThread() != 0;
+	const double NowS = FPlatformTime::Seconds();
+	// Wall time throttles display uploads only; never advances or changes the simulation clock.
+	const bool bTemperatureRefresh = bTemperatureMode && NowS - LastPipeTemperatureDisplayS >= .25;
 	// Colours follow the solved flows, which change only when the network is solved again. Recolouring every pipe
 	// segment every editor frame cost time for nothing.
-	if (!bPipeColorsDirty)
+	if (!bPipeColorsDirty && bTemperatureMode == bLastPipeTemperatureMode && !bTemperatureRefresh)
 	{
 		return;
 	}
 	bPipeColorsDirty = false;
+	bLastPipeTemperatureMode = bTemperatureMode;
+	LastPipeTemperatureDisplayS = NowS;
+	if (bTemperatureMode)
+	{
+		// One colour snapshot per hydraulic edge, reused by all its GJ spline spans.
+		TArray<FLinearColor> Colors;
+		for (int32 Edge = 0; Edge < Network.GetNumPipes(); ++Edge)
+		{
+			double TempK;
+			const bool bValid = TryGetPipeTemperatureK(Edge, TempK);
+			Colors.Add(PipeTemperatureDisplay::Color(TempK, bValid));
+		}
+		for (int32 MeshIndex = 0; MeshIndex < PipeMeshes.Num(); ++MeshIndex)
+		{
+			const int32 Edge = bUseGjConnections ? PipeMeshFlowIndices[MeshIndex] : MeshIndex;
+			SimMeshBuilder::SetMeshColor(PipeMeshes[MeshIndex], Colors.IsValidIndex(Edge) ? Colors[Edge] : PipeTemperatureDisplay::UnknownColor());
+		}
+		return;
+	}
 	double MaxFlowMagnitudeM3s = 0.0;
 	for (int32 PipeIndex = 0; PipeIndex < Network.GetNumPipes(); ++PipeIndex)
 	{
