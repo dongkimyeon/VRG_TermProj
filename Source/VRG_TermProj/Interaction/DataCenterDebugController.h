@@ -47,6 +47,7 @@ public:
 	ADataCenterDebugController();
 
 	virtual void Tick(float DeltaTime) override;
+	virtual void UpdateRotation(float DeltaTime) override;
 
 	// The patch window temporarily owns mouse focus; restore the current mode when it closes.
 	void SetPatchMapOpen(bool bOpen);

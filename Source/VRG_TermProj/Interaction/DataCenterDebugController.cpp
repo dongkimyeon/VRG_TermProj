@@ -756,6 +756,15 @@ void ADataCenterDebugController::SetPatchMapOpen(bool bOpen)
 	if (OpenPatchMaps == 0) RefreshInteractionInputMode();
 }
 
+void ADataCenterDebugController::UpdateRotation(float DeltaTime)
+{
+	// DefaultPawn supplies mouse deltas. Only layout mode gates them behind RMB;
+	// simulation retains its existing free-look bindings. No simulation clock is advanced here.
+	if (OpenPatchMaps > 0 || (IsLayoutMode() && !IsInputKeyDown(EKeys::RightMouseButton)))
+		RotationInput = FRotator::ZeroRotator;
+	Super::UpdateRotation(DeltaTime);
+}
+
 void ADataCenterDebugController::RefreshInteractionInputMode()
 {
 	if (OpenPatchMaps > 0) return;
