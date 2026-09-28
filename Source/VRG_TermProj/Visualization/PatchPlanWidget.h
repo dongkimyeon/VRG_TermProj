@@ -14,6 +14,8 @@ class UPatchPlanWidget : public UUserWidget
 public:
 	void SetRoom(ADataCenterRoomActor* InRoom);
 protected:
+	virtual void NativeConstruct() override;
+	virtual void NativeDestruct() override;
 	virtual void NativeTick(const FGeometry& Geometry, float DeltaSeconds) override;
 	virtual int32 NativePaint(const FPaintArgs& Args, const FGeometry& Geometry, const FSlateRect& CullingRect,
 		FSlateWindowElementList& Elements, int32 Layer, const FWidgetStyle& Style, bool ParentEnabled) const override;

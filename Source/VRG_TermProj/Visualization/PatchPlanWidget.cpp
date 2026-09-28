@@ -1,4 +1,5 @@
 #include "Visualization/PatchPlanWidget.h"
+#include "Interaction/DataCenterDebugController.h"
 #include "Actors/DataCenterRoomActor.h"
 #include "EngineUtils.h"
 #include "GameFramework/PlayerController.h"
@@ -99,12 +100,25 @@ FReply UPatchPlanWidget::NativeOnMouseButtonDown(const FGeometry& Geometry,const
 	return FReply::Handled();
 }
 
+void UPatchPlanWidget::NativeConstruct()
+{
+	Super::NativeConstruct();
+	if (auto* Controller = Cast<ADataCenterDebugController>(GetOwningPlayer())) Controller->SetPatchMapOpen(true);
+}
+
+void UPatchPlanWidget::NativeDestruct()
+{
+	if (auto* Controller = Cast<ADataCenterDebugController>(GetOwningPlayer())) Controller->SetPatchMapOpen(false);
+	Super::NativeDestruct();
+}
+
 FReply UPatchPlanWidget::NativeOnKeyDown(const FGeometry& Geometry,const FKeyEvent& Event)
 {
 	if (Event.GetKey()==EKeys::Escape)
 	{
 		RemoveFromParent();
-		if (APlayerController* Controller=GetOwningPlayer()) { Controller->SetInputMode(FInputModeGameOnly()); Controller->bShowMouseCursor=false; }
+		if (APlayerController* Controller=GetOwningPlayer(); Controller && !Cast<ADataCenterDebugController>(Controller))
+		{ Controller->SetInputMode(FInputModeGameOnly()); Controller->bShowMouseCursor=false; }
 		return FReply::Handled();
 	}
 	if (Event.GetKey()==EKeys::Left || Event.GetKey()==EKeys::Right)

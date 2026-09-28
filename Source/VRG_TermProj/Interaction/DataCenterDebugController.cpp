@@ -682,6 +682,7 @@ void ADataCenterDebugController::OnToggleHelp()
 
 void ADataCenterDebugController::Tick(float DeltaTime)
 {
+	RefreshInteractionInputMode();
 	Super::Tick(DeltaTime);
 
 	RefreshTargetsIfStale(DeltaTime);
@@ -746,6 +747,32 @@ void ADataCenterDebugController::Tick(float DeltaTime)
 	{
 		DrawHelp();
 	}
+}
+
+void ADataCenterDebugController::SetPatchMapOpen(bool bOpen)
+{
+	OpenPatchMaps = FMath::Max(0, OpenPatchMaps + (bOpen ? 1 : -1));
+	bInputModeInitialized = false;
+	if (OpenPatchMaps == 0) RefreshInteractionInputMode();
+}
+
+void ADataCenterDebugController::RefreshInteractionInputMode()
+{
+	if (OpenPatchMaps > 0) return;
+	const bool bLayout = IsLayoutMode();
+	if (bInputModeInitialized && bLastLayoutInputMode == bLayout) return;
+	bInputModeInitialized = true;
+	bLastLayoutInputMode = bLayout;
+	bShowMouseCursor = bLayout;
+	if (GetLocalPlayer() == nullptr) return; // Automation worlds have no viewport.
+	if (bLayout)
+	{
+		FInputModeGameAndUI Mode;
+		Mode.SetHideCursorDuringCapture(false);
+		Mode.SetLockMouseToViewportBehavior(EMouseLockMode::DoNotLock);
+		SetInputMode(Mode);
+	}
+	else SetInputMode(FInputModeGameOnly());
 }
 
 void ADataCenterDebugController::DrawHelp() const

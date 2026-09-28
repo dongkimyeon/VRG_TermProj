@@ -48,6 +48,10 @@ public:
 
 	virtual void Tick(float DeltaTime) override;
 
+	// The patch window temporarily owns mouse focus; restore the current mode when it closes.
+	void SetPatchMapOpen(bool bOpen);
+	void RefreshInteractionInputMode();
+
 	// CPU 칩 하나의 전부하 발열 [W].
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Debug")
 	FDebugKnob CpuHeatKnob;
@@ -113,6 +117,9 @@ protected:
 	virtual void SetupInputComponent() override;
 
 private:
+	int32 OpenPatchMaps = 0;
+	bool bInputModeInitialized = false;
+	bool bLastLayoutInputMode = false;
 	UPROPERTY(Transient)
 	TObjectPtr<UInputMappingContext> MappingContext;
 
