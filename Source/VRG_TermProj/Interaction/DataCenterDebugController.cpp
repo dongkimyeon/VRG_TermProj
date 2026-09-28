@@ -571,9 +571,8 @@ bool ADataCenterDebugController::TryFrameEquipment(const AActor* OnlyActor)
 void ADataCenterDebugController::OnFocusEquipment()
 {
 	if (!IsLayoutMode() || !IsCameraInputAvailable()) return;
-	// Until click selection lands in step 2, the existing G-held equipment is the selection.
-	// Release before moving the view so the old view-ray drag cannot move the equipment with it.
-	AActor* Selected = Grabbed.Get();
+	// Click selection persists when the view changes. Release legacy G movement before framing.
+	AActor* Selected = LayoutSelection.Get();
 	Grabbed.Reset();
 	if (TryFrameEquipment(Selected)) bFramedMoveLogged = false;
 }
@@ -911,7 +910,7 @@ void ADataCenterDebugController::DrawHelp() const
 
 	GEngine->AddOnScreenDebugMessage(BaseKey, 0.0f, FColor(180, 220, 255),
 		IsLayoutMode()
-		? TEXT("[배치 키] 우클릭+마우스 회전 / WASD 이동 / QE 아래·위 / 휠 속도 | 휠 전후 이동 | F 잡은 장비(놓고 보기)/없으면 전체 | G 시선 장비 잡기·놓기  T 회전  C 컨테인먼트  Enter 시뮬레이션  H 도움말")
+		? TEXT("[배치 키] 클릭 장비 선택/빈 곳 해제 | F 선택 장비/없으면 전체 | 우클릭+마우스 회전/WASD 이동/QE 아래·위/휠 속도 | 휠 전후 이동 | G 시선 장비 잡기·놓기  T 회전  C 컨테인먼트  Enter 시뮬레이션  H 도움말")
 		: TEXT("[디버그 키] Enter 배치 모드 | 1/2 CPU 발열  3/4 GPU 발열  5/6 펌프 회전수  7/8 라디에이터 UA(랙별 모드)  9/0 부하율  E 바라보는 유닛 뽑기/꽂기  R 리셋  H 도움말"));
 
 	const ARackThermalActor* Rack = TargetRack.Get();
