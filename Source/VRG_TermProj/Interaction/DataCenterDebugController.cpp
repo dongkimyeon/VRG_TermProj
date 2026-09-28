@@ -16,6 +16,8 @@
 #include "Camera/PlayerCameraManager.h"
 #include "DrawDebugHelpers.h"
 #include "Engine/GameViewportClient.h"
+#include "Engine/Console.h"
+#include "GameFramework/PawnMovementComponent.h"
 #include "EnhancedInputComponent.h"
 #include "EnhancedInputSubsystems.h"
 #include "Engine/Engine.h"
@@ -257,6 +259,8 @@ void ADataCenterDebugController::SetupInputComponent()
 		{ TEXT("RotatePlace"),   EKeys::T,          &ADataCenterDebugController::OnRotatePlaceable },
 		{ TEXT("Containment"),   EKeys::C,          &ADataCenterDebugController::OnCycleContainment },
 		{ TEXT("ToggleHelp"),    EKeys::H,          &ADataCenterDebugController::OnToggleHelp },
+		{ TEXT("CameraWheelUp"), EKeys::MouseScrollUp, &ADataCenterDebugController::OnCameraWheelUp },
+		{ TEXT("CameraWheelDown"), EKeys::MouseScrollDown, &ADataCenterDebugController::OnCameraWheelDown },
 	};
 
 	for (const FBinding& Binding : Bindings)
@@ -639,6 +643,7 @@ void ADataCenterDebugController::DrawTargetHighlight() const
 
 void ADataCenterDebugController::OnToggleSelectedSled()
 {
+	if (IsLayoutMode() || OpenPatchMaps > 0) return; // E flies up in layout; it must not undock hardware.
 	// Only the unit being looked at. Nothing happens when the view ray hits no rack or no unit (blank, frame).
 	ARackThermalActor* Rack = TargetRack.Get();
 	if (Rack == nullptr || SelectedSledIndex == INDEX_NONE)
@@ -760,9 +765,74 @@ void ADataCenterDebugController::UpdateRotation(float DeltaTime)
 {
 	// DefaultPawn supplies mouse deltas. Only layout mode gates them behind RMB;
 	// simulation retains its existing free-look bindings. No simulation clock is advanced here.
-	if (OpenPatchMaps > 0 || (IsLayoutMode() && !IsInputKeyDown(EKeys::RightMouseButton)))
+	if (!IsCameraInputAvailable() || (IsLayoutMode() && !IsInputKeyDown(EKeys::RightMouseButton)))
 		RotationInput = FRotator::ZeroRotator;
 	Super::UpdateRotation(DeltaTime);
+}
+
+bool ADataCenterDebugController::IsMoveInputIgnored() const
+{
+	// Prevent DefaultPawn's WASD, arrows, C and E bindings from moving the layout camera a second time.
+	return IsLayoutMode() || OpenPatchMaps > 0 || Super::IsMoveInputIgnored();
+}
+
+bool ADataCenterDebugController::IsCameraInputAvailable() const
+{
+	if (OpenPatchMaps > 0 || !InputEnabled() || IsPaused()) return false;
+	const UGameViewportClient* Viewport = GetWorld() ? GetWorld()->GetGameViewport() : nullptr;
+	return !Viewport || !Viewport->ViewportConsole || Viewport->ViewportConsole->ConsoleState == NAME_None;
+}
+
+void ADataCenterDebugController::PlayerTick(float DeltaTime)
+{
+	RefreshInteractionInputMode();
+	Super::PlayerTick(DeltaTime);
+	if (IsLayoutMode() || OpenPatchMaps > 0)
+	{
+		if (APawn* ViewPawn = GetPawn())
+		{
+			ViewPawn->ConsumeMovementInputVector();
+			if (UPawnMovementComponent* Movement = ViewPawn->GetMovementComponent()) Movement->StopMovementImmediately();
+		}
+	}
+	const FVector Axes(
+		int32(IsInputKeyDown(EKeys::W)) - int32(IsInputKeyDown(EKeys::S)),
+		int32(IsInputKeyDown(EKeys::D)) - int32(IsInputKeyDown(EKeys::A)),
+		int32(IsInputKeyDown(EKeys::E)) - int32(IsInputKeyDown(EKeys::Q)));
+	ApplyLayoutCameraInput(DeltaTime, Axes, 0.0f, IsInputKeyDown(EKeys::RightMouseButton));
+}
+
+void ADataCenterDebugController::ApplyLayoutCameraInput(float DeltaTime, const FVector& Axes, float Wheel, bool bFly)
+{
+	APawn* ViewPawn = GetPawn();
+	if (!ViewPawn || !IsLayoutMode() || !IsCameraInputAvailable() || Super::IsMoveInputIgnored()) return;
+	if (bFly && Wheel != 0.0f)
+		LayoutCameraSpeedMs = FMath::Clamp(LayoutCameraSpeedMs * FMath::Pow(1.25, FMath::Clamp(double(Wheel), -32.0, 32.0)), 0.25, 24.0);
+	const FRotationMatrix View(GetControlRotation());
+	const FVector Forward = View.GetScaledAxis(EAxis::X);
+	FVector OffsetCm = FVector::ZeroVector;
+	if (bFly && DeltaTime > 0.0f)
+	{
+		const FVector Direction = (Forward * Axes.X + View.GetScaledAxis(EAxis::Y) * Axes.Y + FVector::UpVector * Axes.Z).GetClampedToMaxSize(1.0);
+		OffsetCm = Direction * LayoutCameraSpeedMs * DeltaTime * 100.0;
+	}
+	// Wheel without RMB dollies by 0.5 s of the current view speed per notch (UI choice, no solver time).
+	else if (!bFly) OffsetCm = Forward * Wheel * LayoutCameraSpeedMs * 0.5 * 100.0;
+	if (!OffsetCm.IsNearlyZero())
+	{
+		ViewPawn->SetActorLocation(ViewPawn->GetActorLocation() + OffsetCm, false);
+		bFramedMoveLogged = true; // Intentional navigation is not the startup drift diagnostic.
+	}
+}
+
+void ADataCenterDebugController::OnCameraWheelUp()
+{
+	ApplyLayoutCameraInput(0.0f, FVector::ZeroVector, 1.0f, IsInputKeyDown(EKeys::RightMouseButton));
+}
+
+void ADataCenterDebugController::OnCameraWheelDown()
+{
+	ApplyLayoutCameraInput(0.0f, FVector::ZeroVector, -1.0f, IsInputKeyDown(EKeys::RightMouseButton));
 }
 
 void ADataCenterDebugController::RefreshInteractionInputMode()

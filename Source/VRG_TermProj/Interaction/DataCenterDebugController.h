@@ -48,6 +48,12 @@ public:
 
 	virtual void Tick(float DeltaTime) override;
 	virtual void UpdateRotation(float DeltaTime) override;
+	virtual void PlayerTick(float DeltaTime) override;
+	virtual bool IsMoveInputIgnored() const override;
+
+	// View navigation only: axes = forward/right/world-up, wheel = notches. SI speed converted at the pawn boundary.
+	void ApplyLayoutCameraInput(float DeltaTime, const FVector& Axes, float Wheel, bool bFly);
+	double GetLayoutCameraSpeedMs() const { return LayoutCameraSpeedMs; }
 
 	// The patch window temporarily owns mouse focus; restore the current mode when it closes.
 	void SetPatchMapOpen(bool bOpen);
@@ -121,6 +127,11 @@ private:
 	int32 OpenPatchMaps = 0;
 	bool bInputModeInitialized = false;
 	bool bLastLayoutInputMode = false;
+	// UI tuning, not equipment/physical parameters: 3 m/s, wheel x1.25, limits 0.25..24 m/s.
+	double LayoutCameraSpeedMs = 3.0;
+	bool IsCameraInputAvailable() const;
+	void OnCameraWheelUp();
+	void OnCameraWheelDown();
 	UPROPERTY(Transient)
 	TObjectPtr<UInputMappingContext> MappingContext;
 
