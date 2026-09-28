@@ -116,6 +116,9 @@ public:
 	static bool EquipmentViewpoint(UWorld* World, double HorizontalFovDeg, double Aspect, FVector& OutEyeCm, FRotator& OutLook,
 		const AActor* OnlyActor = nullptr);
 	void OnFocusEquipment();
+	// Layout selection only: never moves equipment or advances the solver. A miss clears the selection.
+	void SelectLayoutAlongRay(const FVector& EyeCm, const FVector& Direction);
+	AActor* GetSelectedLayoutActor() const { return LayoutSelection.Get(); }
 
 	// 레벨에서 대상을 다시 훑는 주기 [s]. 방 액터가 랙을 늦게 띄우기 때문에 필요하다.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Debug")
@@ -193,6 +196,8 @@ private:
 	TWeakObjectPtr<AActor> Grabbed;
 	FVector GrabOffsetCm = FVector::ZeroVector;  // actor origin minus the floor point it was grabbed at
 	TWeakObjectPtr<AActor> HoveredPlaceable;
+	TWeakObjectPtr<AActor> LayoutSelection;
+	void OnSelectLayoutEquipment();
 	int32 StartFrameAttempts = 0;
 	FVector FramedEyeCm = FVector::ZeroVector;
 	bool bFramedMoveLogged = false;

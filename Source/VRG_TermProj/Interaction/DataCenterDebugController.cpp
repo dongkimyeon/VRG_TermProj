@@ -262,6 +262,7 @@ void ADataCenterDebugController::SetupInputComponent()
 		{ TEXT("CameraWheelUp"), EKeys::MouseScrollUp, &ADataCenterDebugController::OnCameraWheelUp },
 		{ TEXT("CameraWheelDown"), EKeys::MouseScrollDown, &ADataCenterDebugController::OnCameraWheelDown },
 		{ TEXT("FocusEquipment"), EKeys::F, &ADataCenterDebugController::OnFocusEquipment },
+		{ TEXT("SelectLayoutEquipment"), EKeys::LeftMouseButton, &ADataCenterDebugController::OnSelectLayoutEquipment },
 	};
 
 	for (const FBinding& Binding : Bindings)
@@ -585,6 +586,29 @@ ADataCenterSimulationActor* ADataCenterDebugController::FindSimActor() const
 	return nullptr;
 }
 
+void ADataCenterDebugController::OnSelectLayoutEquipment()
+{
+	if (!IsLayoutMode() || !IsCameraInputAvailable() || IsInputKeyDown(EKeys::RightMouseButton)) return;
+	FVector EyeCm, Direction;
+	// Failed deprojection (e.g. no viewport) is not an intentional click on empty space.
+	if (DeprojectMousePositionToWorld(EyeCm, Direction)) SelectLayoutAlongRay(EyeCm, Direction);
+}
+
+void ADataCenterDebugController::SelectLayoutAlongRay(const FVector& EyeCm, const FVector& Direction)
+{
+	if (!IsLayoutMode() || !IsCameraInputAvailable() || IsInputKeyDown(EKeys::RightMouseButton)) return;
+	if (EyeCm.ContainsNaN() || Direction.ContainsNaN() || Direction.IsNearlyZero()) return;
+	// Layout can be viewed from well beyond the 15 m unit-undocking reach. Select the closest box
+	// on the ray without that interaction-distance limit; this is UI geometry, not a physical parameter.
+	AActor* Picked = PickPlaceableAlongRay(GetWorld(), EyeCm, Direction.GetSafeNormal(), TNumericLimits<double>::Max());
+	Grabbed.Reset(); // Clicking is selection, never a continuation of the legacy G movement.
+	if (LayoutSelection.Get() != Picked)
+	{
+		LayoutSelection = Picked;
+		UE_LOG(LogTemp, Display, TEXT("[VrgLayout] 선택: %s"), Picked ? *Picked->GetName() : TEXT("없음"));
+	}
+}
+
 bool ADataCenterDebugController::IsLayoutMode() const
 {
 	const ADataCenterSimulationActor* Sim = FindSimActor();
@@ -809,6 +833,12 @@ void ADataCenterDebugController::PlayerTick(float DeltaTime)
 			ViewPawn->ConsumeMovementInputVector();
 			if (UPawnMovementComponent* Movement = ViewPawn->GetMovementComponent()) Movement->StopMovementImmediately();
 		}
+		if (const AActor* Selected = LayoutSelection.Get(); Selected != nullptr && PlaceableBoxM(Selected, SizeM))
+		{
+			const FVector HalfCm = SizeM * 50.0;
+			DrawDebugBox(GetWorld(), Selected->GetActorLocation() + Selected->GetActorUpVector() * HalfCm.Z,
+				HalfCm, Selected->GetActorQuat(), FColor::Green, false, 0.0f, 0, 3.0f);
+		}
 	}
 	const FVector Axes(
 		int32(IsInputKeyDown(EKeys::W)) - int32(IsInputKeyDown(EKeys::S)),
@@ -852,6 +882,7 @@ void ADataCenterDebugController::OnCameraWheelDown()
 
 void ADataCenterDebugController::RefreshInteractionInputMode()
 {
+	if (!IsLayoutMode()) LayoutSelection.Reset();
 	if (OpenPatchMaps > 0) return;
 	const bool bLayout = IsLayoutMode();
 	if (bInputModeInitialized && bLastLayoutInputMode == bLayout) return;
