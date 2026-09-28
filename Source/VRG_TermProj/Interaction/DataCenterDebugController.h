@@ -113,7 +113,9 @@ public:
 
 	// Eye point and look rotation that fit all placeable boxes in a view of the given full horizontal FOV and aspect
 	// (width / height); false if the world has no equipment.
-	static bool EquipmentViewpoint(UWorld* World, double HorizontalFovDeg, double Aspect, FVector& OutEyeCm, FRotator& OutLook);
+	static bool EquipmentViewpoint(UWorld* World, double HorizontalFovDeg, double Aspect, FVector& OutEyeCm, FRotator& OutLook,
+		const AActor* OnlyActor = nullptr);
+	void OnFocusEquipment();
 
 	// 레벨에서 대상을 다시 훑는 주기 [s]. 방 액터가 랙을 늦게 띄우기 때문에 필요하다.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Debug")
@@ -194,7 +196,7 @@ private:
 	int32 StartFrameAttempts = 0;
 	FVector FramedEyeCm = FVector::ZeroVector;
 	bool bFramedMoveLogged = false;
-	bool TryFrameEquipment();
+	bool TryFrameEquipment(const AActor* OnlyActor = nullptr);
 	void OnResetSim();
 	void OnToggleHelp();
 
