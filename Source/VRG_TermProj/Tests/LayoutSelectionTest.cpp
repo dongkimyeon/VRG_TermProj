@@ -9,6 +9,7 @@
 #include "GameFramework/PlayerInput.h"
 #include "Camera/PlayerCameraManager.h"
 #include "Engine/World.h"
+#include "Engine/Engine.h"
 #include "InputKeyEventArgs.h"
 
 #if WITH_DEV_AUTOMATION_TESTS
@@ -18,6 +19,7 @@ bool FLayoutSelectionTest::RunTest(const FString& Parameters)
 {
 	UWorld* World = UWorld::CreateWorld(EWorldType::Game, false);
 	if (!TestNotNull(TEXT("World"), World)) return false;
+	GEngine->CreateNewWorldContext(EWorldType::Game).SetCurrentWorld(World);
 	auto* Sim = World->SpawnActor<ADataCenterSimulationActor>();
 	auto* Controller = World->SpawnActor<ADataCenterDebugController>();
 	auto* Pawn = World->SpawnActor<ADefaultPawn>();
@@ -69,14 +71,14 @@ bool FLayoutSelectionTest::RunTest(const FString& Parameters)
 	ADataCenterDebugController::EquipmentViewpoint(World, Fov, 16.0 / 9.0, AllEye, AllLook);
 	Controller->OnFocusEquipment();
 	const double SelectedViewErrorCm = FVector::Distance(Pawn->GetActorLocation(), SelectedEye);
-	TestEqual(TEXT("F frames the clicked object"), SelectedViewErrorCm, 0.0);
+	TestTrue(TEXT("F frames the clicked object"), SelectedViewErrorCm < 1e-9);
 	TestTrue(TEXT("F does not clear selection"), Controller->GetSelectedLayoutActor() == Selected);
 	TestTrue(TEXT("Single view differs from all-equipment view"), FVector::Distance(SelectedEye, AllEye) > 100);
 	Controller->SelectLayoutAlongRay(FVector(-5000, -5000, 100), FVector(0, 1, 0));
 	TestNull(TEXT("Empty click clears selection"), Controller->GetSelectedLayoutActor());
 	Controller->OnFocusEquipment();
 	const double AllViewErrorCm = FVector::Distance(Pawn->GetActorLocation(), AllEye);
-	TestEqual(TEXT("F with no selection frames everything"), AllViewErrorCm, 0.0);
+	TestTrue(TEXT("F with no selection frames everything"), AllViewErrorCm < 1e-9);
 	for (int32 I = 0; I < Equipment.Num(); ++I)
 		TestTrue(TEXT("Selection and F leave equipment unchanged"), Equipment[I]->GetActorTransform().Equals(OriginalTransforms[I], 0));
 	TestEqual(TEXT("Selection and F leave SimTime unchanged"), Sim->GetSnapshot().SimTimeS, 0.0);
@@ -87,7 +89,7 @@ bool FLayoutSelectionTest::RunTest(const FString& Parameters)
 	TestNull(TEXT("Destroyed selection becomes null"), Controller->GetSelectedLayoutActor());
 	ADataCenterDebugController::EquipmentViewpoint(World, Fov, 16.0 / 9.0, AllEye, AllLook);
 	Controller->OnFocusEquipment();
-	TestEqual(TEXT("Destroyed selection safely falls back to all"), FVector::Distance(Pawn->GetActorLocation(), AllEye), 0.0);
+	TestTrue(TEXT("Destroyed selection safely falls back to all"), FVector::Distance(Pawn->GetActorLocation(), AllEye) < 1e-9);
 
 	Controller->SelectLayoutAlongRay(FVector(0, -500, 100), FVector(0, 1, 0));
 	Sim->EnterSimulationMode();
@@ -100,6 +102,7 @@ bool FLayoutSelectionTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("Simulation ignores layout F"), Pawn->GetActorLocation() == SimEye);
 	AddInfo(FString::Printf(TEXT("Selection: 4 equipment kinds, nearest/empty/UI/RMB/mode/destroy cases; selected/all F errors %.3e / %.3e cm; equipment and SimTime unchanged."), SelectedViewErrorCm, AllViewErrorCm));
 	World->DestroyWorld(false);
+	GEngine->DestroyWorldContext(World);
 	return true;
 }
 #endif
