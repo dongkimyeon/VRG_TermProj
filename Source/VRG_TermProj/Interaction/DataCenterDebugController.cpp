@@ -772,6 +772,12 @@ void ADataCenterDebugController::Tick(float DeltaTime)
 			DrawDebugBox(GetWorld(), H->GetActorLocation() + H->GetActorUpVector() * HalfCm.Z, HalfCm, H->GetActorQuat(),
 				Grabbed.IsValid() ? FColor::Orange : FColor::Cyan, false, 0.0f, 0, 2.0f);
 		}
+		if (const AActor* Selected = LayoutSelection.Get(); Selected != nullptr && PlaceableBoxM(Selected, SizeM))
+		{
+			const FVector HalfCm = SizeM * 50.0;
+			DrawDebugBox(GetWorld(), Selected->GetActorLocation() + Selected->GetActorUpVector() * HalfCm.Z,
+				HalfCm, Selected->GetActorQuat(), FColor::Green, false, 0.0f, 0, 3.0f);
+		}
 	}
 	else
 	{
@@ -831,12 +837,6 @@ void ADataCenterDebugController::PlayerTick(float DeltaTime)
 		{
 			ViewPawn->ConsumeMovementInputVector();
 			if (UPawnMovementComponent* Movement = ViewPawn->GetMovementComponent()) Movement->StopMovementImmediately();
-		}
-		if (const AActor* Selected = LayoutSelection.Get(); Selected != nullptr && PlaceableBoxM(Selected, SizeM))
-		{
-			const FVector HalfCm = SizeM * 50.0;
-			DrawDebugBox(GetWorld(), Selected->GetActorLocation() + Selected->GetActorUpVector() * HalfCm.Z,
-				HalfCm, Selected->GetActorQuat(), FColor::Green, false, 0.0f, 0, 3.0f);
 		}
 	}
 	const FVector Axes(
