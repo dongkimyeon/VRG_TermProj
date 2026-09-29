@@ -206,6 +206,7 @@ private:
 	void OnSelectLayoutEquipment();
 	void OnReleaseLayoutEquipment();
 	void OnCancelLayoutDrag();
+	void UpdateLayoutDragFromCursor();
 	TWeakObjectPtr<AActor> DragActor;
 	FTransform DragStartTransform;
 	FVector DragStartFloorCm = FVector::ZeroVector;

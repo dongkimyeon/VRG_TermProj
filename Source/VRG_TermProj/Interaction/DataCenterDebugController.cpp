@@ -17,6 +17,7 @@
 #include "DrawDebugHelpers.h"
 #include "Engine/GameViewportClient.h"
 #include "Engine/Console.h"
+#include "UnrealClient.h"
 #include "GameFramework/PawnMovementComponent.h"
 #include "EnhancedInputComponent.h"
 #include "EnhancedInputSubsystems.h"
@@ -263,6 +264,7 @@ void ADataCenterDebugController::SetupInputComponent()
 		{ TEXT("CameraWheelDown"), EKeys::MouseScrollDown, &ADataCenterDebugController::OnCameraWheelDown },
 		{ TEXT("FocusEquipment"), EKeys::F, &ADataCenterDebugController::OnFocusEquipment },
 		{ TEXT("SelectLayoutEquipment"), EKeys::LeftMouseButton, &ADataCenterDebugController::OnSelectLayoutEquipment },
+		{ TEXT("CancelLayoutDrag"), EKeys::Escape, &ADataCenterDebugController::OnCancelLayoutDrag },
 	};
 
 	for (const FBinding& Binding : Bindings)
@@ -270,6 +272,11 @@ void ADataCenterDebugController::SetupInputComponent()
 		if (UInputAction* Action = AddKeyAction(Binding.Name, Binding.Key))
 		{
 			EnhancedInput->BindAction(Action, ETriggerEvent::Started, this, Binding.Handler);
+			if (Binding.Key == EKeys::LeftMouseButton)
+			{
+				EnhancedInput->BindAction(Action, ETriggerEvent::Completed, this, &ADataCenterDebugController::OnReleaseLayoutEquipment);
+				EnhancedInput->BindAction(Action, ETriggerEvent::Canceled, this, &ADataCenterDebugController::OnCancelLayoutDrag);
+			}
 		}
 	}
 }
@@ -572,6 +579,7 @@ void ADataCenterDebugController::OnFocusEquipment()
 {
 	if (!IsLayoutMode() || !IsCameraInputAvailable()) return;
 	// Click selection persists when the view changes. Release legacy G movement before framing.
+	EndLayoutDrag(false);
 	AActor* Selected = LayoutSelection.Get();
 	Grabbed.Reset();
 	if (TryFrameEquipment(Selected)) bFramedMoveLogged = false;
@@ -655,6 +663,7 @@ void ADataCenterDebugController::EndLayoutDrag(bool bCommit)
 
 void ADataCenterDebugController::OnReleaseLayoutEquipment()
 {
+	UpdateLayoutDragFromCursor(); // Include the final cursor position, even between two ticks.
 	EndLayoutDrag(true);
 }
 
@@ -663,11 +672,33 @@ void ADataCenterDebugController::OnCancelLayoutDrag()
 	EndLayoutDrag(false);
 }
 
+void ADataCenterDebugController::UpdateLayoutDragFromCursor()
+{
+	if (!IsLayoutDragging()) return;
+	const UGameViewportClient* Client = GetWorld() ? GetWorld()->GetGameViewport() : nullptr;
+	float X = 0.0f, Y = 0.0f;
+	int32 Width = 0, Height = 0;
+	GetViewportSize(Width, Height);
+	if (!IsLayoutMode() || !IsCameraInputAvailable() || IsInputKeyDown(EKeys::RightMouseButton)
+		|| !Client || !Client->Viewport || !Client->Viewport->HasFocus()
+		|| !GetMousePosition(X, Y) || X < 0 || Y < 0 || X >= Width || Y >= Height)
+	{
+		EndLayoutDrag(false); // Losing focus / leaving the viewport never commits a stray move.
+		return;
+	}
+	// UI gesture threshold (4 screen pixels), not a physical tolerance. Click jitter does not snap equipment.
+	bDragMouseThresholdPassed |= FVector2D::Distance(DragStartMouse, FVector2D(X, Y)) >= 4.0;
+	if (!bDragMouseThresholdPassed) return;
+	FVector EyeCm, Direction;
+	if (DeprojectMousePositionToWorld(EyeCm, Direction)) UpdateLayoutDragAlongRay(EyeCm, Direction);
+}
+
 void ADataCenterDebugController::SelectLayoutAlongRay(const FVector& EyeCm, const FVector& Direction)
 {
 	if (!IsLayoutMode() || !IsCameraInputAvailable() || IsInputKeyDown(EKeys::RightMouseButton)) return;
 	if (EyeCm.ContainsNaN() || Direction.ContainsNaN() || Direction.IsNearlyZero()) return;
 	// Layout can be viewed from well beyond the 15 m unit-undocking reach. Select the closest box
+	EndLayoutDrag(false);
 	// on the ray without that interaction-distance limit; this is UI geometry, not a physical parameter.
 	AActor* Picked = PickPlaceableAlongRay(GetWorld(), EyeCm, Direction.GetSafeNormal(), TNumericLimits<double>::Max());
 	Grabbed.Reset(); // Clicking is selection, never a continuation of the legacy G movement.
@@ -686,6 +717,7 @@ bool ADataCenterDebugController::IsLayoutMode() const
 
 void ADataCenterDebugController::OnToggleSimMode()
 {
+	EndLayoutDrag(false);
 	ADataCenterSimulationActor* Sim = FindSimActor();
 	if (Sim == nullptr) return;
 	if (Sim->GetSimMode() == ESimMode::Layout)
@@ -701,6 +733,7 @@ void ADataCenterDebugController::OnToggleSimMode()
 
 void ADataCenterDebugController::OnGrabOrDrop()
 {
+	if (IsLayoutDragging()) return;
 	if (Grabbed.IsValid()) { Grabbed.Reset(); return; }
 	if (!IsLayoutMode()) return;  // moving equipment is a layout-mode action
 	FVector EyeCm; FRotator ViewRotation;
@@ -724,6 +757,7 @@ void ADataCenterDebugController::OnCycleContainment()
 
 void ADataCenterDebugController::OnRotatePlaceable()
 {
+	if (IsLayoutDragging()) return;
 	if (!IsLayoutMode()) return;
 	AActor* Target = Grabbed.IsValid() ? Grabbed.Get() : HoveredPlaceable.Get();
 	if (Target == nullptr) return;
@@ -847,6 +881,9 @@ void ADataCenterDebugController::Tick(float DeltaTime)
 			const FVector HalfCm = SizeM * 50.0;
 			DrawDebugBox(GetWorld(), Selected->GetActorLocation() + Selected->GetActorUpVector() * HalfCm.Z,
 				HalfCm, Selected->GetActorQuat(), FColor::Green, false, 0.0f, 0, 3.0f);
+			if (IsLayoutDragging() && bDragMoved)
+				DrawDebugBox(GetWorld(), DragPreviewCm + Selected->GetActorUpVector() * HalfCm.Z,
+					HalfCm, Selected->GetActorQuat(), FColor::Orange, false, 0.0f, 0, 3.0f);
 		}
 	}
 	else
@@ -870,6 +907,7 @@ void ADataCenterDebugController::Tick(float DeltaTime)
 
 void ADataCenterDebugController::SetPatchMapOpen(bool bOpen)
 {
+	if (bOpen) EndLayoutDrag(false);
 	OpenPatchMaps = FMath::Max(0, OpenPatchMaps + (bOpen ? 1 : -1));
 	bInputModeInitialized = false;
 	if (OpenPatchMaps == 0) RefreshInteractionInputMode();
@@ -901,6 +939,11 @@ void ADataCenterDebugController::PlayerTick(float DeltaTime)
 {
 	RefreshInteractionInputMode();
 	Super::PlayerTick(DeltaTime);
+	if (IsLayoutDragging())
+	{
+		if (!IsInputKeyDown(EKeys::LeftMouseButton)) EndLayoutDrag(false);
+		else UpdateLayoutDragFromCursor();
+	}
 	if (IsLayoutMode() || OpenPatchMaps > 0)
 	{
 		if (APawn* ViewPawn = GetPawn())
@@ -919,7 +962,7 @@ void ADataCenterDebugController::PlayerTick(float DeltaTime)
 void ADataCenterDebugController::ApplyLayoutCameraInput(float DeltaTime, const FVector& Axes, float Wheel, bool bFly)
 {
 	APawn* ViewPawn = GetPawn();
-	if (!ViewPawn || !IsLayoutMode() || !IsCameraInputAvailable() || Super::IsMoveInputIgnored()) return;
+	if (!ViewPawn || !IsLayoutMode() || !IsCameraInputAvailable() || Super::IsMoveInputIgnored() || IsLayoutDragging()) return;
 	if (bFly && Wheel != 0.0f)
 		LayoutCameraSpeedMs = FMath::Clamp(LayoutCameraSpeedMs * FMath::Pow(1.25, FMath::Clamp(double(Wheel), -32.0, 32.0)), 0.25, 24.0);
 	const FRotationMatrix View(GetControlRotation());
@@ -951,7 +994,7 @@ void ADataCenterDebugController::OnCameraWheelDown()
 
 void ADataCenterDebugController::RefreshInteractionInputMode()
 {
-	if (!IsLayoutMode()) LayoutSelection.Reset();
+	if (!IsLayoutMode()) { EndLayoutDrag(false); LayoutSelection.Reset(); }
 	if (OpenPatchMaps > 0) return;
 	const bool bLayout = IsLayoutMode();
 	if (bInputModeInitialized && bLastLayoutInputMode == bLayout) return;
@@ -980,7 +1023,7 @@ void ADataCenterDebugController::DrawHelp() const
 
 	GEngine->AddOnScreenDebugMessage(BaseKey, 0.0f, FColor(180, 220, 255),
 		IsLayoutMode()
-		? TEXT("[배치 키] 클릭 장비 선택/빈 곳 해제 | F 선택 장비/없으면 전체 | 우클릭+마우스 회전/WASD 이동/QE 아래·위/휠 속도 | 휠 전후 이동 | G 시선 장비 잡기·놓기  T 회전  C 컨테인먼트  Enter 시뮬레이션  H 도움말")
+		? TEXT("[배치 키] 클릭 선택/빈 곳 해제 | 드래그 주황 미리보기/놓기 확정/Esc 취소 | F 선택/없으면 전체 | 우클릭+마우스 회전/WASD 이동/QE 아래·위/휠 속도 | 휠 전후 | G 시선 잡기·놓기 T 회전 C 컨테인먼트 Enter 시뮬레이션 H 도움말")
 		: TEXT("[디버그 키] Enter 배치 모드 | 1/2 CPU 발열  3/4 GPU 발열  5/6 펌프 회전수  7/8 라디에이터 UA(랙별 모드)  9/0 부하율  E 바라보는 유닛 뽑기/꽂기  R 리셋  H 도움말"));
 
 	const ARackThermalActor* Rack = TargetRack.Get();
