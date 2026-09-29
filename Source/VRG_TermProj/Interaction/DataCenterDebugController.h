@@ -119,6 +119,12 @@ public:
 	// Layout selection only: never moves equipment or advances the solver. A miss clears the selection.
 	void SelectLayoutAlongRay(const FVector& EyeCm, const FVector& Direction);
 	AActor* GetSelectedLayoutActor() const { return LayoutSelection.Get(); }
+	// Transactional preview: only EndLayoutDrag(true) moves the actor (no pipe rebuild while dragging).
+	void BeginLayoutDragAlongRay(const FVector& EyeCm, const FVector& Direction);
+	void UpdateLayoutDragAlongRay(const FVector& EyeCm, const FVector& Direction);
+	void EndLayoutDrag(bool bCommit);
+	bool IsLayoutDragging() const { return DragActor.IsValid(); }
+	FVector GetLayoutDragPreviewCm() const { return DragPreviewCm; }
 
 	// 레벨에서 대상을 다시 훑는 주기 [s]. 방 액터가 랙을 늦게 띄우기 때문에 필요하다.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Debug")
@@ -198,6 +204,15 @@ private:
 	TWeakObjectPtr<AActor> HoveredPlaceable;
 	TWeakObjectPtr<AActor> LayoutSelection;
 	void OnSelectLayoutEquipment();
+	void OnReleaseLayoutEquipment();
+	void OnCancelLayoutDrag();
+	TWeakObjectPtr<AActor> DragActor;
+	FTransform DragStartTransform;
+	FVector DragStartFloorCm = FVector::ZeroVector;
+	FVector DragPreviewCm = FVector::ZeroVector;
+	FVector2D DragStartMouse = FVector2D::ZeroVector;
+	bool bDragMoved = false;
+	bool bDragMouseThresholdPassed = false;
 	int32 StartFrameAttempts = 0;
 	FVector FramedEyeCm = FVector::ZeroVector;
 	bool bFramedMoveLogged = false;

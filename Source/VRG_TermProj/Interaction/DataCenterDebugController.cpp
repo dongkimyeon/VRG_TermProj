@@ -590,7 +590,77 @@ void ADataCenterDebugController::OnSelectLayoutEquipment()
 	if (!IsLayoutMode() || !IsCameraInputAvailable() || IsInputKeyDown(EKeys::RightMouseButton)) return;
 	FVector EyeCm, Direction;
 	// Failed deprojection (e.g. no viewport) is not an intentional click on empty space.
-	if (DeprojectMousePositionToWorld(EyeCm, Direction)) SelectLayoutAlongRay(EyeCm, Direction);
+	if (DeprojectMousePositionToWorld(EyeCm, Direction))
+	{
+		BeginLayoutDragAlongRay(EyeCm, Direction);
+		float MouseX = 0.0f, MouseY = 0.0f;
+		GetMousePosition(MouseX, MouseY);
+		DragStartMouse = FVector2D(MouseX, MouseY);
+	}
+}
+
+void ADataCenterDebugController::BeginLayoutDragAlongRay(const FVector& EyeCm, const FVector& Direction)
+{
+	EndLayoutDrag(false);
+	SelectLayoutAlongRay(EyeCm, Direction);
+	if (!IsLayoutMode() || !IsCameraInputAvailable() || IsInputKeyDown(EKeys::RightMouseButton)
+		|| EyeCm.ContainsNaN() || Direction.ContainsNaN() || Direction.IsNearlyZero()) return;
+	AActor* Selected = LayoutSelection.Get();
+	if (!Selected || !FloorPointSnapped(EyeCm, Direction.GetSafeNormal(), Selected->GetActorLocation().Z, 0.0, DragStartFloorCm)) return;
+	DragActor = Selected;
+	DragStartTransform = Selected->GetActorTransform();
+	DragPreviewCm = Selected->GetActorLocation();
+	bDragMoved = false;
+	bDragMouseThresholdPassed = false;
+}
+
+void ADataCenterDebugController::UpdateLayoutDragAlongRay(const FVector& EyeCm, const FVector& Direction)
+{
+	if (!IsLayoutDragging()) return;
+	if (!IsLayoutMode() || !IsCameraInputAvailable() || IsInputKeyDown(EKeys::RightMouseButton))
+	{
+		EndLayoutDrag(false);
+		return;
+	}
+	if (EyeCm.ContainsNaN() || Direction.ContainsNaN() || Direction.IsNearlyZero()) return;
+	FVector FloorCm;
+	if (!FloorPointSnapped(EyeCm, Direction.GetSafeNormal(), DragStartTransform.GetLocation().Z, 0.0, FloorCm)) return;
+	const FVector DeltaCm = FloorCm - DragStartFloorCm;
+	if (!bDragMoved && DeltaCm.IsNearlyZero()) return; // A click must not snap an off-grid actor.
+	DragPreviewCm = DragStartTransform.GetLocation() + DeltaCm;
+	// User-selected placement grid, not a measured physical constant. Convert m only at the actor boundary.
+	if (FMath::IsFinite(PlaceSnapM) && PlaceSnapM > 0.0)
+	{
+		const double StepCm = PlaceSnapM * 100.0;
+		DragPreviewCm.X = FMath::RoundToDouble(DragPreviewCm.X / StepCm) * StepCm;
+		DragPreviewCm.Y = FMath::RoundToDouble(DragPreviewCm.Y / StepCm) * StepCm;
+	}
+	DragPreviewCm.Z = DragStartTransform.GetLocation().Z;
+	bDragMoved = true;
+}
+
+void ADataCenterDebugController::EndLayoutDrag(bool bCommit)
+{
+	if (AActor* Actor = DragActor.Get(); Actor && bCommit && bDragMoved && IsLayoutMode() && IsCameraInputAvailable()
+		&& !IsInputKeyDown(EKeys::RightMouseButton) && Actor->GetActorTransform().Equals(DragStartTransform, 0.0))
+	{
+		Actor->SetActorLocation(DragPreviewCm, false);
+		UE_LOG(LogTemp, Display, TEXT("[VrgLayout] 이동 확정: %s %s -> %s cm"), *Actor->GetName(),
+			*DragStartTransform.GetLocation().ToCompactString(), *DragPreviewCm.ToCompactString());
+	}
+	// Cancel needs no restoration: the live actor never left its original location.
+	DragActor.Reset();
+	bDragMoved = false;
+}
+
+void ADataCenterDebugController::OnReleaseLayoutEquipment()
+{
+	EndLayoutDrag(true);
+}
+
+void ADataCenterDebugController::OnCancelLayoutDrag()
+{
+	EndLayoutDrag(false);
 }
 
 void ADataCenterDebugController::SelectLayoutAlongRay(const FVector& EyeCm, const FVector& Direction)
