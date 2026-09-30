@@ -119,13 +119,14 @@ public:
 	// Eye point and look rotation that fit all placeable boxes in a view of the given full horizontal FOV and aspect
 	// (width / height); false if the world has no equipment.
 	static bool EquipmentViewpoint(UWorld* World, double HorizontalFovDeg, double Aspect, FVector& OutEyeCm, FRotator& OutLook,
-		const AActor* OnlyActor = nullptr);
+		const AActor* OnlyActor = nullptr, const TArray<AActor*>* OnlyActors = nullptr);
 	void OnFocusEquipment();
 	// R dispatch: rotate the clicked selection in layout; retain simulation reset.
 	void OnResetSim();
 	// Layout selection only: never moves equipment or advances the solver. A miss clears the selection.
-	void SelectLayoutAlongRay(const FVector& EyeCm, const FVector& Direction);
-	AActor* GetSelectedLayoutActor() const { return LayoutSelection.Get(); }
+	void SelectLayoutAlongRay(const FVector& EyeCm, const FVector& Direction, bool bToggle = false, bool bKeepSelected = false);
+	TArray<AActor*> GetSelectedLayoutActors() const;
+	AActor* GetSelectedLayoutActor() const;
 	// Transactional preview: only EndLayoutDrag(true) moves the actor (no pipe rebuild while dragging).
 	void BeginLayoutDragAlongRay(const FVector& EyeCm, const FVector& Direction);
 	void UpdateLayoutDragAlongRay(const FVector& EyeCm, const FVector& Direction);
@@ -210,7 +211,7 @@ private:
 	TWeakObjectPtr<AActor> Grabbed;
 	FVector GrabOffsetCm = FVector::ZeroVector;  // actor origin minus the floor point it was grabbed at
 	TWeakObjectPtr<AActor> HoveredPlaceable;
-	TWeakObjectPtr<AActor> LayoutSelection;
+	TArray<TWeakObjectPtr<AActor>> LayoutSelection;
 	void OnSelectLayoutEquipment();
 	void OnReleaseLayoutEquipment();
 	void OnCancelLayoutDrag();
@@ -225,7 +226,7 @@ private:
 	int32 StartFrameAttempts = 0;
 	FVector FramedEyeCm = FVector::ZeroVector;
 	bool bFramedMoveLogged = false;
-	bool TryFrameEquipment(const AActor* OnlyActor = nullptr);
+	bool TryFrameEquipment(const AActor* OnlyActor = nullptr, const TArray<AActor*>* OnlyActors = nullptr);
 	void OnToggleHelp();
 
 	void DrawHelp() const;

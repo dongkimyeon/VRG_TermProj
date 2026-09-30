@@ -509,13 +509,14 @@ bool ADataCenterDebugController::FloorPointSnapped(const FVector& EyeCm, const F
 	return true;
 }
 
-bool ADataCenterDebugController::EquipmentViewpoint(UWorld* World, double HorizontalFovDeg, double Aspect, FVector& OutEyeCm, FRotator& OutLook, const AActor* OnlyActor)
+bool ADataCenterDebugController::EquipmentViewpoint(UWorld* World, double HorizontalFovDeg, double Aspect, FVector& OutEyeCm, FRotator& OutLook, const AActor* OnlyActor, const TArray<AActor*>* OnlyActors)
 {
 	if (World == nullptr) return false;
 	TArray<FVector> Corners;
 	for (TActorIterator<AActor> It(World); It; ++It)
 	{
 		if (OnlyActor != nullptr && *It != OnlyActor) continue;
+		if (OnlyActors != nullptr && !OnlyActors->Contains(*It)) continue;
 		FVector SizeM;
 		if (!PlaceableBoxM(*It, SizeM)) continue;
 		const FVector HalfCm = SizeM * 50.0;
@@ -549,7 +550,7 @@ bool ADataCenterDebugController::EquipmentViewpoint(UWorld* World, double Horizo
 	return true;
 }
 
-bool ADataCenterDebugController::TryFrameEquipment(const AActor* OnlyActor)
+bool ADataCenterDebugController::TryFrameEquipment(const AActor* OnlyActor, const TArray<AActor*>* OnlyActors)
 {
 	APawn* ViewPawn = GetPawn();
 	if (ViewPawn == nullptr) return false;
@@ -563,7 +564,7 @@ bool ADataCenterDebugController::TryFrameEquipment(const AActor* OnlyActor)
 	const double Fov = PlayerCameraManager != nullptr ? PlayerCameraManager->GetFOVAngle() : 90.0;
 	FVector Eye;
 	FRotator Look;
-	if (!EquipmentViewpoint(GetWorld(), Fov, Aspect, Eye, Look, OnlyActor)) return false;
+	if (!EquipmentViewpoint(GetWorld(), Fov, Aspect, Eye, Look, OnlyActor, OnlyActors)) return false;
 	ViewPawn->ConsumeMovementInputVector();
 	if (UPawnMovementComponent* Movement = ViewPawn->GetMovementComponent()) Movement->StopMovementImmediately();
 	ViewPawn->SetActorLocation(Eye, false, nullptr, ETeleportType::TeleportPhysics);
@@ -636,6 +637,7 @@ bool ADataCenterDebugController::IsLayoutPlacementBlocked(const AActor* Actor, c
 
 bool ADataCenterDebugController::TryLayoutMove(AActor* Actor, const FVector& TargetCm)
 {
+	if (GetSelectedLayoutActors().Num() > 1) return false;
 	if (!IsLayoutMode() || !IsCameraInputAvailable() || !IsValid(Actor) || Actor->GetWorld() != GetWorld() || TargetCm.ContainsNaN()) return false;
 	FTransform Proposed = Actor->GetActorTransform();
 	Proposed.SetLocation(TargetCm);
@@ -653,6 +655,7 @@ bool ADataCenterDebugController::IsLayoutDragPreviewBlocked() const
 
 bool ADataCenterDebugController::TryLayoutRotation(AActor* Actor, const FRotator& Rotation)
 {
+	if (GetSelectedLayoutActors().Num() > 1) return false;
 	if (!IsLayoutMode() || !IsCameraInputAvailable() || IsLayoutDragging() || !IsValid(Actor)
 		|| Actor->GetWorld() != GetWorld() || Rotation.ContainsNaN()) return false;
 	FTransform Proposed = Actor->GetActorTransform();
@@ -670,9 +673,9 @@ void ADataCenterDebugController::OnFocusEquipment()
 	if (!IsLayoutMode() || !IsCameraInputAvailable()) return;
 	// Click selection persists when the view changes. Release legacy G movement before framing.
 	EndLayoutDrag(false);
-	AActor* Selected = LayoutSelection.Get();
+	const TArray<AActor*> Selected = GetSelectedLayoutActors();
 	Grabbed.Reset();
-	if (TryFrameEquipment(Selected)) bFramedMoveLogged = false;
+	if (TryFrameEquipment(nullptr, Selected.IsEmpty() ? nullptr : &Selected)) bFramedMoveLogged = false;
 }
 
 ADataCenterSimulationActor* ADataCenterDebugController::FindSimActor() const
@@ -690,6 +693,11 @@ void ADataCenterDebugController::OnSelectLayoutEquipment()
 	// Failed deprojection (e.g. no viewport) is not an intentional click on empty space.
 	if (DeprojectMousePositionToWorld(EyeCm, Direction))
 	{
+		if (IsInputKeyDown(EKeys::LeftShift) || IsInputKeyDown(EKeys::RightShift))
+		{
+			SelectLayoutAlongRay(EyeCm, Direction, true);
+			return; // Shift changes selection only, never arms a drag.
+		}
 		BeginLayoutDragAlongRay(EyeCm, Direction);
 		float MouseX = 0.0f, MouseY = 0.0f;
 		GetMousePosition(MouseX, MouseY);
@@ -703,7 +711,7 @@ void ADataCenterDebugController::BeginLayoutDragAlongRay(const FVector& EyeCm, c
 	SelectLayoutAlongRay(EyeCm, Direction);
 	if (!IsLayoutMode() || !IsCameraInputAvailable() || IsInputKeyDown(EKeys::RightMouseButton)
 		|| EyeCm.ContainsNaN() || Direction.ContainsNaN() || Direction.IsNearlyZero()) return;
-	AActor* Selected = LayoutSelection.Get();
+	AActor* Selected = GetSelectedLayoutActor();
 	if (!Selected || !FloorPointSnapped(EyeCm, Direction.GetSafeNormal(), Selected->GetActorLocation().Z, 0.0, DragStartFloorCm)) return;
 	DragActor = Selected;
 	DragStartTransform = Selected->GetActorTransform();
@@ -789,7 +797,21 @@ void ADataCenterDebugController::UpdateLayoutDragFromCursor()
 	if (DeprojectMousePositionToWorld(EyeCm, Direction)) UpdateLayoutDragAlongRay(EyeCm, Direction);
 }
 
-void ADataCenterDebugController::SelectLayoutAlongRay(const FVector& EyeCm, const FVector& Direction)
+TArray<AActor*> ADataCenterDebugController::GetSelectedLayoutActors() const
+{
+	TArray<AActor*> Selected;
+	for (const TWeakObjectPtr<AActor>& Actor : LayoutSelection)
+		if (Actor.IsValid()) Selected.Add(Actor.Get());
+	return Selected;
+}
+
+AActor* ADataCenterDebugController::GetSelectedLayoutActor() const
+{
+	const TArray<AActor*> Selected = GetSelectedLayoutActors();
+	return Selected.IsEmpty() ? nullptr : Selected[0];
+}
+
+void ADataCenterDebugController::SelectLayoutAlongRay(const FVector& EyeCm, const FVector& Direction, bool bToggle, bool bKeepSelected)
 {
 	if (!IsLayoutMode() || !IsCameraInputAvailable() || IsInputKeyDown(EKeys::RightMouseButton)) return;
 	if (EyeCm.ContainsNaN() || Direction.ContainsNaN() || Direction.IsNearlyZero()) return;
@@ -798,11 +820,20 @@ void ADataCenterDebugController::SelectLayoutAlongRay(const FVector& EyeCm, cons
 	// on the ray without that interaction-distance limit; this is UI geometry, not a physical parameter.
 	AActor* Picked = PickPlaceableAlongRay(GetWorld(), EyeCm, Direction.GetSafeNormal(), TNumericLimits<double>::Max());
 	Grabbed.Reset(); // Clicking is selection, never a continuation of the legacy G movement.
-	if (LayoutSelection.Get() != Picked)
+	LayoutSelection.RemoveAll([](const TWeakObjectPtr<AActor>& Actor) { return !Actor.IsValid(); });
+	const TWeakObjectPtr<AActor> PickedRef(Picked);
+	if (!Picked) LayoutSelection.Reset();
+	else if (bToggle)
 	{
-		LayoutSelection = Picked;
-		UE_LOG(LogTemp, Display, TEXT("[VrgLayout] 선택: %s"), Picked ? *Picked->GetName() : TEXT("없음"));
+		if (LayoutSelection.Contains(PickedRef)) LayoutSelection.Remove(PickedRef);
+		else LayoutSelection.Add(PickedRef);
 	}
+	else if (!bKeepSelected || !LayoutSelection.Contains(PickedRef))
+	{
+		LayoutSelection.Reset();
+		LayoutSelection.Add(PickedRef);
+	}
+	UE_LOG(LogTemp, Display, TEXT("[VrgLayout] 선택 %d대: %s"), LayoutSelection.Num(), Picked ? *Picked->GetName() : TEXT("없음"));
 }
 
 bool ADataCenterDebugController::IsLayoutMode() const
@@ -829,6 +860,7 @@ void ADataCenterDebugController::OnToggleSimMode()
 
 void ADataCenterDebugController::OnGrabOrDrop()
 {
+	if (GetSelectedLayoutActors().Num() > 1) { Grabbed.Reset(); return; }
 	if (IsLayoutDragging()) return;
 	if (Grabbed.IsValid()) { Grabbed.Reset(); return; }
 	if (!IsLayoutMode()) return;  // moving equipment is a layout-mode action
@@ -853,6 +885,7 @@ void ADataCenterDebugController::OnCycleContainment()
 
 void ADataCenterDebugController::OnRotatePlaceable()
 {
+	if (GetSelectedLayoutActors().Num() > 1) return;
 	if (IsLayoutDragging()) return;
 	if (!IsLayoutMode()) return;
 	AActor* Target = Grabbed.IsValid() ? Grabbed.Get() : HoveredPlaceable.Get();
@@ -902,7 +935,8 @@ void ADataCenterDebugController::OnResetSim()
 	if (IsLayoutMode())
 	{
 		if (!IsCameraInputAvailable() || IsLayoutDragging() || IsInputKeyDown(EKeys::RightMouseButton) || Grabbed.IsValid()) return;
-		AActor* Selected = LayoutSelection.Get();
+		if (GetSelectedLayoutActors().Num() > 1) return;
+		AActor* Selected = GetSelectedLayoutActor();
 		if (!Selected) return;
 		FRotator Rotation = Selected->GetActorRotation();
 		// User-requested UI quarter turn; preserve a non-cardinal starting heading instead of snapping it.
@@ -985,8 +1019,9 @@ void ADataCenterDebugController::Tick(float DeltaTime)
 			DrawDebugBox(GetWorld(), H->GetActorLocation() + H->GetActorUpVector() * HalfCm.Z, HalfCm, H->GetActorQuat(),
 				Grabbed.IsValid() ? FColor::Orange : FColor::Cyan, false, 0.0f, 0, 2.0f);
 		}
-		if (const AActor* Selected = LayoutSelection.Get(); Selected != nullptr && PlaceableBoxM(Selected, SizeM))
+		for (const AActor* Selected : GetSelectedLayoutActors())
 		{
+			if (!PlaceableBoxM(Selected, SizeM)) continue;
 			const FVector HalfCm = SizeM * 50.0;
 			DrawDebugBox(GetWorld(), Selected->GetActorLocation() + Selected->GetActorUpVector() * HalfCm.Z,
 				HalfCm, Selected->GetActorQuat(), FColor::Green, false, 0.0f, 0, 3.0f);
