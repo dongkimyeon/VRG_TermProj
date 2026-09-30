@@ -651,6 +651,20 @@ bool ADataCenterDebugController::IsLayoutDragPreviewBlocked() const
 	return IsLayoutPlacementBlocked(DragActor.Get(), Proposed);
 }
 
+bool ADataCenterDebugController::TryLayoutRotation(AActor* Actor, const FRotator& Rotation)
+{
+	if (!IsLayoutMode() || !IsCameraInputAvailable() || IsLayoutDragging() || !IsValid(Actor)
+		|| Actor->GetWorld() != GetWorld() || Rotation.ContainsNaN()) return false;
+	FTransform Proposed = Actor->GetActorTransform();
+	Proposed.SetRotation(Rotation.Quaternion());
+	if (IsLayoutPlacementBlocked(Actor, Proposed))
+	{
+		UE_LOG(LogTemp, Display, TEXT("[VrgLayout] 회전 거절: %s (장비 상자/1 cm 여유)"), *Actor->GetName());
+		return false;
+	}
+	return Actor->SetActorRotation(Rotation);
+}
+
 void ADataCenterDebugController::OnFocusEquipment()
 {
 	if (!IsLayoutMode() || !IsCameraInputAvailable()) return;
@@ -840,7 +854,7 @@ void ADataCenterDebugController::OnRotatePlaceable()
 	if (Target == nullptr) return;
 	FRotator R = Target->GetActorRotation();
 	R.Yaw = FRotator::NormalizeAxis(FMath::RoundToDouble((R.Yaw + 90.0) / 90.0) * 90.0);
-	Target->SetActorRotation(R);
+	TryLayoutRotation(Target, R);
 }
 
 void ADataCenterDebugController::DrawTargetHighlight() const
@@ -888,8 +902,8 @@ void ADataCenterDebugController::OnResetSim()
 		FRotator Rotation = Selected->GetActorRotation();
 		// User-requested UI quarter turn; preserve a non-cardinal starting heading instead of snapping it.
 		Rotation.Yaw = FRotator::NormalizeAxis(Rotation.Yaw + 90.0);
-		Selected->SetActorRotation(Rotation);
-		UE_LOG(LogTemp, Display, TEXT("[VrgLayout] 선택 회전: %s yaw %.2f deg"), *Selected->GetName(), Rotation.Yaw);
+		if (TryLayoutRotation(Selected, Rotation))
+			UE_LOG(LogTemp, Display, TEXT("[VrgLayout] 선택 회전: %s yaw %.2f deg"), *Selected->GetName(), Rotation.Yaw);
 		return;
 	}
 	// Simulation still restarts from the current layout; standalone racks retain their existing reset path.
