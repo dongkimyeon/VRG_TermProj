@@ -101,6 +101,10 @@ public:
 	static AActor* PickPlaceableAlongRay(UWorld* World, const FVector& EyeCm, const FVector& Dir, double MaxDistanceCm);
 	// Where the ray meets the horizontal plane at PlaneZCm, snapped in X and Y to SnapM; false if it never does.
 	static bool FloorPointSnapped(const FVector& EyeCm, const FVector& Dir, double PlaneZCm, double SnapM, FVector& OutCm);
+	// Projected equipment boxes, with 1 cm clearance on a separating axis (UI placement rule).
+	static bool IsLayoutPlacementBlocked(const AActor* Actor, const FTransform& Proposed);
+	// Shared by legacy G and cursor placement; layout-only, no solver changes.
+	bool TryLayoutMove(AActor* Actor, const FVector& TargetCm);
 
 	// Grid step of layout moves [m].
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Debug", meta = (ClampMin = "0.0"))
@@ -127,6 +131,7 @@ public:
 	void EndLayoutDrag(bool bCommit);
 	bool IsLayoutDragging() const { return DragActor.IsValid(); }
 	FVector GetLayoutDragPreviewCm() const { return DragPreviewCm; }
+	bool IsLayoutDragPreviewBlocked() const;
 
 	// 레벨에서 대상을 다시 훑는 주기 [s]. 방 액터가 랙을 늦게 띄우기 때문에 필요하다.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Debug")

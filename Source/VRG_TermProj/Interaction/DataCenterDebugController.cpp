@@ -575,6 +575,82 @@ bool ADataCenterDebugController::TryFrameEquipment(const AActor* OnlyActor)
 	return true;
 }
 
+namespace
+{
+	// XY projection of a transformed box. Three generators include tilted/scaled height as well as depth/width.
+	struct FLayoutFootprint
+	{
+		FVector2D Centre;
+		FVector2D HalfEdges[3];
+	};
+	bool MakeLayoutFootprint(const AActor* Actor, const FTransform& Transform, FLayoutFootprint& Out)
+	{
+		FVector SizeM;
+		if (!ADataCenterDebugController::PlaceableBoxM(Actor, SizeM) || Transform.ContainsNaN() || SizeM.ContainsNaN()
+			|| SizeM.X <= 0 || SizeM.Y <= 0 || SizeM.Z <= 0) return false;
+		const FVector HalfCm = SizeM * 50.0; // Actor/view boundary only; solver units remain m.
+		const FVector CentreCm = Transform.TransformPosition(FVector(0, 0, HalfCm.Z));
+		Out.Centre = FVector2D(CentreCm.X, CentreCm.Y);
+		const FVector LocalEdges[] = { FVector(HalfCm.X, 0, 0), FVector(0, HalfCm.Y, 0), FVector(0, 0, HalfCm.Z) };
+		for (int32 I = 0; I < 3; ++I)
+		{
+			const FVector Edge = Transform.TransformVector(LocalEdges[I]);
+			Out.HalfEdges[I] = FVector2D(Edge.X, Edge.Y);
+		}
+		return true;
+	}
+	bool FootprintsConflict(const FLayoutFootprint& A, const FLayoutFootprint& B)
+	{
+		const FVector2D Delta = B.Centre - A.Centre;
+		// Team placement plan: 1 cm total clearance, not 1 cm expansion on each box and not a physical constant.
+		constexpr double ClearanceCm = 1.0;
+		for (const FLayoutFootprint* Footprint : { &A, &B })
+			for (const FVector2D& Edge : Footprint->HalfEdges)
+			{
+				if (Edge.IsNearlyZero()) continue;
+				const FVector2D Axis = FVector2D(-Edge.Y, Edge.X).GetSafeNormal();
+				double Radius = 0;
+				for (int32 I = 0; I < 3; ++I)
+					Radius += FMath::Abs(FVector2D::DotProduct(A.HalfEdges[I], Axis)) + FMath::Abs(FVector2D::DotProduct(B.HalfEdges[I], Axis));
+				if (FMath::Abs(FVector2D::DotProduct(Delta, Axis)) >= Radius + ClearanceCm) return false;
+			}
+		return true;
+	}
+}
+
+bool ADataCenterDebugController::IsLayoutPlacementBlocked(const AActor* Actor, const FTransform& Proposed)
+{
+	if (!IsValid(Actor) || !Actor->GetWorld()) return true;
+	FLayoutFootprint Candidate;
+	if (!MakeLayoutFootprint(Actor, Proposed, Candidate)) return true;
+	for (TActorIterator<AActor> It(Actor->GetWorld()); It; ++It)
+	{
+		if (*It == Actor || !IsValid(*It)) continue;
+		FVector SizeM;
+		if (!PlaceableBoxM(*It, SizeM)) continue;
+		FLayoutFootprint Other;
+		if (!MakeLayoutFootprint(*It, It->GetActorTransform(), Other) || FootprintsConflict(Candidate, Other)) return true;
+	}
+	return false;
+}
+
+bool ADataCenterDebugController::TryLayoutMove(AActor* Actor, const FVector& TargetCm)
+{
+	if (!IsLayoutMode() || !IsCameraInputAvailable() || !IsValid(Actor) || Actor->GetWorld() != GetWorld() || TargetCm.ContainsNaN()) return false;
+	FTransform Proposed = Actor->GetActorTransform();
+	Proposed.SetLocation(TargetCm);
+	if (IsLayoutPlacementBlocked(Actor, Proposed)) return false;
+	return Actor->SetActorLocation(TargetCm, false);
+}
+
+bool ADataCenterDebugController::IsLayoutDragPreviewBlocked() const
+{
+	if (!IsLayoutDragging() || !bDragMoved) return false;
+	FTransform Proposed = DragStartTransform;
+	Proposed.SetLocation(DragPreviewCm);
+	return IsLayoutPlacementBlocked(DragActor.Get(), Proposed);
+}
+
 void ADataCenterDebugController::OnFocusEquipment()
 {
 	if (!IsLayoutMode() || !IsCameraInputAvailable()) return;
@@ -652,9 +728,10 @@ void ADataCenterDebugController::EndLayoutDrag(bool bCommit)
 	if (AActor* Actor = DragActor.Get(); Actor && bCommit && bDragMoved && IsLayoutMode() && IsCameraInputAvailable()
 		&& !IsInputKeyDown(EKeys::RightMouseButton) && Actor->GetActorTransform().Equals(DragStartTransform, 0.0))
 	{
-		Actor->SetActorLocation(DragPreviewCm, false);
-		UE_LOG(LogTemp, Display, TEXT("[VrgLayout] 이동 확정: %s %s -> %s cm"), *Actor->GetName(),
-			*DragStartTransform.GetLocation().ToCompactString(), *DragPreviewCm.ToCompactString());
+		if (TryLayoutMove(Actor, DragPreviewCm))
+			UE_LOG(LogTemp, Display, TEXT("[VrgLayout] 이동 확정: %s %s -> %s cm"), *Actor->GetName(),
+				*DragStartTransform.GetLocation().ToCompactString(), *DragPreviewCm.ToCompactString());
+		else UE_LOG(LogTemp, Display, TEXT("[VrgLayout] 이동 거절: %s (장비 상자/1 cm 여유)"), *Actor->GetName());
 	}
 	// Cancel needs no restoration: the live actor never left its original location.
 	DragActor.Reset();
@@ -876,7 +953,7 @@ void ADataCenterDebugController::Tick(float DeltaTime)
 					Target.Y = FMath::RoundToDouble(Target.Y / S) * S;
 				}
 				Target.Z = Held->GetActorLocation().Z;
-				Held->SetActorLocation(Target);
+				TryLayoutMove(Held, Target);
 			}
 		}
 		HoveredPlaceable = Grabbed.IsValid() ? Grabbed : TWeakObjectPtr<AActor>(PickPlaceableAlongRay(GetWorld(), EyeCm, ViewRotation.Vector(), MaxSelectDistanceM * 100.0));
@@ -894,7 +971,7 @@ void ADataCenterDebugController::Tick(float DeltaTime)
 				HalfCm, Selected->GetActorQuat(), FColor::Green, false, 0.0f, 0, 3.0f);
 			if (IsLayoutDragging() && bDragMoved)
 				DrawDebugBox(GetWorld(), DragPreviewCm + Selected->GetActorUpVector() * HalfCm.Z,
-					HalfCm, Selected->GetActorQuat(), FColor::Orange, false, 0.0f, 0, 3.0f);
+					HalfCm, Selected->GetActorQuat(), IsLayoutDragPreviewBlocked() ? FColor::Red : FColor::Orange, false, 0.0f, 0, 3.0f);
 		}
 	}
 	else
