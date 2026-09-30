@@ -573,7 +573,7 @@ bool ADataCenterDebugController::TryFrameEquipment(const AActor* OnlyActor, cons
 	ViewPawn->SetActorRotation(Look);
 	SetControlRotation(Look);
 	UE_LOG(LogTemp, Display, TEXT("[VrgDebug] 장비 보기 (%s): %s (FOV %.0f, 화면비 %.2f)"),
-		OnlyActor ? *OnlyActor->GetName() : TEXT("전체"), *Eye.ToCompactString(), Fov, Aspect);
+		OnlyActor ? *OnlyActor->GetName() : OnlyActors ? TEXT("선택 그룹") : TEXT("전체"), *Eye.ToCompactString(), Fov, Aspect);
 	return true;
 }
 
@@ -1220,7 +1220,7 @@ void ADataCenterDebugController::DrawHelp() const
 
 	GEngine->AddOnScreenDebugMessage(BaseKey, 0.0f, FColor(180, 220, 255),
 		IsLayoutMode()
-		? TEXT("[배치 키] 클릭 선택/빈 곳 해제 | 드래그 주황 미리보기/놓기 확정/Esc 취소 | R 선택 90도 회전 | F 선택/없으면 전체 | 우클릭+마우스 회전/WASD 이동/QE 아래·위/휠 속도 | 휠 전후 | G 시선 잡기·놓기 T 회전 C 컨테인먼트 Enter 시뮬레이션 H 도움말")
+		? TEXT("[배치 키] Shift+클릭 추가/제거·빈 곳 전체 해제 | 드래그 그룹 이동/빨강 거절/Esc 취소 | R 단일 선택 회전 | F 선택 그룹/없으면 전체 | 우클릭+마우스/WASD/QE 비행·휠 속도 | 휠 전후 | G/T 단일 선택만 C 컨테인먼트 Enter 시뮬레이션 H 도움말")
 		: TEXT("[디버그 키] Enter 배치 모드 | 1/2 CPU 발열  3/4 GPU 발열  5/6 펌프 회전수  7/8 라디에이터 UA(랙별 모드)  9/0 부하율  E 바라보는 유닛 뽑기/꽂기  R 리셋  H 도움말"));
 
 	const ARackThermalActor* Rack = TargetRack.Get();
