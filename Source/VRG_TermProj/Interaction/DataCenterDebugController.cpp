@@ -743,9 +743,14 @@ void ADataCenterDebugController::EndLayoutDrag(bool bCommit)
 		&& !IsInputKeyDown(EKeys::RightMouseButton) && Actor->GetActorTransform().Equals(DragStartTransform, 0.0))
 	{
 		if (TryLayoutMove(Actor, DragPreviewCm))
+		{
 			UE_LOG(LogTemp, Display, TEXT("[VrgLayout] 이동 확정: %s %s -> %s cm"), *Actor->GetName(),
 				*DragStartTransform.GetLocation().ToCompactString(), *DragPreviewCm.ToCompactString());
-		else UE_LOG(LogTemp, Display, TEXT("[VrgLayout] 이동 거절: %s (장비 상자/1 cm 여유)"), *Actor->GetName());
+		}
+		else
+		{
+			UE_LOG(LogTemp, Display, TEXT("[VrgLayout] 이동 거절: %s (장비 상자/1 cm 여유)"), *Actor->GetName());
+		}
 	}
 	// Cancel needs no restoration: the live actor never left its original location.
 	DragActor.Reset();
@@ -903,7 +908,9 @@ void ADataCenterDebugController::OnResetSim()
 		// User-requested UI quarter turn; preserve a non-cardinal starting heading instead of snapping it.
 		Rotation.Yaw = FRotator::NormalizeAxis(Rotation.Yaw + 90.0);
 		if (TryLayoutRotation(Selected, Rotation))
+		{
 			UE_LOG(LogTemp, Display, TEXT("[VrgLayout] 선택 회전: %s yaw %.2f deg"), *Selected->GetName(), Rotation.Yaw);
+		}
 		return;
 	}
 	// Simulation still restarts from the current layout; standalone racks retain their existing reset path.
