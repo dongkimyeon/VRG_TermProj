@@ -116,6 +116,8 @@ public:
 	static bool EquipmentViewpoint(UWorld* World, double HorizontalFovDeg, double Aspect, FVector& OutEyeCm, FRotator& OutLook,
 		const AActor* OnlyActor = nullptr);
 	void OnFocusEquipment();
+	// R dispatch: rotate the clicked selection in layout; retain simulation reset.
+	void OnResetSim();
 	// Layout selection only: never moves equipment or advances the solver. A miss clears the selection.
 	void SelectLayoutAlongRay(const FVector& EyeCm, const FVector& Direction);
 	AActor* GetSelectedLayoutActor() const { return LayoutSelection.Get(); }
@@ -218,7 +220,6 @@ private:
 	FVector FramedEyeCm = FVector::ZeroVector;
 	bool bFramedMoveLogged = false;
 	bool TryFrameEquipment(const AActor* OnlyActor = nullptr);
-	void OnResetSim();
 	void OnToggleHelp();
 
 	void DrawHelp() const;

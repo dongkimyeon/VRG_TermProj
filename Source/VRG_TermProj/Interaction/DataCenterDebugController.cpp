@@ -803,8 +803,19 @@ void ADataCenterDebugController::OnToggleSelectedSled()
 
 void ADataCenterDebugController::OnResetSim()
 {
-	// With the integrated actor: restart the simulation from the current layout, and do nothing in layout mode
-	// (resetting racks there would start their own standalone integration).
+	if (IsLayoutMode())
+	{
+		if (!IsCameraInputAvailable() || IsLayoutDragging() || IsInputKeyDown(EKeys::RightMouseButton) || Grabbed.IsValid()) return;
+		AActor* Selected = LayoutSelection.Get();
+		if (!Selected) return;
+		FRotator Rotation = Selected->GetActorRotation();
+		// User-requested UI quarter turn; preserve a non-cardinal starting heading instead of snapping it.
+		Rotation.Yaw = FRotator::NormalizeAxis(Rotation.Yaw + 90.0);
+		Selected->SetActorRotation(Rotation);
+		UE_LOG(LogTemp, Display, TEXT("[VrgLayout] 선택 회전: %s yaw %.2f deg"), *Selected->GetName(), Rotation.Yaw);
+		return;
+	}
+	// Simulation still restarts from the current layout; standalone racks retain their existing reset path.
 	if (ADataCenterSimulationActor* Sim = FindSimActor())
 	{
 		if (Sim->GetSimMode() == ESimMode::Simulation) Sim->EnterSimulationMode();
@@ -1023,7 +1034,7 @@ void ADataCenterDebugController::DrawHelp() const
 
 	GEngine->AddOnScreenDebugMessage(BaseKey, 0.0f, FColor(180, 220, 255),
 		IsLayoutMode()
-		? TEXT("[배치 키] 클릭 선택/빈 곳 해제 | 드래그 주황 미리보기/놓기 확정/Esc 취소 | F 선택/없으면 전체 | 우클릭+마우스 회전/WASD 이동/QE 아래·위/휠 속도 | 휠 전후 | G 시선 잡기·놓기 T 회전 C 컨테인먼트 Enter 시뮬레이션 H 도움말")
+		? TEXT("[배치 키] 클릭 선택/빈 곳 해제 | 드래그 주황 미리보기/놓기 확정/Esc 취소 | R 선택 90도 회전 | F 선택/없으면 전체 | 우클릭+마우스 회전/WASD 이동/QE 아래·위/휠 속도 | 휠 전후 | G 시선 잡기·놓기 T 회전 C 컨테인먼트 Enter 시뮬레이션 H 도움말")
 		: TEXT("[디버그 키] Enter 배치 모드 | 1/2 CPU 발열  3/4 GPU 발열  5/6 펌프 회전수  7/8 라디에이터 UA(랙별 모드)  9/0 부하율  E 바라보는 유닛 뽑기/꽂기  R 리셋  H 도움말"));
 
 	const ARackThermalActor* Rack = TargetRack.Get();
