@@ -102,7 +102,7 @@ public:
 	// Where the ray meets the horizontal plane at PlaneZCm, snapped in X and Y to SnapM; false if it never does.
 	static bool FloorPointSnapped(const FVector& EyeCm, const FVector& Dir, double PlaneZCm, double SnapM, FVector& OutCm);
 	// Projected equipment boxes, with 1 cm clearance on a separating axis (UI placement rule).
-	static bool IsLayoutPlacementBlocked(const AActor* Actor, const FTransform& Proposed);
+	static bool IsLayoutPlacementBlocked(const AActor* Actor, const FTransform& Proposed, const TArray<AActor*>* Ignored = nullptr);
 	// Shared by legacy G and cursor placement; layout-only, no solver changes.
 	bool TryLayoutMove(AActor* Actor, const FVector& TargetCm);
 	bool TryLayoutRotation(AActor* Actor, const FRotator& Rotation);
@@ -131,9 +131,10 @@ public:
 	void BeginLayoutDragAlongRay(const FVector& EyeCm, const FVector& Direction);
 	void UpdateLayoutDragAlongRay(const FVector& EyeCm, const FVector& Direction);
 	void EndLayoutDrag(bool bCommit);
-	bool IsLayoutDragging() const { return DragActor.IsValid(); }
+	bool IsLayoutDragging() const { return !DragMembers.IsEmpty(); }
 	FVector GetLayoutDragPreviewCm() const { return DragPreviewCm; }
 	bool IsLayoutDragPreviewBlocked() const;
+	bool GetLayoutDragPreviewTransform(const AActor* Actor, FTransform& Out) const;
 
 	// 레벨에서 대상을 다시 훑는 주기 [s]. 방 액터가 랙을 늦게 띄우기 때문에 필요하다.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Debug")
@@ -216,7 +217,12 @@ private:
 	void OnReleaseLayoutEquipment();
 	void OnCancelLayoutDrag();
 	void UpdateLayoutDragFromCursor();
-	TWeakObjectPtr<AActor> DragActor;
+	struct FLayoutDragMember
+	{
+		TWeakObjectPtr<AActor> Actor;
+		FTransform Start;
+	};
+	TArray<FLayoutDragMember> DragMembers;
 	FTransform DragStartTransform;
 	FVector DragStartFloorCm = FVector::ZeroVector;
 	FVector DragPreviewCm = FVector::ZeroVector;

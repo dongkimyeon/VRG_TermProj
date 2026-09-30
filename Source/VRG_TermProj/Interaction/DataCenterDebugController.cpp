@@ -14,6 +14,7 @@
 #include "Simulation/Thermal/RackThermalModel.h"
 
 #include "Camera/PlayerCameraManager.h"
+#include "Components/SceneComponent.h"
 #include "DrawDebugHelpers.h"
 #include "Engine/GameViewportClient.h"
 #include "Engine/Console.h"
@@ -523,7 +524,7 @@ bool ADataCenterDebugController::EquipmentViewpoint(UWorld* World, double Horizo
 		for (int32 C = 0; C < 8; ++C)
 		{
 			const FVector Local((C & 1 ? 1 : -1) * HalfCm.X, (C & 2 ? 1 : -1) * HalfCm.Y, C & 4 ? 2.0 * HalfCm.Z : 0.0);
-			Corners.Add(It->GetActorTransform().TransformPositionNoScale(Local));
+			Corners.Add(It->GetActorTransform().TransformPosition(Local));
 		}
 	}
 	if (Corners.Num() == 0) return false;
@@ -619,7 +620,7 @@ namespace
 	}
 }
 
-bool ADataCenterDebugController::IsLayoutPlacementBlocked(const AActor* Actor, const FTransform& Proposed)
+bool ADataCenterDebugController::IsLayoutPlacementBlocked(const AActor* Actor, const FTransform& Proposed, const TArray<AActor*>* Ignored)
 {
 	if (!IsValid(Actor) || !Actor->GetWorld()) return true;
 	FLayoutFootprint Candidate;
@@ -627,6 +628,7 @@ bool ADataCenterDebugController::IsLayoutPlacementBlocked(const AActor* Actor, c
 	for (TActorIterator<AActor> It(Actor->GetWorld()); It; ++It)
 	{
 		if (*It == Actor || !IsValid(*It)) continue;
+		if (Ignored && Ignored->Contains(*It)) continue;
 		FVector SizeM;
 		if (!PlaceableBoxM(*It, SizeM)) continue;
 		FLayoutFootprint Other;
@@ -648,9 +650,39 @@ bool ADataCenterDebugController::TryLayoutMove(AActor* Actor, const FVector& Tar
 bool ADataCenterDebugController::IsLayoutDragPreviewBlocked() const
 {
 	if (!IsLayoutDragging() || !bDragMoved) return false;
-	FTransform Proposed = DragStartTransform;
-	Proposed.SetLocation(DragPreviewCm);
-	return IsLayoutPlacementBlocked(DragActor.Get(), Proposed);
+	TArray<AActor*> Members;
+	for (const FLayoutDragMember& Member : DragMembers)
+	{
+		if (!Member.Actor.IsValid() || Member.Actor->GetWorld() != GetWorld()
+			|| !Member.Actor->GetActorTransform().Equals(Member.Start, 0.0)) return true;
+		Members.Add(Member.Actor.Get());
+	}
+	TArray<FLayoutFootprint> Footprints;
+	for (const FLayoutDragMember& Member : DragMembers)
+	{
+		FTransform Proposed;
+		GetLayoutDragPreviewTransform(Member.Actor.Get(), Proposed);
+		if (IsLayoutPlacementBlocked(Member.Actor.Get(), Proposed, &Members)) return true;
+		FLayoutFootprint Candidate;
+		if (!MakeLayoutFootprint(Member.Actor.Get(), Proposed, Candidate)) return true;
+		// Ignore members' old locations, but still check their proposed footprints against each other.
+		for (const FLayoutFootprint& Other : Footprints)
+			if (FootprintsConflict(Candidate, Other)) return true;
+		Footprints.Add(Candidate);
+	}
+	return false;
+}
+
+bool ADataCenterDebugController::GetLayoutDragPreviewTransform(const AActor* Actor, FTransform& Out) const
+{
+	for (const FLayoutDragMember& Member : DragMembers)
+		if (Member.Actor.Get() == Actor && IsValid(Actor))
+		{
+			Out = Member.Start;
+			Out.SetLocation(Member.Start.GetLocation() + (DragPreviewCm - DragStartTransform.GetLocation()));
+			return true;
+		}
+	return false;
 }
 
 bool ADataCenterDebugController::TryLayoutRotation(AActor* Actor, const FRotator& Rotation)
@@ -708,13 +740,13 @@ void ADataCenterDebugController::OnSelectLayoutEquipment()
 void ADataCenterDebugController::BeginLayoutDragAlongRay(const FVector& EyeCm, const FVector& Direction)
 {
 	EndLayoutDrag(false);
-	SelectLayoutAlongRay(EyeCm, Direction);
+	SelectLayoutAlongRay(EyeCm, Direction, false, true);
 	if (!IsLayoutMode() || !IsCameraInputAvailable() || IsInputKeyDown(EKeys::RightMouseButton)
 		|| EyeCm.ContainsNaN() || Direction.ContainsNaN() || Direction.IsNearlyZero()) return;
-	AActor* Selected = GetSelectedLayoutActor();
+	AActor* Selected = PickPlaceableAlongRay(GetWorld(), EyeCm, Direction.GetSafeNormal(), TNumericLimits<double>::Max());
 	if (!Selected || !FloorPointSnapped(EyeCm, Direction.GetSafeNormal(), Selected->GetActorLocation().Z, 0.0, DragStartFloorCm)) return;
-	DragActor = Selected;
 	DragStartTransform = Selected->GetActorTransform();
+	for (AActor* Member : GetSelectedLayoutActors()) DragMembers.Add({ Member, Member->GetActorTransform() });
 	DragPreviewCm = Selected->GetActorLocation();
 	bDragMoved = false;
 	bDragMouseThresholdPassed = false;
@@ -747,21 +779,37 @@ void ADataCenterDebugController::UpdateLayoutDragAlongRay(const FVector& EyeCm, 
 
 void ADataCenterDebugController::EndLayoutDrag(bool bCommit)
 {
-	if (AActor* Actor = DragActor.Get(); Actor && bCommit && bDragMoved && IsLayoutMode() && IsCameraInputAvailable()
-		&& !IsInputKeyDown(EKeys::RightMouseButton) && Actor->GetActorTransform().Equals(DragStartTransform, 0.0))
+	if (bCommit && bDragMoved && IsLayoutDragging() && IsLayoutMode() && IsCameraInputAvailable()
+		&& !IsInputKeyDown(EKeys::RightMouseButton))
 	{
-		if (TryLayoutMove(Actor, DragPreviewCm))
+		bool bAllowed = !IsLayoutDragPreviewBlocked();
+		// Preflight every member before changing any actor. No solver or routing tick can interleave on the game thread.
+		for (const FLayoutDragMember& Member : DragMembers)
+			if (!Member.Actor.IsValid() || !Member.Actor->GetRootComponent()
+				|| Member.Actor->GetRootComponent()->Mobility != EComponentMobility::Movable) bAllowed = false;
+		int32 Applied = 0;
+		if (bAllowed)
 		{
-			UE_LOG(LogTemp, Display, TEXT("[VrgLayout] 이동 확정: %s %s -> %s cm"), *Actor->GetName(),
-				*DragStartTransform.GetLocation().ToCompactString(), *DragPreviewCm.ToCompactString());
+			for (const FLayoutDragMember& Member : DragMembers)
+			{
+				FTransform Proposed;
+				if (!GetLayoutDragPreviewTransform(Member.Actor.Get(), Proposed) || !Member.Actor->SetActorLocation(Proposed.GetLocation(), false))
+				{
+					bAllowed = false;
+					break;
+				}
+				++Applied;
+			}
 		}
-		else
+		if (!bAllowed && Applied > 0)
 		{
-			UE_LOG(LogTemp, Display, TEXT("[VrgLayout] 이동 거절: %s (장비 상자/1 cm 여유)"), *Actor->GetName());
+			for (int32 I = 0; I < Applied; ++I)
+				if (DragMembers[I].Actor.IsValid()) DragMembers[I].Actor->SetActorTransform(DragMembers[I].Start, false);
 		}
+		UE_LOG(LogTemp, Display, TEXT("[VrgLayout] 그룹 이동 %s: %d대"), bAllowed ? TEXT("확정") : TEXT("거절"), DragMembers.Num());
 	}
 	// Cancel needs no restoration: the live actor never left its original location.
-	DragActor.Reset();
+	DragMembers.Reset();
 	bDragMoved = false;
 }
 
@@ -1019,15 +1067,20 @@ void ADataCenterDebugController::Tick(float DeltaTime)
 			DrawDebugBox(GetWorld(), H->GetActorLocation() + H->GetActorUpVector() * HalfCm.Z, HalfCm, H->GetActorQuat(),
 				Grabbed.IsValid() ? FColor::Orange : FColor::Cyan, false, 0.0f, 0, 2.0f);
 		}
+		const bool bPreviewBlocked = IsLayoutDragPreviewBlocked();
 		for (const AActor* Selected : GetSelectedLayoutActors())
 		{
 			if (!PlaceableBoxM(Selected, SizeM)) continue;
 			const FVector HalfCm = SizeM * 50.0;
-			DrawDebugBox(GetWorld(), Selected->GetActorLocation() + Selected->GetActorUpVector() * HalfCm.Z,
-				HalfCm, Selected->GetActorQuat(), FColor::Green, false, 0.0f, 0, 3.0f);
+			DrawDebugBox(GetWorld(), Selected->GetActorTransform().TransformPosition(FVector(0, 0, HalfCm.Z)),
+				HalfCm * Selected->GetActorScale3D().GetAbs(), Selected->GetActorQuat(), FColor::Green, false, 0.0f, 0, 3.0f);
 			if (IsLayoutDragging() && bDragMoved)
-				DrawDebugBox(GetWorld(), DragPreviewCm + Selected->GetActorUpVector() * HalfCm.Z,
-					HalfCm, Selected->GetActorQuat(), IsLayoutDragPreviewBlocked() ? FColor::Red : FColor::Orange, false, 0.0f, 0, 3.0f);
+			{
+				FTransform Proposed;
+				if (GetLayoutDragPreviewTransform(Selected, Proposed))
+					DrawDebugBox(GetWorld(), Proposed.TransformPosition(FVector(0, 0, SizeM.Z * 50.0)),
+						HalfCm * Proposed.GetScale3D().GetAbs(), Proposed.GetRotation(), bPreviewBlocked ? FColor::Red : FColor::Orange, false, 0.0f, 0, 3.0f);
+			}
 		}
 	}
 	else
