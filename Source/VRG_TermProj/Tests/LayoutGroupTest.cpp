@@ -39,8 +39,7 @@ bool FLayoutGroupTest::RunTest(const FString& Parameters)
 	Click(B, true);
 	TestEqual(TEXT("Shift removes from selection"), Controller->GetSelectedLayoutActors().Num(), 1);
 	Click(B, true);
-	Controller->OnResetSim();
-	TestTrue(TEXT("R ignores multiple selection"), A->GetActorTransform().Equals(StartA, 0) && B->GetActorTransform().Equals(StartB, 0));
+	// R group rotation is covered by GroupQuarterTurn; G/T still cannot bypass the group transaction.
 	TestFalse(TEXT("Legacy G shared move blocked for multiple selection"), Controller->TryLayoutMove(A, FVector(300, 0, 7)));
 	TestFalse(TEXT("Legacy T shared rotation blocked for multiple selection"), Controller->TryLayoutRotation(A, FRotator::ZeroRotator));
 	Controller->OnFocusEquipment();

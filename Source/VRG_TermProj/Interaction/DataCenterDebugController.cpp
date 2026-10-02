@@ -641,6 +641,7 @@ bool ADataCenterDebugController::IsLayoutPlacementBlocked(const AActor* Actor, c
 
 bool ADataCenterDebugController::TryLayoutMove(AActor* Actor, const FVector& TargetCm)
 {
+	if (bMarqueeActive) return false;
 	if (GetSelectedLayoutActors().Num() > 1) return false;
 	if (!IsLayoutMode() || !IsCameraInputAvailable() || !IsValid(Actor) || Actor->GetWorld() != GetWorld() || TargetCm.ContainsNaN()) return false;
 	FTransform Proposed = Actor->GetActorTransform();
@@ -689,6 +690,7 @@ bool ADataCenterDebugController::GetLayoutDragPreviewTransform(const AActor* Act
 
 bool ADataCenterDebugController::TryLayoutRotation(AActor* Actor, const FRotator& Rotation)
 {
+	if (bMarqueeActive) return false;
 	if (GetSelectedLayoutActors().Num() > 1) return false;
 	if (!IsLayoutMode() || !IsCameraInputAvailable() || IsLayoutDragging() || !IsValid(Actor)
 		|| Actor->GetWorld() != GetWorld() || Rotation.ContainsNaN()) return false;
@@ -1019,10 +1021,10 @@ void ADataCenterDebugController::EndLayoutMarquee(bool bCommit)
 	bMarqueeActive = false;
 	if (!bCommit || !IsLayoutMode() || !IsCameraInputAvailable() || IsInputKeyDown(EKeys::RightMouseButton)) return;
 	if (!bMoved) { LayoutSelection.Reset(); return; } // Empty click clears even when Shift was held.
-	const ULocalPlayer* Player = GetLocalPlayer();
+	const ULocalPlayer* LocalPlayer = GetLocalPlayer();
 	const UGameViewportClient* Client = GetWorld()->GetGameViewport();
 	FSceneViewProjectionData Data;
-	if (Player && Client && Client->Viewport && Player->GetProjectionData(Client->Viewport, Data))
+	if (LocalPlayer && Client && Client->Viewport && LocalPlayer->GetProjectionData(Client->Viewport, Data))
 		SelectLayoutInScreenRect(Rect, Data.ComputeViewProjectionMatrix(), Data.GetConstrainedViewRect(), bAdd);
 }
 
