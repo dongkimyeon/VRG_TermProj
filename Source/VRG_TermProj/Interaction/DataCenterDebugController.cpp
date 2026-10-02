@@ -269,6 +269,7 @@ void ADataCenterDebugController::SetupInputComponent()
 		{ TEXT("FocusEquipment"), EKeys::F, &ADataCenterDebugController::OnFocusEquipment },
 		{ TEXT("SelectLayoutEquipment"), EKeys::LeftMouseButton, &ADataCenterDebugController::OnSelectLayoutEquipment },
 		{ TEXT("CancelLayoutDrag"), EKeys::Escape, &ADataCenterDebugController::OnCancelLayoutDrag },
+		{ TEXT("DeleteLayoutEquipment"), EKeys::Delete, &ADataCenterDebugController::OnDeleteLayoutEquipment },
 	};
 
 	for (const FBinding& Binding : Bindings)
@@ -755,6 +756,39 @@ ARackThermalActor* ADataCenterDebugController::ConfirmRackAddition()
 	UE_LOG(LogTemp, Display, TEXT("[VrgLayout] GB200 NVL72 추가: %s %s yaw %.0f deg"),
 		*AddedRack->GetName(), *AddedRack->GetActorLocation().ToCompactString(), AddedRack->GetActorRotation().Yaw);
 	return AddedRack;
+}
+
+bool ADataCenterDebugController::TryDeleteLayoutRack()
+{
+	UWorld* CurrentWorld = GetWorld();
+	if (!CurrentWorld || !CurrentWorld->IsGameWorld() || !IsLayoutMode() || !IsCameraInputAvailable()
+		|| bAddingRack || IsLayoutDragging() || bMarqueeActive || Grabbed.IsValid() || IsInputKeyDown(EKeys::RightMouseButton)) return false;
+	const TArray<AActor*> Selected = GetSelectedLayoutActors();
+	if (Selected.Num() != 1) return false;
+	auto* SelectedRack = Cast<ARackThermalActor>(Selected[0]);
+	if (!IsValid(SelectedRack) || SelectedRack->GetWorld() != CurrentWorld) return false;
+	const FString DeletedName = SelectedRack->GetName();
+	if (!SelectedRack->Destroy()) return false;
+	LayoutSelection.Reset();
+	TargetRack.Reset();
+	HoveredPlaceable.Reset();
+	Grabbed.Reset();
+	SelectedSledIndex = INDEX_NONE;
+	FindTargetActors();
+	for (TActorIterator<ADataCenterRoomActor> It(CurrentWorld); It; ++It)
+	{
+		It->RebuildRoom(); // Also invalidate on a hash collision; removal is an explicit layout change.
+		It->RebuildRoomNow();
+	}
+	// Layout rebuild invalidates raw model pointers immediately; actual solver setup waits for simulation entry.
+	if (ADataCenterSimulationActor* Sim = FindSimActor()) Sim->RebuildCoupling();
+	UE_LOG(LogTemp, Display, TEXT("[VrgLayout] 랙 삭제: %s | 남은 랙 %d대"), *DeletedName, Racks.Num());
+	return true;
+}
+
+void ADataCenterDebugController::OnDeleteLayoutEquipment()
+{
+	if (!TryDeleteLayoutRack()) UE_LOG(LogTemp, Display, TEXT("[VrgLayout] 랙 삭제 거절: 단일 랙 선택과 배치 대기 상태가 필요합니다."));
 }
 
 bool ADataCenterDebugController::TryLayoutMove(AActor* Actor, const FVector& TargetCm)
@@ -1649,7 +1683,7 @@ void ADataCenterDebugController::DrawHelp() const
 
 	GEngine->AddOnScreenDebugMessage(BaseKey, 0.0f, FColor(180, 220, 255),
 		IsLayoutMode()
-		? TEXT("[배치 키] Shift+클릭 추가/제거 | 빈 곳 드래그 사각형 선택·Shift 추가 | 장비 드래그 그룹 이동/빨강 거절/Esc 취소 | 단일 랙 줄 붙이기/Alt 해제 | 추가: 클릭 확정/R 회전/Esc 취소 | R 선택 90도 회전 | F 선택/없으면 전체 | 우클릭+마우스/WASD/QE 비행·휠 속도 | 휠 전후 | G/T 단일만 C 컨테인먼트 Enter 시뮬레이션 H 도움말")
+		? TEXT("[배치 키] Shift+클릭 추가/제거 | 빈 곳 드래그 사각형 선택·Shift 추가 | 장비 드래그 그룹 이동/빨강 거절/Esc 취소 | 단일 랙 줄 붙이기/Alt 해제 | 추가: 클릭 확정/R 회전/Esc 취소 | R 선택 90도 회전 | Delete 단일 랙 삭제 | F 선택/없으면 전체 | 우클릭+마우스/WASD/QE 비행·휠 속도 | 휠 전후 | G/T 단일만 C 컨테인먼트 Enter 시뮬레이션 H 도움말")
 		: TEXT("[디버그 키] Enter 배치 모드 | 1/2 CPU 발열  3/4 GPU 발열  5/6 펌프 회전수  7/8 라디에이터 UA(랙별 모드)  9/0 부하율  E 바라보는 유닛 뽑기/꽂기  R 리셋  H 도움말"));
 
 	const ARackThermalActor* Rack = TargetRack.Get();

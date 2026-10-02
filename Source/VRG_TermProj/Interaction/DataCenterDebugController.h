@@ -117,6 +117,8 @@ public:
 	bool TryLayoutMove(AActor* Actor, const FVector& TargetCm);
 	bool TryLayoutRotation(AActor* Actor, const FRotator& Rotation);
 	bool TryRotateLayoutSelection();
+	// Runtime layout only: exactly one selected rack, with no placement gesture in progress.
+	bool TryDeleteLayoutRack();
 
 	// Grid step of layout moves [m].
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Debug", meta = (ClampMin = "0.0"))
@@ -232,6 +234,7 @@ private:
 	void OnToggleSimMode();
 	void OnGrabOrDrop();
 	void OnRotatePlaceable();
+	void OnDeleteLayoutEquipment();
 	void OnCycleContainment();
 	class ADataCenterSimulationActor* FindSimActor() const;
 	bool IsLayoutMode() const;

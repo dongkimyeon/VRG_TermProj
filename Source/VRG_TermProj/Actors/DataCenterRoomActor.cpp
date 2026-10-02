@@ -224,6 +224,7 @@ bool ADataCenterRoomActor::AreTransformsInSameRackRow(const FTransform& A, const
 void ADataCenterRoomActor::DiscoverRows()
 {
 	Rows.Reset();
+	GridSpawnedRacks.RemoveAll([](const TObjectPtr<ARackThermalActor>& Rack) { return !IsValid(Rack.Get()); });
 
 	UWorld* World = GetWorld();
 	if (World == nullptr)

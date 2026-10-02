@@ -179,6 +179,16 @@ void ADataCenterSimulationActor::PostEditChangeProperty(FPropertyChangedEvent& P
 void ADataCenterSimulationActor::RebuildCoupling()
 {
 	bNeedsRebuild = true;
+	if (Mode == ESimMode::Layout)
+	{
+		// A deleted actor must not remain in the bridge's raw thermal-model pointers until the next run/GC.
+		Bridge.SetAirSolver(nullptr);
+		Bridge.SetHydraulicNetwork(nullptr);
+		Bridge.Initialize({}, {});
+		Racks.Reset();
+		Spines.Reset();
+		bDisplaySnapshotValid = false;
+	}
 }
 
 void ADataCenterSimulationActor::StartSim()
