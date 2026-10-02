@@ -31,6 +31,7 @@
 #include "InputAction.h"
 #include "InputMappingContext.h"
 #include "HAL/IConsoleManager.h"
+#include "Widgets/SViewport.h"
 
 static TAutoConsoleVariable<int32> CVarLayoutInputDiagnostics(TEXT("vrg.Layout.InputDiagnostics"), 0,
 	TEXT("Log placement input gates at duplicate/confirm/patch/capture events; 0 disables diagnostics."));
@@ -1748,6 +1749,10 @@ void ADataCenterDebugController::RefreshInteractionInputMode()
 	if (bLayout)
 	{
 		FInputModeGameAndUI Mode;
+		// An empty WidgetToFocus leaves focus on the removed patch widget. Cursor deprojection
+		// still succeeds, but HasFocus rejects placement until another viewport click.
+		if (UGameViewportClient* Client = GetWorld()->GetGameViewport())
+			Mode.SetWidgetToFocus(Client->GetGameViewportWidget());
 		Mode.SetHideCursorDuringCapture(false);
 		Mode.SetLockMouseToViewportBehavior(EMouseLockMode::DoNotLock);
 		SetInputMode(Mode);
