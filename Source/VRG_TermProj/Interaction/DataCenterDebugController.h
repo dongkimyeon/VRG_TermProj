@@ -52,6 +52,7 @@ public:
 	virtual void UpdateRotation(float DeltaTime) override;
 	virtual void PlayerTick(float DeltaTime) override;
 	virtual bool IsMoveInputIgnored() const override;
+	virtual bool InputKey(const FInputKeyEventArgs& Params) override;
 
 	// View navigation only: axes = forward/right/world-up, wheel = notches. SI speed converted at the pawn boundary.
 	void ApplyLayoutCameraInput(float DeltaTime, const FVector& Axes, float Wheel, bool bFly);
@@ -175,6 +176,9 @@ private:
 	bool bRackAdditionHasFloor = false;
 	FTransform RackAdditionTransform = FTransform::Identity;
 	TOptional<FRackLayoutSettings> RackDuplicationSettings;
+	// Capture Ctrl at the D press event, before a short chord's release can reach frame-based actions.
+	bool bLayoutLeftControl = false;
+	bool bLayoutRightControl = false;
 	void UpdateRackAdditionFromCursor();
 	int32 OpenPatchMaps = 0;
 	bool bInputModeInitialized = false;

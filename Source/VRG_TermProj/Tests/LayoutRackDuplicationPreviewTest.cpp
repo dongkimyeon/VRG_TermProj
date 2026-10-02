@@ -7,6 +7,7 @@
 #include "Engine/World.h"
 #include "Engine/Engine.h"
 #include "EngineUtils.h"
+#include "InputKeyEventArgs.h"
 
 #if WITH_DEV_AUTOMATION_TESTS
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FLayoutRackDuplicationPreviewTest, "VRG.Interaction.Layout.RackDuplicationPreview",
@@ -49,6 +50,21 @@ bool FLayoutRackDuplicationPreviewTest::RunTest(const FString& Parameters)
 	Controller->SetPatchMapOpen(true); Reject(TEXT("Patch window")); Controller->SetPatchMapOpen(false);
 	Select(Cdu, true); Reject(TEXT("Multiple selection")); Select(Source);
 	Sim->EnterSimulationMode(); Reject(TEXT("Simulation mode")); Sim->EnterLayoutMode(); Select(Source);
+	// Ctrl release before the next PlayerTick must not erase the D-press chord.
+	auto Key = [&](const FKey& Code, EInputEvent Event) {
+		FInputKeyEventArgs Args; Args.Key = Code; Args.Event = Event; Args.AmountDepressed = 1;
+		Controller->InputKey(Args);
+	};
+	Key(EKeys::D, IE_Pressed); Key(EKeys::D, IE_Released);
+	TestFalse(TEXT("Plain D does not duplicate"), Controller->IsAddingRack());
+	Key(EKeys::LeftControl, IE_Pressed); Key(EKeys::D, IE_Pressed);
+	Key(EKeys::D, IE_Released); Key(EKeys::LeftControl, IE_Released);
+	TestTrue(TEXT("Fast Ctrl+D starts preview despite same-frame release"), Controller->IsAddingRack());
+	Controller->CancelRackAddition();
+	Key(EKeys::RightControl, IE_Pressed); Key(EKeys::D, IE_Repeat);
+	TestFalse(TEXT("Repeat cannot start a duplicate"), Controller->IsAddingRack());
+	Key(EKeys::D, IE_Pressed); Key(EKeys::D, IE_Released); Key(EKeys::RightControl, IE_Released);
+	TestTrue(TEXT("Right Ctrl supported"), Controller->IsAddingRack()); Controller->CancelRackAddition();
 
 	// Fixture settings, not new equipment defaults: a modified slot layout and non-default controls.
 	Source->Params.Slots.Pop(); Source->ConformInputs();

@@ -21,6 +21,7 @@
 #include "Engine/LocalPlayer.h"
 #include "SceneView.h"
 #include "Engine/Console.h"
+#include "InputKeyEventArgs.h"
 #include "UnrealClient.h"
 #include "GameFramework/PawnMovementComponent.h"
 #include "EnhancedInputComponent.h"
@@ -270,7 +271,6 @@ void ADataCenterDebugController::SetupInputComponent()
 		{ TEXT("SelectLayoutEquipment"), EKeys::LeftMouseButton, &ADataCenterDebugController::OnSelectLayoutEquipment },
 		{ TEXT("CancelLayoutDrag"), EKeys::Escape, &ADataCenterDebugController::OnCancelLayoutDrag },
 		{ TEXT("DeleteLayoutEquipment"), EKeys::Delete, &ADataCenterDebugController::OnDeleteLayoutEquipment },
-		{ TEXT("DuplicateLayoutRack"), EKeys::D, &ADataCenterDebugController::OnDuplicateLayoutRack },
 	};
 
 	for (const FBinding& Binding : Bindings)
@@ -688,10 +688,22 @@ bool ADataCenterDebugController::BeginRackDuplication()
 
 void ADataCenterDebugController::OnDuplicateLayoutRack()
 {
-	// D still belongs to ordinary camera navigation without Ctrl. Started prevents repeat spawning.
-	if (!(IsInputKeyDown(EKeys::LeftControl) || IsInputKeyDown(EKeys::RightControl))) return;
 	if (!BeginRackDuplication())
 		UE_LOG(LogTemp, Display, TEXT("[VrgLayout] 랙 복제 거절: 단일 랙 선택과 배치 대기 상태가 필요합니다."));
+}
+
+bool ADataCenterDebugController::InputKey(const FInputKeyEventArgs& Params)
+{
+	if (Params.Key == EKeys::LeftControl) bLayoutLeftControl = Params.Event != IE_Released;
+	if (Params.Key == EKeys::RightControl) bLayoutRightControl = Params.Event != IE_Released;
+	if (Params.Key == EKeys::D && Params.Event == IE_Pressed && (bLayoutLeftControl || bLayoutRightControl))
+	{
+		// A press/release chord may fit into one frame. Polling Ctrl in an Enhanced Input Started callback
+		// would then see the already released key. Handle this chord at event time, and never repeat it.
+		OnDuplicateLayoutRack();
+		return true;
+	}
+	return Super::InputKey(Params); // D without Ctrl retains normal camera input.
 }
 
 void ADataCenterDebugController::CancelRackAddition()
@@ -1623,6 +1635,9 @@ void ADataCenterDebugController::PlayerTick(float DeltaTime)
 {
 	RefreshInteractionInputMode();
 	Super::PlayerTick(DeltaTime);
+	// A focus/input-mode change can flush pressed keys without routing their release events here.
+	if (!IsInputKeyDown(EKeys::LeftControl)) bLayoutLeftControl = false;
+	if (!IsInputKeyDown(EKeys::RightControl)) bLayoutRightControl = false;
 	UpdateRackAdditionFromCursor();
 	if (bMarqueeActive)
 	{
