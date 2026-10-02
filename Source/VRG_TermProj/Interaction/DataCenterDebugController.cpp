@@ -700,6 +700,58 @@ bool ADataCenterDebugController::TryLayoutRotation(AActor* Actor, const FRotator
 	return Actor->SetActorRotation(Rotation);
 }
 
+bool ADataCenterDebugController::TryRotateLayoutSelection()
+{
+	if (!IsLayoutMode() || !IsCameraInputAvailable() || IsLayoutDragging()
+		|| IsInputKeyDown(EKeys::RightMouseButton) || Grabbed.IsValid()) return false;
+	const TArray<AActor*> Selected = GetSelectedLayoutActors();
+	if (Selected.Num() < 2) return false;
+	TArray<FTransform> Starts, Proposed;
+	FBox2D Bounds(ForceInit);
+	for (AActor* Actor : Selected)
+	{
+		FVector SizeM;
+		if (!PlaceableBoxM(Actor, SizeM) || !Actor->GetRootComponent()
+			|| Actor->GetRootComponent()->Mobility != EComponentMobility::Movable) return false;
+		Starts.Add(Actor->GetActorTransform());
+		FLayoutFootprint Footprint;
+		if (!MakeLayoutFootprint(Actor, Starts.Last(), Footprint)) return false;
+		for (int32 C = 0; C < 8; ++C)
+		{
+			FVector2D Point = Footprint.Centre;
+			for (int32 Axis = 0; Axis < 3; ++Axis) Point += Footprint.HalfEdges[Axis] * (C & (1 << Axis) ? 1.0 : -1.0);
+			Bounds += Point;
+		}
+	}
+	const FVector2D Pivot = Bounds.GetCenter();
+	// User-requested quarter turn about world Z, with the projected group AABB centre as pivot.
+	const FQuat QuarterTurn(FVector::UpVector, UE_DOUBLE_PI * .5);
+	TArray<FLayoutFootprint> Footprints;
+	for (int32 I = 0; I < Selected.Num(); ++I)
+	{
+		FTransform Transform = Starts[I];
+		const FVector Position = Transform.GetLocation();
+		Transform.SetLocation(FVector(Pivot.X - (Position.Y - Pivot.Y), Pivot.Y + (Position.X - Pivot.X), Position.Z));
+		Transform.SetRotation(QuarterTurn * Transform.GetRotation());
+		if (IsLayoutPlacementBlocked(Selected[I], Transform, &Selected)) return false;
+		FLayoutFootprint Candidate;
+		if (!MakeLayoutFootprint(Selected[I], Transform, Candidate)) return false;
+		for (const FLayoutFootprint& Other : Footprints) if (FootprintsConflict(Candidate, Other)) return false;
+		Footprints.Add(Candidate);
+		Proposed.Add(Transform);
+	}
+	for (int32 I = 0; I < Selected.Num(); ++I)
+	{
+		if (!Selected[I]->SetActorTransform(Proposed[I], false))
+		{
+			for (int32 J = 0; J <= I; ++J) Selected[J]->SetActorTransform(Starts[J], false);
+			return false;
+		}
+	}
+	UE_LOG(LogTemp, Display, TEXT("[VrgLayout] 그룹 90도 회전 확정: %d대, 중심 (%.3f, %.3f) cm"), Selected.Num(), Pivot.X, Pivot.Y);
+	return true;
+}
+
 void ADataCenterDebugController::OnFocusEquipment()
 {
 	if (!IsLayoutMode() || !IsCameraInputAvailable()) return;
@@ -983,7 +1035,11 @@ void ADataCenterDebugController::OnResetSim()
 	if (IsLayoutMode())
 	{
 		if (!IsCameraInputAvailable() || IsLayoutDragging() || IsInputKeyDown(EKeys::RightMouseButton) || Grabbed.IsValid()) return;
-		if (GetSelectedLayoutActors().Num() > 1) return;
+		if (GetSelectedLayoutActors().Num() > 1)
+		{
+			if (!TryRotateLayoutSelection()) UE_LOG(LogTemp, Display, TEXT("[VrgLayout] 그룹 회전 거절"));
+			return;
+		}
 		AActor* Selected = GetSelectedLayoutActor();
 		if (!Selected) return;
 		FRotator Rotation = Selected->GetActorRotation();

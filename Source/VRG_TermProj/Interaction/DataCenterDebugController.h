@@ -106,6 +106,7 @@ public:
 	// Shared by legacy G and cursor placement; layout-only, no solver changes.
 	bool TryLayoutMove(AActor* Actor, const FVector& TargetCm);
 	bool TryLayoutRotation(AActor* Actor, const FRotator& Rotation);
+	bool TryRotateLayoutSelection();
 
 	// Grid step of layout moves [m].
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Debug", meta = (ClampMin = "0.0"))
