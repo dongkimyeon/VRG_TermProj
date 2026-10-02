@@ -13,6 +13,26 @@
 
 class UStaticMeshComponent;
 
+// Value-only runtime placement configuration. No actor/component/model/clock references.
+// Input contains authored heat/load/docking/fan controls only; solver boundary values use defaults.
+struct FRackLayoutSettings
+{
+	FRackThermalParams Params;
+	FRackThermalInput Input;
+	FRadiatorParams Radiator;
+	FVector RackSizeM;
+	bool bCloseCoolantLoopThroughRadiator;
+	bool bUseGjModels;
+	double FixedStepS;
+	double PanelThicknessM;
+	double SledPullOutM;
+	float SledSlideSpeed;
+	double ColorMinCelsius;
+	double ColorMaxCelsius;
+	bool bShowReadout;
+	bool bShowSledLabels;
+};
+
 // 랙(캐비닛) 1대를 스태틱 메쉬로 세우고 열모델을 돌리는 액터.
 //
 // 캐비닛 = 서버 유닛 N대, 유닛 1대 = CPU/GPU/RAM/VRM 부품 4개.
@@ -76,6 +96,10 @@ public:
 	// 9 NVLink switch trays, 8 power shelves, 2 management switches) and restart the model.
 	UFUNCTION(BlueprintCallable, CallInEditor, Category = "Rack")
 	void ApplyGb200Nvl72Preset();
+
+	FRackLayoutSettings CaptureLayoutSettings() const;
+	// Apply to a newly deferred-spawned rack. Current/initial source temperatures and clock are not copied.
+	void ApplyLayoutSettings(const FRackLayoutSettings& Settings);
 
 	// Rack-local height [m] of the management switch the node harness and uplinks plug into
 	// (the top Management slot). Falls back to the pre-preset GJ height when there is none.

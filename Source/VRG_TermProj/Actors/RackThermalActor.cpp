@@ -148,6 +148,52 @@ void ARackThermalActor::ApplyGb200Nvl72Preset()
 	ResetSim();
 }
 
+FRackLayoutSettings ARackThermalActor::CaptureLayoutSettings() const
+{
+	FRackLayoutSettings Settings;
+	Settings.Params = Params;
+	// Never copy Input wholesale: inlet temperatures, slot inlet samples and coolant flow are live coupling data.
+	Settings.Input.ComponentHeatW = Input.ComponentHeatW;
+	Settings.Input.SledDocked = Input.SledDocked;
+	Settings.Input.Utilization = Input.Utilization;
+	Settings.Input.SlotUtilization = Input.SlotUtilization;
+	Settings.Input.FanSpeedOverride = Input.FanSpeedOverride;
+	Settings.Radiator = Radiator;
+	Settings.RackSizeM = RackSizeM;
+	Settings.bCloseCoolantLoopThroughRadiator = bCloseCoolantLoopThroughRadiator;
+	Settings.bUseGjModels = bUseGjModels;
+	Settings.FixedStepS = FixedStepS;
+	Settings.PanelThicknessM = PanelThicknessM;
+	Settings.SledPullOutM = SledPullOutM;
+	Settings.SledSlideSpeed = SledSlideSpeed;
+	Settings.ColorMinCelsius = ColorMinCelsius;
+	Settings.ColorMaxCelsius = ColorMaxCelsius;
+	Settings.bShowReadout = bShowReadout;
+	Settings.bShowSledLabels = bShowSledLabels;
+	return Settings;
+}
+
+void ARackThermalActor::ApplyLayoutSettings(const FRackLayoutSettings& Settings)
+{
+	Params = Settings.Params;
+	Input = Settings.Input;
+	Radiator = Settings.Radiator;
+	RackSizeM = Settings.RackSizeM;
+	bCloseCoolantLoopThroughRadiator = Settings.bCloseCoolantLoopThroughRadiator;
+	bUseGjModels = Settings.bUseGjModels;
+	FixedStepS = Settings.FixedStepS;
+	PanelThicknessM = Settings.PanelThicknessM;
+	SledPullOutM = Settings.SledPullOutM;
+	SledSlideSpeed = Settings.SledSlideSpeed;
+	ColorMinCelsius = Settings.ColorMinCelsius;
+	ColorMaxCelsius = Settings.ColorMaxCelsius;
+	bShowReadout = Settings.bShowReadout;
+	bShowSledLabels = Settings.bShowSledLabels;
+	InitialState = FRackThermalState();
+	ExternalSimTimeS = 0.0;
+	ResetSim(); // Fresh model, fan state, ledger and clock; the source remains untouched.
+}
+
 double ARackThermalActor::GetUplinkSwitchZM() const
 {
 	double Z = -1.0;

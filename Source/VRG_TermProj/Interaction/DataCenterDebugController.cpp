@@ -270,6 +270,7 @@ void ADataCenterDebugController::SetupInputComponent()
 		{ TEXT("SelectLayoutEquipment"), EKeys::LeftMouseButton, &ADataCenterDebugController::OnSelectLayoutEquipment },
 		{ TEXT("CancelLayoutDrag"), EKeys::Escape, &ADataCenterDebugController::OnCancelLayoutDrag },
 		{ TEXT("DeleteLayoutEquipment"), EKeys::Delete, &ADataCenterDebugController::OnDeleteLayoutEquipment },
+		{ TEXT("DuplicateLayoutRack"), EKeys::D, &ADataCenterDebugController::OnDuplicateLayoutRack },
 	};
 
 	for (const FBinding& Binding : Bindings)
@@ -661,16 +662,43 @@ void ADataCenterDebugController::BeginRackAddition()
 	EndLayoutDrag(false);
 	EndLayoutMarquee(false);
 	Grabbed.Reset();
+	RackDuplicationSettings.Reset();
 	bAddingRack = true;
 	bRackAdditionHasFloor = false;
 	RackAdditionTransform = FTransform::Identity;
 	UpdateRackAdditionFromCursor();
 }
 
+bool ADataCenterDebugController::BeginRackDuplication()
+{
+	UWorld* CurrentWorld = GetWorld();
+	if (!CurrentWorld || !CurrentWorld->IsGameWorld() || !IsLayoutMode() || !IsCameraInputAvailable()
+		|| bAddingRack || IsLayoutDragging() || bMarqueeActive || Grabbed.IsValid() || IsInputKeyDown(EKeys::RightMouseButton)) return false;
+	const TArray<AActor*> Selected = GetSelectedLayoutActors();
+	if (Selected.Num() != 1) return false;
+	const auto* SourceRack = Cast<ARackThermalActor>(Selected[0]);
+	if (!IsValid(SourceRack) || SourceRack->GetWorld() != CurrentWorld) return false;
+	RackDuplicationSettings = SourceRack->CaptureLayoutSettings();
+	RackAdditionTransform = SourceRack->GetActorTransform();
+	bAddingRack = true;
+	bRackAdditionHasFloor = false;
+	UpdateRackAdditionFromCursor();
+	return true;
+}
+
+void ADataCenterDebugController::OnDuplicateLayoutRack()
+{
+	// D still belongs to ordinary camera navigation without Ctrl. Started prevents repeat spawning.
+	if (!(IsInputKeyDown(EKeys::LeftControl) || IsInputKeyDown(EKeys::RightControl))) return;
+	if (!BeginRackDuplication())
+		UE_LOG(LogTemp, Display, TEXT("[VrgLayout] 랙 복제 거절: 단일 랙 선택과 배치 대기 상태가 필요합니다."));
+}
+
 void ADataCenterDebugController::CancelRackAddition()
 {
 	bAddingRack = false;
 	bRackAdditionHasFloor = false;
+	RackDuplicationSettings.Reset();
 }
 
 void ADataCenterDebugController::UpdateRackAdditionAlongRay(const FVector& EyeCm, const FVector& Direction)
@@ -678,7 +706,7 @@ void ADataCenterDebugController::UpdateRackAdditionAlongRay(const FVector& EyeCm
 	if (!bAddingRack) return;
 	FVector FloorCm;
 	bRackAdditionHasFloor = IsLayoutMode() && IsCameraInputAvailable()
-		&& FloorPointSnapped(EyeCm, Direction, 0.0, PlaceSnapM, FloorCm);
+		&& FloorPointSnapped(EyeCm, Direction, RackDuplicationSettings.IsSet() ? RackAdditionTransform.GetLocation().Z : 0.0, PlaceSnapM, FloorCm);
 	if (bRackAdditionHasFloor) RackAdditionTransform.SetLocation(FloorCm);
 }
 
@@ -707,7 +735,8 @@ bool ADataCenterDebugController::GetRackAdditionPreview(FTransform& Out, FVector
 	if (!bAddingRack || !bRackAdditionHasFloor || !IsLayoutMode() || !IsCameraInputAvailable()) return false;
 	Out = RackAdditionTransform;
 	// Reuse the authored GJ geometry; no new equipment dimensions or physical defaults.
-	SizeM = FVector(GjRackLayout::FrameDepthM, GjRackLayout::FrameWidthM, GjRackLayout::FrameHeightM);
+	SizeM = RackDuplicationSettings.IsSet() ? RackDuplicationSettings->RackSizeM
+		: FVector(GjRackLayout::FrameDepthM, GjRackLayout::FrameWidthM, GjRackLayout::FrameHeightM);
 	return true;
 }
 
@@ -720,7 +749,7 @@ bool ADataCenterDebugController::IsRackAdditionBlocked() const
 ARackThermalActor* ADataCenterDebugController::ConfirmRackAddition()
 {
 	FTransform Proposed; FVector SizeM;
-	if (!GetRackAdditionPreview(Proposed, SizeM) || IsLayoutBoxBlocked(GetWorld(), SizeM, Proposed))
+	if (!GetWorld() || !GetWorld()->IsGameWorld() || !GetRackAdditionPreview(Proposed, SizeM) || IsLayoutBoxBlocked(GetWorld(), SizeM, Proposed))
 	{
 		UE_LOG(LogTemp, Display, TEXT("[VrgLayout] 랙 추가 거절: 목적지 없음 또는 장비 겹침"));
 		return nullptr;
@@ -730,19 +759,27 @@ ARackThermalActor* ADataCenterDebugController::ConfirmRackAddition()
 		nullptr, nullptr, ESpawnActorCollisionHandlingMethod::AlwaysSpawn);
 	if (!AddedRack) return nullptr;
 	AddedRack->bDrivenExternally = true;
-	AddedRack->ApplyGb200Nvl72Preset();
-	// Placement plan: inherit the current rack heat/load controls, never a serialized copy of its physical params.
-	for (TActorIterator<ARackThermalActor> It(GetWorld()); It; ++It)
+	const bool bDuplicate = RackDuplicationSettings.IsSet();
+	if (bDuplicate)
 	{
-		if (*It == AddedRack || It->Input.ComponentHeatW.Num() != AddedRack->Input.ComponentHeatW.Num()
-			|| It->Params.Slots.Num() != AddedRack->Params.Slots.Num()) continue;
-		AddedRack->Input.ComponentHeatW = It->Input.ComponentHeatW;
-		AddedRack->Input.Utilization = It->Input.Utilization;
-		AddedRack->Input.SlotUtilization = It->Input.SlotUtilization;
-		break;
+		AddedRack->ApplyLayoutSettings(RackDuplicationSettings.GetValue());
 	}
-	AddedRack->RackSizeM = SizeM;
-	AddedRack->bUseGjModels = true;
+	else
+	{
+		AddedRack->ApplyGb200Nvl72Preset();
+		// Placement plan: inherit the current rack heat/load controls, never a serialized copy of its physical params.
+		for (TActorIterator<ARackThermalActor> It(GetWorld()); It; ++It)
+		{
+			if (*It == AddedRack || It->Input.ComponentHeatW.Num() != AddedRack->Input.ComponentHeatW.Num()
+				|| It->Params.Slots.Num() != AddedRack->Params.Slots.Num()) continue;
+			AddedRack->Input.ComponentHeatW = It->Input.ComponentHeatW;
+			AddedRack->Input.Utilization = It->Input.Utilization;
+			AddedRack->Input.SlotUtilization = It->Input.SlotUtilization;
+			break;
+		}
+		AddedRack->RackSizeM = SizeM;
+		AddedRack->bUseGjModels = true;
+	}
 	AddedRack->FinishSpawning(Proposed);
 	AddedRack->PauseSim();
 	AddedRack->RefreshVisuals();
@@ -753,7 +790,7 @@ ARackThermalActor* ADataCenterDebugController::ConfirmRackAddition()
 	// Existing discovery owns rows, branch pipes and CDU assignment. Simulation entry reuses these
 	// rows, resets the air domain and binds every rack's heat/slot-air targets at t=0.
 	for (TActorIterator<ADataCenterRoomActor> It(GetWorld()); It; ++It) It->RebuildRoomNow();
-	UE_LOG(LogTemp, Display, TEXT("[VrgLayout] GB200 NVL72 추가: %s %s yaw %.0f deg"),
+	UE_LOG(LogTemp, Display, TEXT("[VrgLayout] GB200 NVL72 %s: %s %s yaw %.0f deg"), bDuplicate ? TEXT("복제") : TEXT("추가"),
 		*AddedRack->GetName(), *AddedRack->GetActorLocation().ToCompactString(), AddedRack->GetActorRotation().Yaw);
 	return AddedRack;
 }
@@ -1407,8 +1444,7 @@ void ADataCenterDebugController::OnResetSim()
 		{
 			if (IsCameraInputAvailable() && !IsInputKeyDown(EKeys::RightMouseButton))
 			{
-				const double Yaw = FRotator::NormalizeAxis(RackAdditionTransform.Rotator().Yaw + 90.0);
-				RackAdditionTransform.SetRotation(FRotator(0, Yaw, 0).Quaternion());
+				RackAdditionTransform.SetRotation(FRotator(0, 90, 0).Quaternion() * RackAdditionTransform.GetRotation());
 			}
 			return;
 		}
@@ -1683,7 +1719,7 @@ void ADataCenterDebugController::DrawHelp() const
 
 	GEngine->AddOnScreenDebugMessage(BaseKey, 0.0f, FColor(180, 220, 255),
 		IsLayoutMode()
-		? TEXT("[배치 키] Shift+클릭 추가/제거 | 빈 곳 드래그 사각형 선택·Shift 추가 | 장비 드래그 그룹 이동/빨강 거절/Esc 취소 | 단일 랙 줄 붙이기/Alt 해제 | 추가: 클릭 확정/R 회전/Esc 취소 | R 선택 90도 회전 | Delete 단일 랙 삭제 | F 선택/없으면 전체 | 우클릭+마우스/WASD/QE 비행·휠 속도 | 휠 전후 | G/T 단일만 C 컨테인먼트 Enter 시뮬레이션 H 도움말")
+		? TEXT("[배치 키] Shift+클릭 추가/제거 | 빈 곳 드래그 사각형 선택·Shift 추가 | 장비 드래그 그룹 이동/빨강 거절/Esc 취소 | 단일 랙 줄 붙이기/Alt 해제 | Ctrl+D 단일 랙 복제 | 추가/복제: 클릭 확정/R 회전/Esc 취소 | R 선택 90도 회전 | Delete 단일 랙 삭제 | F 선택/없으면 전체 | 우클릭+마우스/WASD/QE 비행·휠 속도 | 휠 전후 | G/T 단일만 C 컨테인먼트 Enter 시뮬레이션 H 도움말")
 		: TEXT("[디버그 키] Enter 배치 모드 | 1/2 CPU 발열  3/4 GPU 발열  5/6 펌프 회전수  7/8 라디에이터 UA(랙별 모드)  9/0 부하율  E 바라보는 유닛 뽑기/꽂기  R 리셋  H 도움말"));
 
 	const ARackThermalActor* Rack = TargetRack.Get();

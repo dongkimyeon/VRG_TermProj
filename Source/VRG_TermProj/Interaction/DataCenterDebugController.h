@@ -5,6 +5,7 @@
 #include "CoreMinimal.h"
 #include "GameFramework/PlayerController.h"
 #include "Interaction/DebugKnob.h"
+#include "Actors/RackThermalActor.h"
 #include "DataCenterDebugController.generated.h"
 
 class ARackThermalActor;
@@ -107,6 +108,7 @@ public:
 	static bool IsLayoutBoxBlocked(UWorld* World, const FVector& SizeM, const FTransform& Proposed, const TArray<AActor*>* Ignored = nullptr);
 	// Addition is a value-only preview; no actors or pipes until confirmation.
 	void BeginRackAddition();
+	bool BeginRackDuplication();
 	void CancelRackAddition();
 	void UpdateRackAdditionAlongRay(const FVector& EyeCm, const FVector& Direction);
 	bool GetRackAdditionPreview(FTransform& Out, FVector& SizeM) const;
@@ -172,6 +174,7 @@ private:
 	bool bAddingRack = false;
 	bool bRackAdditionHasFloor = false;
 	FTransform RackAdditionTransform = FTransform::Identity;
+	TOptional<FRackLayoutSettings> RackDuplicationSettings;
 	void UpdateRackAdditionFromCursor();
 	int32 OpenPatchMaps = 0;
 	bool bInputModeInitialized = false;
@@ -235,6 +238,7 @@ private:
 	void OnGrabOrDrop();
 	void OnRotatePlaceable();
 	void OnDeleteLayoutEquipment();
+	void OnDuplicateLayoutRack();
 	void OnCycleContainment();
 	class ADataCenterSimulationActor* FindSimActor() const;
 	bool IsLayoutMode() const;
