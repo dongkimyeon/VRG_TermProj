@@ -1329,6 +1329,16 @@ void ADataCenterDebugController::Tick(float DeltaTime)
 				Grabbed.IsValid() ? FColor::Orange : FColor::Cyan, false, 0.0f, 0, 2.0f);
 		}
 		const bool bPreviewBlocked = IsLayoutDragPreviewBlocked();
+		FVector GuideStart, GuideEnd;
+		if (GetLayoutRowSnapGuide(GuideStart, GuideEnd))
+		{
+			const FColor GuideColor = bPreviewBlocked ? FColor::Red : FColor::Cyan;
+			DrawDebugLine(GetWorld(), GuideStart, GuideEnd, GuideColor, false, 0.0f, 0, 2.0f);
+			// Existing destination box shows orientation; this tether marks its origin on the rear guide.
+			const FVector Along = (GuideEnd - GuideStart).GetSafeNormal2D();
+			const FVector RearPoint = GuideStart + Along * FVector::DotProduct(DragPreviewCm - GuideStart, Along);
+			DrawDebugLine(GetWorld(), RearPoint, DragPreviewCm, GuideColor, false, 0.0f, 0, 2.0f);
+		}
 		for (const AActor* Selected : GetSelectedLayoutActors())
 		{
 			if (!PlaceableBoxM(Selected, SizeM)) continue;
@@ -1487,7 +1497,7 @@ void ADataCenterDebugController::DrawHelp() const
 
 	GEngine->AddOnScreenDebugMessage(BaseKey, 0.0f, FColor(180, 220, 255),
 		IsLayoutMode()
-		? TEXT("[배치 키] Shift+클릭 추가/제거 | 빈 곳 드래그 사각형 선택·Shift 추가 | 장비 드래그 그룹 이동/빨강 거절/Esc 취소 | R 선택 90도 회전 | F 선택/없으면 전체 | 우클릭+마우스/WASD/QE 비행·휠 속도 | 휠 전후 | G/T 단일만 C 컨테인먼트 Enter 시뮬레이션 H 도움말")
+		? TEXT("[배치 키] Shift+클릭 추가/제거 | 빈 곳 드래그 사각형 선택·Shift 추가 | 장비 드래그 그룹 이동/빨강 거절/Esc 취소 | 단일 랙 줄 붙이기/Alt 해제 | R 선택 90도 회전 | F 선택/없으면 전체 | 우클릭+마우스/WASD/QE 비행·휠 속도 | 휠 전후 | G/T 단일만 C 컨테인먼트 Enter 시뮬레이션 H 도움말")
 		: TEXT("[디버그 키] Enter 배치 모드 | 1/2 CPU 발열  3/4 GPU 발열  5/6 펌프 회전수  7/8 라디에이터 UA(랙별 모드)  9/0 부하율  E 바라보는 유닛 뽑기/꽂기  R 리셋  H 도움말"));
 
 	const ARackThermalActor* Rack = TargetRack.Get();
