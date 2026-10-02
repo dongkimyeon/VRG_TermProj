@@ -312,6 +312,7 @@ private:
 	FString LastSetupMessage;
 
 	void FindTargetActors();
+	bool HasUnroutedRacks() const;
 
 	// 랙 기하를 공기 격자 인덱스로 풀어 다리에 넘길 연결 정보를 만든다.
 	void BuildCoupling();

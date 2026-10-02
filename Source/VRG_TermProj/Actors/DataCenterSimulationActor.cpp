@@ -162,7 +162,7 @@ void ADataCenterSimulationActor::EnterSimulationMode()
 		if (Rack != nullptr) Rack->ResetSim();
 	}
 	BuildCoupling();
-	bNeedsRebuild = (Racks.Num() == 0);
+	bNeedsRebuild = HasUnroutedRacks();
 	bSimRunning = true;
 	UE_LOG(LogTemp, Display, TEXT("[VrgSim] 시뮬레이션 모드: 랙 %d대 / 스파인 %d대 / CRAH %d대로 구성하고 t=0부터 시작."),
 		Racks.Num(), Spines.Num(), CrahPlacements.Num());
@@ -204,6 +204,14 @@ void ADataCenterSimulationActor::PauseSim()
 FCouplingSnapshot ADataCenterSimulationActor::GetSnapshot() const
 {
 	return Bridge.MakeSnapshot(Clock.GetSimTimeS());
+}
+
+bool ADataCenterSimulationActor::HasUnroutedRacks() const
+{
+	if (!Racks.IsEmpty() || !GetWorld()) return false;
+	// Preserve startup's row-discovery retry, but an intentionally empty layout is not a failed setup.
+	for (TActorIterator<ARackThermalActor> It(GetWorld()); It; ++It) return true;
+	return false;
 }
 
 void ADataCenterSimulationActor::FindTargetActors()
@@ -464,8 +472,7 @@ void ADataCenterSimulationActor::BuildCoupling()
 	if (Racks.Num() == 0)
 	{
 		LastSetupMessage = TEXT("레벨에서 랙을 찾지 못했습니다.");
-		Bridge.Initialize({}, {});
-		return;
+		// Last-rack deletion still rebuilds solids/ducts/clock and retains any spine thermal targets below.
 	}
 
 	// 바깥이 돌리므로 랙과 공기 액터는 자기 적분을 멈춘다 (규약 4).
@@ -1161,7 +1168,7 @@ void ADataCenterSimulationActor::Tick(float DeltaTime)
 		return;
 	}
 
-	if (bNeedsRebuild)
+	if (bNeedsRebuild || HasUnroutedRacks())
 	{
 		BuildCoupling();
 
@@ -1170,7 +1177,7 @@ void ADataCenterSimulationActor::Tick(float DeltaTime)
 		// 한 번 실패하고 포기하면 영원히 연결되지 않으므로 될 때까지 다시 시도한다.
 		// 실제로 겪었다 - 통합 액터를 배치했는데 화면에 "랙 0대 / IT 발열 0.0 kW"가 뜨고
 		// 공기 액터가 자기 더미 열원으로 계속 돌았다 (시계도 둘로 갈렸다).
-		bNeedsRebuild = (Racks.Num() == 0);
+		bNeedsRebuild = HasUnroutedRacks();
 	}
 
 	// 예약된 예열을 먼저 나눠 소화한다. 다 끝나면 평소 적분으로 돌아간다.
