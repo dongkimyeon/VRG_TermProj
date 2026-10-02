@@ -10,6 +10,13 @@
 #include "DataCenterRoomActor.generated.h"
 
 class ARackThermalActor;
+
+// Fresh game-thread placement query; never rebuilds meshes or the hydraulic graph.
+struct FRackPlacementRow
+{
+	FVector RearDir, AlongDir;
+	TArray<ARackThermalActor*> Racks;
+};
 class ACoolingDistributionUnitActor;
 class UStaticMeshComponent;
 
@@ -221,6 +228,8 @@ public:
 	// 줄 묶기에 쓰인 랙 목록. 공기 열원을 랙마다 놓을 때 쓴다.
 	UFUNCTION(BlueprintCallable, Category = "Room")
 	TArray<ARackThermalActor*> GetRoutedRacks() const;
+	TArray<FRackPlacementRow> GetRackRowsForPlacement(const ARackThermalActor* Excluded) const;
+	bool AreTransformsInSameRackRow(const FTransform& A, const FTransform& B) const;
 
 	// 통합 액터가 빌려 가는 수력망. 수명은 이 액터가 쥔다.
 	FHydraulicNetwork& GetMutableNetwork() { return Network; }

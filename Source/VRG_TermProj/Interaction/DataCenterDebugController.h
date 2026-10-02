@@ -130,12 +130,13 @@ public:
 	AActor* GetSelectedLayoutActor() const;
 	// Transactional preview: only EndLayoutDrag(true) moves the actor (no pipe rebuild while dragging).
 	void BeginLayoutDragAlongRay(const FVector& EyeCm, const FVector& Direction);
-	void UpdateLayoutDragAlongRay(const FVector& EyeCm, const FVector& Direction);
+	void UpdateLayoutDragAlongRay(const FVector& EyeCm, const FVector& Direction, bool bDisableRowSnap = false);
 	void EndLayoutDrag(bool bCommit);
 	bool IsLayoutDragging() const { return !DragMembers.IsEmpty(); }
 	FVector GetLayoutDragPreviewCm() const { return DragPreviewCm; }
 	bool IsLayoutDragPreviewBlocked() const;
 	bool GetLayoutDragPreviewTransform(const AActor* Actor, FTransform& Out) const;
+	bool GetLayoutRowSnapGuide(FVector& StartCm, FVector& EndCm) const;
 	// Viewport pixel rectangle, clipped at UE's reversed-Z near plane; no mesh/occlusion picking.
 	static bool ProjectLayoutBoxToScreen(const AActor* Actor, const FMatrix& ViewProjection, const FIntRect& ViewRect, FBox2D& Out);
 	bool SelectLayoutInScreenRect(const FBox2D& Rect, const FMatrix& ViewProjection, const FIntRect& ViewRect, bool bAdd);
@@ -226,6 +227,7 @@ private:
 	void OnReleaseLayoutEquipment();
 	void OnCancelLayoutDrag();
 	void UpdateLayoutDragFromCursor();
+	void RefreshLayoutRowSnap();
 	struct FLayoutDragMember
 	{
 		TWeakObjectPtr<AActor> Actor;
@@ -235,6 +237,11 @@ private:
 	FTransform DragStartTransform;
 	FVector DragStartFloorCm = FVector::ZeroVector;
 	FVector DragPreviewCm = FVector::ZeroVector;
+	FVector DragRawPreviewCm = FVector::ZeroVector;
+	FQuat DragPreviewRotation = FQuat::Identity;
+	bool bDragRowSnapped = false;
+	bool bDragDisableRowSnap = false;
+	FVector RowGuideStartCm, RowGuideEndCm;
 	FVector2D DragStartMouse = FVector2D::ZeroVector;
 	bool bDragMoved = false;
 	bool bDragMouseThresholdPassed = false;

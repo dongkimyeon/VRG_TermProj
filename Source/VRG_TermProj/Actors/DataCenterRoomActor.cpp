@@ -44,6 +44,20 @@ namespace
 		const FVector Unit = Direction.GetSafeNormal2D();
 		return FVector(FMath::RoundToDouble(Unit.X), FMath::RoundToDouble(Unit.Y), 0.0).GetSafeNormal();
 	}
+	struct FRowKey
+	{
+		int32 DirX, DirY, OffsetBucket;
+		bool operator==(const FRowKey& Other) const
+		{
+			return DirX == Other.DirX && DirY == Other.DirY && OffsetBucket == Other.OffsetBucket;
+		}
+	};
+	FRowKey RackRowKey(const FTransform& Transform, double ToleranceM)
+	{
+		const FVector Rear = QuantizeDirection(-Transform.GetRotation().GetForwardVector());
+		return { FMath::RoundToInt32(Rear.X), FMath::RoundToInt32(Rear.Y),
+			FMath::RoundToInt32(FVector::DotProduct(SimUnits::UnrealToMeters(Transform.GetLocation()), Rear) / FMath::Max(ToleranceM, 0.05)) };
+	}
 }
 
 ADataCenterRoomActor::ADataCenterRoomActor()
@@ -172,6 +186,41 @@ FVector ADataCenterRoomActor::RackRearAnchorM(const ARackThermalActor& Rack, con
 	return RackM + RearDir * (Rack.RackSizeM.X * 0.5 + ExtraOffsetM);
 }
 
+TArray<FRackPlacementRow> ADataCenterRoomActor::GetRackRowsForPlacement(const ARackThermalActor* Excluded) const
+{
+	TArray<FRackPlacementRow> Result;
+	if (!GetWorld() || !FMath::IsFinite(RowGroupToleranceM)) return Result;
+	TArray<FRowKey> Keys;
+	for (TActorIterator<ARackThermalActor> It(GetWorld()); It; ++It)
+	{
+		ARackThermalActor* Rack = *It;
+		if (Rack == Excluded || !IsValid(Rack) || Rack->GetActorTransform().ContainsNaN()) continue;
+		const FVector Rear = QuantizeDirection(-Rack->GetActorForwardVector());
+		if (Rear.IsNearlyZero()) continue;
+		const FRowKey Key = RackRowKey(Rack->GetActorTransform(), RowGroupToleranceM);
+		int32 Index = Keys.IndexOfByKey(Key);
+		if (Index == INDEX_NONE)
+		{
+			Index = Result.Num(); Keys.Add(Key);
+			FRackPlacementRow Row;
+			Row.RearDir = Rear; Row.AlongDir = FVector::CrossProduct(FVector::UpVector, Rear).GetSafeNormal();
+			Result.Add(MoveTemp(Row));
+		}
+		Result[Index].Racks.Add(Rack);
+	}
+	for (FRackPlacementRow& Row : Result)
+		Row.Racks.Sort([Along = Row.AlongDir](const ARackThermalActor& A, const ARackThermalActor& B) {
+			return FVector::DotProduct(A.GetActorLocation(), Along) < FVector::DotProduct(B.GetActorLocation(), Along);
+		});
+	return Result;
+}
+
+bool ADataCenterRoomActor::AreTransformsInSameRackRow(const FTransform& A, const FTransform& B) const
+{
+	return FMath::IsFinite(RowGroupToleranceM) && !A.ContainsNaN() && !B.ContainsNaN()
+		&& RackRowKey(A, RowGroupToleranceM) == RackRowKey(B, RowGroupToleranceM);
+}
+
 void ADataCenterRoomActor::DiscoverRows()
 {
 	Rows.Reset();
@@ -188,61 +237,13 @@ void ADataCenterRoomActor::DiscoverRows()
 		Cdus.Add(*It);
 	}
 
-	// 같은 방향을 보면서 뒷면이 한 줄로 늘어선 랙을 묶는다.
-	// 키는 (반올림한 뒷면 방향, 그 방향으로 잰 위치)다.
-	struct FRowKey
+	// Placement and routing share the exact same direction/position bucket key.
+	for (const FRackPlacementRow& Placement : GetRackRowsForPlacement(nullptr))
 	{
-		int32 DirX = 0;
-		int32 DirY = 0;
-		int32 OffsetBucket = 0;
-
-		bool operator==(const FRowKey& Other) const
-		{
-			return DirX == Other.DirX && DirY == Other.DirY && OffsetBucket == Other.OffsetBucket;
-		}
-	};
-
-	TArray<FRowKey> Keys;
-	const double ToleranceM = FMath::Max(RowGroupToleranceM, 0.05);
-
-	for (TActorIterator<ARackThermalActor> It(World); It; ++It)
-	{
-		ARackThermalActor* Rack = *It;
-		if (Rack == nullptr)
-		{
-			continue;
-		}
-
-		// 랙 앞면은 로컬 +X다 (유닛이 앞으로 뽑히고 공기도 앞에서 들어온다).
-		// 뒷면은 그 반대다.
-		const FVector RearDir = QuantizeDirection(-Rack->GetActorForwardVector());
-		if (RearDir.IsNearlyZero())
-		{
-			continue;
-		}
-
-		const FVector RackM = SimUnits::UnrealToMeters(Rack->GetActorLocation());
-		const double OffsetM = FVector::DotProduct(RackM, RearDir);
-
-		FRowKey Key;
-		Key.DirX = FMath::RoundToInt32(RearDir.X);
-		Key.DirY = FMath::RoundToInt32(RearDir.Y);
-		Key.OffsetBucket = FMath::RoundToInt32(OffsetM / ToleranceM);
-
-		int32 RowIndex = Keys.IndexOfByKey(Key);
-		if (RowIndex == INDEX_NONE)
-		{
-			RowIndex = Rows.Num();
-			Keys.Add(Key);
-
-			FRackRow NewRow;
-			NewRow.RearDir = RearDir;
-			// 줄 방향은 뒷면 방향과 수직인 수평 방향이다.
-			NewRow.AlongDir = FVector::CrossProduct(FVector::UpVector, RearDir).GetSafeNormal();
-			Rows.Add(NewRow);
-		}
-
-		Rows[RowIndex].Racks.Add(Rack);
+		FRackRow Row;
+		Row.RearDir = Placement.RearDir; Row.AlongDir = Placement.AlongDir;
+		for (ARackThermalActor* Rack : Placement.Racks) Row.Racks.Add(Rack);
+		Rows.Add(MoveTemp(Row));
 	}
 
 	for (FRackRow& Row : Rows)
