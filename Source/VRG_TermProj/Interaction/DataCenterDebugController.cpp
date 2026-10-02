@@ -718,8 +718,43 @@ bool ADataCenterDebugController::IsRackAdditionBlocked() const
 
 ARackThermalActor* ADataCenterDebugController::ConfirmRackAddition()
 {
-	// Actual runtime creation follows in the next small feature commit.
-	return nullptr;
+	FTransform Proposed; FVector SizeM;
+	if (!GetRackAdditionPreview(Proposed, SizeM) || IsLayoutBoxBlocked(GetWorld(), SizeM, Proposed))
+	{
+		UE_LOG(LogTemp, Display, TEXT("[VrgLayout] 랙 추가 거절: 목적지 없음 또는 장비 겹침"));
+		return nullptr;
+	}
+	// Configure before BeginPlay: a runtime rack must never integrate on a second clock in layout.
+	auto* AddedRack = GetWorld()->SpawnActorDeferred<ARackThermalActor>(ARackThermalActor::StaticClass(), Proposed,
+		nullptr, nullptr, ESpawnActorCollisionHandlingMethod::AlwaysSpawn);
+	if (!AddedRack) return nullptr;
+	AddedRack->bDrivenExternally = true;
+	AddedRack->ApplyGb200Nvl72Preset();
+	// Placement plan: inherit the current rack heat/load controls, never a serialized copy of its physical params.
+	for (TActorIterator<ARackThermalActor> It(GetWorld()); It; ++It)
+	{
+		if (*It == AddedRack || It->Input.ComponentHeatW.Num() != AddedRack->Input.ComponentHeatW.Num()
+			|| It->Params.Slots.Num() != AddedRack->Params.Slots.Num()) continue;
+		AddedRack->Input.ComponentHeatW = It->Input.ComponentHeatW;
+		AddedRack->Input.Utilization = It->Input.Utilization;
+		AddedRack->Input.SlotUtilization = It->Input.SlotUtilization;
+		break;
+	}
+	AddedRack->RackSizeM = SizeM;
+	AddedRack->bUseGjModels = true;
+	AddedRack->FinishSpawning(Proposed);
+	AddedRack->PauseSim();
+	AddedRack->RefreshVisuals();
+	CancelRackAddition(); // One click creates exactly one rack, not a repeat-placement tool.
+	LayoutSelection.Reset();
+	LayoutSelection.Add(AddedRack);
+	FindTargetActors();
+	// Existing discovery owns rows, branch pipes and CDU assignment. Simulation entry reuses these
+	// rows, resets the air domain and binds every rack's heat/slot-air targets at t=0.
+	for (TActorIterator<ADataCenterRoomActor> It(GetWorld()); It; ++It) It->RebuildRoomNow();
+	UE_LOG(LogTemp, Display, TEXT("[VrgLayout] GB200 NVL72 추가: %s %s yaw %.0f deg"),
+		*AddedRack->GetName(), *AddedRack->GetActorLocation().ToCompactString(), AddedRack->GetActorRotation().Yaw);
+	return AddedRack;
 }
 
 bool ADataCenterDebugController::TryLayoutMove(AActor* Actor, const FVector& TargetCm)

@@ -13,18 +13,17 @@ void ULayoutRackPalette::NativeOnInitialized()
 	auto* Canvas = WidgetTree->ConstructWidget<UCanvasPanel>();
 	WidgetTree->RootWidget = Canvas;
 	Canvas->SetVisibility(ESlateVisibility::SelfHitTestInvisible);
-	auto* Button = WidgetTree->ConstructWidget<UButton>();
-	Button->SetIsFocusable(false);
+	auto* Button = WidgetTree->ConstructWidget<ULayoutRackButton>();
 	Button->OnClicked.AddDynamic(this, &ULayoutRackPalette::OnAddRack);
 	auto* Label = WidgetTree->ConstructWidget<UTextBlock>();
 	Label->SetText(FText::FromString(TEXT("GB200 NVL72 랙 추가")));
 	FSlateFontInfo Font = Label->GetFont(); Font.Size = 16; Label->SetFont(Font);
 	Button->AddChild(Label);
-	auto* Slot = Canvas->AddChildToCanvas(Button);
-	Slot->SetAnchors(FAnchors(0, 1));
-	Slot->SetAlignment(FVector2D(0, 1));
-	Slot->SetPosition(FVector2D(20, -20));
-	Slot->SetSize(FVector2D(240, 44)); // UI pixels, not equipment dimensions.
+	auto* ButtonSlot = Canvas->AddChildToCanvas(Button);
+	ButtonSlot->SetAnchors(FAnchors(0, 1));
+	ButtonSlot->SetAlignment(FVector2D(0, 1));
+	ButtonSlot->SetPosition(FVector2D(20, -20));
+	ButtonSlot->SetSize(FVector2D(240, 44)); // UI pixels, not equipment dimensions.
 }
 
 void ULayoutRackPalette::OnAddRack()
