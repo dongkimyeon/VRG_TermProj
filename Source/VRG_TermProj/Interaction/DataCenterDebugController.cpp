@@ -860,8 +860,8 @@ void ADataCenterDebugController::RefreshLayoutRowSnap()
 	double BestDistanceSq = TNumericLimits<double>::Max();
 	for (TActorIterator<ADataCenterRoomActor> It(GetWorld()); It; ++It)
 	{
-		const auto* Room = *It;
-		for (const FRackPlacementRow& Row : Room->GetRackRowsForPlacement(Moving))
+		const auto* CurrentRoom = *It;
+		for (const FRackPlacementRow& Row : CurrentRoom->GetRackRowsForPlacement(Moving))
 		{
 			if (Row.Racks.Num() < 2) continue; // No inferred pitch from a lone rack or configured spawn pitch.
 			TArray<double> Gaps;
@@ -889,11 +889,11 @@ void ADataCenterDebugController::RefreshLayoutRowSnap()
 			const FVector ProposedRear = Proposed.TransformPosition(FVector(-Moving->RackSizeM.X * 50.0, 0, 0));
 			const double RearCorrection = FVector::DotProduct(ReferenceRear - ProposedRear, Row.RearDir);
 			// Same effective minimum as DiscoverRows; metres convert only here at the actor/UI boundary.
-			if (FMath::Abs(RearCorrection) > FMath::Max(Room->RowGroupToleranceM, 0.05) * 100.0) continue;
+			if (FMath::Abs(RearCorrection) > FMath::Max(CurrentRoom->RowGroupToleranceM, 0.05) * 100.0) continue;
 			const double Slot = First + FMath::RoundToDouble((Along - First) / PitchCm) * PitchCm;
 			Proposed.SetLocation(DragRawPreviewCm + Row.AlongDir * (Slot - Along) + Row.RearDir * RearCorrection);
 			// Physical rear-face alignment alone may land in another origin bucket (e.g. very different depths).
-			if (!Room->AreTransformsInSameRackRow(Proposed, Reference->GetActorTransform())) continue;
+			if (!CurrentRoom->AreTransformsInSameRackRow(Proposed, Reference->GetActorTransform())) continue;
 			const double DistanceSq = FVector::DistSquared2D(Proposed.GetLocation(), DragRawPreviewCm);
 			if (DistanceSq >= BestDistanceSq) continue;
 			BestDistanceSq = DistanceSq;
