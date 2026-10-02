@@ -30,6 +30,10 @@
 #include "EngineUtils.h"
 #include "InputAction.h"
 #include "InputMappingContext.h"
+#include "HAL/IConsoleManager.h"
+
+static TAutoConsoleVariable<int32> CVarLayoutInputDiagnostics(TEXT("vrg.Layout.InputDiagnostics"), 0,
+	TEXT("Log placement input gates at duplicate/confirm/patch/capture events; 0 disables diagnostics."));
 
 ADataCenterDebugController::ADataCenterDebugController()
 {
@@ -690,10 +694,13 @@ void ADataCenterDebugController::OnDuplicateLayoutRack()
 {
 	if (!BeginRackDuplication())
 		UE_LOG(LogTemp, Display, TEXT("[VrgLayout] 랙 복제 거절: 단일 랙 선택과 배치 대기 상태가 필요합니다."));
+	LogLayoutInputState(TEXT("Ctrl+D"));
 }
 
 bool ADataCenterDebugController::InputKey(const FInputKeyEventArgs& Params)
 {
+	if ((Params.Key == EKeys::LeftAlt || Params.Key == EKeys::RightAlt) && Params.Event == IE_Released)
+		LogLayoutInputState(TEXT("AltRelease")); // Also observes the end of Alt+Print Screen when routed to the game.
 	if (Params.Key == EKeys::LeftControl) bLayoutLeftControl = Params.Event != IE_Released;
 	if (Params.Key == EKeys::RightControl) bLayoutRightControl = Params.Event != IE_Released;
 	if (Params.Key == EKeys::D && Params.Event == IE_Pressed && (bLayoutLeftControl || bLayoutRightControl))
@@ -742,6 +749,29 @@ void ADataCenterDebugController::UpdateRackAdditionFromCursor()
 	UpdateRackAdditionAlongRay(EyeCm, Direction);
 }
 
+void ADataCenterDebugController::LogLayoutInputState(const TCHAR* Context) const
+{
+	if (CVarLayoutInputDiagnostics.GetValueOnGameThread() == 0) return;
+	const UGameViewportClient* Client = GetWorld() ? GetWorld()->GetGameViewport() : nullptr;
+	float X = 0, Y = 0;
+	int32 Width = 0, Height = 0;
+	GetViewportSize(Width, Height);
+	const bool bMouse = GetMousePosition(X, Y);
+	FVector EyeCm, Direction, FloorCm;
+	const bool bRay = DeprojectMousePositionToWorld(EyeCm, Direction);
+	const bool bFloor = bRay && FloorPointSnapped(EyeCm, Direction,
+		RackDuplicationSettings.IsSet() ? RackAdditionTransform.GetLocation().Z : 0.0, PlaceSnapM, FloorCm);
+	FTransform Proposed; FVector SizeM;
+	const bool bPreview = GetRackAdditionPreview(Proposed, SizeM);
+	// Opt-in, event-only diagnostics. Observing a ray does not update placement or weaken any guard.
+	UE_LOG(LogTemp, Display, TEXT("[VrgLayoutInput] %s layout=%d enabled=%d paused=%d patch=%d console=%s focus=%d RMB=%d selected=%d adding=%d floorStored=%d mouse=%d XY=(%.1f,%.1f)/(%d,%d) ray=%d floorRay=%d preview=%d blocked=%d"),
+		Context, IsLayoutMode(), InputEnabled(), IsPaused(), OpenPatchMaps,
+		Client && Client->ViewportConsole ? *Client->ViewportConsole->ConsoleState.ToString() : TEXT("NoConsole"),
+		Client && Client->Viewport && Client->Viewport->HasFocus(), IsInputKeyDown(EKeys::RightMouseButton),
+		GetSelectedLayoutActors().Num(), bAddingRack, bRackAdditionHasFloor, bMouse, X, Y, Width, Height,
+		bRay, bFloor, bPreview, bPreview && IsLayoutBoxBlocked(GetWorld(), SizeM, Proposed));
+}
+
 bool ADataCenterDebugController::GetRackAdditionPreview(FTransform& Out, FVector& SizeM) const
 {
 	if (!bAddingRack || !bRackAdditionHasFloor || !IsLayoutMode() || !IsCameraInputAvailable()) return false;
@@ -760,6 +790,7 @@ bool ADataCenterDebugController::IsRackAdditionBlocked() const
 
 ARackThermalActor* ADataCenterDebugController::ConfirmRackAddition()
 {
+	LogLayoutInputState(TEXT("Confirm"));
 	FTransform Proposed; FVector SizeM;
 	if (!GetWorld() || !GetWorld()->IsGameWorld() || !GetRackAdditionPreview(Proposed, SizeM) || IsLayoutBoxBlocked(GetWorld(), SizeM, Proposed))
 	{
@@ -1607,6 +1638,7 @@ void ADataCenterDebugController::SetPatchMapOpen(bool bOpen)
 	OpenPatchMaps = FMath::Max(0, OpenPatchMaps + (bOpen ? 1 : -1));
 	bInputModeInitialized = false;
 	if (OpenPatchMaps == 0) RefreshInteractionInputMode();
+	LogLayoutInputState(bOpen ? TEXT("PatchOpen") : TEXT("PatchClose"));
 }
 
 void ADataCenterDebugController::UpdateRotation(float DeltaTime)

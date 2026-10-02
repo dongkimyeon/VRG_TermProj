@@ -180,6 +180,7 @@ private:
 	bool bLayoutLeftControl = false;
 	bool bLayoutRightControl = false;
 	void UpdateRackAdditionFromCursor();
+	void LogLayoutInputState(const TCHAR* Context) const;
 	int32 OpenPatchMaps = 0;
 	bool bInputModeInitialized = false;
 	bool bLastLayoutInputMode = false;
