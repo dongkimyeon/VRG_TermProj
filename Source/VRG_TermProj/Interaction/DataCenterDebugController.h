@@ -11,6 +11,7 @@ class ARackThermalActor;
 class ADataCenterRoomActor;
 class UInputAction;
 class UInputMappingContext;
+class ULayoutRackPalette;
 
 // 런타임에 시뮬레이션 파라미터를 돌려 보기 위한 디버그 입력.
 //
@@ -103,6 +104,15 @@ public:
 	static bool FloorPointSnapped(const FVector& EyeCm, const FVector& Dir, double PlaneZCm, double SnapM, FVector& OutCm);
 	// Projected equipment boxes, with 1 cm clearance on a separating axis (UI placement rule).
 	static bool IsLayoutPlacementBlocked(const AActor* Actor, const FTransform& Proposed, const TArray<AActor*>* Ignored = nullptr);
+	static bool IsLayoutBoxBlocked(UWorld* World, const FVector& SizeM, const FTransform& Proposed, const TArray<AActor*>* Ignored = nullptr);
+	// Addition is a value-only preview; no actors or pipes until confirmation.
+	void BeginRackAddition();
+	void CancelRackAddition();
+	void UpdateRackAdditionAlongRay(const FVector& EyeCm, const FVector& Direction);
+	bool GetRackAdditionPreview(FTransform& Out, FVector& SizeM) const;
+	bool IsRackAdditionBlocked() const;
+	ARackThermalActor* ConfirmRackAddition();
+	bool IsAddingRack() const { return bAddingRack; }
 	// Shared by legacy G and cursor placement; layout-only, no solver changes.
 	bool TryLayoutMove(AActor* Actor, const FVector& TargetCm);
 	bool TryLayoutRotation(AActor* Actor, const FRotator& Rotation);
@@ -155,6 +165,12 @@ protected:
 	virtual void SetupInputComponent() override;
 
 private:
+	UPROPERTY(Transient)
+	TObjectPtr<ULayoutRackPalette> RackPalette;
+	bool bAddingRack = false;
+	bool bRackAdditionHasFloor = false;
+	FTransform RackAdditionTransform = FTransform::Identity;
+	void UpdateRackAdditionFromCursor();
 	int32 OpenPatchMaps = 0;
 	bool bInputModeInitialized = false;
 	bool bLastLayoutInputMode = false;
