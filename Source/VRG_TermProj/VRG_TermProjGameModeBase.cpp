@@ -3,8 +3,10 @@
 
 #include "VRG_TermProjGameModeBase.h"
 #include "Interaction/DataCenterDebugController.h"
+#include "Interaction/DataCenterLayoutHud.h"
 
 AVRG_TermProjGameModeBase::AVRG_TermProjGameModeBase()
 {
 	PlayerControllerClass = ADataCenterDebugController::StaticClass();
+	HUDClass = ADataCenterLayoutHud::StaticClass();
 }

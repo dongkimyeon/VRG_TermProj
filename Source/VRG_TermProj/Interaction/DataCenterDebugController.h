@@ -136,6 +136,14 @@ public:
 	FVector GetLayoutDragPreviewCm() const { return DragPreviewCm; }
 	bool IsLayoutDragPreviewBlocked() const;
 	bool GetLayoutDragPreviewTransform(const AActor* Actor, FTransform& Out) const;
+	// Viewport pixel rectangle, clipped at UE's reversed-Z near plane; no mesh/occlusion picking.
+	static bool ProjectLayoutBoxToScreen(const AActor* Actor, const FMatrix& ViewProjection, const FIntRect& ViewRect, FBox2D& Out);
+	bool SelectLayoutInScreenRect(const FBox2D& Rect, const FMatrix& ViewProjection, const FIntRect& ViewRect, bool bAdd);
+	void BeginLayoutMarquee(const FVector2D& Start, bool bAdd);
+	void UpdateLayoutMarquee(const FVector2D& Current);
+	void EndLayoutMarquee(bool bCommit);
+	bool IsLayoutMarqueeActive() const { return bMarqueeActive; }
+	bool GetLayoutMarqueeRect(FBox2D& Out) const;
 
 	// 레벨에서 대상을 다시 훑는 주기 [s]. 방 액터가 랙을 늦게 띄우기 때문에 필요하다.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Debug")
@@ -230,6 +238,12 @@ private:
 	FVector2D DragStartMouse = FVector2D::ZeroVector;
 	bool bDragMoved = false;
 	bool bDragMouseThresholdPassed = false;
+	bool bMarqueeActive = false;
+	bool bMarqueeMoved = false;
+	bool bMarqueeAdd = false;
+	FVector2D MarqueeStart = FVector2D::ZeroVector;
+	FVector2D MarqueeEnd = FVector2D::ZeroVector;
+	void UpdateLayoutMarqueeFromCursor();
 	int32 StartFrameAttempts = 0;
 	FVector FramedEyeCm = FVector::ZeroVector;
 	bool bFramedMoveLogged = false;
