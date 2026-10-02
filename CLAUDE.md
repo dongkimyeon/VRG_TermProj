@@ -2535,3 +2535,55 @@ Ctrl+D만 원시 키 이벤트의 D Press 시점에 처리하도록 보완하고
 실행 로그 Saved/Logs/RackDuplication_UI.log(입력 보완 전), RackDuplication_UI_Final.log(보완 후).
 이 자료는 로컬에만 남기고 커밋하지 않는다. 검증 게임은33랙의 배치 모드로 남겼고 레벨 에셋은 수정하지 않았다.
 FPS·장시간 운전·33랙 정상상태 열수지는 미검증이며 그룹/다른 장비 복제·Undo·저장/불러오기 확장은 후속이다.
+
+## S7 패치 종료 뒤 복제 입력 진단·포커스 복구 (2026-10-03)
+
+앞 절의 목적지 미표시를 최소 재현하고 수정했다. **선택을 유지한 채 패치 Esc 종료→Ctrl+D**에서
+패치 창 수0·콘솔 None·커서 역투영/바닥 교점 성공인데 `Viewport->HasFocus()`만 false였다.
+따라서 복제는 시작되지만 `UpdateRackAdditionFromCursor`가 목적지를 무효화해 미리보기를 숨겼다.
+요청한 패치 열기→Esc→랙 재선택→Ctrl+D 순서는 정상이다. 재선택 클릭이 뷰포트 포커스를 돌려주기 때문이다.
+기존 실행 월드와 새 실행 월드에서 비교했으며, 원인 재현에는 Alt+Print Screen을 보내지 않았다.
+
+원인: `RefreshInteractionInputMode`가 복귀용 GameAndUI 모드의 `WidgetToFocus`를 비웠다.
+UE 5.8 `FInputModeDataBase::SetFocusAndLocking`은 유효한 WidgetToFocus가 있을 때만 SetUserFocus를 요청한다.
+배치 입력 모드 복귀 시 기존 `GetGameViewportWidget()`을 명시적으로 지정하도록 수정했다.
+NativeDestruct 안의 PatchClose 로그는 Slate 포커스 요청 처리 전이라 즉시 focus0일 수 있다.
+판정은 이후 Ctrl+D 이벤트의 focus/preview 상태로 한다. HasFocus·콘솔/패치 차단·바닥 교점·1cm SAT는 유지한다.
+물리 입력·솔버·시계·물성·D1~D10과 기존 보존/타당성 오차 기준은 변경하지 않았다.
+
+`vrg.Layout.InputDiagnostics 1`은 복제 시작·클릭 확정·패치 전환·게임에 전달된 Alt 해제 시점에만
+`[VrgLayoutInput]`을 출력한다. 기본0, 틱별 로그/상시 HUD 없음. `0`으로 끈다.
+포커스, 콘솔, 패치 수, 입력 허용/정지, RMB, 선택 수, 실제 미리보기 상태, 커서 좌표/역투영/바닥 교점,
+충돌을 따로 읽는다. XY는 뷰포트 픽셀, 물리 기준이나 새 추정 수치는 아니다.
+
+| 실제 L_Test 진단 | 관측 | 판정 |
+|---|---|---|
+| 수정 전, 재선택 없이 패치 종료→Ctrl+D | patch0 / console None / ray1 / floorRay1 / focus0 / floorStored0 / preview0 | 포커스가 목적지 경로를 차단 |
+| 수정 후 같은 순서, 기존·런타임 원본 | focus1 / floorStored1 / preview1 | 재클릭 없이 복구 |
+| 캡처 입력 비교 | 캡처 전에도 실패 재현; 수정 후 AltRelease 뒤 focus1/preview1 유지 | Alt+Print Screen이 이번 포커스 실패를 만들었다는 증거 없음 |
+| 클릭 확정 | 겹친 곳 blocked1 거절, 빈 곳 blocked0 확정 | 기존 충돌 판정 유지 |
+| 패치 재진입 | patch1 / adding0 / preview0, 패치 중 Ctrl+D 거절 | 미확정 복제 취소·입력 차단 유지 |
+
+이전 실행의 포괄적인 '목적지 없음 또는 장비 겹침' 로그만으로 당시 클릭 거절 원인을 소급 확정하지 않는다.
+이번 유효 클릭은 수정 전에도 포커스를 얻어 성공했고, 수정 후에도 성공했다. 미표시 원인은 포커스였으며,
+이번에 로그로 구분한 거절은 실제 겹침이다. 원본과 목적지가 완전히 같은 상자면 초록 선택선과 빨강 미리보기선이
+겹쳐 색 판독이 어렵다. 원본에서 떨어진 목적지와 preview/blocked 로그를 함께 확인했다. 표시 순서는 이번에 변경하지 않았다.
+도구가 콘솔 Enter 직후 보낸 클릭1회는 선택되지 않았다(selected0). 해당 시도를 성공 처리하지 않고
+콘솔 종료/선택 로그를 확인한 뒤 진행했다. 이 타이밍 결과와 제품의 패치 포커스 결함을 구분한다.
+
+빌드: 최초 진단 빌드는 UE에 없는 EKeys::PrintScreen으로 실패(76.40s), 지원되는 Alt 해제 이벤트로 교정 후
+Editor 성공10.70s. 진단을 켠 RackDuplicationPreview1건 성공(기존 기울어진 fixture 축 근사 경고2)/실패0/종료0.
+포커스 수정 Editor 빌드 성공40.10s, 영향받은 CameraInputAndMode·RackDuplicationPreview **2건 성공**
+(무경고1+같은 경고2 동반1)/실패0/미실행0/종료0. 전체 VRG·복제 물리 통합·패키징은 반복하지 않았다.
+보고서 `Saved/Automation/PatchFocus_Preview`, `PatchFocus_Fix`; 로그 `Saved/Logs/PatchFocus_Preview.log`,
+`PatchFocus_Fix.log`; 빌드 `Saved/Build_PatchFocus_Diagnostics_Final.log`, `Build_PatchFocus_Fix.log`.
+NullRHI 검사는 OS/Slate 포커스 증거가 아니며 실제 입력 확인은 다음 기록이다.
+
+실제 Alt+Print Screen→클립보드 PNG→이미지 확인으로 기존/런타임 랙 모두 목적지 표시·클릭 확정·Esc 취소,
+미리보기 중 패치 재진입 취소·Esc 복귀 후 재클릭 없는 Ctrl+D를 확인했다. 패치 중 Ctrl+D 거절도 확인했다.
+기존 원본에서 RackThermalActor_0, 그 런타임 원본에서 RackThermalActor_1이 각각 클릭 한 번에 생성됐다
+(32→33→34랙). 취소/겹침/패치 거절로 추가 생성된 랙은 없으며 원본·GJ 메시·공급/회수 배관을 확인했다.
+`Saved/PatchFocus_UI_2026-10-03/결과.md`에 이미지별 유효 증거와 제외한 시도를 구분했다.
+수정 전/후 로그 `Saved/Logs/PatchFocus_UI.log`, `PatchFocus_UI_Fix.log`와 이미지는 로컬 자료이며 커밋하지 않는다.
+검증 게임은34랙 배치 모드로 남겼다. 실행 월드만 변경했고 레벨 에셋은 수정하지 않았다.
+FPS·장시간 운전·34랙 열/공기 통합은 이번에 검증하지 않았다. 나머지 과거 입력 미검증도 완료 처리하지 않는다.
