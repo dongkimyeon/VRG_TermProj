@@ -42,13 +42,15 @@ bool FLayoutGroupRotationTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("Four turns restore positions and orientations"), ReturnErrorCm < 1e-9
 		&& A->GetActorQuat().Equals(StartA.GetRotation(), 1e-12) && B->GetActorQuat().Equals(StartB.GetRotation(), 1e-12));
 	A->SetActorTransform(StartA); B->SetActorTransform(StartB);
+	// UE may normalize a quaternion during restoration. Rejection must preserve the actual pre-command transforms exactly.
+	const FTransform BeforeRejectA = A->GetActorTransform(), BeforeRejectB = B->GetActorTransform();
 	Obstacle->SetActorLocation(FVector(15, 105, 12));
 	Controller->OnResetSim();
-	TestTrue(TEXT("One proposed member collision rejects entire R rotation"), A->GetActorTransform().Equals(StartA, 0) && B->GetActorTransform().Equals(StartB, 0));
+	TestTrue(TEXT("One proposed member collision rejects entire R rotation"), A->GetActorTransform().Equals(BeforeRejectA, 0) && B->GetActorTransform().Equals(BeforeRejectB, 0));
 	Obstacle->SetActorLocation(FVector(1000, 0, 0));
 	B->GetRootComponent()->SetMobility(EComponentMobility::Static);
 	TestFalse(TEXT("Immovable member blocks transaction"), Controller->TryRotateLayoutSelection());
-	TestTrue(TEXT("No partial change on immovable member"), A->GetActorTransform().Equals(StartA, 0));
+	TestTrue(TEXT("No partial change on immovable member"), A->GetActorTransform().Equals(BeforeRejectA, 0) && B->GetActorTransform().Equals(BeforeRejectB, 0));
 	B->GetRootComponent()->SetMobility(EComponentMobility::Movable);
 	Controller->BeginLayoutDragAlongRay(FVector(0, 0, 500), FVector(0, 0, -1));
 	TestFalse(TEXT("Equipment drag blocks group rotation"), Controller->TryRotateLayoutSelection());
