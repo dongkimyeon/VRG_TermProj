@@ -60,4 +60,48 @@ bool FLayoutGroupMoveUndoTest::RunTest(const FString& Parameters)
 	World->DestroyWorld(false); GEngine->DestroyWorldContext(World);
 	return true;
 }
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FLayoutGroupRotationUndoTest, "VRG.Interaction.Layout.GroupRotationUndoRedo",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::CommandletContext | EAutomationTestFlags::EngineFilter)
+bool FLayoutGroupRotationUndoTest::RunTest(const FString& Parameters)
+{
+	UWorld* World=UWorld::CreateWorld(EWorldType::Game,false);
+	GEngine->CreateNewWorldContext(EWorldType::Game).SetCurrentWorld(World);
+	auto* Sim=World->SpawnActor<ADataCenterSimulationActor>();
+	auto* C=World->SpawnActor<ADataCenterDebugController>(); Sim->EnterLayoutMode();
+	TArray<AActor*> Members={World->SpawnActor<ARackThermalActor>(FVector(0,0,7),FRotator(0,17,0)),
+		World->SpawnActor<ASpineCabinetActor>(FVector(0,500,13),FRotator(0,31,0))};
+	Members[1]->SetActorScale3D(FVector(1.2,.8,1.1));
+	const FVector Down(0,0,-1);
+	for(int32 I=0;I<Members.Num();++I) C->SelectLayoutAlongRay(Members[I]->GetActorLocation()+FVector(0,0,500),Down,I>0);
+	TArray<FTransform> Original,Moved,Rotated;
+	for(AActor* A:Members) Original.Add(A->GetActorTransform());
+	FVector Eye=Members[0]->GetActorLocation()+FVector(0,0,500);
+	C->BeginLayoutDragAlongRay(Eye,Down); C->UpdateLayoutDragAlongRay(Eye+FVector(-200,0,0),Down,true); C->EndLayoutDrag(true);
+	for(AActor* A:Members) Moved.Add(A->GetActorTransform());
+	TestTrue(TEXT("Group R applies"),C->TryRotateLayoutSelection());
+	for(AActor* A:Members) Rotated.Add(A->GetActorTransform());
+	TestEqual(TEXT("Move and rotation are two commands"),C->GetLayoutUndoCount(),2);
+	double MaxCm=0,MaxDeg=0;
+	auto Check=[&](const TArray<FTransform>& Expected) {
+		for(int32 I=0;I<Members.Num();++I) {
+			MaxCm=FMath::Max(MaxCm,FVector::Distance(Members[I]->GetActorLocation(),Expected[I].GetLocation()));
+			MaxDeg=FMath::Max(MaxDeg,FMath::Abs(FMath::FindDeltaAngleDegrees(Members[I]->GetActorRotation().Yaw,Expected[I].Rotator().Yaw)));
+			TestTrue(TEXT("Group transform restored"),Members[I]->GetActorTransform().Equals(Expected[I],1e-9));
+		}
+	};
+	auto* Block=World->SpawnActor<ACrahUnitActor>(Moved[1].GetLocation(),FRotator::ZeroRotator); Block->SizeM=FVector(.2,.2,1);
+	TestFalse(TEXT("One rotation Undo collision rejects whole group"),C->TryUndoLayout()); Check(Rotated);
+	TestEqual(TEXT("Whole rotation rejection keeps stack"),C->GetLayoutUndoCount(),2);
+	Block->SetActorLocation(FVector(5000,5000,0));
+	TestTrue(TEXT("Undo group R"),C->TryUndoLayout()); Check(Moved);
+	TestTrue(TEXT("Undo group move"),C->TryUndoLayout()); Check(Original);
+	TestTrue(TEXT("Redo group move"),C->TryRedoLayout()); Check(Moved);
+	TestTrue(TEXT("Redo group R"),C->TryRedoLayout()); Check(Rotated);
+	TestTrue(TEXT("Undo for new R"),C->TryUndoLayout());
+	TestTrue(TEXT("Fresh R"),C->TryRotateLayoutSelection());
+	TestEqual(TEXT("New group R drops Redo"),C->GetLayoutRedoCount(),0);
+	TestEqual(TEXT("Clock unchanged"),Sim->GetSnapshot().SimTimeS,0.0);
+	AddInfo(FString::Printf(TEXT("Group move/R mixed restoration: max position %.3e cm, yaw delta %.3e deg; collision is atomic, history count2 and fresh-edit Redo reset."),MaxCm,MaxDeg));
+	World->DestroyWorld(false); GEngine->DestroyWorldContext(World); return true;
+}
 #endif

@@ -199,7 +199,8 @@ bool FLayoutRotationUndoTest::RunTest(const FString& Parameters)
 	TestFalse(TEXT("Multi-selected delete rejected"), Controller->TryDeleteLayoutRack());
 	TestEqual(TEXT("Rejected unsupported edit retains history"), Controller->GetLayoutUndoCount(), 1);
 	TestTrue(TEXT("Group R applies"), Controller->TryRotateLayoutSelection());
-	TestEqual(TEXT("Group R clears old commands"), Controller->GetLayoutUndoCount(), 0);
+	TestEqual(TEXT("Group R adds one command"), Controller->GetLayoutUndoCount(), 2);
+	Controller->ClearLayoutHistory();
 	Rack->SetActorTransform(Original); Spine->SetActorTransform(SpineOriginal); Select(Rack);
 	Drag(FVector(-5, 0, 0)); Select(Spine, true); Drag(FVector(0, 100, 0));
 	TestEqual(TEXT("Group drag is one command after single move"), Controller->GetLayoutUndoCount(), 2);

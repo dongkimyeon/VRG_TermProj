@@ -1055,7 +1055,7 @@ bool ADataCenterDebugController::TryLayoutRotation(AActor* Actor, const FRotator
 
 bool ADataCenterDebugController::TryRotateLayoutSelection()
 {
-	if (!IsLayoutMode() || !IsCameraInputAvailable() || IsLayoutDragging() || bMarqueeActive
+	if (!IsLayoutMode() || !IsCameraInputAvailable() || bAddingRack || IsLayoutDragging() || bMarqueeActive
 		|| IsInputKeyDown(EKeys::RightMouseButton) || Grabbed.IsValid()) return false;
 	const TArray<AActor*> Selected = GetSelectedLayoutActors();
 	if (Selected.Num() < 2) return false;
@@ -1102,7 +1102,7 @@ bool ADataCenterDebugController::TryRotateLayoutSelection()
 		}
 	}
 	UE_LOG(LogTemp, Display, TEXT("[VrgLayout] 그룹 90도 회전 확정: %d대, 중심 (%.3f, %.3f) cm"), Selected.Num(), Pivot.X, Pivot.Y);
-	ClearLayoutHistory(); // Group undo is not supported yet.
+	RecordLayoutTransforms(Selected, Starts);
 	return true;
 }
 

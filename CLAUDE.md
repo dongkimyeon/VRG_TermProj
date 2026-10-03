@@ -2732,3 +2732,12 @@ fixture를 독립 구간으로 분리하고 빌드28.18s 및 해당 회전1건 �
 | 그룹 이동 복원 방향 | 0 | ≤1e-10 | 기록 yaw와 최단 각도 차이, ° |
 새 물리 수치·보존/타당성 기준 변경 없음. Saved/Build_GroupMoveUndo*.log, Saved/Logs/GroupMoveUndo*_Tests.log, Saved/Automation/GroupMoveUndo*는 로컬 생성물.
 실제 그룹 입력/UI/FPS 미검증. 관련 검사만 실행했고 전체 VRG 반복 없음.
+
+### S7 그룹 회전 Undo/Redo (2026-10-04)
+
+그룹 R도 같은 전체 변환 명령에 기록한다. 기존 바닥 투영 경계 중심/거리/높이/스케일/1cm 검사를 유지한다.
+그룹 이동→R은 두 명령이고 Undo/Redo 역순/정순 복원·부분 충돌 전체 거절·새 R의 Redo 초기화를 확인했다.
+Editor29.08s 성공 및 GroupRotationUndoRedo/GroupQuarterTurn/SingleRotationUndoRedo3건 무경고 성공(실패0/미실행0/종료0).
+최대 위치0cm/최단 yaw delta2.842e-14°, SimTime0s. 측정 후 기준 위치≤1e-6cm/yaw≤1e-10°(기록 변환 대비 절대 UI 오차).
+기존 회전 중심을 바꾸지 않았으며 새 물리 수치/보존·타당성 기준 변경 없음. 그룹 R의 이전 기록 초기화 제한은 해제했다.
+Saved/Build_GroupRotationUndo.log, Saved/Logs/GroupRotationUndo_Tests.log, Saved/Automation/GroupRotationUndo. 실제 그룹 입력/FPS 미검증, 전체 반복 없음.
