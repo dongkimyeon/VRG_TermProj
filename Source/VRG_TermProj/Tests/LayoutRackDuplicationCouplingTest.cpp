@@ -1,6 +1,8 @@
 #include "Misc/AutomationTest.h"
 #include "Interaction/DataCenterDebugController.h"
 #include "Interaction/VrgRackLifecycle.h"
+#include "Interaction/VrgLayoutFile.h"
+#include "HAL/FileManager.h"
 #include "Actors/DataCenterSimulationActor.h"
 #include "Actors/DataCenterRoomActor.h"
 #include "Actors/CoolingDistributionUnitActor.h"
@@ -94,6 +96,14 @@ bool FLayoutRackDuplicationCouplingTest::RunTest(const FString& Parameters)
 		TestEqual(TEXT("Deletion Redo removes branch"), Room->GetRoutedRacks().Num(), 1);
 		TestTrue(TEXT("Restore clone for physical integration"), Controller->TryUndoLayout());
 		Clone = VrgRackLifecycle::Find(World, CloneId);
+		const FString File = FString::Printf(TEXT("AutomationRestoredCoupling%d"),Case); FString Summary;
+		TestTrue(TEXT("Save restored inventory"), VrgLayoutFile::Save(World,File,Summary));
+		Controller->SelectLayoutAlongRay(Clone->GetActorLocation()+FVector(0,0,500),FVector(0,0,-1));
+		TestTrue(TEXT("Delete clone before reload"),Controller->TryDeleteLayoutRack());
+		TestTrue(TEXT("Reload inventory before physical verification"),VrgLayoutFile::Load(World,File,Summary));
+		Clone=VrgRackLifecycle::Find(World,CloneId);
+		if (!TestNotNull(TEXT("Loaded clone"),Clone)) { World->DestroyWorld(false); GEngine->DestroyWorldContext(World); continue; }
+		IFileManager::Get().Delete(*VrgLayoutFile::PathFor(File));
 		const auto Routed = Room->GetRoutedRacks(); const auto Rows = Room->GetRoutedRackRows();
 		const int32 SourceIndex = Routed.IndexOfByKey(Source), CloneIndex = Routed.IndexOfByKey(Clone);
 		const auto& Branches = Room->GetRackBranchPipeIndices();

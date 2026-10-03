@@ -128,6 +128,7 @@ public:
 	void ClearLayoutHistory();
 	void ResetLayoutEditsForLoad();
 	void RefreshLayoutEquipmentReferences();
+	void NotifyLayoutRackRecreated(ARackThermalActor* Rack) { RebindLayoutRack(Rack); }
 	int32 GetLayoutUndoCount() const { return LayoutUndo.Num(); }
 	int32 GetLayoutRedoCount() const { return LayoutRedo.Num(); }
 

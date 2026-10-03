@@ -19,7 +19,7 @@ public class VRG_TermProj : ModuleRules
 		// UMG/Slate는 패치 평면도에 사용한다. Niagara는 아직 사용하지 않는다.
 		PublicDependencyModuleNames.AddRange(new string[] { "Core", "CoreUObject", "Engine", "InputCore", "EnhancedInput", "RenderCore", "RHI", "VrgRender" });
 
-		PrivateDependencyModuleNames.AddRange(new string[] { "Eigen", "UMG", "Slate", "SlateCore", "Json" });
+		PrivateDependencyModuleNames.AddRange(new string[] { "Eigen", "UMG", "Slate", "SlateCore", "Json", "JsonUtilities" });
 
 		// Uncomment if you are using Slate UI
 		// PrivateDependencyModuleNames.AddRange(new string[] { "Slate", "SlateCore" });

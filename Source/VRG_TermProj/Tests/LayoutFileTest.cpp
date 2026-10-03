@@ -8,6 +8,9 @@
 #include "Actors/RackThermalActor.h"
 #include "Engine/World.h"
 #include "HAL/FileManager.h"
+#include "Misc/FileHelper.h"
+#include "Dom/JsonObject.h"
+#include "Serialization/JsonSerializer.h"
 
 #if WITH_DEV_AUTOMATION_TESTS
 
@@ -52,7 +55,16 @@ bool FLayoutFileTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("Settings restored"), Sim->Containment == EAisleContainment::Blanking && Sim->CrahLayout == ECrahLayout::Perimeter
 		&& Air->GridParams.CellSizeM == .125);
 
-	// A saved actor that is no longer in the level is reported, not silently skipped.
+	// Legacy v1 remains move-only, with no rack creation/deletion.
+	FString LegacyText; FFileHelper::LoadFileToString(LegacyText,*VrgLayoutFile::PathFor(Name));
+	TSharedPtr<FJsonObject> Legacy;
+	FJsonSerializer::Deserialize(TJsonReaderFactory<>::Create(LegacyText),Legacy); Legacy->SetNumberField(TEXT("version"),1);
+	LegacyText.Reset(); FJsonSerializer::Serialize(Legacy.ToSharedRef(),TJsonWriterFactory<>::Create(&LegacyText));
+	FFileHelper::SaveStringToFile(LegacyText,*VrgLayoutFile::PathFor(Name));
+	A->SetActorLocation(FVector(800,800,0));
+	TestTrue(TEXT("Legacy v1 loads successfully"), VrgLayoutFile::Load(World,Name,Summary));
+	TestTrue(TEXT("Legacy v1 retains move-only placement"), Same(TA,A));
+	// A legacy actor that is no longer in the level is reported, not silently skipped.
 	B->Rename(TEXT("RackRenamedAfterSave"));  // the saved name no longer exists (Destroy warns in a context-less test world)
 	AddExpectedMessage(TEXT("레벨에 없는 장비"), ELogVerbosity::Warning, EAutomationExpectedMessageFlags::Contains, 1);
 	TestFalse(TEXT("Missing equipment reported"), VrgLayoutFile::Load(World, Name, Summary));
