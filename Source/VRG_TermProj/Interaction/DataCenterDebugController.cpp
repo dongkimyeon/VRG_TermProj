@@ -700,6 +700,12 @@ void ADataCenterDebugController::OnDuplicateLayoutRack()
 
 bool ADataCenterDebugController::InputKey(const FInputKeyEventArgs& Params)
 {
+	if (Params.Key == EKeys::LeftMouseButton)
+	{
+		if (Params.Event == IE_Pressed) LogLayoutInputState(TEXT("RawLmbPressBefore"));
+		else if (Params.Event == IE_Released) LogLayoutInputState(TEXT("RawLmbReleaseBefore"));
+		else if (Params.Event == IE_DoubleClick) LogLayoutInputState(TEXT("RawLmbDoubleClickBefore"));
+	}
 	if ((Params.Key == EKeys::LeftAlt || Params.Key == EKeys::RightAlt) && Params.Event == IE_Released)
 		LogLayoutInputState(TEXT("AltRelease")); // Also observes the end of Alt+Print Screen when routed to the game.
 	if (Params.Key == EKeys::LeftControl) bLayoutLeftControl = Params.Event != IE_Released;
@@ -782,6 +788,12 @@ void ADataCenterDebugController::LogLayoutInputState(const TCHAR* Context) const
 		Client && Client->Viewport && Client->Viewport->HasFocus(), IsInputKeyDown(EKeys::RightMouseButton),
 		GetSelectedLayoutActors().Num(), bAddingRack, bRackAdditionHasFloor, bMouse, X, Y, Width, Height,
 		bRay, bFloor, bPreview, bPreview && IsLayoutBoxBlocked(GetWorld(), SizeM, Proposed));
+	const AActor* Selected = GetSelectedLayoutActor();
+	UE_LOG(LogTemp, Display, TEXT("[VrgLayoutGesture] %s LMB=%d drag=%d moved=%d threshold=%d row=%d marquee=%d grabbed=%d undo=%d redo=%d target=%s liveCm=%s yaw=%.3f startCm=%s previewCm=%s"),
+		Context, IsInputKeyDown(EKeys::LeftMouseButton), DragMembers.Num(), bDragMoved, bDragMouseThresholdPassed,
+		bDragRowSnapped, bMarqueeActive, Grabbed.IsValid(), LayoutUndo.Num(), LayoutRedo.Num(),
+		Selected ? *Selected->GetName() : TEXT("None"), Selected ? *Selected->GetActorLocation().ToCompactString() : TEXT("None"),
+		Selected ? Selected->GetActorRotation().Yaw : 0.0, *DragStartTransform.GetLocation().ToCompactString(), *DragPreviewCm.ToCompactString());
 }
 
 bool ADataCenterDebugController::GetRackAdditionPreview(FTransform& Out, FVector& SizeM) const
@@ -1091,6 +1103,7 @@ ADataCenterSimulationActor* ADataCenterDebugController::FindSimActor() const
 
 void ADataCenterDebugController::OnSelectLayoutEquipment()
 {
+	LogLayoutInputState(TEXT("EnhancedSelectBegin"));
 	if (!IsLayoutMode() || !IsCameraInputAvailable() || IsInputKeyDown(EKeys::RightMouseButton)) return;
 	FVector EyeCm, Direction;
 	// Failed deprojection (e.g. no viewport) is not an intentional click on empty space.
@@ -1118,6 +1131,7 @@ void ADataCenterDebugController::OnSelectLayoutEquipment()
 		float MouseX = 0.0f, MouseY = 0.0f;
 		GetMousePosition(MouseX, MouseY);
 		DragStartMouse = FVector2D(MouseX, MouseY);
+		LogLayoutInputState(TEXT("EnhancedSelectArmed"));
 	}
 }
 
@@ -1235,6 +1249,8 @@ bool ADataCenterDebugController::GetLayoutRowSnapGuide(FVector& StartCm, FVector
 
 void ADataCenterDebugController::EndLayoutDrag(bool bCommit)
 {
+	const bool bHadDrag = IsLayoutDragging();
+	if (bHadDrag) LogLayoutInputState(bCommit ? TEXT("DragEndCommitBegin") : TEXT("DragEndCancelBegin"));
 	if (bCommit && bDragMoved && IsLayoutDragging() && IsLayoutMode() && IsCameraInputAvailable()
 		&& !IsInputKeyDown(EKeys::RightMouseButton))
 	{
@@ -1277,10 +1293,12 @@ void ADataCenterDebugController::EndLayoutDrag(bool bCommit)
 	DragMembers.Reset();
 	bDragMoved = false;
 	bDragRowSnapped = false;
+	if (bHadDrag) LogLayoutInputState(bCommit ? TEXT("DragEndCommitDone") : TEXT("DragEndCancelDone"));
 }
 
 void ADataCenterDebugController::OnReleaseLayoutEquipment()
 {
+	LogLayoutInputState(TEXT("EnhancedReleaseBegin"));
 	if (bMarqueeActive)
 	{
 		UpdateLayoutMarqueeFromCursor();
@@ -1289,10 +1307,12 @@ void ADataCenterDebugController::OnReleaseLayoutEquipment()
 	}
 	UpdateLayoutDragFromCursor(); // Include the final cursor position, even between two ticks.
 	EndLayoutDrag(true);
+	LogLayoutInputState(TEXT("EnhancedReleaseDone"));
 }
 
 void ADataCenterDebugController::OnCancelLayoutDrag()
 {
+	LogLayoutInputState(TEXT("EnhancedCancelBegin"));
 	CancelRackAddition();
 	EndLayoutMarquee(false);
 	EndLayoutDrag(false);
@@ -1309,11 +1329,14 @@ void ADataCenterDebugController::UpdateLayoutDragFromCursor()
 		|| !Client || !Client->Viewport || !Client->Viewport->HasFocus()
 		|| !GetMousePosition(X, Y) || X < 0 || Y < 0 || X >= Width || Y >= Height)
 	{
+		LogLayoutInputState(TEXT("DragFocusCancel"));
 		EndLayoutDrag(false); // Losing focus / leaving the viewport never commits a stray move.
 		return;
 	}
 	// UI gesture threshold (4 screen pixels), not a physical tolerance. Click jitter does not snap equipment.
+	const bool bHadThreshold = bDragMouseThresholdPassed;
 	bDragMouseThresholdPassed |= FVector2D::Distance(DragStartMouse, FVector2D(X, Y)) >= 4.0;
+	if (!bHadThreshold && bDragMouseThresholdPassed) LogLayoutInputState(TEXT("DragMoveThreshold"));
 	if (!bDragMouseThresholdPassed) return;
 	FVector EyeCm, Direction;
 	if (DeprojectMousePositionToWorld(EyeCm, Direction)) UpdateLayoutDragAlongRay(EyeCm, Direction);
@@ -1768,7 +1791,11 @@ void ADataCenterDebugController::PlayerTick(float DeltaTime)
 	}
 	if (IsLayoutDragging())
 	{
-		if (!IsInputKeyDown(EKeys::LeftMouseButton)) EndLayoutDrag(false);
+		if (!IsInputKeyDown(EKeys::LeftMouseButton))
+		{
+			LogLayoutInputState(TEXT("TickNoLmbCancel"));
+			EndLayoutDrag(false);
+		}
 		else UpdateLayoutDragFromCursor();
 	}
 	if (IsLayoutMode() || OpenPatchMaps > 0)
