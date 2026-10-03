@@ -177,15 +177,20 @@ protected:
 	virtual void SetupInputComponent() override;
 
 private:
-	struct FLayoutTransformCommand
+	struct FLayoutTransformMember
 	{
 		TWeakObjectPtr<AActor> Actor;
 		FTransform Before;
 		FTransform After;
 	};
+	struct FLayoutTransformCommand
+	{
+		TArray<FLayoutTransformMember> Members;
+	};
 	TArray<FLayoutTransformCommand> LayoutUndo;
 	TArray<FLayoutTransformCommand> LayoutRedo;
 	void RecordLayoutTransform(AActor* Actor, const FTransform& Before);
+	void RecordLayoutTransforms(const TArray<AActor*>& Actors, const TArray<FTransform>& Before);
 	bool RestoreLayoutTransform(bool bRedo);
 	UPROPERTY(Transient)
 	TObjectPtr<ULayoutRackPalette> RackPalette;

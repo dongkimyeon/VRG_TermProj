@@ -122,7 +122,8 @@ bool FLayoutMoveUndoTest::RunTest(const FString& Parameters)
 	Drag(Rack, FVector(-5, 0, 0));
 	Rack->AddActorWorldOffset(FVector(1, 0, 0));
 	TestFalse(TEXT("External transform change cannot be overwritten"), Controller->TryUndoLayout());
-	TestEqual(TEXT("Stale history invalidated"), Controller->GetLayoutUndoCount(), 0);
+	TestEqual(TEXT("Stale history rejected without popping"), Controller->GetLayoutUndoCount(), 1);
+	Controller->ClearLayoutHistory();
 	Drag(Rack, FVector(-5, 0, 0)); Rack->Destroy();
 	TestFalse(TEXT("Destroyed actor never restored by name"), Controller->TryUndoLayout());
 	AddInfo(FString::Printf(TEXT("Single move Undo/Redo four kinds: max position error %.3e cm, quaternion angular error %.3e deg; history cap100, collision/cancel/no-op/input/mode/load/stale identity tested. No physics accuracy claim."), MaxPositionErrorCm, MaxAngleErrorDeg));
@@ -201,7 +202,8 @@ bool FLayoutRotationUndoTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("Group R clears old commands"), Controller->GetLayoutUndoCount(), 0);
 	Rack->SetActorTransform(Original); Spine->SetActorTransform(SpineOriginal); Select(Rack);
 	Drag(FVector(-5, 0, 0)); Select(Spine, true); Drag(FVector(0, 100, 0));
-	TestEqual(TEXT("Group drag clears old commands"), Controller->GetLayoutUndoCount(), 0);
+	TestEqual(TEXT("Group drag is one command after single move"), Controller->GetLayoutUndoCount(), 2);
+	Controller->ClearLayoutHistory(); // The following fixture independently tests presence-edit barriers.
 	Rack->SetActorTransform(Original); Spine->SetActorTransform(SpineOriginal); Select(Rack);
 	Drag(FVector(-5, 0, 0));
 	TestTrue(TEXT("Begin duplication"), Controller->BeginRackDuplication());

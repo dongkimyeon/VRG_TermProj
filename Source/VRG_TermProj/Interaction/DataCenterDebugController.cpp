@@ -928,11 +928,23 @@ void ADataCenterDebugController::ResetLayoutEditsForLoad()
 
 void ADataCenterDebugController::RecordLayoutTransform(AActor* Actor, const FTransform& Before)
 {
-	const FTransform After = Actor->GetActorTransform();
-	if (After.Equals(Before, 0.0)) return; // A click or no-op is not an edit and retains Redo.
+	RecordLayoutTransforms({Actor}, {Before});
+}
+
+void ADataCenterDebugController::RecordLayoutTransforms(const TArray<AActor*>& Actors, const TArray<FTransform>& Before)
+{
+	FLayoutTransformCommand Command;
+	bool bChanged = false;
+	for (int32 I = 0; I < Actors.Num(); ++I)
+	{
+		const FTransform After = Actors[I]->GetActorTransform();
+		bChanged |= !After.Equals(Before[I], 0.0);
+		Command.Members.Add({Actors[I], Before[I], After});
+	}
+	if (!bChanged) return;
 	LayoutRedo.Reset();
-	if (LayoutUndo.Num() == 100) LayoutUndo.RemoveAt(0); // Placement plan: 100 commands, not a physical parameter.
-	LayoutUndo.Add({Actor, Before, After});
+	if (LayoutUndo.Num() == 100) LayoutUndo.RemoveAt(0); // Placement plan: commands, not individual members.
+	LayoutUndo.Add(MoveTemp(Command));
 }
 
 bool ADataCenterDebugController::RestoreLayoutTransform(bool bRedo)
@@ -943,21 +955,34 @@ bool ADataCenterDebugController::RestoreLayoutTransform(bool bRedo)
 	TArray<FLayoutTransformCommand>& To = bRedo ? LayoutUndo : LayoutRedo;
 	if (From.IsEmpty()) return false;
 	const FLayoutTransformCommand Command = From.Last();
-	AActor* Actor = Command.Actor.Get();
-	const FTransform& Expected = bRedo ? Command.Before : Command.After;
-	const FTransform& Target = bRedo ? Command.After : Command.Before;
-	// Weak identity rejects deleted/replaced actors. Default transform tolerance only guards UI roundoff;
-	// it is not collision clearance. External changes invalidate the unsupported history.
-	if (!IsValid(Actor) || Actor->GetWorld() != GetWorld() || !Actor->GetActorTransform().Equals(Expected))
+	TArray<AActor*> Actors;
+	TArray<FTransform> Expected, Targets;
+	for (const FLayoutTransformMember& Member : Command.Members)
 	{
-		ClearLayoutHistory();
-		return false;
+		AActor* Actor = Member.Actor.Get();
+		const FTransform& Current = bRedo ? Member.Before : Member.After;
+		if (!IsValid(Actor) || Actor->GetWorld() != GetWorld() || !Actor->GetActorTransform().Equals(Current)
+			|| !Actor->GetRootComponent() || Actor->GetRootComponent()->Mobility != EComponentMobility::Movable) return false;
+		Actors.Add(Actor); Expected.Add(Current); Targets.Add(bRedo ? Member.After : Member.Before);
 	}
-	if (!Actor->GetRootComponent() || Actor->GetRootComponent()->Mobility != EComponentMobility::Movable
-		|| IsLayoutPlacementBlocked(Actor, Target)) return false; // Keep both stacks unchanged on collision.
-	if (!Actor->SetActorTransform(Target, false)) return false;
-	From.Pop();
-	To.Add(Command);
+	TArray<FLayoutFootprint> Footprints;
+	for (int32 I = 0; I < Actors.Num(); ++I)
+	{
+		if (IsLayoutPlacementBlocked(Actors[I], Targets[I], &Actors)) return false;
+		FLayoutFootprint Candidate;
+		if (!MakeLayoutFootprint(Actors[I], Targets[I], Candidate)) return false;
+		for (const FLayoutFootprint& Other : Footprints) if (FootprintsConflict(Candidate, Other)) return false;
+		Footprints.Add(Candidate);
+	}
+	for (int32 I = 0; I < Actors.Num(); ++I)
+	{
+		if (!Actors[I]->SetActorTransform(Targets[I], false))
+		{
+			for (int32 J = 0; J <= I; ++J) Actors[J]->SetActorTransform(Expected[J], false);
+			return false;
+		}
+	}
+	From.Pop(); To.Add(Command);
 	for (TActorIterator<ADataCenterRoomActor> It(GetWorld()); It; ++It) It->RebuildRoomNow();
 	if (ADataCenterSimulationActor* Sim = FindSimActor()) Sim->RebuildCoupling();
 	return true;
@@ -1277,10 +1302,10 @@ void ADataCenterDebugController::EndLayoutDrag(bool bCommit)
 		}
 		if (bAllowed)
 		{
-			if (DragMembers.Num() == 1) RecordLayoutTransform(DragMembers[0].Actor.Get(), DragMembers[0].Start);
-			else
-				for (const FLayoutDragMember& Member : DragMembers)
-					if (!Member.Actor->GetActorTransform().Equals(Member.Start, 0.0)) { ClearLayoutHistory(); break; }
+			TArray<AActor*> Actors;
+			TArray<FTransform> Starts;
+			for (const FLayoutDragMember& Member : DragMembers) { Actors.Add(Member.Actor.Get()); Starts.Add(Member.Start); }
+			RecordLayoutTransforms(Actors, Starts);
 		}
 		if (!bAllowed && Applied > 0)
 		{
