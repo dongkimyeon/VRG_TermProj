@@ -74,6 +74,17 @@ bool FLayoutRowSnapTest::RunTest(const FString& Parameters)
 	const TArray<int32> Rows = Room->GetRoutedRackRows();
 	const int32 Ai = Routed.IndexOfByKey(A), Mi = Routed.IndexOfByKey(Moving);
 	TestTrue(TEXT("Committed rack joins actual routing row"), Ai != INDEX_NONE && Mi != INDEX_NONE && Rows[Ai] == Rows[Mi]);
+	const FTransform Snapped = Moving->GetActorTransform();
+	TestTrue(TEXT("Undo row attachment"), Controller->TryUndoLayout());
+	TestTrue(TEXT("Undo restores pre-snap position/orientation/scale"), Moving->GetActorTransform().Equals(Original, 1e-9));
+	const auto UndoRouted = Room->GetRoutedRacks();
+	const auto UndoRows = Room->GetRoutedRackRows();
+	TestTrue(TEXT("Undo rebuild removes old row membership"), UndoRows[UndoRouted.IndexOfByKey(A)] != UndoRows[UndoRouted.IndexOfByKey(Moving)]);
+	TestTrue(TEXT("Redo row attachment"), Controller->TryRedoLayout());
+	TestTrue(TEXT("Redo restores full snapped transform"), Moving->GetActorTransform().Equals(Snapped, 1e-9));
+	const auto RedoRouted = Room->GetRoutedRacks();
+	const auto RedoRows = Room->GetRoutedRackRows();
+	TestTrue(TEXT("Redo immediately rebuilds actual routing row"), RedoRows[RedoRouted.IndexOfByKey(A)] == RedoRows[RedoRouted.IndexOfByKey(Moving)]);
 	Moving->SetActorTransform(Original);
 	// Begin captures the actual UE-restored transform, not a pre-normalization value.
 	Controller->BeginLayoutDragAlongRay(Eye, Down); Preview(FVector(70.01, 151, 7));

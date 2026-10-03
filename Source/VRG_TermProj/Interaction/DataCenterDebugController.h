@@ -122,6 +122,13 @@ public:
 	bool TryRotateLayoutSelection();
 	// Runtime layout only: exactly one selected rack, with no placement gesture in progress.
 	bool TryDeleteLayoutRack();
+	// Game-thread layout transforms only (UE cm at this actor boundary), not simulation state.
+	bool TryUndoLayout();
+	bool TryRedoLayout();
+	void ClearLayoutHistory();
+	void ResetLayoutEditsForLoad();
+	int32 GetLayoutUndoCount() const { return LayoutUndo.Num(); }
+	int32 GetLayoutRedoCount() const { return LayoutRedo.Num(); }
 
 	// Grid step of layout moves [m].
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Debug", meta = (ClampMin = "0.0"))
@@ -170,6 +177,16 @@ protected:
 	virtual void SetupInputComponent() override;
 
 private:
+	struct FLayoutTransformCommand
+	{
+		TWeakObjectPtr<AActor> Actor;
+		FTransform Before;
+		FTransform After;
+	};
+	TArray<FLayoutTransformCommand> LayoutUndo;
+	TArray<FLayoutTransformCommand> LayoutRedo;
+	void RecordLayoutTransform(AActor* Actor, const FTransform& Before);
+	bool RestoreLayoutTransform(bool bRedo);
 	UPROPERTY(Transient)
 	TObjectPtr<ULayoutRackPalette> RackPalette;
 	bool bAddingRack = false;

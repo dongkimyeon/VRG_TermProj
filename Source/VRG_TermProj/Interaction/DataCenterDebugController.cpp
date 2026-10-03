@@ -704,6 +704,17 @@ bool ADataCenterDebugController::InputKey(const FInputKeyEventArgs& Params)
 		LogLayoutInputState(TEXT("AltRelease")); // Also observes the end of Alt+Print Screen when routed to the game.
 	if (Params.Key == EKeys::LeftControl) bLayoutLeftControl = Params.Event != IE_Released;
 	if (Params.Key == EKeys::RightControl) bLayoutRightControl = Params.Event != IE_Released;
+	if ((Params.Key == EKeys::Z || Params.Key == EKeys::Y) && (bLayoutLeftControl || bLayoutRightControl))
+	{
+		if (Params.Event == IE_Pressed)
+		{
+			const bool bRedo = Params.Key == EKeys::Y;
+			const bool bOk = bRedo ? TryRedoLayout() : TryUndoLayout();
+			UE_LOG(LogTemp, Display, TEXT("[VrgLayout] %s %s (Undo %d / Redo %d)"),
+				bRedo ? TEXT("Redo") : TEXT("Undo"), bOk ? TEXT("확정") : TEXT("거절"), LayoutUndo.Num(), LayoutRedo.Num());
+		}
+		return true; // Event-time chords, including short presses; never repeat or move the camera.
+	}
 	if (Params.Key == EKeys::D && Params.Event == IE_Pressed && (bLayoutLeftControl || bLayoutRightControl))
 	{
 		// A press/release chord may fit into one frame. Polling Ctrl in an Enhanced Input Started callback
@@ -825,6 +836,7 @@ ARackThermalActor* ADataCenterDebugController::ConfirmRackAddition()
 		AddedRack->bUseGjModels = true;
 	}
 	AddedRack->FinishSpawning(Proposed);
+	ClearLayoutHistory(); // Addition/duplication undo is not supported yet.
 	AddedRack->PauseSim();
 	AddedRack->RefreshVisuals();
 	CancelRackAddition(); // One click creates exactly one rack, not a repeat-placement tool.
@@ -850,6 +862,7 @@ bool ADataCenterDebugController::TryDeleteLayoutRack()
 	if (!IsValid(SelectedRack) || SelectedRack->GetWorld() != CurrentWorld) return false;
 	const FString DeletedName = SelectedRack->GetName();
 	if (!SelectedRack->Destroy()) return false;
+	ClearLayoutHistory(); // Deletion cannot leave commands referring to the old layout.
 	LayoutSelection.Reset();
 	TargetRack.Reset();
 	HoveredPlaceable.Reset();
@@ -880,8 +893,66 @@ bool ADataCenterDebugController::TryLayoutMove(AActor* Actor, const FVector& Tar
 	FTransform Proposed = Actor->GetActorTransform();
 	Proposed.SetLocation(TargetCm);
 	if (IsLayoutPlacementBlocked(Actor, Proposed)) return false;
-	return Actor->SetActorLocation(TargetCm, false);
+	const FTransform Before = Actor->GetActorTransform();
+	const bool bMoved = Actor->SetActorLocation(TargetCm, false);
+	if (bMoved && !Actor->GetActorTransform().Equals(Before, 0.0)) ClearLayoutHistory(); // Legacy G is not transactional.
+	return bMoved;
 }
+
+void ADataCenterDebugController::ClearLayoutHistory()
+{
+	LayoutUndo.Reset();
+	LayoutRedo.Reset();
+}
+
+void ADataCenterDebugController::ResetLayoutEditsForLoad()
+{
+	CancelRackAddition();
+	EndLayoutDrag(false);
+	EndLayoutMarquee(false);
+	Grabbed.Reset();
+	ClearLayoutHistory();
+}
+
+void ADataCenterDebugController::RecordLayoutTransform(AActor* Actor, const FTransform& Before)
+{
+	const FTransform After = Actor->GetActorTransform();
+	if (After.Equals(Before, 0.0)) return; // A click or no-op is not an edit and retains Redo.
+	LayoutRedo.Reset();
+	if (LayoutUndo.Num() == 100) LayoutUndo.RemoveAt(0); // Placement plan: 100 commands, not a physical parameter.
+	LayoutUndo.Add({Actor, Before, After});
+}
+
+bool ADataCenterDebugController::RestoreLayoutTransform(bool bRedo)
+{
+	if (!IsLayoutMode() || !IsCameraInputAvailable() || bAddingRack || IsLayoutDragging() || bMarqueeActive
+		|| Grabbed.IsValid() || IsInputKeyDown(EKeys::RightMouseButton)) return false;
+	TArray<FLayoutTransformCommand>& From = bRedo ? LayoutRedo : LayoutUndo;
+	TArray<FLayoutTransformCommand>& To = bRedo ? LayoutUndo : LayoutRedo;
+	if (From.IsEmpty()) return false;
+	const FLayoutTransformCommand Command = From.Last();
+	AActor* Actor = Command.Actor.Get();
+	const FTransform& Expected = bRedo ? Command.Before : Command.After;
+	const FTransform& Target = bRedo ? Command.After : Command.Before;
+	// Weak identity rejects deleted/replaced actors. Default transform tolerance only guards UI roundoff;
+	// it is not collision clearance. External changes invalidate the unsupported history.
+	if (!IsValid(Actor) || Actor->GetWorld() != GetWorld() || !Actor->GetActorTransform().Equals(Expected))
+	{
+		ClearLayoutHistory();
+		return false;
+	}
+	if (!Actor->GetRootComponent() || Actor->GetRootComponent()->Mobility != EComponentMobility::Movable
+		|| IsLayoutPlacementBlocked(Actor, Target)) return false; // Keep both stacks unchanged on collision.
+	if (!Actor->SetActorTransform(Target, false)) return false;
+	From.Pop();
+	To.Add(Command);
+	for (TActorIterator<ADataCenterRoomActor> It(GetWorld()); It; ++It) It->RebuildRoomNow();
+	if (ADataCenterSimulationActor* Sim = FindSimActor()) Sim->RebuildCoupling();
+	return true;
+}
+
+bool ADataCenterDebugController::TryUndoLayout() { return RestoreLayoutTransform(false); }
+bool ADataCenterDebugController::TryRedoLayout() { return RestoreLayoutTransform(true); }
 
 bool ADataCenterDebugController::IsLayoutDragPreviewBlocked() const
 {
@@ -935,7 +1006,10 @@ bool ADataCenterDebugController::TryLayoutRotation(AActor* Actor, const FRotator
 		UE_LOG(LogTemp, Display, TEXT("[VrgLayout] 회전 거절: %s (장비 상자/1 cm 여유)"), *Actor->GetName());
 		return false;
 	}
-	return Actor->SetActorRotation(Rotation);
+	const FTransform Before = Actor->GetActorTransform();
+	const bool bRotated = Actor->SetActorRotation(Rotation);
+	if (bRotated && !Actor->GetActorTransform().Equals(Before, 0.0)) ClearLayoutHistory(); // Rotation recording follows separately.
+	return bRotated;
 }
 
 bool ADataCenterDebugController::TryRotateLayoutSelection()
@@ -987,6 +1061,7 @@ bool ADataCenterDebugController::TryRotateLayoutSelection()
 		}
 	}
 	UE_LOG(LogTemp, Display, TEXT("[VrgLayout] 그룹 90도 회전 확정: %d대, 중심 (%.3f, %.3f) cm"), Selected.Num(), Pivot.X, Pivot.Y);
+	ClearLayoutHistory(); // Group undo is not supported yet.
 	return true;
 }
 
@@ -1179,6 +1254,13 @@ void ADataCenterDebugController::EndLayoutDrag(bool bCommit)
 				}
 				++Applied;
 			}
+		}
+		if (bAllowed)
+		{
+			if (DragMembers.Num() == 1) RecordLayoutTransform(DragMembers[0].Actor.Get(), DragMembers[0].Start);
+			else
+				for (const FLayoutDragMember& Member : DragMembers)
+					if (!Member.Actor->GetActorTransform().Equals(Member.Start, 0.0)) { ClearLayoutHistory(); break; }
 		}
 		if (!bAllowed && Applied > 0)
 		{
@@ -1606,6 +1688,7 @@ void ADataCenterDebugController::Tick(float DeltaTime)
 						HalfCm * Proposed.GetScale3D().GetAbs(), Proposed.GetRotation(), bPreviewBlocked ? FColor::Red : FColor::Orange, false, 0.0f, 0, 3.0f);
 			}
 		}
+
 		// Destination color takes precedence when its edges coincide with the green selection.
 		// Only submission order changes; geometry and collision queries stay the same.
 		FTransform AdditionPreview;

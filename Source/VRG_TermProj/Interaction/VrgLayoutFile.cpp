@@ -1,6 +1,7 @@
 // Fill out your copyright notice in the Description page of Project Settings.
 
 #include "Interaction/VrgLayoutFile.h"
+#include "Interaction/DataCenterDebugController.h"
 
 #include "Actors/AirFieldDebugActor.h"
 #include "Actors/CoolingDistributionUnitActor.h"
@@ -104,6 +105,8 @@ bool VrgLayoutFile::Load(UWorld* World, const FString& Name, FString& OutSummary
 	}
 
 	// Layout changes belong to layout mode: stop the simulation first; its next entry rebuilds from the new layout.
+	// Once a parsed file starts applying, even a partial/missing-equipment load invalidates old commands.
+	for (TActorIterator<ADataCenterDebugController> It(World); It; ++It) It->ResetLayoutEditsForLoad();
 	ADataCenterSimulationActor* Sim = LayoutFindFirst<ADataCenterSimulationActor>(World);
 	if (Sim != nullptr && Sim->GetSimMode() == ESimMode::Simulation) Sim->EnterLayoutMode();
 
