@@ -1581,10 +1581,6 @@ void ADataCenterDebugController::Tick(float DeltaTime)
 			DrawDebugBox(GetWorld(), H->GetActorLocation() + H->GetActorUpVector() * HalfCm.Z, HalfCm, H->GetActorQuat(),
 				Grabbed.IsValid() ? FColor::Orange : FColor::Cyan, false, 0.0f, 0, 2.0f);
 		}
-		FTransform AdditionPreview;
-		if (GetRackAdditionPreview(AdditionPreview, SizeM))
-			DrawDebugBox(GetWorld(), AdditionPreview.TransformPosition(FVector(0, 0, SizeM.Z * 50.0)),
-				SizeM * 50.0, AdditionPreview.GetRotation(), IsRackAdditionBlocked() ? FColor::Red : FColor::Orange, false, 0.0f, 0, 3.0f);
 		const bool bPreviewBlocked = IsLayoutDragPreviewBlocked();
 		FVector GuideStart, GuideEnd;
 		if (GetLayoutRowSnapGuide(GuideStart, GuideEnd))
@@ -1610,6 +1606,12 @@ void ADataCenterDebugController::Tick(float DeltaTime)
 						HalfCm * Proposed.GetScale3D().GetAbs(), Proposed.GetRotation(), bPreviewBlocked ? FColor::Red : FColor::Orange, false, 0.0f, 0, 3.0f);
 			}
 		}
+		// Destination color takes precedence when its edges coincide with the green selection.
+		// Only submission order changes; geometry and collision queries stay the same.
+		FTransform AdditionPreview;
+		if (GetRackAdditionPreview(AdditionPreview, SizeM))
+			DrawDebugBox(GetWorld(), AdditionPreview.TransformPosition(FVector(0, 0, SizeM.Z * 50.0)),
+				SizeM * 50.0, AdditionPreview.GetRotation(), IsRackAdditionBlocked() ? FColor::Red : FColor::Orange, false, 0.0f, 0, 3.0f);
 	}
 	else
 	{
