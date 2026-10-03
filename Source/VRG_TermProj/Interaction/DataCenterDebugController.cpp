@@ -1978,7 +1978,7 @@ void ADataCenterDebugController::DrawHelp() const
 
 	GEngine->AddOnScreenDebugMessage(BaseKey, 0.0f, FColor(180, 220, 255),
 		IsLayoutMode()
-		? TEXT("[배치 키] Shift+클릭 추가/제거 | 빈 곳 드래그 사각형 선택·Shift 추가 | 장비 드래그 그룹 이동/빨강 거절/Esc 취소 | 단일 랙 줄 붙이기/Alt 해제 | Ctrl+D 단일 랙 복제 | Ctrl+Z/Y 단일 이동·R 실행 취소/다시 실행 | 추가/복제: 클릭 확정/R 회전/Esc 취소 | R 선택 90도 회전 | Delete 단일 랙 삭제 | F 선택/없으면 전체 | 우클릭+마우스/WASD/QE 비행·휠 속도 | 휠 전후 | G/T 단일만 C 컨테인먼트 Enter 시뮬레이션 H 도움말")
+		? TEXT("[배치 키] Shift+클릭 추가/제거 | 빈 곳 드래그 사각형 선택·Shift 추가 | 장비 드래그 그룹 이동/빨강 거절/Esc 취소 | 단일 랙 줄 붙이기/Alt 해제 | Ctrl+D 단일 랙 복제 | Ctrl+Z/Y 배치 실행 취소/다시 실행 | 추가/복제: 클릭 확정/R 회전/Esc 취소 | R 선택 90도 회전 | Delete 단일 랙 삭제 | F 선택/없으면 전체 | 우클릭+마우스/WASD/QE 비행·휠 속도 | 휠 전후 | G/T 단일만 C 컨테인먼트 Enter 시뮬레이션 H 도움말")
 		: TEXT("[디버그 키] Enter 배치 모드 | 1/2 CPU 발열  3/4 GPU 발열  5/6 펌프 회전수  7/8 라디에이터 UA(랙별 모드)  9/0 부하율  E 바라보는 유닛 뽑기/꽂기  R 리셋  H 도움말"));
 
 	const ARackThermalActor* Rack = TargetRack.Get();
