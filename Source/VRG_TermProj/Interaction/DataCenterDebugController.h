@@ -118,7 +118,7 @@ public:
 	bool IsAddingRack() const { return bAddingRack; }
 	// Shared by legacy G and cursor placement; layout-only, no solver changes.
 	bool TryLayoutMove(AActor* Actor, const FVector& TargetCm);
-	bool TryLayoutRotation(AActor* Actor, const FRotator& Rotation);
+	bool TryLayoutRotation(AActor* Actor, const FRotator& Rotation, bool bRecordHistory = false);
 	bool TryRotateLayoutSelection();
 	// Runtime layout only: exactly one selected rack, with no placement gesture in progress.
 	bool TryDeleteLayoutRack();

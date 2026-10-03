@@ -129,4 +129,99 @@ bool FLayoutMoveUndoTest::RunTest(const FString& Parameters)
 	World->DestroyWorld(false); GEngine->DestroyWorldContext(World);
 	return true;
 }
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FLayoutRotationUndoTest, "VRG.Interaction.Layout.SingleRotationUndoRedo",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::CommandletContext | EAutomationTestFlags::EngineFilter)
+bool FLayoutRotationUndoTest::RunTest(const FString& Parameters)
+{
+	UWorld* World = UWorld::CreateWorld(EWorldType::Game, false);
+	if (!TestNotNull(TEXT("World"), World)) return false;
+	GEngine->CreateNewWorldContext(EWorldType::Game).SetCurrentWorld(World);
+	auto* Sim = World->SpawnActor<ADataCenterSimulationActor>();
+	auto* Controller = World->SpawnActor<ADataCenterDebugController>();
+	auto* Rack = World->SpawnActor<ARackThermalActor>(FVector(0, 0, 7), FRotator(0, 17, 0));
+	auto* Spine = World->SpawnActor<ASpineCabinetActor>(FVector(0, 800, 7), FRotator::ZeroRotator);
+	auto* Obstacle = World->SpawnActor<ACrahUnitActor>(FVector(5000, 5000, 0), FRotator::ZeroRotator);
+	Rack->RackSizeM = FVector(1.2, .4, 1);
+	Rack->SetActorScale3D(FVector(1.2, .9, 1.1));
+	Obstacle->SizeM = FVector(.1, .1, 1);
+	Sim->EnterLayoutMode();
+	const FVector Down(0, 0, -1);
+	const FTransform Original = Rack->GetActorTransform(), SpineOriginal = Spine->GetActorTransform();
+	auto Select = [&](AActor* Actor, bool bToggle = false) {
+		Controller->SelectLayoutAlongRay(Actor->GetActorLocation() + FVector(0, 0, 500), Down, bToggle);
+	};
+	auto Drag = [&](const FVector& Delta) {
+		const FVector Eye = Rack->GetActorLocation() + FVector(0, 0, 500);
+		Controller->BeginLayoutDragAlongRay(Eye, Down);
+		Controller->UpdateLayoutDragAlongRay(Eye + Delta, Down, true);
+		Controller->EndLayoutDrag(true);
+	};
+	double MaxPositionErrorCm = 0, MaxYawErrorDeg = 0;
+	auto Measure = [&](const FTransform& Expected) {
+		MaxPositionErrorCm = FMath::Max(MaxPositionErrorCm, FVector::Distance(Rack->GetActorLocation(), Expected.GetLocation()));
+		MaxYawErrorDeg = FMath::Max(MaxYawErrorDeg, FMath::Abs(FMath::FindDeltaAngleDegrees(Rack->GetActorRotation().Yaw, Expected.Rotator().Yaw)));
+		TestTrue(TEXT("Undo/Redo restores position/orientation/height/scale"), Rack->GetActorTransform().Equals(Expected, 1e-9));
+	};
+	Drag(FVector(-150, 0, 0));
+	const FTransform Moved = Rack->GetActorTransform();
+	Controller->OnResetSim();
+	const FTransform Rotated = Rack->GetActorTransform();
+	TestEqual(TEXT("Move then R are separate commands"), Controller->GetLayoutUndoCount(), 2);
+	TestTrue(TEXT("R preserves height and scale"), Rotated.GetLocation() == Moved.GetLocation() && Rotated.GetScale3D() == Moved.GetScale3D());
+	// A small obstacle along the old long axis is clear of the rotated narrow footprint.
+	Obstacle->SetActorLocation(Moved.GetLocation() + Moved.GetRotation().RotateVector(FVector(65, 0, 0)));
+	TestFalse(TEXT("Undo rotation respects old footprint collision"), Controller->TryUndoLayout());
+	Measure(Rotated);
+	TestEqual(TEXT("Rotation collision retains stack"), Controller->GetLayoutUndoCount(), 2);
+	Controller->OnResetSim();
+	TestEqual(TEXT("Rejected R creates no record"), Controller->GetLayoutUndoCount(), 2);
+	Obstacle->SetActorLocation(FVector(5000, 5000, 0));
+	TestTrue(TEXT("Undo R"), Controller->TryUndoLayout()); Measure(Moved);
+	TestTrue(TEXT("Undo move"), Controller->TryUndoLayout()); Measure(Original);
+	TestTrue(TEXT("Redo move"), Controller->TryRedoLayout()); Measure(Moved);
+	TestTrue(TEXT("Redo R"), Controller->TryRedoLayout()); Measure(Rotated);
+	TestTrue(TEXT("Undo R for fresh edit"), Controller->TryUndoLayout());
+	Controller->OnResetSim();
+	TestEqual(TEXT("New R clears Redo"), Controller->GetLayoutRedoCount(), 0);
+	Controller->SetPatchMapOpen(true); Controller->OnResetSim();
+	TestEqual(TEXT("Patch-rejected R preserves records"), Controller->GetLayoutUndoCount(), 2);
+	Controller->SetPatchMapOpen(false);
+	TestEqual(TEXT("Undo/Redo does not advance clock"), Sim->GetSnapshot().SimTimeS, 0.0);
+
+	// Unsupported successful edits are history barriers; selection and rejected edits are not.
+	Controller->ClearLayoutHistory(); Rack->SetActorTransform(Original);
+	Drag(FVector(-5, 0, 0));
+	TestTrue(TEXT("Legacy T rotation applies"), Controller->TryLayoutRotation(Rack, FRotator(0, 107, 0)));
+	TestEqual(TEXT("Legacy T clears old commands"), Controller->GetLayoutUndoCount(), 0);
+	Rack->SetActorTransform(Original); Drag(FVector(-5, 0, 0)); Select(Spine, true);
+	TestFalse(TEXT("Multi-selected delete rejected"), Controller->TryDeleteLayoutRack());
+	TestEqual(TEXT("Rejected unsupported edit retains history"), Controller->GetLayoutUndoCount(), 1);
+	TestTrue(TEXT("Group R applies"), Controller->TryRotateLayoutSelection());
+	TestEqual(TEXT("Group R clears old commands"), Controller->GetLayoutUndoCount(), 0);
+	Rack->SetActorTransform(Original); Spine->SetActorTransform(SpineOriginal); Select(Rack);
+	Drag(FVector(-5, 0, 0)); Select(Spine, true); Drag(FVector(0, 100, 0));
+	TestEqual(TEXT("Group drag clears old commands"), Controller->GetLayoutUndoCount(), 0);
+	Rack->SetActorTransform(Original); Spine->SetActorTransform(SpineOriginal); Select(Rack);
+	Drag(FVector(-5, 0, 0));
+	TestTrue(TEXT("Begin duplication"), Controller->BeginRackDuplication());
+	Controller->CancelRackAddition();
+	TestEqual(TEXT("Cancelled duplication retains history"), Controller->GetLayoutUndoCount(), 1);
+	TestTrue(TEXT("Begin duplication again"), Controller->BeginRackDuplication());
+	Controller->UpdateRackAdditionAlongRay(FVector(-1500, -1500, 500), Down);
+	auto* Duplicate = Controller->ConfirmRackAddition();
+	TestNotNull(TEXT("Duplicate confirmed"), Duplicate);
+	TestEqual(TEXT("Successful duplication clears history"), Controller->GetLayoutUndoCount(), 0);
+	Select(Rack); Drag(FVector(-5, 0, 0));
+	Controller->BeginRackAddition(); Controller->UpdateRackAdditionAlongRay(FVector(1500, -1500, 500), Down);
+	TestNotNull(TEXT("Addition confirmed"), Controller->ConfirmRackAddition());
+	TestEqual(TEXT("Successful addition clears history"), Controller->GetLayoutUndoCount(), 0);
+	Select(Rack); Drag(FVector(-5, 0, 0));
+	TestTrue(TEXT("Selected rack deleted"), Controller->TryDeleteLayoutRack());
+	TestEqual(TEXT("Successful deletion clears history"), Controller->GetLayoutUndoCount(), 0);
+	TestFalse(TEXT("Deleted rack cannot be recreated by Undo"), Controller->TryUndoLayout());
+	AddInfo(FString::Printf(TEXT("Single R mixed with move: max absolute position error %.3e cm, yaw delta %.3e deg, SimTime change0s; old-footprint collision, fresh-edit Redo reset and unsupported-edit barriers tested."), MaxPositionErrorCm, MaxYawErrorDeg));
+	World->DestroyWorld(false); GEngine->DestroyWorldContext(World);
+	return true;
+}
 #endif

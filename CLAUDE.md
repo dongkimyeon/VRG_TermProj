@@ -2636,3 +2636,24 @@ Editor 빌드147.34s 성공, SingleMoveUndoRedo/SingleRackRowSnap/SaveLoadRoundT
 이 표는 UI 변환 회귀의 측정 범위이며 물리 정확도/성능 보장이 아니다. 새 물리 추정 수치는 없다.
 로컬 빌드 Saved/Build_UndoMove.log, 검사 Saved/Logs/UndoMove_Tests.log, 보고서 Saved/Automation/UndoMove.
 실제 화면은 아직 미검증이며 최종 회전 연결 뒤 한 번만 확인한다. 전체/물리 통합/FPS/패키징 반복 없음.
+
+### S7 단일 선택 R 회전 Undo/Redo 연결 (2026-10-04)
+
+앞 절의 단일 R 미지원 제한을 해제했다. OnResetSim의 단일 선택 R 경로만 TryLayoutRotation의 기록 옵션을 켠다.
+기존 T는 기록을 비우고 그룹 R은 미지원 기록 경계로 유지한다. 시뮬레이션 R 리셋은 그대로다.
+이동→R을 두 명령으로 역순 취소/정순 재실행하며 높이·스케일·방향을 복원한다. 도움말에 Ctrl+Z/Y를 추가했다.
+추가/복제 취소와 다중 선택 삭제 거절은 기록을 유지한다. 그룹 이동/R·추가/삭제/복제·G/T의 확정은 양쪽 기록을 비운다.
+Editor 빌드120.01s 성공. SingleRotationUndoRedo/SelectedQuarterTurn/EquipmentOverlapGuards/GroupQuarterTurn
+4건 무경고 성공·실패0·미실행0·종료0. 앞 커밋의3건을 반복하지 않았다.
+혼합 이동/R 위치 복원오차0cm·yaw delta 최대2.842e-14°·SimTime 변화0s.
+회전 전 상자에만 놓인 장애물의 Undo/R 거절과 기록 불변, 실제 생성/삭제/그룹 확정의 기록 초기화까지 검사했다.
+
+| 검사 | 측정 | 기록 기준 | 정규화·단위 |
+|---|---|---|---|
+| 혼합 단일 이동/R 복원 위치 | 0 | ≤1e-6 | 기록된 월드 위치와 절대 거리, cm |
+| 혼합 단일 이동/R 복원 방향 | 2.842e-14 | ≤1e-10 | 기록된 yaw와 최단 각도 차이, 절대 ° |
+
+위 기준은 UI 변환이며 앞 절의 quat AngularDistance(acos 반올림 포함)와 서로 다른 측정 지표다.
+새 물리 수치/추정값/보존 기준 변경 없음. 빌드 Saved/Build_UndoRotation.log,
+검사 Saved/Logs/UndoRotation_Tests.log, 보고서 Saved/Automation/UndoRotation. 실제 화면 확인은 후속 기록으로 구분한다.
+전체/물리 통합/FPS/패키징 반복은 하지 않았다.
