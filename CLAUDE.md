@@ -2674,3 +2674,28 @@ Alt+Print Screen→클립보드 PNG→이미지 확인으로 직접 비교했다
 제품 실패로 단정하지 않고 도구 오류/관측 범위를 기록했다. WGC/API 캡처 재시도·드라이버/렌더 설정 변경 없음.
 로컬 증거 목록 Saved/Undo_UI_2026-10-04/결과.md, PNG05~08과 Saved/Logs/Undo_UI.log. 생성물 Git 제외.
 전체 테스트/물리 통합/FPS/장시간/패키징은 실행하지 않았다. 구현 및 자동화는 이동3건/회전4건의 각 단계 결과다.
+
+### S7 드래그 입력 경로 선택형 진단 (2026-10-04)
+
+이전 drag2회 확정 증거 부재와 Ctrl+D 대기 조건 거절의 원인을 구분하도록 e033390에서
+기존 vrg.Layout.InputDiagnostics(기본0)를 확장했다. Raw LMB 누름/놓기/더블클릭, Enhanced 선택/놓기/취소,
+최초4px 이동 감지, 포커스/틱 버튼 해제 취소, 드래그 종료 전후만 기록한다. 틱별 로그 없음.
+VrgLayoutGesture는 LMB/drag/moved/threshold/row/마키/G/Undo·Redo 수, 실제/시작/목적지cm와 yaw를 함께 남긴다.
+RawBefore는 Super::InputKey 이전 상태이며 CommitDone은 확정 요청 처리 종료다. 실제 성공 여부는 위치/기록과 함께 읽는다.
+Esc와 왼쪽 액션 Canceled가 공유하는 취소 핸들러 로그만으로 입력 원인을 단정하지 않는다.
+입력 처리/포커스·콘솔·패치 차단/총1cm 충돌/확정·취소/Undo 기록/솔버·물성·시계는 변경하지 않았다.
+새 물리 수치/추정값이나 보존·타당성 오차 기준 변경 없음.
+
+Editor 빌드95.38s 성공. 진단1 상태 SingleEquipmentDrag/SingleMoveUndoRedo/SingleRackRowSnap/
+RackDuplicationPreview4건 성공(무경고3+기존 기울어진 fixture 팬 축 근사 경고2 동반1), 실패0/미실행0/종료0.
+이동/취소0cm, Undo0cm/quat3.415e-06°, 줄 붙이기 위치0cm/방향0°로 기존 측정 범위를 유지했다.
+로컬 Saved/Build_DragInputDiagnostics.log, Saved/Logs/DragInputDiagnostics_Tests.log,
+Saved/Automation/DragInputDiagnostics. 직접 함수 검사는 실제 OS 버튼 전달 증거가 아니다.
+
+이번 UI는 드라이버 다운로드 안내의 아니오 버튼1회가 coordinate input geometry is unavailable로 실패했다.
+후속 창 확인에서도 같은 안내가 남아 재시도를 중단했다. L_Test에 도달하지 못해 실제 누름→이동→놓기,
+놓은 뒤 드래그 잔류 여부, Ctrl+D와의 관련성, 이동/줄 붙이기 Undo/Redo·Esc 기록 불변은 아직 미검증이다.
+원인 미확정이므로 기능 수정/입력 조건 완화는 하지 않았다. Alt+Print Screen 단계에도 도달하지 못했고 WGC 재시도 없음.
+진단용 실행은 드라이버 안내 상태로 남겼다. 직접 확인 순서와 로그 판독 주의점은 Tools/드래그입력_확인_2026-10-04.md.
+로컬 UI 로그 Saved/Logs/DragInput_UI.log와 Saved/DragInput_UI_2026-10-04/결과.md. 생성물 Git 제외.
+전체/물리 통합/FPS/장시간/패키징 반복, 드라이버/렌더 설정·레벨 에셋 변경 없음.
