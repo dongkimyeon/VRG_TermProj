@@ -127,6 +127,7 @@ public:
 	bool TryRedoLayout();
 	void ClearLayoutHistory();
 	void ResetLayoutEditsForLoad();
+	void RefreshLayoutEquipmentReferences();
 	int32 GetLayoutUndoCount() const { return LayoutUndo.Num(); }
 	int32 GetLayoutRedoCount() const { return LayoutRedo.Num(); }
 
@@ -182,16 +183,28 @@ private:
 		TWeakObjectPtr<AActor> Actor;
 		FTransform Before;
 		FTransform After;
+		FString RackId;
 	};
 	struct FLayoutTransformCommand
 	{
 		TArray<FLayoutTransformMember> Members;
+		bool bRackPresence = false;
+		bool bBeforePresent = false;
+		FString RackId;
+		FName RackName;
+		TWeakObjectPtr<UClass> RackClass;
+		FTransform RackTransform;
+		TOptional<FRackLayoutSettings> RackSettings;
 	};
 	TArray<FLayoutTransformCommand> LayoutUndo;
 	TArray<FLayoutTransformCommand> LayoutRedo;
 	void RecordLayoutTransform(AActor* Actor, const FTransform& Before);
 	void RecordLayoutTransforms(const TArray<AActor*>& Actors, const TArray<FTransform>& Before);
 	bool RestoreLayoutTransform(bool bRedo);
+	void PushLayoutCommand(FLayoutTransformCommand Command);
+	FLayoutTransformCommand CaptureRackPresence(ARackThermalActor* Rack, bool bBeforePresent);
+	bool RestoreRackPresence(const FLayoutTransformCommand& Command, bool bRedo);
+	void RebindLayoutRack(ARackThermalActor* Rack);
 	UPROPERTY(Transient)
 	TObjectPtr<ULayoutRackPalette> RackPalette;
 	bool bAddingRack = false;

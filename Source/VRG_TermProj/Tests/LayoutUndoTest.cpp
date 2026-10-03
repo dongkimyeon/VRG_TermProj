@@ -190,7 +190,7 @@ bool FLayoutRotationUndoTest::RunTest(const FString& Parameters)
 	Controller->SetPatchMapOpen(false);
 	TestEqual(TEXT("Undo/Redo does not advance clock"), Sim->GetSnapshot().SimTimeS, 0.0);
 
-	// Unsupported successful edits are history barriers; selection and rejected edits are not.
+	// Legacy T remains a barrier; supported group/presence edits now add commands.
 	Controller->ClearLayoutHistory(); Rack->SetActorTransform(Original);
 	Drag(FVector(-5, 0, 0));
 	TestTrue(TEXT("Legacy T rotation applies"), Controller->TryLayoutRotation(Rack, FRotator(0, 107, 0)));
@@ -214,15 +214,15 @@ bool FLayoutRotationUndoTest::RunTest(const FString& Parameters)
 	Controller->UpdateRackAdditionAlongRay(FVector(-1500, -1500, 500), Down);
 	auto* Duplicate = Controller->ConfirmRackAddition();
 	TestNotNull(TEXT("Duplicate confirmed"), Duplicate);
-	TestEqual(TEXT("Successful duplication clears history"), Controller->GetLayoutUndoCount(), 0);
+	TestEqual(TEXT("Duplication adds presence command"), Controller->GetLayoutUndoCount(), 2);
 	Select(Rack); Drag(FVector(-5, 0, 0));
 	Controller->BeginRackAddition(); Controller->UpdateRackAdditionAlongRay(FVector(1500, -1500, 500), Down);
 	TestNotNull(TEXT("Addition confirmed"), Controller->ConfirmRackAddition());
-	TestEqual(TEXT("Successful addition clears history"), Controller->GetLayoutUndoCount(), 0);
+	TestEqual(TEXT("Addition adds presence command"), Controller->GetLayoutUndoCount(), 4);
 	Select(Rack); Drag(FVector(-5, 0, 0));
 	TestTrue(TEXT("Selected rack deleted"), Controller->TryDeleteLayoutRack());
-	TestEqual(TEXT("Successful deletion clears history"), Controller->GetLayoutUndoCount(), 0);
-	TestFalse(TEXT("Deleted rack cannot be recreated by Undo"), Controller->TryUndoLayout());
+	TestEqual(TEXT("Deletion adds presence command"), Controller->GetLayoutUndoCount(), 6);
+	TestTrue(TEXT("Deleted rack recreated by Undo"), Controller->TryUndoLayout());
 	AddInfo(FString::Printf(TEXT("Single R mixed with move: max absolute position error %.3e cm, yaw delta %.3e deg, SimTime change0s; old-footprint collision, fresh-edit Redo reset and unsupported-edit barriers tested."), MaxPositionErrorCm, MaxYawErrorDeg));
 	World->DestroyWorld(false); GEngine->DestroyWorldContext(World);
 	return true;

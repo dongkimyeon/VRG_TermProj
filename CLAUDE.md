@@ -2741,3 +2741,19 @@ Editor29.08s 성공 및 GroupRotationUndoRedo/GroupQuarterTurn/SingleRotationUnd
 최대 위치0cm/최단 yaw delta2.842e-14°, SimTime0s. 측정 후 기준 위치≤1e-6cm/yaw≤1e-10°(기록 변환 대비 절대 UI 오차).
 기존 회전 중심을 바꾸지 않았으며 새 물리 수치/보존·타당성 기준 변경 없음. 그룹 R의 이전 기록 초기화 제한은 해제했다.
 Saved/Build_GroupRotationUndo.log, Saved/Logs/GroupRotationUndo_Tests.log, Saved/Automation/GroupRotationUndo. 실제 그룹 입력/FPS 미검증, 전체 반복 없음.
+
+### S7 단일 랙 추가·삭제·복제 Undo/Redo (2026-10-04)
+
+배치 추가/복제/삭제를 생성 전후 존재 여부 명령으로 기록한다. 설정은 CaptureLayoutSettings의 입력/Params/표시만 저장하며 현재 온도/적분/팬 상태/시계는 저장하지 않는다.
+랙 LayoutId(Transient)는 최초 기존 이름 기반 placed/<name>, 신규는 GUID다. 삭제는 UObject 이름을 임시 이름으로 비운 뒤 Destroy하여 GC 전에도 같은 이름으로 복원한다.
+게임 월드에서만 deferred 생성·외부 시계·ApplyLayoutSettings·Pause/표시 경로를 사용한다. 재생성 때 두 스택의 같은 ID 멤버 약한 참조를 연결하여 이전 이동/그룹 기록을 이어간다.
+외부에서 임의로 파괴한 액터는 자동 이름 조회로 복원하지 않는다. 설정/변환/종류/식별 관계가 달라진 제거는 거절하며 목적지 충돌도 스택/월드를 유지한다.
+추가/삭제/복제는 이제 기록 초기화 대상이 아니다. G/T 등 미지원 편집의 초기화·100개·모드 유지·로드 초기화 정책은 유지한다.
+복원 뒤 기존 Room/모델 참조/CDU/패치/열·공기 재구축을 공유한다. 선택과 오래된 장비 참조는 정리한다.
+Editor83.03s 및 생명주기/단일 회전/추가/복제 미리보기/복제 물리5건 성공. 실행 시작 시 새 reflected 설정 구조체의 미초기화 오류가 발견돼 transport 필드를0/false로 초기화했다(물성 기본값은 Capture가 채움).
+수정 빌드67.42s, 생명주기/기존 삭제2건 성공. 시작 초기화 오류 없음. 삭제의 빈 랙 fixture 안내 경고6, 복제 미리보기의 기존 축 근사 경고2는 기존 범위다.
+측정: 복제 Undo의1랙 IT는 초기 기준과 상대오차<1e-9, 재생성/삭제 복원 뒤2랙 분기·CDU·패치·열/공기 결합을 검사했다.
+기본/비기본 IT 증가116512.612431/76494.877169W, 전력 상대오차0, 전역 잔차4.019e-15/-3.360e-14(유입+열원 장부 정규화, 무차원), 덕트 유량 상대오차7.407e-16/1.068e-15, 발산2.597e-08/5.023e-08로 기존 기준 유지.
+추가/삭제/복제의 랙 수 변화·동일 ID/이름·비기본 설정·재생성 후 이전 이동 Undo/Redo·설정 변경/충돌 거절·원본 불변·시계0s도 통과했다.
+새 물리 추정값/오차 기준 변경 없음. Saved/Build_RackPresenceUndo*.log 및 Saved/Logs/RackPresenceUndo*_Tests.log, Saved/Automation/RackPresenceUndo*.
+실제 UI는 최종 저장 확장 뒤 확인한다. 그룹 삭제/복제·다른 장비 생명주기 Undo·물리 상태 저장·전체/FPS는 범위 밖이다.

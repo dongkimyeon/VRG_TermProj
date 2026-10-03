@@ -1,6 +1,7 @@
 // Fill out your copyright notice in the Description page of Project Settings.
 
 #include "Interaction/DataCenterDebugController.h"
+#include "Interaction/VrgRackLifecycle.h"
 #include "Interaction/LayoutRackPalette.h"
 #include "Simulation/Core/VrgHud.h"
 
@@ -847,8 +848,9 @@ ARackThermalActor* ADataCenterDebugController::ConfirmRackAddition()
 		AddedRack->RackSizeM = SizeM;
 		AddedRack->bUseGjModels = true;
 	}
+	AddedRack->LayoutId = FGuid::NewGuid().ToString();
 	AddedRack->FinishSpawning(Proposed);
-	ClearLayoutHistory(); // Addition/duplication undo is not supported yet.
+	PushLayoutCommand(CaptureRackPresence(AddedRack, false));
 	AddedRack->PauseSim();
 	AddedRack->RefreshVisuals();
 	CancelRackAddition(); // One click creates exactly one rack, not a repeat-placement tool.
@@ -873,8 +875,9 @@ bool ADataCenterDebugController::TryDeleteLayoutRack()
 	auto* SelectedRack = Cast<ARackThermalActor>(Selected[0]);
 	if (!IsValid(SelectedRack) || SelectedRack->GetWorld() != CurrentWorld) return false;
 	const FString DeletedName = SelectedRack->GetName();
-	if (!SelectedRack->Destroy()) return false;
-	ClearLayoutHistory(); // Deletion cannot leave commands referring to the old layout.
+	const FLayoutTransformCommand Command = CaptureRackPresence(SelectedRack, true);
+	if (!VrgRackLifecycle::Remove(SelectedRack)) return false;
+	PushLayoutCommand(Command);
 	LayoutSelection.Reset();
 	TargetRack.Reset();
 	HoveredPlaceable.Reset();
@@ -939,9 +942,16 @@ void ADataCenterDebugController::RecordLayoutTransforms(const TArray<AActor*>& A
 	{
 		const FTransform After = Actors[I]->GetActorTransform();
 		bChanged |= !After.Equals(Before[I], 0.0);
-		Command.Members.Add({Actors[I], Before[I], After});
+		auto* Rack = Cast<ARackThermalActor>(Actors[I]);
+		if (Rack && Rack->LayoutId.IsEmpty()) Rack->LayoutId = VrgRackLifecycle::Identity(Rack);
+		Command.Members.Add({Actors[I], Before[I], After, Rack ? Rack->LayoutId : FString()});
 	}
 	if (!bChanged) return;
+	PushLayoutCommand(MoveTemp(Command));
+}
+
+void ADataCenterDebugController::PushLayoutCommand(FLayoutTransformCommand Command)
+{
 	LayoutRedo.Reset();
 	if (LayoutUndo.Num() == 100) LayoutUndo.RemoveAt(0); // Placement plan: commands, not individual members.
 	LayoutUndo.Add(MoveTemp(Command));
@@ -955,6 +965,12 @@ bool ADataCenterDebugController::RestoreLayoutTransform(bool bRedo)
 	TArray<FLayoutTransformCommand>& To = bRedo ? LayoutUndo : LayoutRedo;
 	if (From.IsEmpty()) return false;
 	const FLayoutTransformCommand Command = From.Last();
+	if (Command.bRackPresence)
+	{
+		if (!RestoreRackPresence(Command, bRedo)) return false;
+		From.Pop(); To.Add(Command);
+		return true;
+	}
 	TArray<AActor*> Actors;
 	TArray<FTransform> Expected, Targets;
 	for (const FLayoutTransformMember& Member : Command.Members)
@@ -985,6 +1001,56 @@ bool ADataCenterDebugController::RestoreLayoutTransform(bool bRedo)
 	From.Pop(); To.Add(Command);
 	for (TActorIterator<ADataCenterRoomActor> It(GetWorld()); It; ++It) It->RebuildRoomNow();
 	if (ADataCenterSimulationActor* Sim = FindSimActor()) Sim->RebuildCoupling();
+	return true;
+}
+
+void ADataCenterDebugController::RefreshLayoutEquipmentReferences()
+{
+	LayoutSelection.Reset(); TargetRack.Reset(); HoveredPlaceable.Reset(); Grabbed.Reset();
+	SelectedSledIndex = INDEX_NONE;
+	FindTargetActors();
+}
+
+ADataCenterDebugController::FLayoutTransformCommand ADataCenterDebugController::CaptureRackPresence(ARackThermalActor* Rack, bool bBeforePresent)
+{
+	FLayoutTransformCommand Command;
+	if (Rack->LayoutId.IsEmpty()) Rack->LayoutId = VrgRackLifecycle::Identity(Rack);
+	Command.bRackPresence = true; Command.bBeforePresent = bBeforePresent;
+	Command.RackId = Rack->LayoutId; Command.RackName = Rack->GetFName(); Command.RackClass = Rack->GetClass();
+	Command.RackTransform = Rack->GetActorTransform(); Command.RackSettings = Rack->CaptureLayoutSettings();
+	return Command;
+}
+
+void ADataCenterDebugController::RebindLayoutRack(ARackThermalActor* Rack)
+{
+	// Only sanctioned recreation rebinds old weak references; arbitrary external replacement remains rejected.
+	for (auto* Stack : {&LayoutUndo, &LayoutRedo})
+		for (FLayoutTransformCommand& Command : *Stack)
+			for (FLayoutTransformMember& Member : Command.Members)
+				if (Member.RackId == Rack->LayoutId) Member.Actor = Rack;
+}
+
+bool ADataCenterDebugController::RestoreRackPresence(const FLayoutTransformCommand& Command, bool bRedo)
+{
+	if (!GetWorld()->IsGameWorld() || !Command.RackClass.IsValid() || !Command.RackSettings.IsSet()) return false;
+	const bool bTargetPresent = bRedo ? !Command.bBeforePresent : Command.bBeforePresent;
+	auto* Rack = VrgRackLifecycle::Find(GetWorld(), Command.RackId);
+	if (bTargetPresent)
+	{
+		if (Rack || IsLayoutBoxBlocked(GetWorld(), Command.RackSettings->RackSizeM, Command.RackTransform)) return false;
+		Rack = VrgRackLifecycle::Spawn(GetWorld(), Command.RackName, Command.RackId, Command.RackClass.Get(), Command.RackTransform, Command.RackSettings.GetValue());
+		if (!Rack) return false;
+		RebindLayoutRack(Rack);
+	}
+	else
+	{
+		if (!Rack || Rack->GetClass() != Command.RackClass.Get() || Rack->GetFName() != Command.RackName
+			|| !Rack->GetActorTransform().Equals(Command.RackTransform)) return false;
+		const FRackLayoutSettings Current = Rack->CaptureLayoutSettings();
+		if (!FRackLayoutSettings::StaticStruct()->CompareScriptStruct(&Current, &Command.RackSettings.GetValue(), 0)) return false;
+		if (!VrgRackLifecycle::Remove(Rack)) return false;
+	}
+	VrgRackLifecycle::Rebuild(GetWorld());
 	return true;
 }
 

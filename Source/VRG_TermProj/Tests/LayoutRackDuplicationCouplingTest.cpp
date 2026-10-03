@@ -1,5 +1,6 @@
 #include "Misc/AutomationTest.h"
 #include "Interaction/DataCenterDebugController.h"
+#include "Interaction/VrgRackLifecycle.h"
 #include "Actors/DataCenterSimulationActor.h"
 #include "Actors/DataCenterRoomActor.h"
 #include "Actors/CoolingDistributionUnitActor.h"
@@ -72,6 +73,27 @@ bool FLayoutRackDuplicationCouplingTest::RunTest(const FString& Parameters)
 			&& Clone->Input.ComponentHeatW == Settings.Input.ComponentHeatW && Clone->Input.SledDocked == Settings.Input.SledDocked
 			&& Clone->Input.Utilization == Settings.Input.Utilization && Clone->Input.SlotUtilization == Settings.Input.SlotUtilization
 			&& Clone->Input.FanSpeedOverride == Settings.Input.FanSpeedOverride && Clone->bUseGjModels);
+		const FString CloneId = VrgRackLifecycle::Identity(Clone);
+		TestTrue(TEXT("Undo cloned rack before integration"), Controller->TryUndoLayout());
+		TestEqual(TEXT("Undo removes clone branch and patch target"), Room->GetRoutedRacks().Num(), 1);
+		TestEqual(TEXT("Undo leaves source patch device"), Room->GetPatchDevices().Num(), 1);
+		Sim->EnterSimulationMode(); Sim->Tick(.021f);
+		TestEqual(TEXT("Undo removes clone thermal/air coupling"), Sim->GetSnapshot().RackAirMassFlowKgs.Num(), 1);
+		const double OneRackItW = Sim->GetSnapshot().TotalItHeatW;
+		TestTrue(TEXT("One-rack global energy after Undo"), FMath::Abs(Sim->GetSnapshot().NormalizedEnergyResidual) < 1e-9);
+		TestTrue(TEXT("Undo IT matches original initial step"), FMath::Abs(OneRackItW - Before.TotalItHeatW) / Before.TotalItHeatW < 1e-9);
+		Sim->EnterLayoutMode();
+		TestTrue(TEXT("Redo clone recreates independent branch"), Controller->TryRedoLayout());
+		Clone = VrgRackLifecycle::Find(World, CloneId);
+		if (!TestNotNull(TEXT("Redo clone identity"), Clone)) { World->DestroyWorld(false); GEngine->DestroyWorldContext(World); continue; }
+		Controller->SelectLayoutAlongRay(Clone->GetActorLocation() + FVector(0,0,500), FVector(0,0,-1));
+		TestTrue(TEXT("Delete clone"), Controller->TryDeleteLayoutRack());
+		TestTrue(TEXT("Undo clone deletion"), Controller->TryUndoLayout());
+		TestEqual(TEXT("Deletion Undo restores two branches"), Room->GetRoutedRacks().Num(), 2);
+		TestTrue(TEXT("Redo clone deletion"), Controller->TryRedoLayout());
+		TestEqual(TEXT("Deletion Redo removes branch"), Room->GetRoutedRacks().Num(), 1);
+		TestTrue(TEXT("Restore clone for physical integration"), Controller->TryUndoLayout());
+		Clone = VrgRackLifecycle::Find(World, CloneId);
 		const auto Routed = Room->GetRoutedRacks(); const auto Rows = Room->GetRoutedRackRows();
 		const int32 SourceIndex = Routed.IndexOfByKey(Source), CloneIndex = Routed.IndexOfByKey(Clone);
 		const auto& Branches = Room->GetRackBranchPipeIndices();
