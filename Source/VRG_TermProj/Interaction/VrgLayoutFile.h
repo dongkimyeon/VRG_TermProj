@@ -10,6 +10,7 @@ class UWorld;
 // A file holds the placement of every rack, spine, CDU and CRAH actor (by actor name; position in m, yaw in degrees)
 // and the cooling settings (containment, CRAH layout, coolant heat rejection, air cell size).
 // Version 2 reconciles the complete rack inventory by stable identity, with configuration and full transforms.
+// Additive v2 spine capabilities retain native spine provenance/configuration and explicit placed deletions.
 // Other equipment remains name-matched. Version 1 remains move-only. No solver state or Undo history is saved.
 // Files live in Saved/Layouts/<name>.json. Loading switches the simulation to layout mode first (the next simulation
 // entry rebuilds everything from the loaded layout).

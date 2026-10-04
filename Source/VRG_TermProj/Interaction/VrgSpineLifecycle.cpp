@@ -1,4 +1,5 @@
 #include "Interaction/VrgSpineLifecycle.h"
+#include "Interaction/VrgSpineLayoutState.h"
 #include "Engine/World.h"
 #include "EngineUtils.h"
 #include "UObject/UObjectGlobals.h"
@@ -28,7 +29,9 @@ ASpineCabinetActor* VrgSpineLifecycle::Spawn(UWorld* World, FName Name, const FS
 	Spine->LayoutId = Id; Spine->bRuntimeLayoutSpine = bRuntime;
 	Spine->ApplyLayoutSettings(Settings);
 	Spine->FinishSpawning(Transform);
-	return IsValid(Spine) ? Spine : nullptr;
+	if (!IsValid(Spine)) return nullptr;
+	World->GetSubsystem<UVrgSpineLayoutState>()->DeletedPlaced.Remove(Id);
+	return Spine;
 }
 
 bool VrgSpineLifecycle::Remove(ASpineCabinetActor* Spine)
@@ -37,9 +40,15 @@ bool VrgSpineLifecycle::Remove(ASpineCabinetActor* Spine)
 		|| Spine->IsActorBeingDestroyed() || Spine->IsActorBeginningPlay()
 		|| Spine->GetClass() != ASpineCabinetActor::StaticClass() || Spine->GetLocalRole() != ROLE_Authority) return false;
 	const FName Name = Spine->GetFName();
+	const FSpineLayoutRecord Record{Identity(Spine), Name, Spine->GetActorTransform(),
+		Spine->CaptureLayoutSettings(), Spine->bRuntimeLayoutSpine};
 	const FName Retired = MakeUniqueObjectName(Spine->GetOuter(), Spine->GetClass(), TEXT("RetiredLayoutSpine"));
 	if (!Spine->Rename(*Retired.ToString(), nullptr, REN_DontCreateRedirectors | REN_NonTransactional)) return false;
-	if (Spine->Destroy(false, false)) return true;
+	if (Spine->Destroy(false, false))
+	{
+		if (!Record.bRuntime) Spine->GetWorld()->GetSubsystem<UVrgSpineLayoutState>()->DeletedPlaced.Add(Record.Id, Record);
+		return true;
+	}
 	Spine->Rename(*Name.ToString(), nullptr, REN_DontCreateRedirectors | REN_NonTransactional);
 	return false;
 }

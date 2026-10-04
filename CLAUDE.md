@@ -20,8 +20,8 @@ S3(균일 격자 공기 해석), **S4(도메인 통합 = MVP)** 완료.
 D4(영향 범위를 재계산으로 판정)를 지키기도 쉽다.
 
 남은 순서: S7 시각화·성능의 남은 항목(웹 대시보드 포함, `Tools/웹대시보드_계획.md`) → S2b 냉각수·누수·장애 (마지막).
-최근 스파인 단일 추가 검증(2026-10-05, NullRHI): Editor96.39s/호환 수정10.69s 성공. 관련8종의 성공을 확인했다(첫 실행7 성공/1 실패 → v1 호환 수정 후 영향4건 모두 성공, 가상 CDU 경고9건 포함). 추가/Undo/Redo/저장 v2·케이블/IT/열수지/공기 기준 통과. 전체 VRG 반복 없음. 사용자 그룹 줄 붙이기 직접 절차 모두 정상 보고 반영. L_Test에서 스파인 버튼 표시만 확인했고 클릭 도구 오류 이후 조작은 미검증. 상세 정규화/단위·한계는 마지막 절. 원격139건은 병합 전 전체 기록이며 이번 구성의 전체 통과로 계산하지 않는다.
-S7 볼륨·기류 표시와 기존 패키징 검증은 이미 완료했다. 배치 Shift 다중 선택·F 그룹 보기·그룹 드래그·단일/그룹 R 회전·사각형 선택·이동/회전 겹침 방지·단일/그룹 랙 줄 붙이기·GB200 NVL72 랙 추가·단일/다중 랙 삭제·단일/다중 랙 복제·그룹 생명주기 Undo/Redo·랙 저장 v2·스파인 단일 추가/Undo/Redo/저장까지 구현했다. 그룹 복제 미리보기의 R은 사용자 요청으로 차단한다. 실제 입력 확인 상태는 마지막 관련 절을 참고한다. 현재 PC 성능 측정은 필요 시 별도로 진행한다.
+최근 스파인 단일 삭제 검증(2026-10-05, NullRHI): Editor90.33s/저장 확장63.34s/검사 초기화 수정7.52s 성공. 관련7종의 성공을 확인했다(삭제 입력3건 성공, 저장/결합6건 중5 성공/1 검사 오류 후 해당1건 수정·무경고 성공). 기존 추가 결합 fixture의 가상 CDU 경고9건 유지. 삭제/Undo/Redo/저장·케이블/IT/열수지/공기 기준 통과. 사용자 스파인 추가 직접 절차 모두 정상 보고 반영. 새 삭제 UI는 기존 클릭 도구 실패를 반복하지 않아 미검증. 전체 VRG/FPS 반복 없음. 정규화/단위·한계는 마지막 절. 과거 원격139건은 이번 전체 성공으로 계산하지 않는다.
+S7 볼륨·기류 표시와 기존 패키징 검증은 이미 완료했다. 배치 Shift 다중 선택·F 그룹 보기·그룹 드래그·단일/그룹 R 회전·사각형 선택·이동/회전 겹침 방지·단일/그룹 랙 줄 붙이기·GB200 NVL72 랙 추가·단일/다중 랙 삭제·단일/다중 랙 복제·그룹 생명주기 Undo/Redo·랙 저장 v2·스파인 단일 추가·삭제/Undo/Redo/저장까지 구현했다. 그룹 복제 미리보기의 R은 사용자 요청으로 차단한다. 실제 입력 확인 상태는 마지막 관련 절을 참고한다. 현재 PC 성능 측정은 필요 시 별도로 진행한다.
 RTX 4080 측정값을 다른 PC의 보장값으로 쓰지 않는다. 화면에는 단축키 안내만 유지한다.
 **VR(HMD) 환경은 구현하지 않는다** (2026-09-27 팀 결정). 아래 절들의 "HMD 미검증" 문구는 당시 기록이며 남은 작업이 아니다.
 
@@ -3047,4 +3047,30 @@ Editor96.39s 성공. 신규 SpineAdditionUndoRedo는 무경고 성공(첫 영향
 
 Delete는 기존 랙 전체 삭제 또는 네이티브 스파인 한 대 삭제로 분기한다. 기존 배치/실행 중 추가 스파인을 지원하고 다중·혼합/비선택·드래그/사각형/추가 미리보기·패치/시뮬레이션 차단을 유지한다. 성공 삭제 후 기존 재구축으로 선택·참조·패치/결합을 비운다. Undo는 동일 ID/이름/설정/전체 변환/기존 출처를 복원하고 이전 이동/R 참조를 재연결하며 현재 열 상태/시계는 전달하지 않는다. 총1cm 충돌/설정 변경/이름 점유 거절은 기록을 유지한다. 기존 랙 다중 삭제는 유지한다.
 
-Editor90.33s 성공. SpineDeletionUndoRedo/SpineAdditionUndoRedo/RackBatchDeletionUndoRedo3건 성공, 실패0/미실행0/종료0. 변환 복원은 기존 FTransform Equals1e-9(UE 액터cm·스케일 무차원), 배치 시계0s. 새 물성/오차 기준 없음. 근거 Saved/Build_SpineDeletion.log·Saved/Logs/SpineDeletion_Tests.log·Saved/Automation/SpineDeletion. 새 삭제의 실제 UI는 기존 클릭 도구 실패 때문에 재시도하지 않았고 사용자 추가 확인과 구분한다. 저장 삭제 기록/열 결합 최종 검증은 다음 작은 커밋에서 이어간다.
+Editor90.33s 성공. SpineDeletionUndoRedo/SpineAdditionUndoRedo/RackBatchDeletionUndoRedo3건 무경고 성공, 실패0/미실행0/종료0. 변환 복원은 기존 FTransform Equals1e-9(UE 액터cm·스케일 무차원), 배치 시계0s. 새 물성/오차 기준 없음. 근거 Saved/Build_SpineDeletion.log·Saved/Logs/SpineDeletion_Tests.log·Saved/Automation/SpineDeletion. 새 삭제의 실제 UI는 기존 클릭 도구 실패 때문에 재시도하지 않았고 사용자 추가 확인과 구분한다. 저장 삭제 기록/열 결합 최종 검증은 다음 절을 따른다.
+
+### S7 스파인 삭제 저장 호환·열/공기·케이블 검증 (2026-10-05)
+
+v2에 명시적 `deletedSpines` 배열을 더했다. 기존 배치 스파인을 삭제하면 월드 수명의 UVrgSpineLayoutState에 ID/이름/전체 변환/NumSwitches/FirstSwitchSlot과 기존 출처만 남긴다. 온도·입력 샘플·적분·시계·장비 참조는 기록하지 않는다. 기록 상한/Undo 초기화와 별개여서 삭제 저장 의도가 사라지지 않는다. Undo/로드 생성은 원래 출처를 복원하고 해당 삭제 기록을 지운다. 월드가 끝나면 메모리 기록도 끝난다.
+
+새 저장 파일의 배열은 비어 있어도 기존 네이티브 스파인 복원 지원 표식이다. 명시 삭제 ID는 살아 있는 장비 목록과 중복될 수 없고 기존 배치 네이티브 스파인만 대상으로 한다. 새 파일은 삭제 목록대로 기존 스파인을 제거하고, 삭제 전 파일은 같은 ID/이름/설정/변환의 기존 스파인을 새 열 상태로 복원한다. 팔레트 스파인은 기존 `spineInventory` 인벤토리 재구축을 유지한다. 전체 구조/유한값/설정/이름/출처 검증 뒤 기존 트랜잭션 순서를 사용하고 실패 원복에는 삭제 기록 백업도 포함한다. 파일 좌표m↔액터cm 경계 변환은 유지한다.
+
+v1과 옛 v2는 스파인 항목 누락을 기존 배치 스파인 삭제로 해석하지 않는다. 옛 spineInventory=true 파일도 명시 삭제 배열 없이는 기존 스파인을 제거하지 않는다. 옛 spineInventory 파일의 누락된 기존 스파인 복원은 같은 월드에서 삭제 기록이 알려진 경우만 허용한다. 이전 랙 저장/추가·생명주기 동작 유지. 옛 형식 fixture는 새 삭제 필드도 제거해 실제 옛 파일을 재현하도록 갱신했다.
+
+SpineDeletionPersistenceCoupling은 CDU가 있는 NVL72 한 랙+기본 스파인 한 대 축소 fixture다. 기존/팔레트 스파인의 Delete·Undo/Redo·삭제 전/후 파일 Load마다 패치 장비2↔1·데이터 케이블/미연결 진단·열/공기 대상2↔1을 검사했다. 랙 줄·CDU 배정·수력 배관 수는 불변이며 스파인 냉각수는0kg/s다. 별도 월드의 기존 스파인 삭제/복원·반복 중복 없음·로드 기록 초기화·기존 파일 누락 보존·동일 live/deleted ID 및 비정수 설정 거절도 통과했다. 기존 스파인 삭제 Undo 뒤 이전 이동/R 참조 재연결은 앞 입력 검사에서 확인했다.
+
+| 검사 | 측정 | 기존 기준·정규화·단위 |
+|---|---|---|
+| 기존/팔레트 삭제·Redo·삭제 파일 Load 첫 스텝 IT 감소 | 2408.217600W, 상대오차 최대1.511e-15 | 동일 초기조건0.02s, abs((삭제 전 전체 IT-현재 전체 IT)-스파인 기준 W)/스파인 기준 W <1e-9, 무차원 |
+| Undo/삭제 전 파일·팔레트 파일 Load IT 복원 | 삭제 전과 차이0W/상대오차0 | abs(현재 전체 IT-삭제 전 전체 IT)/스파인 기준 W <1e-9, 무차원 |
+| 스파인 IT 타당성 | 2408.217600W | 기존4×597W 전자부품 + 계산 팬20.217600W, 4×597W < 총 IT ≤4×747W 참고 상한. QM9700 출처/분해 추정은 기존 발열 절/코드 주석 |
+| 각t0.82s 전역 잔차 절댓값 최대 | 1.713e-13 | <1e-9, (EnergyInJ-EnergyOutJ-StoredJ)/EnergyInJ, 유입+열원 장부J 정규화·무차원 |
+| 덕트 유량 상대오차 최대 | 2.140e-15 | <1e-9, abs(덕트-장비 유량)/장비 유량kg/s, 무차원·양의 유량/거절 없음 |
+| 정규화 발산 최대 | 3.564e-08 | <1e-5 및 압력 수렴, maxAbsDiv(1/s)/(maxAbsVelocity(m/s)/cellSize(m)), 무차원 |
+| 삭제/복원·반복 Load | 스파인1↔0·재Load0 생성/0 제거·기록0 | 정수 개수 정확 일치·ID/출처/설정 일치, 기존 전체 변환 Equals1e-9(액터cm·스케일 무차원) |
+
+Editor 저장 확장63.34s 성공. 영향6건은5 성공/1 실패(종료255); 실패 원인은 기존 배치 액터가 열모델을 시뮬레이션 진입 때 초기화하는데 새 검사의 독립 기준 모델이 그 전에 읽어0W가 된 테스트 초기화 오류였다. 제품 IT 감소는2408.217600W였다. 검사에서 기존 EnsureThermalModel을 호출하도록 고친 뒤 증분7.52s 성공/해당1건 무경고 성공(실패0/미실행0/종료0). 나머지 통과한 검사를 반복하지 않았다. 앞3건과 합쳐 관련7종 성공 확인: SpineDeletionUndoRedo/SpineAdditionUndoRedo/RackBatchDeletionUndoRedo/SpineDeletionPersistenceCoupling/SpinePersistenceCoupling/InventorySaveLoad/SaveLoadRoundTrip. 기존 SpinePersistenceCoupling의 CDU 없는 fixture 가상 CDU 경고9건 유지, 새 삭제 결합은 무경고다.
+
+새 물성/오차 피팅 없음. 전체 VRG·L_Test 전체 열운전·정상상태/FPS·극단 자원 고갈/Destroy 실패 주입은 제외했다. 다중 스파인 삭제·복제·Blueprint 재생성도 후속이다. 실제 삭제 UI는 기존 클릭 geometry unavailable 오류와 환경 변화 근거가 없어 재시도하지 않았다. 사용자 추가 확인은 새 삭제 UI 확인으로 확대하지 않는다. 직접 절차 Tools/배치스파인삭제_확인_2026-10-05.md.
+
+근거(커밋 제외): Saved/Build_SpineDeletionPersistence.log·Saved/Build_SpineDeletionPersistence_TestFix.log, Saved/Logs/SpineDeletionPersistence_Tests.log·SpineDeletionPersistence_TestFix.log, Saved/Automation/SpineDeletionPersistence·SpineDeletionPersistence_TestFix. 이미 확인한 동일 도구 실패/전체 검사를 반복하지 않았다.

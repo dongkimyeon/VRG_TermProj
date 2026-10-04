@@ -89,7 +89,7 @@ bool FLayoutSpinePersistenceTest::RunTest(const FString& Parameters)
 	TestFalse(TEXT("Fractional switch count refused"),VrgLayoutFile::Load(W,File,Summary));
 	TestTrue(TEXT("Invalid import state invariant"),C->GetLayoutUndoCount()==History && Added->GetActorTransform().Equals(Changed,0));
 	// Old v2 has no spine capability/IDs: retain transform-only behavior, no implicit runtime deletion.
-	FJsonSerializer::Deserialize(TJsonReaderFactory<>::Create(Original),Root); Root->RemoveField(TEXT("spineInventory"));
+	FJsonSerializer::Deserialize(TJsonReaderFactory<>::Create(Original),Root); Root->RemoveField(TEXT("spineInventory")); Root->RemoveField(TEXT("deletedSpines"));
 	for(const auto& Item:Root->GetArrayField(TEXT("equipment"))) { auto O=Item->AsObject(); O->RemoveField(TEXT("spineId")); O->RemoveField(TEXT("spineSettings")); O->RemoveField(TEXT("runtimeSpine")); }
 	FString Legacy; FJsonSerializer::Serialize(Root.ToSharedRef(),TJsonWriterFactory<>::Create(&Legacy)); FFileHelper::SaveStringToFile(Legacy,*VrgLayoutFile::PathFor(File));
 	TestTrue(TEXT("Old v2 spines remain name-matched and settings retained"),VrgLayoutFile::Load(W,File,Summary) && Added->CaptureLayoutSettings()==NonDefault);

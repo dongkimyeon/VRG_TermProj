@@ -4,6 +4,7 @@
 #include "Interaction/DataCenterDebugController.h"
 #include "Interaction/VrgRackLifecycle.h"
 #include "Interaction/VrgSpineLifecycle.h"
+#include "Interaction/VrgSpineLayoutState.h"
 #include "Actors/DataCenterRoomActor.h"
 #include "JsonObjectConverter.h"
 #include "Interaction/VrgLayoutValidation.h"
@@ -95,6 +96,24 @@ bool VrgLayoutFile::Save(UWorld* World, const FString& Name, FString& OutSummary
 		Items.Add(MakeShared<FJsonValueObject>(Item));
 	}
 	Root->SetArrayField(TEXT("equipment"), Items);
+	// Explicit intent: older files with absent spine entries never imply placed-spine deletion.
+	TArray<TSharedPtr<FJsonValue>> Deleted;
+	if (auto* State = World->GetSubsystem<UVrgSpineLayoutState>()) for (const auto& Pair : State->DeletedPlaced)
+	{
+		const auto& R = Pair.Value;
+		TSharedRef<FJsonObject> O = MakeShared<FJsonObject>();
+		O->SetStringField(TEXT("name"), R.Name.ToString()); O->SetStringField(TEXT("class"), ASpineCabinetActor::StaticClass()->GetName());
+		O->SetStringField(TEXT("spineId"), R.Id); O->SetBoolField(TEXT("runtimeSpine"), false);
+		const FVector M = SimUnits::UnrealToMeters(R.Transform.GetLocation());
+		const FRotator Rotation = R.Transform.Rotator(); const FVector Scale = R.Transform.GetScale3D();
+		O->SetNumberField(TEXT("x_m"), M.X); O->SetNumberField(TEXT("y_m"), M.Y); O->SetNumberField(TEXT("z_m"), M.Z);
+		O->SetNumberField(TEXT("yaw_deg"), Rotation.Yaw); O->SetNumberField(TEXT("pitch_deg"), Rotation.Pitch); O->SetNumberField(TEXT("roll_deg"), Rotation.Roll);
+		O->SetNumberField(TEXT("scale_x"), Scale.X); O->SetNumberField(TEXT("scale_y"), Scale.Y); O->SetNumberField(TEXT("scale_z"), Scale.Z);
+		TSharedRef<FJsonObject> Config = MakeShared<FJsonObject>();
+		if (!FJsonObjectConverter::UStructToJsonObject(FSpineLayoutSettings::StaticStruct(), &R.Settings, Config)) return false;
+		O->SetObjectField(TEXT("spineSettings"), Config); Deleted.Add(MakeShared<FJsonValueObject>(O));
+	}
+	Root->SetArrayField(TEXT("deletedSpines"), Deleted); // Presence opts into native placed-spine restoration as well.
 	TSharedRef<FJsonObject> Settings = MakeShared<FJsonObject>();
 	if (const ADataCenterSimulationActor* Sim = LayoutFindFirst<ADataCenterSimulationActor>(World))
 	{
@@ -162,6 +181,11 @@ bool VrgLayoutFile::Load(UWorld* World, const FString& Name, FString& OutSummary
 	bool bSpineInventory = false;
 	if (Version == 2 && Root->HasField(TEXT("spineInventory")) && !Root->TryGetBoolField(TEXT("spineInventory"), bSpineInventory))
 		return Fail(TEXT("스파인 목록 기능 표식 오류"));
+	const bool bSpineDeletions = Version == 2 && Root->HasField(TEXT("deletedSpines"));
+	const TArray<TSharedPtr<FJsonValue>>* DeletedValues = nullptr;
+	if (bSpineDeletions && (!bSpineInventory || !Root->TryGetArrayField(TEXT("deletedSpines"), DeletedValues)))
+		return Fail(TEXT("명시 스파인 삭제 목록 오류"));
+	auto* SpineState = World->GetSubsystem<UVrgSpineLayoutState>();
 	TMap<FString,ASpineCabinetActor*> BySpineId;
 	TMap<FString,AActor*> ByName;
 	TMap<FString,ARackThermalActor*> ById;
@@ -182,11 +206,15 @@ bool VrgLayoutFile::Load(UWorld* World, const FString& Name, FString& OutSummary
 			ById.Add(Id,Rack);
 		}
 	}
-	TArray<FLoadedEquipment> Items;
+	TArray<FLoadedEquipment> Items, DeletedItems;
 	TSet<FString> SeenNames,SeenIds,SeenSpineIds;
 	int32 Missing=0;
-	for (const auto& Value:*Values)
+	TArray<TSharedPtr<FJsonValue>> AllValues = *Values;
+	if (DeletedValues) AllValues.Append(*DeletedValues);
+	for (int32 ValueIndex = 0; ValueIndex < AllValues.Num(); ++ValueIndex)
 	{
+		const auto& Value = AllValues[ValueIndex];
+		const bool bDeleteSpine = ValueIndex >= Values->Num();
 		if (!FiniteLayoutJson(Value) || Value->Type!=EJson::Object) return Fail(TEXT("장비 데이터 형식/유한값 오류"));
 		const auto O=Value->AsObject(); FLoadedEquipment Item;
 		if (!O->TryGetStringField(TEXT("name"),Item.Name) || Item.Name.IsEmpty()
@@ -226,7 +254,7 @@ bool VrgLayoutFile::Load(UWorld* World, const FString& Name, FString& OutSummary
 				if (!bSpineInventory || Item.Rack.IsSet() || !O->TryGetStringField(TEXT("spineId"),Item.Id) || Item.Id.IsEmpty()
 					|| SeenIds.Contains(Item.Id) || !O->TryGetBoolField(TEXT("runtimeSpine"),Item.bRuntimeSpine)
 					|| !O->TryGetObjectField(TEXT("spineSettings"),Config)) return Fail(TEXT("스파인 ID/설정 오류 또는 중복"));
-				SeenIds.Add(Item.Id); SeenSpineIds.Add(Item.Id); Item.Actor = BySpineId.FindRef(Item.Id);
+				SeenIds.Add(Item.Id); if (!bDeleteSpine) SeenSpineIds.Add(Item.Id); Item.Actor = BySpineId.FindRef(Item.Id);
 				FSpineLayoutSettings SpineSettings;
 				double SwitchCount, FirstSlot;
 				if (!ReadLayoutNumber(*Config,TEXT("numSwitches"),SwitchCount) || !ReadLayoutNumber(*Config,TEXT("firstSwitchSlot"),FirstSlot)
@@ -236,15 +264,18 @@ bool VrgLayoutFile::Load(UWorld* World, const FString& Name, FString& OutSummary
 					|| !SpineSettings.IsValid()) return Fail(TEXT("스파인 설정 구조/범위 오류")); // Existing actor authoring bounds, no new hardware values.
 				Item.Spine = SpineSettings;
 				auto* ExistingSpine = Cast<ASpineCabinetActor>(Item.Actor);
-				if ((!Item.Actor && (!Item.bRuntimeSpine || Item.Class != ASpineCabinetActor::StaticClass()->GetName()))
+				if ((!Item.Actor && (Item.Class != ASpineCabinetActor::StaticClass()->GetName()
+					|| (!Item.bRuntimeSpine && !bSpineDeletions && !SpineState->DeletedPlaced.Contains(Item.Id))))
 					|| (Item.Actor && (!ExistingSpine || ExistingSpine->bRuntimeLayoutSpine != Item.bRuntimeSpine))) return Fail(TEXT("스파인 종류/출처 불일치"));
 			}
 			else if (bSpineInventory && (Item.Class == ASpineCabinetActor::StaticClass()->GetName() || Cast<ASpineCabinetActor>(Item.Actor)))
 				return Fail(TEXT("스파인 ID/설정 누락"));
 		}
+		if (bDeleteSpine && (!Item.Spine.IsSet() || Item.bRuntimeSpine
+			|| Item.Class != ASpineCabinetActor::StaticClass()->GetName())) return Fail(TEXT("명시 삭제는 기존 네이티브 스파인만 지원"));
 		if (Item.Actor && (Item.Actor->GetClass()->GetName()!=Item.Class || !Item.Actor->GetRootComponent()
 			|| Item.Actor->GetRootComponent()->Mobility!=EComponentMobility::Movable)) return Fail(TEXT("장비 종류 또는 이동 가능 상태 불일치"));
-		if (!Item.Actor && (Version==1 || (!Item.Rack.IsSet() && !Item.Spine.IsSet())))
+		if (!bDeleteSpine && !Item.Actor && (Version==1 || (!Item.Rack.IsSet() && !Item.Spine.IsSet())))
 		{
 			++Missing; UE_LOG(LogTemp,Warning,TEXT("[VrgLayout] 레벨에 없는 장비: %s"),*Item.Name);
 		}
@@ -255,7 +286,7 @@ bool VrgLayoutFile::Load(UWorld* World, const FString& Name, FString& OutSummary
 		}
 		Item.Target=FTransform(FRotator(Pitch,Yaw,Roll),SimUnits::MetersToUnreal(FVector(X,Y,Z)),FVector(SX,SY,SZ));
 		if (Item.Target.ContainsNaN()) return Fail(TEXT("좌표 변환 범위 오류"));
-		Items.Add(MoveTemp(Item));
+		if (bDeleteSpine) DeletedItems.Add(MoveTemp(Item)); else Items.Add(MoveTemp(Item));
 	}
 	if (Missing) return Fail(FString::Printf(TEXT("레벨에 없는 장비 %d: 적용하지 않음"),Missing));
 	const TSharedPtr<FJsonObject>* SettingsObject=nullptr;
@@ -275,6 +306,11 @@ bool VrgLayoutFile::Load(UWorld* World, const FString& Name, FString& OutSummary
 		Remove.Add(Pair.Value);
 	}
 	TArray<ASpineCabinetActor*> RemoveSpines;
+	for (const auto& Item : DeletedItems) if (auto* Spine = Cast<ASpineCabinetActor>(Item.Actor))
+	{
+		if (Spine->GetLocalRole() != ROLE_Authority) return Fail(TEXT("스파인 삭제 권한 없음"));
+		RemoveSpines.Add(Spine);
+	}
 	if (bSpineInventory) for (const auto& Pair:BySpineId)
 		if (Pair.Value->bRuntimeLayoutSpine && !SeenSpineIds.Contains(Pair.Key))
 		{
@@ -303,10 +339,12 @@ bool VrgLayoutFile::Load(UWorld* World, const FString& Name, FString& OutSummary
 	}
 	struct FSpineRemovalBackup {
 		FName Name; FString Id; FTransform Transform; FSpineLayoutSettings Settings; FRackThermalModel Model; FRackThermalInput Input;
+		bool bRuntime;
 	};
 	TArray<FSpineRemovalBackup> SpineBackups;
 	for (auto* Spine:RemoveSpines) SpineBackups.Add({Spine->GetFName(),VrgSpineLifecycle::Identity(Spine),Spine->GetActorTransform(),
-		Spine->CaptureLayoutSettings(),Spine->GetMutableModel(),Spine->GetMutableInput()});
+		Spine->CaptureLayoutSettings(),Spine->GetMutableModel(),Spine->GetMutableInput(),Spine->bRuntimeLayoutSpine});
+	const auto OldDeletedPlaced = SpineState->DeletedPlaced;
 	auto Rollback=[&]() {
 		for (auto& Item:Items) if (Item.bSpawned && IsValid(Item.Actor))
 		{
@@ -317,8 +355,11 @@ bool VrgLayoutFile::Load(UWorld* World, const FString& Name, FString& OutSummary
 		{
 			const auto& B=SpineBackups[I];
 			if (IsValid(RemoveSpines[I])) RemoveSpines[I]->Rename(*B.Name.ToString(),nullptr,REN_DontCreateRedirectors|REN_NonTransactional);
-			else if (auto* Restored=VrgSpineLifecycle::Spawn(World,B.Name,B.Id,B.Transform,B.Settings))
-			{ Restored->GetMutableModel()=B.Model; Restored->GetMutableInput()=B.Input; }
+			else if (auto* Restored=VrgSpineLifecycle::Spawn(World,B.Name,B.Id,B.Transform,B.Settings,B.bRuntime))
+			{
+				Restored->GetMutableModel()=B.Model; Restored->GetMutableInput()=B.Input;
+				for (TActorIterator<ADataCenterDebugController> It(World); It; ++It) It->NotifyLayoutSpineRecreated(Restored);
+			}
 		}
 		for (int32 I=0;I<Remove.Num();++I) {
 			if (IsValid(Remove[I])) Remove[I]->Rename(*RemovedNames[I].ToString(),nullptr,REN_DontCreateRedirectors|REN_NonTransactional);
@@ -335,12 +376,13 @@ bool VrgLayoutFile::Load(UWorld* World, const FString& Name, FString& OutSummary
 			}
 		}
 		for (int32 I=0;I<Current.Num();++I) if (IsValid(Current[I])) Current[I]->SetActorTransform(OldTransforms[I],false);
+		SpineState->DeletedPlaced = OldDeletedPlaced;
 	};
 	for (auto& Item:Items) if (!Item.Actor)
 	{
 		UClass* Kind=Item.Spine.IsSet()?ASpineCabinetActor::StaticClass():ARackThermalActor::StaticClass();
 		const FName Temp=MakeUniqueObjectName(World->PersistentLevel,Kind,TEXT("PendingLayoutEquipment"));
-		Item.Actor=Item.Spine.IsSet()?static_cast<AActor*>(VrgSpineLifecycle::Spawn(World,Temp,Item.Id,Item.Target,Item.Spine.GetValue()))
+		Item.Actor=Item.Spine.IsSet()?static_cast<AActor*>(VrgSpineLifecycle::Spawn(World,Temp,Item.Id,Item.Target,Item.Spine.GetValue(),Item.bRuntimeSpine))
 			:VrgRackLifecycle::Spawn(World,Temp,Item.Id,Kind,Item.Target,Item.Rack.GetValue());
 		Item.bSpawned=Item.Actor!=nullptr;
 		if (!Item.Actor) { Rollback(); return Fail(TEXT("랙 생성 실패: 이전 배치 유지")); }
@@ -371,6 +413,12 @@ bool VrgLayoutFile::Load(UWorld* World, const FString& Name, FString& OutSummary
 		return Fail(TEXT("스파인 제거 실패: 이전 배치 복원"));
 	}
 	// Commit only after structural validation, all spawns/names/transforms and removals have succeeded.
+	if (bSpineDeletions)
+	{
+		SpineState->DeletedPlaced.Reset();
+		for (const auto& Item : DeletedItems) SpineState->DeletedPlaced.Add(Item.Id,
+			{Item.Id, FName(*Item.Name), Item.Target, Item.Spine.GetValue(), false});
+	}
 	ADataCenterSimulationActor* Sim=LayoutFindFirst<ADataCenterSimulationActor>(World);
 	if (Sim && Sim->GetSimMode()==ESimMode::Simulation) Sim->EnterLayoutMode();
 	for (TActorIterator<ADataCenterDebugController> It(World);It;++It) It->ResetLayoutEditsForLoad();
@@ -383,6 +431,7 @@ bool VrgLayoutFile::Load(UWorld* World, const FString& Name, FString& OutSummary
 	{
 		auto* Spine=CastChecked<ASpineCabinetActor>(Item.Actor);
 		Spine->LayoutId=Item.Id;
+		SpineState->DeletedPlaced.Remove(Item.Id);
 		if (!Item.bSpawned) { Spine->ApplyLayoutSettings(Item.Spine.GetValue()); Spine->RefreshVisuals(); }
 	}
 	double V;
