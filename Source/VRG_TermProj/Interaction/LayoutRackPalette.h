@@ -22,4 +22,5 @@ protected:
 private:
 	UFUNCTION()
 	void OnAddRack();
+	UFUNCTION() void OnAddSpine();
 };

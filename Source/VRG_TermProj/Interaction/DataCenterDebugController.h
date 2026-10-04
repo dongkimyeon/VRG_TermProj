@@ -6,6 +6,7 @@
 #include "GameFramework/PlayerController.h"
 #include "Interaction/DebugKnob.h"
 #include "Actors/RackThermalActor.h"
+#include "Actors/SpineCabinetActor.h"
 #include "DataCenterDebugController.generated.h"
 
 class ARackThermalActor;
@@ -109,6 +110,8 @@ public:
 	static bool IsLayoutBoxBlocked(UWorld* World, const FVector& SizeM, const FTransform& Proposed, const TArray<AActor*>* Ignored = nullptr);
 	// Addition is a value-only preview; no actors or pipes until confirmation.
 	void BeginRackAddition();
+	void BeginSpineAddition();
+	ASpineCabinetActor* ConfirmSpineAddition();
 	bool BeginRackDuplication();
 	void CancelRackAddition();
 	void UpdateRackAdditionAlongRay(const FVector& EyeCm, const FVector& Direction);
@@ -187,6 +190,7 @@ private:
 		FTransform Before;
 		FTransform After;
 		FString RackId;
+		FString SpineId;
 	};
 	struct FLayoutRackMember
 	{
@@ -196,12 +200,17 @@ private:
 		FTransform Transform;
 		FRackLayoutSettings Settings;
 	};
+	struct FLayoutSpineMember
+	{
+		FString Id; FName Name; FTransform Transform; FSpineLayoutSettings Settings;
+	};
 	struct FLayoutTransformCommand
 	{
 		TArray<FLayoutTransformMember> Members;
 		bool bRackPresence = false;
 		bool bBeforePresent = false;
 		TArray<FLayoutRackMember> Racks;
+		TArray<FLayoutSpineMember> Spines;
 	};
 	TArray<FLayoutTransformCommand> LayoutUndo;
 	TArray<FLayoutTransformCommand> LayoutRedo;
@@ -211,10 +220,12 @@ private:
 	void PushLayoutCommand(FLayoutTransformCommand Command);
 	FLayoutTransformCommand CaptureRackPresence(ARackThermalActor* Rack, bool bBeforePresent);
 	bool RestoreRackPresence(const FLayoutTransformCommand& Command, bool bRedo);
+	bool RestoreSpinePresence(const FLayoutTransformCommand& Command, bool bRedo);
 	void RebindLayoutRack(ARackThermalActor* Rack, ARackThermalActor* Previous = nullptr);
 	UPROPERTY(Transient)
 	TObjectPtr<ULayoutRackPalette> RackPalette;
-	bool bAddingRack = false;
+	bool bAddingRack = false; // Shared equipment preview activity; existing input guards use this flag.
+	bool bAddingSpine = false;
 	bool bRackAdditionHasFloor = false;
 	FTransform RackAdditionTransform = FTransform::Identity;
 	TArray<FLayoutRackMember> RackDuplicationMembers;

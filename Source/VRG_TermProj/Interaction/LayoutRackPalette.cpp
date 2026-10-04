@@ -24,9 +24,22 @@ void ULayoutRackPalette::NativeOnInitialized()
 	ButtonSlot->SetAlignment(FVector2D(0, 1));
 	ButtonSlot->SetPosition(FVector2D(20, -20));
 	ButtonSlot->SetSize(FVector2D(240, 44)); // UI pixels, not equipment dimensions.
+ auto* SpineButton = WidgetTree->ConstructWidget<ULayoutRackButton>();
+ SpineButton->OnClicked.AddDynamic(this, &ULayoutRackPalette::OnAddSpine);
+ auto* SpineLabel = WidgetTree->ConstructWidget<UTextBlock>();
+ SpineLabel->SetText(FText::FromString(TEXT("스파인 캐비닛 추가"))); SpineLabel->SetFont(Font);
+ SpineButton->AddChild(SpineLabel);
+ auto* SpineSlot = Canvas->AddChildToCanvas(SpineButton);
+ SpineSlot->SetAnchors(FAnchors(0, 1)); SpineSlot->SetAlignment(FVector2D(0, 1));
+ SpineSlot->SetPosition(FVector2D(270, -20)); SpineSlot->SetSize(FVector2D(240, 44));
 }
 
 void ULayoutRackPalette::OnAddRack()
 {
 	if (auto* Controller = Cast<ADataCenterDebugController>(GetOwningPlayer())) Controller->BeginRackAddition();
+}
+
+void ULayoutRackPalette::OnAddSpine()
+{
+ if (auto* Controller = Cast<ADataCenterDebugController>(GetOwningPlayer())) Controller->BeginSpineAddition();
 }

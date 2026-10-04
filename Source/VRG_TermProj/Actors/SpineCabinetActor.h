@@ -7,6 +7,17 @@
 
 class UStaticMeshComponent;
 
+// Authored layout configuration only. Thermal state/input samples are deliberately absent.
+USTRUCT()
+struct FSpineLayoutSettings
+{
+	GENERATED_BODY()
+	UPROPERTY() int32 NumSwitches = 0;
+	UPROPERTY() int32 FirstSwitchSlot = 0;
+	bool IsValid() const { return NumSwitches >= 1 && NumSwitches <= 8 && FirstSwitchSlot >= 0 && FirstSwitchSlot <= 36; }
+	bool operator==(const FSpineLayoutSettings& Other) const { return NumSwitches == Other.NumSwitches && FirstSwitchSlot == Other.FirstSwitchSlot; }
+};
+
 // Row-end network cabinet: the patch panel / spine switches that rack uplinks terminate on.
 // The room actor's patch manager discovers these, assigns their ports and routes cables to them.
 //
@@ -42,6 +53,11 @@ public:
 	FVector GetPortOutwardWorld() const { return -GetActorForwardVector(); }
 	double GetSwitchZM(int32 Switch) const;
 	void EnsureThermalModel();
+	FSpineLayoutSettings CaptureLayoutSettings() const;
+	void ApplyLayoutSettings(const FSpineLayoutSettings& Settings);
+	UPROPERTY(Transient) FString LayoutId;
+	// Only runtime palette equipment participates in authoritative inventory reconciliation.
+	UPROPERTY(Transient) bool bRuntimeLayoutSpine = false;
 	FRackThermalModel& GetMutableModel() { return Model; }
 	FRackThermalInput& GetMutableInput() { return Input; }
 	double GetDesignHeatToAirW() const { return FRackThermalModel::DesignHeatToAirW(Model.GetParams(), Input); }

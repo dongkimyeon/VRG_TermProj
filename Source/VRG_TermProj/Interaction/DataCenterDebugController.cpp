@@ -2,6 +2,7 @@
 
 #include "Interaction/DataCenterDebugController.h"
 #include "Interaction/VrgRackLifecycle.h"
+#include "Interaction/VrgSpineLifecycle.h"
 #include "Interaction/LayoutRackPalette.h"
 #include "Simulation/Core/VrgHud.h"
 
@@ -669,10 +670,18 @@ void ADataCenterDebugController::BeginRackAddition()
 	EndLayoutMarquee(false);
 	Grabbed.Reset();
 	RackDuplicationMembers.Reset();
+	bAddingSpine = false;
 	bAddingRack = true;
 	bRackAdditionHasFloor = false;
 	RackAdditionTransform = FTransform::Identity;
 	UpdateRackAdditionFromCursor();
+}
+
+void ADataCenterDebugController::BeginSpineAddition()
+{
+ if (!IsLayoutMode() || !IsCameraInputAvailable()) return;
+ BeginRackAddition();
+ if (bAddingRack) bAddingSpine = true;
 }
 
 bool ADataCenterDebugController::BeginRackDuplication()
@@ -742,6 +751,7 @@ bool ADataCenterDebugController::InputKey(const FInputKeyEventArgs& Params)
 void ADataCenterDebugController::CancelRackAddition()
 {
 	bAddingRack = false;
+	bAddingSpine = false;
 	bRackAdditionHasFloor = false;
 	RackDuplicationMembers.Reset();
 }
@@ -848,6 +858,7 @@ bool ADataCenterDebugController::IsRackAdditionBlocked() const
 
 ARackThermalActor* ADataCenterDebugController::ConfirmRackAddition()
 {
+	if (bAddingSpine) { ConfirmSpineAddition(); return nullptr; }
 	LogLayoutInputState(TEXT("Confirm"));
 	FTransform Proposed; FVector SizeM;
 	if (!GetWorld() || !GetWorld()->IsGameWorld() || !GetRackAdditionPreview(Proposed, SizeM) || IsRackAdditionBlocked())
@@ -911,6 +922,27 @@ ARackThermalActor* ADataCenterDebugController::ConfirmRackAddition()
 	UE_LOG(LogTemp, Display, TEXT("[VrgLayout] GB200 NVL72 추가: %s %s yaw %.0f deg"),
 		*AddedRack->GetName(), *AddedRack->GetActorLocation().ToCompactString(), AddedRack->GetActorRotation().Yaw);
 	return AddedRack;
+}
+
+ASpineCabinetActor* ADataCenterDebugController::ConfirmSpineAddition()
+{
+ FTransform Proposed; FVector SizeM;
+ if (!bAddingSpine || !GetWorld() || !GetWorld()->IsGameWorld()
+  || !GetRackAdditionPreview(Proposed, SizeM) || IsRackAdditionBlocked()) return nullptr;
+ FLayoutTransformCommand Command;
+ const FString Id = FGuid::NewGuid().ToString();
+ const FName Name = MakeUniqueObjectName(GetWorld()->PersistentLevel, ASpineCabinetActor::StaticClass(),
+  FName(*(TEXT("AddedSpine_") + Id)));
+ // Default object owns configuration; QM9700 physical values remain in MakeQuantumSpineParams.
+ Command.Spines.Add({Id, Name, Proposed, GetDefault<ASpineCabinetActor>()->CaptureLayoutSettings()});
+ if (!RestoreSpinePresence(Command, true)) return nullptr;
+ PushLayoutCommand(Command);
+ CancelRackAddition();
+ auto* Spine = VrgSpineLifecycle::Find(GetWorld(), Id);
+ LayoutSelection.Add(Spine);
+ UE_LOG(LogTemp, Display, TEXT("[VrgLayout] 스파인 추가: %s %s yaw %.0f deg"),
+  *Spine->GetName(), *Spine->GetActorLocation().ToCompactString(), Spine->GetActorRotation().Yaw);
+ return Spine;
 }
 
 bool ADataCenterDebugController::TryDeleteLayoutRack()
@@ -986,7 +1018,9 @@ void ADataCenterDebugController::RecordLayoutTransforms(const TArray<AActor*>& A
 		bChanged |= !After.Equals(Before[I], 0.0);
 		auto* Rack = Cast<ARackThermalActor>(Actors[I]);
 		if (Rack && Rack->LayoutId.IsEmpty()) Rack->LayoutId = VrgRackLifecycle::Identity(Rack);
-		Command.Members.Add({Actors[I], Before[I], After, Rack ? Rack->LayoutId : FString()});
+		auto* Spine = Cast<ASpineCabinetActor>(Actors[I]);
+  Command.Members.Add({Actors[I], Before[I], After, Rack ? Rack->LayoutId : FString(),
+   Spine ? VrgSpineLifecycle::Identity(Spine) : FString()});
 	}
 	if (!bChanged) return;
 	PushLayoutCommand(MoveTemp(Command));
@@ -1007,6 +1041,12 @@ bool ADataCenterDebugController::RestoreLayoutTransform(bool bRedo)
 	TArray<FLayoutTransformCommand>& To = bRedo ? LayoutUndo : LayoutRedo;
 	if (From.IsEmpty()) return false;
 	const FLayoutTransformCommand Command = From.Last();
+	if (!Command.Spines.IsEmpty())
+	{
+		if (!RestoreSpinePresence(Command, bRedo)) return false;
+		From.Pop(); To.Add(Command);
+		return true;
+	}
 	if (Command.bRackPresence)
 	{
 		if (!RestoreRackPresence(Command, bRedo)) return false;
@@ -1131,6 +1171,32 @@ bool ADataCenterDebugController::RestoreRackPresence(const FLayoutTransformComma
 	else if (!VrgRackLifecycle::RemoveBatch(Present)) return false;
 	VrgRackLifecycle::Rebuild(GetWorld());
 	return true;
+}
+
+bool ADataCenterDebugController::RestoreSpinePresence(const FLayoutTransformCommand& Command, bool bRedo)
+{
+ if (!GetWorld()->IsGameWorld() || Command.Spines.Num() != 1) return false;
+ const auto& Member = Command.Spines[0];
+ const bool bTargetPresent = bRedo ? !Command.bBeforePresent : Command.bBeforePresent;
+ auto* Spine = VrgSpineLifecycle::Find(GetWorld(), Member.Id);
+ if (bTargetPresent)
+ {
+  const FVector SizeM(GjRackLayout::FrameDepthM, GjRackLayout::FrameWidthM, GjRackLayout::FrameHeightM);
+  if (Spine || IsLayoutBoxBlocked(GetWorld(), SizeM, Member.Transform)) return false;
+  Spine = VrgSpineLifecycle::Spawn(GetWorld(), Member.Name, Member.Id, Member.Transform, Member.Settings);
+  if (!Spine) return false;
+  // Sanctioned recreation reconnects earlier move/rotation records only.
+  for (auto* Stack : {&LayoutUndo, &LayoutRedo})
+   for (auto& SavedCommand : *Stack) for (auto& SavedMember : SavedCommand.Members)
+    if (SavedMember.SpineId == Member.Id) SavedMember.Actor = Spine;
+ }
+ else
+ {
+  if (!Spine || Spine->GetFName() != Member.Name || !Spine->GetActorTransform().Equals(Member.Transform)
+   || !(Spine->CaptureLayoutSettings() == Member.Settings) || !VrgSpineLifecycle::Remove(Spine)) return false;
+ }
+ VrgRackLifecycle::Rebuild(GetWorld());
+ return true;
 }
 
 bool ADataCenterDebugController::TryUndoLayout() { return RestoreLayoutTransform(false); }

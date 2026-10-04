@@ -3006,3 +3006,10 @@ RackGroupRowSnapPersistence/GroupMoveUndoRedo/InventorySaveLoad3건 무경고 �
 신규 보존 기준/물리 피팅 없음. 빌드 결과/최초 환경 차단은 앞 절, 로그/리포트는 Saved/Logs/GroupRowSnap_Tests.log·Saved/Automation/GroupRowSnap. 생성물 커밋 제외.
 NullRHI 축소 fixture의 결과이며 실제 L_Test 전체 운전/FPS·새 그룹 드래그 화면은 미검증. 사용자 복제 정상 보고와 구분하고 기존 도구 실패/전체 테스트 반복 없음.
 직접 절차: Tools/배치그룹줄붙이기_확인_2026-10-04.md. 자동 회전/간격 재배열·비랙/방 편집은 후속 요청 범위다.
+### S7 사용자 그룹 줄 붙이기 확인·스파인 팔레트 추가 (2026-10-05)
+
+사용자가 앞선 그룹 줄 붙이기 직접 절차에 대해 모두 정상으로 보고했다. 그룹 붙이기/가이드·Alt/Esc·한 멤버 충돌 전체 거절·Undo/Redo·저장/반복 Load/로드 기록 초기화의 사용자 확인으로 기록한다. 로그/캡처와 FPS는 제공되지 않았으며 과거 도구 오류의 원인을 소급 확정하지 않는다.
+배치 전용 스파인 버튼은 기존 값 기반 랙 미리보기·5cm/총1cm·R/Esc·패치/모드 취소를 공유한다. 클릭 때만 네이티브 ASpineCabinetActor 한 대를 만든다. QM9700 물성은 MakeQuantumSpineParams를 유지하고 NumSwitches/FirstSwitchSlot은 기존 클래스 기본값을 읽는다. 새 물성/실측/추정값 없음.
+새 스파인은 GUID와 runtime 출처를 갖고 추가 명령 하나로 Ctrl+Z/Y 제거/재생성한다. 이름/설정/전체 변환과 이전 이동/R 기록 참조를 연결하고 열 상태/입력 샘플/적분/시계는 전달하지 않는다. 충돌/설정 변경/이름 점유 시 거절하고 기록 유지, 기존 스파인의 Delete/Ctrl+D는 범위 밖이다. 재구축은 VrgRackLifecycle::Rebuild 공유 경로.
+Editor96.39s 성공. 신규 SpineAdditionUndoRedo는 무경고 성공(첫 영향8건 실행 중). 값 기반 취소/충돌 개수 불변·5cm/총1cm 경계·R·패치/모드 취소·추가/Undo/Redo·Redo 충돌 상태 불변·ID/이름·새 장부0J·이동/R 참조 재연결을 확인했다. 위치 전체 변환 Equals1e-9(기존 액터cm/UI 스케일 무차원 기준), 배치 시계0s. 실제 새 스파인 UI는 후속 확인 대상으로 남긴다.
+저장/열·공기 결합은 다음 작은 검증 커밋에서 기록한다. 첫 실행의 SaveLoadRoundTrip v1 기능 표식 거절은 저장 확장 코드에서 진단·수정 중이며 신규 입력 기능 오류로 계산하지 않는다. 전체/FPS 재실행 없음. 근거 Saved/Build_SpineAddition.log·Saved/Logs/SpineAddition_Tests.log(커밋 제외).

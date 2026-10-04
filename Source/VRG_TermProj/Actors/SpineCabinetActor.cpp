@@ -35,6 +35,21 @@ void ASpineCabinetActor::EnsureThermalModel()
 	ThermalFirstSlot = FirstSwitchSlot;
 }
 
+FSpineLayoutSettings ASpineCabinetActor::CaptureLayoutSettings() const
+{
+	FSpineLayoutSettings Settings;
+	Settings.NumSwitches = NumSwitches; Settings.FirstSwitchSlot = FirstSwitchSlot;
+	return Settings;
+}
+
+void ASpineCabinetActor::ApplyLayoutSettings(const FSpineLayoutSettings& Settings)
+{
+	check(Settings.IsValid());
+	NumSwitches = Settings.NumSwitches; FirstSwitchSlot = Settings.FirstSwitchSlot;
+	ThermalSwitchCount = ThermalFirstSlot = INDEX_NONE;
+	EnsureThermalModel(); // Fresh model/input; no copied temperatures, fan state, ledger or clock.
+}
+
 double ASpineCabinetActor::GetSwitchZM(int32 Switch) const
 {
 	return GjRackLayout::NodeZ(FirstSwitchSlot + Switch);
