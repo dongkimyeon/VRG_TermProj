@@ -1316,6 +1316,7 @@ void ADataCenterDebugController::BeginLayoutDragAlongRay(const FVector& EyeCm, c
 	AActor* Selected = PickPlaceableAlongRay(GetWorld(), EyeCm, Direction.GetSafeNormal(), TNumericLimits<double>::Max());
 	if (!Selected || !FloorPointSnapped(EyeCm, Direction.GetSafeNormal(), Selected->GetActorLocation().Z, 0.0, DragStartFloorCm)) return;
 	DragStartTransform = Selected->GetActorTransform();
+	DragAnchor = Selected;
 	for (AActor* Member : GetSelectedLayoutActors()) DragMembers.Add({ Member, Member->GetActorTransform() });
 	DragPreviewCm = Selected->GetActorLocation();
 	DragRawPreviewCm = DragPreviewCm;
@@ -1357,15 +1358,23 @@ void ADataCenterDebugController::RefreshLayoutRowSnap()
 		DragPreviewCm.Y = FMath::RoundToDouble(DragPreviewCm.Y / StepCm) * StepCm;
 	}
 	DragPreviewCm.Z = DragStartTransform.GetLocation().Z;
-	if (DragMembers.Num() != 1 || bDragDisableRowSnap
+	if (DragMembers.IsEmpty() || bDragDisableRowSnap
 		|| IsInputKeyDown(EKeys::LeftAlt) || IsInputKeyDown(EKeys::RightAlt)) return;
-	const ARackThermalActor* Moving = Cast<ARackThermalActor>(DragMembers[0].Actor.Get());
+	const ARackThermalActor* Moving = Cast<ARackThermalActor>(DragAnchor.Get());
 	if (!Moving || DragRawPreviewCm.ContainsNaN()) return;
+	const bool bGroup = DragMembers.Num() > 1;
+	TArray<ARackThermalActor*> MovingRacks;
+	for (const FLayoutDragMember& Member : DragMembers)
+	{
+		auto* Rack = Cast<ARackThermalActor>(Member.Actor.Get());
+		if (!IsValid(Rack) || Member.Start.ContainsNaN()) return; // Mixed selections keep the original group drag.
+		MovingRacks.Add(Rack);
+	}
 	double BestDistanceSq = TNumericLimits<double>::Max();
 	for (TActorIterator<ADataCenterRoomActor> It(GetWorld()); It; ++It)
 	{
 		const auto* CurrentRoom = *It;
-		for (const FRackPlacementRow& Row : CurrentRoom->GetRackRowsForPlacement(Moving))
+		for (const FRackPlacementRow& Row : CurrentRoom->GetRackRowsForPlacement(Moving, &MovingRacks))
 		{
 			if (Row.Racks.Num() < 2) continue; // No inferred pitch from a lone rack or configured spawn pitch.
 			TArray<double> Gaps;
@@ -1383,11 +1392,17 @@ void ADataCenterDebugController::RefreshLayoutRowSnap()
 			const double First = FVector::DotProduct(Reference->GetActorLocation(), Row.AlongDir);
 			const double Last = FVector::DotProduct(Row.Racks.Last()->GetActorLocation(), Row.AlongDir);
 			const double Along = FVector::DotProduct(DragRawPreviewCm, Row.AlongDir);
-			if (Along < First - PitchCm || Along > Last + PitchCm) continue;
+			bool bNearRow = false;
+			for (const FLayoutDragMember& Member : DragMembers)
+			{
+				const double MemberAlong = Along + FVector::DotProduct(Member.Start.GetLocation() - DragStartTransform.GetLocation(), Row.AlongDir);
+				if (MemberAlong >= First - PitchCm && MemberAlong <= Last + PitchCm) bNearRow = true;
+			}
+			if (!bNearRow) continue;
 			FRotator Rotation = DragStartTransform.Rotator();
-			Rotation.Yaw = (-Row.RearDir).Rotation().Yaw;
+			if (!bGroup) Rotation.Yaw = (-Row.RearDir).Rotation().Yaw;
 			FTransform Proposed = DragStartTransform;
-			Proposed.SetRotation(Rotation.Quaternion());
+			if (!bGroup) Proposed.SetRotation(Rotation.Quaternion());
 			Proposed.SetLocation(DragRawPreviewCm);
 			const FVector ReferenceRear = Reference->GetActorTransform().TransformPosition(FVector(-Reference->RackSizeM.X * 50.0, 0, 0));
 			const FVector ProposedRear = Proposed.TransformPosition(FVector(-Moving->RackSizeM.X * 50.0, 0, 0));
@@ -1398,13 +1413,43 @@ void ADataCenterDebugController::RefreshLayoutRowSnap()
 			Proposed.SetLocation(DragRawPreviewCm + Row.AlongDir * (Slot - Along) + Row.RearDir * RearCorrection);
 			// Physical rear-face alignment alone may land in another origin bucket (e.g. very different depths).
 			if (!CurrentRoom->AreTransformsInSameRackRow(Proposed, Reference->GetActorTransform())) continue;
+			double GuideFirst = FMath::Min(First, Slot), GuideLast = FMath::Max(Last, Slot);
+			if (bGroup)
+			{
+				// Rigid translation only: accept an existing slot lattice and common rear line.
+				// UE floating-point comparison epsilon is a UI compatibility check, not a physical tolerance or fitted value.
+				const double Epsilon = UE_DOUBLE_KINDA_SMALL_NUMBER;
+				const FVector Facing = Reference->GetActorForwardVector().GetSafeNormal2D();
+				const double Rear = FVector::DotProduct(ReferenceRear, Row.RearDir);
+				auto Compatible = [&](const FTransform& Transform, const FVector& RackSizeM)
+				{
+					const double SlotIndex = (FVector::DotProduct(Transform.GetLocation(), Row.AlongDir) - First) / PitchCm;
+					return Transform.GetRotation().GetForwardVector().GetSafeNormal2D().Equals(Facing, Epsilon)
+						&& FMath::IsNearlyEqual(FVector::DotProduct(Transform.TransformPosition(FVector(-RackSizeM.X * 50.0, 0, 0)), Row.RearDir), Rear, Epsilon)
+						&& FMath::IsNearlyEqual(SlotIndex, FMath::RoundToDouble(SlotIndex), Epsilon)
+						&& CurrentRoom->AreTransformsInSameRackRow(Transform, Reference->GetActorTransform());
+				};
+				bool bCompatible = true;
+				for (const auto* Rack : Row.Racks)
+					if (!Compatible(Rack->GetActorTransform(), Rack->RackSizeM)) bCompatible = false;
+				const FVector Translation = Proposed.GetLocation() - DragStartTransform.GetLocation();
+				for (const FLayoutDragMember& Member : DragMembers)
+				{
+					FTransform MemberTarget = Member.Start;
+					MemberTarget.AddToTranslation(Translation);
+					if (!Compatible(MemberTarget, CastChecked<ARackThermalActor>(Member.Actor.Get())->RackSizeM)) bCompatible = false;
+					const double MemberSlot = FVector::DotProduct(MemberTarget.GetLocation(), Row.AlongDir);
+					GuideFirst = FMath::Min(GuideFirst, MemberSlot); GuideLast = FMath::Max(GuideLast, MemberSlot);
+				}
+				if (!bCompatible) continue;
+			}
 			const double DistanceSq = FVector::DistSquared2D(Proposed.GetLocation(), DragRawPreviewCm);
 			if (DistanceSq >= BestDistanceSq) continue;
 			BestDistanceSq = DistanceSq;
 			DragPreviewCm = Proposed.GetLocation(); DragPreviewRotation = Proposed.GetRotation(); bDragRowSnapped = true;
 			const double Rear = FVector::DotProduct(ReferenceRear, Row.RearDir);
-			RowGuideStartCm = Row.RearDir * Rear + Row.AlongDir * FMath::Min(First, Slot);
-			RowGuideEndCm = Row.RearDir * Rear + Row.AlongDir * FMath::Max(Last, Slot);
+			RowGuideStartCm = Row.RearDir * Rear + Row.AlongDir * GuideFirst;
+			RowGuideEndCm = Row.RearDir * Rear + Row.AlongDir * GuideLast;
 			RowGuideStartCm.Z = RowGuideEndCm.Z = DragStartTransform.GetLocation().Z;
 		}
 	}
@@ -1461,6 +1506,7 @@ void ADataCenterDebugController::EndLayoutDrag(bool bCommit)
 	}
 	// Cancel needs no restoration: the live actor never left its original location.
 	DragMembers.Reset();
+	DragAnchor.Reset();
 	bDragMoved = false;
 	bDragRowSnapped = false;
 	if (bHadDrag) LogLayoutInputState(bCommit ? TEXT("DragEndCommitDone") : TEXT("DragEndCancelDone"));

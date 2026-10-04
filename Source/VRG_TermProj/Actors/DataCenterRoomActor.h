@@ -228,7 +228,8 @@ public:
 	// 줄 묶기에 쓰인 랙 목록. 공기 열원을 랙마다 놓을 때 쓴다.
 	UFUNCTION(BlueprintCallable, Category = "Room")
 	TArray<ARackThermalActor*> GetRoutedRacks() const;
-	TArray<FRackPlacementRow> GetRackRowsForPlacement(const ARackThermalActor* Excluded) const;
+	TArray<FRackPlacementRow> GetRackRowsForPlacement(const ARackThermalActor* Excluded,
+		const TArray<ARackThermalActor*>* ExcludedGroup = nullptr) const;
 	bool AreTransformsInSameRackRow(const FTransform& A, const FTransform& B) const;
 
 	// 통합 액터가 빌려 가는 수력망. 수명은 이 액터가 쥔다.

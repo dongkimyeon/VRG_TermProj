@@ -304,6 +304,7 @@ private:
 		FTransform Start;
 	};
 	TArray<FLayoutDragMember> DragMembers;
+	TWeakObjectPtr<AActor> DragAnchor;
 	FTransform DragStartTransform;
 	FVector DragStartFloorCm = FVector::ZeroVector;
 	FVector DragPreviewCm = FVector::ZeroVector;

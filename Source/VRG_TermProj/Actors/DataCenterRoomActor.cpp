@@ -186,7 +186,8 @@ FVector ADataCenterRoomActor::RackRearAnchorM(const ARackThermalActor& Rack, con
 	return RackM + RearDir * (Rack.RackSizeM.X * 0.5 + ExtraOffsetM);
 }
 
-TArray<FRackPlacementRow> ADataCenterRoomActor::GetRackRowsForPlacement(const ARackThermalActor* Excluded) const
+TArray<FRackPlacementRow> ADataCenterRoomActor::GetRackRowsForPlacement(const ARackThermalActor* Excluded,
+	const TArray<ARackThermalActor*>* ExcludedGroup) const
 {
 	TArray<FRackPlacementRow> Result;
 	if (!GetWorld() || !FMath::IsFinite(RowGroupToleranceM)) return Result;
@@ -194,7 +195,8 @@ TArray<FRackPlacementRow> ADataCenterRoomActor::GetRackRowsForPlacement(const AR
 	for (TActorIterator<ARackThermalActor> It(GetWorld()); It; ++It)
 	{
 		ARackThermalActor* Rack = *It;
-		if (Rack == Excluded || !IsValid(Rack) || Rack->GetActorTransform().ContainsNaN()) continue;
+		if (Rack == Excluded || (ExcludedGroup && ExcludedGroup->Contains(Rack))
+			|| !IsValid(Rack) || Rack->GetActorTransform().ContainsNaN()) continue;
 		const FVector Rear = QuantizeDirection(-Rack->GetActorForwardVector());
 		if (Rear.IsNearlyZero()) continue;
 		const FRowKey Key = RackRowKey(Rack->GetActorTransform(), RowGroupToleranceM);
