@@ -3,6 +3,7 @@
 #include "Interaction/VrgRackLifecycle.h"
 #include "Actors/DataCenterSimulationActor.h"
 #include "Actors/CrahUnitActor.h"
+#include "Components/SceneComponent.h"
 #include "Engine/World.h"
 #include "Engine/Engine.h"
 #include "EngineUtils.h"
@@ -49,6 +50,7 @@ bool FLayoutRackGroupDuplicationTest::RunTest(const FString& Parameters)
 	FTransform Preview[2]; FVector Size;
 	for(int32 I=0;I<2;++I) TestTrue(TEXT("Each member has a preview box"),C->GetRackAdditionPreview(Preview[I],Size,I));
 	TestFalse(TEXT("Group preview R is blocked"),C->TryRotateRackAddition());
+	C->OnResetSim(); // Also verify the actual R action cannot rotate a pending group.
 	double MaxError=0;
 	for(int32 I=0;I<2;++I) {
 		FTransform Expected=Original[I]; Expected.AddToTranslation(FVector(-400,0,0));
@@ -68,6 +70,12 @@ bool FLayoutRackGroupDuplicationTest::RunTest(const FString& Parameters)
 	C->BeginRackDuplication(); Sim->EnterSimulationMode(); C->RefreshInteractionInputMode();
 	TestFalse(TEXT("Mode transition cancels group preview"),C->IsAddingRack());
 	Sim->EnterLayoutMode(); Select(A); Select(B,true);
+	// Preserve the other branch's malformed arrangement regression without enabling group rotation.
+	B->SetActorLocation(A->GetActorLocation()); C->BeginRackDuplication();
+	C->UpdateRackAdditionAlongRay(FVector(1500,1500,500),FVector(0,0,-1));
+	TestTrue(TEXT("Internal member overlap rejects whole group"),C->IsRackAdditionBlocked());
+	TestNull(TEXT("Internal collision creates nothing"),C->ConfirmRackAddition());
+	C->CancelRackAddition(); B->SetActorTransform(Original[1]);
 	// Reset original live state after mode transition and prove confirmation doesn't touch it.
 	A->SetExternalSimTimeS(42); A->GetMutableModel().Step(A->Input,.02);
 	const auto BeforeConfirm=A->GetSnapshot(); const double BeforeEnergy=A->GetMutableModel().GetEnergyInJ();
@@ -80,16 +88,19 @@ bool FLayoutRackGroupDuplicationTest::RunTest(const FString& Parameters)
 	W->RemoveOnActorSpawnedHandler(Handler);
 	TestTrue(TEXT("Spawn failure preserves original selection/history and preview"),Count()==2 && C->GetSelectedLayoutActors().Num()==2
 		&& C->GetLayoutUndoCount()==0 && C->GetLayoutRedoCount()==0 && C->IsAddingRack());
+	B->Input.Utilization=.4; // Source edits after capture must not alias the pending snapshots.
 	TestNotNull(TEXT("Confirm group after removing failure cause"),C->ConfirmRackAddition());
+	TestNull(TEXT("Second click cannot duplicate again"),C->ConfirmRackAddition());
+	TestEqual(TEXT("Confirmation leaves edited source settings untouched"),B->Input.Utilization,.4);
 	TestTrue(TEXT("Two clones, one history record, selected together"),Count()==4 && C->GetLayoutUndoCount()==1 && C->GetSelectedLayoutActors().Num()==2);
-	TArray<FString> CloneIds; TArray<FTransform> CloneTransforms;
+	TArray<FString> CloneIds; TArray<FName> CloneNames; TArray<FTransform> CloneTransforms;
 	for(int32 I=0;I<C->GetSelectedLayoutActors().Num();++I) {
 		auto* Clone=CastChecked<ARackThermalActor>(C->GetSelectedLayoutActors()[I]);
 		const auto Settings=Clone->CaptureLayoutSettings();
 		TestTrue(TEXT("Each source settings copied independently"),FRackLayoutSettings::StaticStruct()->CompareScriptStruct(&Settings,&Configs[I],0));
 		const FString Id=VrgRackLifecycle::Identity(Clone);
 		TestTrue(TEXT("Independent IDs"),Id!=SourceIds[0] && Id!=SourceIds[1] && !CloneIds.Contains(Id));
-		CloneIds.Add(Id); CloneTransforms.Add(Clone->GetActorTransform());
+		CloneIds.Add(Id); CloneNames.Add(Clone->GetFName()); CloneTransforms.Add(Clone->GetActorTransform());
 		FRackThermalModel Fresh; Fresh.Initialize(Configs[I].Params,FRackThermalState());
 		TestTrue(TEXT("Fresh temperatures/clock/integral ledger"),Clone->GetSnapshot().SimTimeS==0 && Clone->GetMutableModel().GetEnergyInJ()==0
 			&& Clone->GetMutableModel().GetState().ComponentTempK==Fresh.GetState().ComponentTempK);
@@ -103,11 +114,25 @@ bool FLayoutRackGroupDuplicationTest::RunTest(const FString& Parameters)
 	Block->SetActorLocation(CloneTransforms[1].GetLocation());
 	TestFalse(TEXT("Second restoration collision rejects whole Redo"),C->TryRedoLayout());
 	TestTrue(TEXT("Redo rejection retains count/stacks"),Count()==2 && C->GetLayoutUndoCount()==0 && C->GetLayoutRedoCount()==1);
-	Block->SetActorLocation(FVector(3000,3000,0)); TestTrue(TEXT("One Redo restores both clones"),C->TryRedoLayout());
+	Block->SetActorLocation(FVector(3000,3000,0));
+	// Preserve the remote regression: failure during Redo must also undo its first spawn.
+	USceneComponent* Occupant=nullptr;
+	const auto RedoHandler=W->AddOnActorSpawnedHandler(FOnActorSpawned::FDelegate::CreateLambda([&](AActor* Actor) {
+		if(Actor->GetFName()==CloneNames[0]) Occupant=NewObject<USceneComponent>(W->PersistentLevel,CloneNames[1]);
+	}));
+	TestFalse(TEXT("Second Redo spawn failure removes first copy"),C->TryRedoLayout());
+	W->RemoveOnActorSpawnedHandler(RedoHandler);
+	TestTrue(TEXT("Failed Redo keeps original count and stacks"),Count()==2 && C->GetLayoutUndoCount()==0 && C->GetLayoutRedoCount()==1);
+	if(Occupant) Occupant->Rename(nullptr,GetTransientPackage(),REN_DontCreateRedirectors|REN_NonTransactional);
+	TestTrue(TEXT("One Redo restores both clones"),C->TryRedoLayout());
 	for(int32 I=0;I<CloneIds.Num();++I) {
 		auto* Clone=VrgRackLifecycle::Find(W,CloneIds[I]);
-		if(TestNotNull(TEXT("Clone identity restored"),Clone)) TestTrue(TEXT("Transform restored"),Clone->GetActorTransform().Equals(CloneTransforms[I],1e-9));
+		if(TestNotNull(TEXT("Clone identity restored"),Clone)) TestTrue(TEXT("Name and transform restored"),Clone->GetFName()==CloneNames[I] && Clone->GetActorTransform().Equals(CloneTransforms[I],1e-9));
 	}
+	TestTrue(TEXT("Undo before new group edit"),C->TryUndoLayout());
+	Select(A); Select(B,true); C->BeginRackDuplication(); C->UpdateRackAdditionAlongRay(FVector(-1000,1000,500),FVector(0,0,-1));
+	TestNotNull(TEXT("New group edit succeeds"),C->ConfirmRackAddition());
+	TestEqual(TEXT("New confirmed group clears Redo"),C->GetLayoutRedoCount(),0);
 	Select(A); C->BeginRackDuplication(); TestTrue(TEXT("Single preview R retained"),C->TryRotateRackAddition()); C->CancelRackAddition();
 	AddInfo(FString::Printf(TEXT("Group duplication: preview error %.3e cm | counts 2->4->2->4, one command | mixed/second collision/spawn failure atomic | source initial live %.2f s %.3f J; clone clocks/ledgers 0."),MaxError,OriginalState.SimTimeS,OriginalEnergy));
 	W->DestroyWorld(false); GEngine->DestroyWorldContext(W); return true;
