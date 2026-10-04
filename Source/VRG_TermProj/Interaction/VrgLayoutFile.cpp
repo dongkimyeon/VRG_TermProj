@@ -3,6 +3,7 @@
 #include "Interaction/VrgLayoutFile.h"
 #include "Interaction/DataCenterDebugController.h"
 #include "Interaction/VrgRackLifecycle.h"
+#include "Interaction/VrgSpineLifecycle.h"
 #include "Actors/DataCenterRoomActor.h"
 #include "JsonObjectConverter.h"
 #include "Interaction/VrgLayoutValidation.h"
@@ -59,6 +60,7 @@ bool VrgLayoutFile::Save(UWorld* World, const FString& Name, FString& OutSummary
 	if (World == nullptr || Name.IsEmpty()) { OutSummary = TEXT("월드나 이름이 없다"); return false; }
 	TSharedRef<FJsonObject> Root = MakeShared<FJsonObject>();
 	Root->SetNumberField(TEXT("version"), 2);
+	Root->SetBoolField(TEXT("spineInventory"), true); // Additive v2 capability; old v2 remains transform-only for spines.
 	TArray<TSharedPtr<FJsonValue>> Items;
 	for (TActorIterator<AActor> It(World); It; ++It)
 	{
@@ -80,6 +82,15 @@ bool VrgLayoutFile::Save(UWorld* World, const FString& Name, FString& OutSummary
 			const auto Snapshot = Rack->CaptureLayoutSettings();
 			if (!FJsonObjectConverter::UStructToJsonObject(FRackLayoutSettings::StaticStruct(), &Snapshot, Config)) return false;
 			Item->SetObjectField(TEXT("rackSettings"), Config);
+		}
+		if (const auto* Spine = Cast<ASpineCabinetActor>(*It))
+		{
+			Item->SetStringField(TEXT("spineId"), VrgSpineLifecycle::Identity(Spine));
+			Item->SetBoolField(TEXT("runtimeSpine"), Spine->bRuntimeLayoutSpine);
+			TSharedRef<FJsonObject> Config = MakeShared<FJsonObject>();
+			const auto Snapshot = Spine->CaptureLayoutSettings();
+			if (!FJsonObjectConverter::UStructToJsonObject(FSpineLayoutSettings::StaticStruct(), &Snapshot, Config)) return false;
+			Item->SetObjectField(TEXT("spineSettings"), Config);
 		}
 		Items.Add(MakeShared<FJsonValueObject>(Item));
 	}
@@ -129,6 +140,8 @@ namespace
 		AActor* Actor=nullptr;
 		FTransform Target;
 		TOptional<FRackLayoutSettings> Rack;
+		TOptional<FSpineLayoutSettings> Spine;
+		bool bRuntimeSpine = false;
 		bool bSpawned=false;
 	};
 }
@@ -146,12 +159,22 @@ bool VrgLayoutFile::Load(UWorld* World, const FString& Name, FString& OutSummary
 	if (Version!=1 && Version!=2) return Fail(TEXT("지원하지 않는 버전"));
 	const TArray<TSharedPtr<FJsonValue>>* Values=nullptr;
 	if (!Root->TryGetArrayField(TEXT("equipment"),Values)) return Fail(TEXT("장비 목록 없음"));
+	bool bSpineInventory = false;
+	if (Version == 2 && Root->HasField(TEXT("spineInventory")) && !Root->TryGetBoolField(TEXT("spineInventory"), bSpineInventory))
+		return Fail(TEXT("스파인 목록 기능 표식 오류"));
+	TMap<FString,ASpineCabinetActor*> BySpineId;
 	TMap<FString,AActor*> ByName;
 	TMap<FString,ARackThermalActor*> ById;
 	TArray<AActor*> Current;
 	for (TActorIterator<AActor> It(World);It;++It) if (LayoutIsEquipment(*It))
 	{
 		ByName.Add(It->GetName(),*It); Current.Add(*It);
+		if (auto* Spine = Cast<ASpineCabinetActor>(*It))
+		{
+			const FString Id = VrgSpineLifecycle::Identity(Spine);
+			if (BySpineId.Contains(Id)) return Fail(TEXT("월드 스파인 식별자 중복"));
+			BySpineId.Add(Id, Spine);
+		}
 		if (auto* Rack=Cast<ARackThermalActor>(*It))
 		{
 			const FString Id=VrgRackLifecycle::Identity(Rack);
@@ -160,7 +183,7 @@ bool VrgLayoutFile::Load(UWorld* World, const FString& Name, FString& OutSummary
 		}
 	}
 	TArray<FLoadedEquipment> Items;
-	TSet<FString> SeenNames,SeenIds;
+	TSet<FString> SeenNames,SeenIds,SeenSpineIds;
 	int32 Missing=0;
 	for (const auto& Value:*Values)
 	{
@@ -198,10 +221,30 @@ bool VrgLayoutFile::Load(UWorld* World, const FString& Name, FString& OutSummary
 					|| (Item.Actor && !Cast<ARackThermalActor>(Item.Actor))) return Fail(TEXT("생성할 수 없는 랙 종류"));
 			}
 			else if (Item.Class==ARackThermalActor::StaticClass()->GetName() || Cast<ARackThermalActor>(Item.Actor)) return Fail(TEXT("랙 ID/설정 누락"));
+			if (O->HasField(TEXT("spineId")))
+			{
+				if (!bSpineInventory || Item.Rack.IsSet() || !O->TryGetStringField(TEXT("spineId"),Item.Id) || Item.Id.IsEmpty()
+					|| SeenIds.Contains(Item.Id) || !O->TryGetBoolField(TEXT("runtimeSpine"),Item.bRuntimeSpine)
+					|| !O->TryGetObjectField(TEXT("spineSettings"),Config)) return Fail(TEXT("스파인 ID/설정 오류 또는 중복"));
+				SeenIds.Add(Item.Id); SeenSpineIds.Add(Item.Id); Item.Actor = BySpineId.FindRef(Item.Id);
+				FSpineLayoutSettings SpineSettings;
+				double SwitchCount, FirstSlot;
+				if (!ReadLayoutNumber(*Config,TEXT("numSwitches"),SwitchCount) || !ReadLayoutNumber(*Config,TEXT("firstSwitchSlot"),FirstSlot)
+					|| SwitchCount != FMath::FloorToDouble(SwitchCount) || FirstSlot != FMath::FloorToDouble(FirstSlot)
+					|| SwitchCount < 1 || SwitchCount > 8 || FirstSlot < 0 || FirstSlot > 36
+					|| !FJsonObjectConverter::JsonObjectToUStruct(Config->ToSharedRef(),&SpineSettings,0,0,true)
+					|| !SpineSettings.IsValid()) return Fail(TEXT("스파인 설정 구조/범위 오류")); // Existing actor authoring bounds, no new hardware values.
+				Item.Spine = SpineSettings;
+				auto* ExistingSpine = Cast<ASpineCabinetActor>(Item.Actor);
+				if ((!Item.Actor && (!Item.bRuntimeSpine || Item.Class != ASpineCabinetActor::StaticClass()->GetName()))
+					|| (Item.Actor && (!ExistingSpine || ExistingSpine->bRuntimeLayoutSpine != Item.bRuntimeSpine))) return Fail(TEXT("스파인 종류/출처 불일치"));
+			}
+			else if (bSpineInventory && (Item.Class == ASpineCabinetActor::StaticClass()->GetName() || Cast<ASpineCabinetActor>(Item.Actor)))
+				return Fail(TEXT("스파인 ID/설정 누락"));
 		}
 		if (Item.Actor && (Item.Actor->GetClass()->GetName()!=Item.Class || !Item.Actor->GetRootComponent()
 			|| Item.Actor->GetRootComponent()->Mobility!=EComponentMobility::Movable)) return Fail(TEXT("장비 종류 또는 이동 가능 상태 불일치"));
-		if (!Item.Actor && (Version==1 || !Item.Rack.IsSet()))
+		if (!Item.Actor && (Version==1 || (!Item.Rack.IsSet() && !Item.Spine.IsSet())))
 		{
 			++Missing; UE_LOG(LogTemp,Warning,TEXT("[VrgLayout] 레벨에 없는 장비: %s"),*Item.Name);
 		}
@@ -231,11 +274,19 @@ bool VrgLayoutFile::Load(UWorld* World, const FString& Name, FString& OutSummary
 		if (Pair.Value->GetClass()!=ARackThermalActor::StaticClass() || Pair.Value->GetLocalRole()!=ROLE_Authority) return Fail(TEXT("제거할 수 없는 랙 종류/권한"));
 		Remove.Add(Pair.Value);
 	}
+	TArray<ASpineCabinetActor*> RemoveSpines;
+	if (bSpineInventory) for (const auto& Pair:BySpineId)
+		if (Pair.Value->bRuntimeLayoutSpine && !SeenSpineIds.Contains(Pair.Key))
+		{
+			if (Pair.Value->GetClass()!=ASpineCabinetActor::StaticClass() || Pair.Value->GetLocalRole()!=ROLE_Authority)
+				return Fail(TEXT("제거할 수 없는 런타임 스파인"));
+			RemoveSpines.Add(Pair.Value);
+		}
 	// Verify target names before spawning or touching current equipment. Rack names may be released by reconciliation.
-	for (const auto& Item:Items) if (Version==2 && Item.Rack.IsSet())
+	for (const auto& Item:Items) if (Version==2 && (Item.Rack.IsSet() || Item.Spine.IsSet()))
 	{
 		UObject* Occupant=FindObjectFast<UObject>(World->PersistentLevel,FName(*Item.Name));
-		if (Occupant && Occupant!=Item.Actor && !Remove.Contains(Cast<ARackThermalActor>(Occupant))) return Fail(TEXT("복원 이름이 다른 객체와 충돌"));
+		if (Occupant && Occupant!=Item.Actor && !Remove.Contains(Cast<ARackThermalActor>(Occupant)) && !RemoveSpines.Contains(Cast<ASpineCabinetActor>(Occupant))) return Fail(TEXT("복원 이름이 다른 객체와 충돌"));
 	}
 	TArray<FTransform> OldTransforms;
 	for (AActor* Actor:Current) OldTransforms.Add(Actor->GetActorTransform());
@@ -250,8 +301,25 @@ bool VrgLayoutFile::Load(UWorld* World, const FString& Name, FString& OutSummary
 		Backups.Add({Rack->GetFName(),VrgRackLifecycle::Identity(Rack),Rack->LayoutId,Rack->GetActorTransform(),Rack->CaptureLayoutSettings(),
 			Rack->GetMutableModel(),Rack->Input,Rack->InitialState,Rack->GetSnapshot().SimTimeS,Rack->bDrivenExternally});
 	}
+	struct FSpineRemovalBackup {
+		FName Name; FString Id; FTransform Transform; FSpineLayoutSettings Settings; FRackThermalModel Model; FRackThermalInput Input;
+	};
+	TArray<FSpineRemovalBackup> SpineBackups;
+	for (auto* Spine:RemoveSpines) SpineBackups.Add({Spine->GetFName(),VrgSpineLifecycle::Identity(Spine),Spine->GetActorTransform(),
+		Spine->CaptureLayoutSettings(),Spine->GetMutableModel(),Spine->GetMutableInput()});
 	auto Rollback=[&]() {
-		for (auto& Item:Items) if (Item.bSpawned && IsValid(Item.Actor)) VrgRackLifecycle::Remove(CastChecked<ARackThermalActor>(Item.Actor));
+		for (auto& Item:Items) if (Item.bSpawned && IsValid(Item.Actor))
+		{
+			if (Item.Spine.IsSet()) VrgSpineLifecycle::Remove(CastChecked<ASpineCabinetActor>(Item.Actor));
+			else VrgRackLifecycle::Remove(CastChecked<ARackThermalActor>(Item.Actor));
+		}
+		for (int32 I=0;I<RemoveSpines.Num();++I)
+		{
+			const auto& B=SpineBackups[I];
+			if (IsValid(RemoveSpines[I])) RemoveSpines[I]->Rename(*B.Name.ToString(),nullptr,REN_DontCreateRedirectors|REN_NonTransactional);
+			else if (auto* Restored=VrgSpineLifecycle::Spawn(World,B.Name,B.Id,B.Transform,B.Settings))
+			{ Restored->GetMutableModel()=B.Model; Restored->GetMutableInput()=B.Input; }
+		}
 		for (int32 I=0;I<Remove.Num();++I) {
 			if (IsValid(Remove[I])) Remove[I]->Rename(*RemovedNames[I].ToString(),nullptr,REN_DontCreateRedirectors|REN_NonTransactional);
 			else {
@@ -270,8 +338,10 @@ bool VrgLayoutFile::Load(UWorld* World, const FString& Name, FString& OutSummary
 	};
 	for (auto& Item:Items) if (!Item.Actor)
 	{
-		const FName Temp=MakeUniqueObjectName(World->PersistentLevel,ARackThermalActor::StaticClass(),TEXT("PendingLayoutRack"));
-		Item.Actor=VrgRackLifecycle::Spawn(World,Temp,Item.Id,ARackThermalActor::StaticClass(),Item.Target,Item.Rack.GetValue());
+		UClass* Kind=Item.Spine.IsSet()?ASpineCabinetActor::StaticClass():ARackThermalActor::StaticClass();
+		const FName Temp=MakeUniqueObjectName(World->PersistentLevel,Kind,TEXT("PendingLayoutEquipment"));
+		Item.Actor=Item.Spine.IsSet()?static_cast<AActor*>(VrgSpineLifecycle::Spawn(World,Temp,Item.Id,Item.Target,Item.Spine.GetValue()))
+			:VrgRackLifecycle::Spawn(World,Temp,Item.Id,Kind,Item.Target,Item.Rack.GetValue());
 		Item.bSpawned=Item.Actor!=nullptr;
 		if (!Item.Actor) { Rollback(); return Fail(TEXT("랙 생성 실패: 이전 배치 유지")); }
 	}
@@ -279,6 +349,11 @@ bool VrgLayoutFile::Load(UWorld* World, const FString& Name, FString& OutSummary
 	{
 		const FName Temp=MakeUniqueObjectName(Rack->GetOuter(),Rack->GetClass(),TEXT("PendingLayoutRemoval"));
 		if (!Rack->Rename(*Temp.ToString(),nullptr,REN_DontCreateRedirectors|REN_NonTransactional)) { Rollback(); return Fail(TEXT("랙 이름 준비 실패")); }
+	}
+	for (auto* Spine:RemoveSpines)
+	{
+		const FName Temp=MakeUniqueObjectName(Spine->GetOuter(),Spine->GetClass(),TEXT("PendingSpineRemoval"));
+		if (!Spine->Rename(*Temp.ToString(),nullptr,REN_DontCreateRedirectors|REN_NonTransactional)) { Rollback(); return Fail(TEXT("스파인 이름 준비 실패")); }
 	}
 	for (auto& Item:Items)
 	{
@@ -290,6 +365,11 @@ bool VrgLayoutFile::Load(UWorld* World, const FString& Name, FString& OutSummary
 		Rollback(); VrgRackLifecycle::Rebuild(World);
 		return Fail(TEXT("랙 제거 실패: 이전 배치 복원"));
 	}
+	for (auto* Spine:RemoveSpines) if (!Spine->Destroy())
+	{
+		Rollback(); VrgRackLifecycle::Rebuild(World);
+		return Fail(TEXT("스파인 제거 실패: 이전 배치 복원"));
+	}
 	// Commit only after structural validation, all spawns/names/transforms and removals have succeeded.
 	ADataCenterSimulationActor* Sim=LayoutFindFirst<ADataCenterSimulationActor>(World);
 	if (Sim && Sim->GetSimMode()==ESimMode::Simulation) Sim->EnterLayoutMode();
@@ -298,6 +378,12 @@ bool VrgLayoutFile::Load(UWorld* World, const FString& Name, FString& OutSummary
 	{
 		auto* Rack=CastChecked<ARackThermalActor>(Item.Actor); Rack->LayoutId=Item.Id; Rack->bDrivenExternally=true;
 		if (!Item.bSpawned) { Rack->ApplyLayoutSettings(Item.Rack.GetValue()); Rack->PauseSim(); Rack->RefreshVisuals(); }
+	}
+	for (auto& Item:Items) if (Item.Spine.IsSet())
+	{
+		auto* Spine=CastChecked<ASpineCabinetActor>(Item.Actor);
+		Spine->LayoutId=Item.Id;
+		if (!Item.bSpawned) { Spine->ApplyLayoutSettings(Item.Spine.GetValue()); Spine->RefreshVisuals(); }
 	}
 	double V;
 	if (Sim)
@@ -309,7 +395,8 @@ bool VrgLayoutFile::Load(UWorld* World, const FString& Name, FString& OutSummary
 	if (auto* Air=LayoutFindFirst<AAirFieldDebugActor>(World))
 		if ((*SettingsObject)->TryGetNumberField(TEXT("cellSizeM"),V) && V>=0.01) Air->GridParams.CellSizeM=V;
 	VrgRackLifecycle::Rebuild(World);
-	OutSummary=FString::Printf(TEXT("v%.0f: 장비%d 적용, 랙%d 생성/%d 제거 (상태·기록 저장 없음)"),Version,Items.Num(),Items.FilterByPredicate([](const auto& I){return I.bSpawned;}).Num(),Remove.Num());
+	OutSummary=FString::Printf(TEXT("v%.0f: 장비%d 적용, 랙%d 생성/%d 제거 (상태·기록 저장 없음)"),Version,Items.Num(),Items.FilterByPredicate([](const auto& I){return I.bSpawned && I.Rack.IsSet();}).Num(),Remove.Num());
+	OutSummary += FString::Printf(TEXT(" | 스파인%d 생성/%d 제거"), Items.FilterByPredicate([](const auto& I){return I.bSpawned && I.Spine.IsSet();}).Num(), RemoveSpines.Num());
 	return true;
 }
 
