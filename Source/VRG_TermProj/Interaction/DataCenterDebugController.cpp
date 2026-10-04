@@ -871,33 +871,27 @@ bool ADataCenterDebugController::TryDeleteLayoutRack()
 	if (!CurrentWorld || !CurrentWorld->IsGameWorld() || !IsLayoutMode() || !IsCameraInputAvailable()
 		|| bAddingRack || IsLayoutDragging() || bMarqueeActive || Grabbed.IsValid() || IsInputKeyDown(EKeys::RightMouseButton)) return false;
 	const TArray<AActor*> Selected = GetSelectedLayoutActors();
-	if (Selected.Num() != 1) return false;
-	auto* SelectedRack = Cast<ARackThermalActor>(Selected[0]);
-	if (!IsValid(SelectedRack) || SelectedRack->GetWorld() != CurrentWorld) return false;
-	const FString DeletedName = SelectedRack->GetName();
-	const FLayoutTransformCommand Command = CaptureRackPresence(SelectedRack, true);
-	if (!VrgRackLifecycle::Remove(SelectedRack)) return false;
-	PushLayoutCommand(Command);
-	LayoutSelection.Reset();
-	TargetRack.Reset();
-	HoveredPlaceable.Reset();
-	Grabbed.Reset();
-	SelectedSledIndex = INDEX_NONE;
-	FindTargetActors();
-	for (TActorIterator<ADataCenterRoomActor> It(CurrentWorld); It; ++It)
+	if (Selected.IsEmpty()) return false;
+	TArray<ARackThermalActor*> SelectedRacks;
+	for (AActor* Actor : Selected)
 	{
-		It->RebuildRoom(); // Also invalidate on a hash collision; removal is an explicit layout change.
-		It->RebuildRoomNow();
+		auto* Rack = Cast<ARackThermalActor>(Actor);
+		if (!IsValid(Rack) || Rack->GetWorld() != CurrentWorld) return false;
+		SelectedRacks.Add(Rack);
 	}
-	// Layout rebuild invalidates raw model pointers immediately; actual solver setup waits for simulation entry.
-	if (ADataCenterSimulationActor* Sim = FindSimActor()) Sim->RebuildCoupling();
-	UE_LOG(LogTemp, Display, TEXT("[VrgLayout] 랙 삭제: %s | 남은 랙 %d대"), *DeletedName, Racks.Num());
+	FLayoutTransformCommand Command;
+	Command.bRackPresence = true; Command.bBeforePresent = true;
+	for (auto* Rack : SelectedRacks) Command.Racks.Append(CaptureRackPresence(Rack, true).Racks);
+	if (!VrgRackLifecycle::RemoveBatch(SelectedRacks)) return false;
+	PushLayoutCommand(Command);
+	VrgRackLifecycle::Rebuild(CurrentWorld);
+	UE_LOG(LogTemp, Display, TEXT("[VrgLayout] 랙 삭제: %d대 | 남은 랙 %d대"), SelectedRacks.Num(), Racks.Num());
 	return true;
 }
 
 void ADataCenterDebugController::OnDeleteLayoutEquipment()
 {
-	if (!TryDeleteLayoutRack()) UE_LOG(LogTemp, Display, TEXT("[VrgLayout] 랙 삭제 거절: 단일 랙 선택과 배치 대기 상태가 필요합니다."));
+	if (!TryDeleteLayoutRack()) UE_LOG(LogTemp, Display, TEXT("[VrgLayout] 랙 삭제 거절: 선택 전체가 랙이어야 하며 배치 대기 상태가 필요합니다."));
 }
 
 bool ADataCenterDebugController::TryLayoutMove(AActor* Actor, const FVector& TargetCm)
@@ -1004,52 +998,89 @@ bool ADataCenterDebugController::RestoreLayoutTransform(bool bRedo)
 	return true;
 }
 
-void ADataCenterDebugController::RefreshLayoutEquipmentReferences()
+void ADataCenterDebugController::RefreshLayoutEquipmentReferences(bool bKeepSelection)
 {
-	LayoutSelection.Reset(); TargetRack.Reset(); HoveredPlaceable.Reset(); Grabbed.Reset();
-	SelectedSledIndex = INDEX_NONE;
+	if (!bKeepSelection)
+	{
+		LayoutSelection.Reset(); TargetRack.Reset(); HoveredPlaceable.Reset(); Grabbed.Reset();
+		SelectedSledIndex = INDEX_NONE;
+	}
 	FindTargetActors();
 }
 
 ADataCenterDebugController::FLayoutTransformCommand ADataCenterDebugController::CaptureRackPresence(ARackThermalActor* Rack, bool bBeforePresent)
 {
 	FLayoutTransformCommand Command;
-	if (Rack->LayoutId.IsEmpty()) Rack->LayoutId = VrgRackLifecycle::Identity(Rack);
 	Command.bRackPresence = true; Command.bBeforePresent = bBeforePresent;
-	Command.RackId = Rack->LayoutId; Command.RackName = Rack->GetFName(); Command.RackClass = Rack->GetClass();
-	Command.RackTransform = Rack->GetActorTransform(); Command.RackSettings = Rack->CaptureLayoutSettings();
+	Command.Racks.Add({VrgRackLifecycle::Identity(Rack), Rack->GetFName(), Rack->GetClass(),
+		Rack->GetActorTransform(), Rack->CaptureLayoutSettings()});
 	return Command;
 }
 
-void ADataCenterDebugController::RebindLayoutRack(ARackThermalActor* Rack)
+void ADataCenterDebugController::RebindLayoutRack(ARackThermalActor* Rack, ARackThermalActor* Previous)
 {
 	// Only sanctioned recreation rebinds old weak references; arbitrary external replacement remains rejected.
 	for (auto* Stack : {&LayoutUndo, &LayoutRedo})
 		for (FLayoutTransformCommand& Command : *Stack)
 			for (FLayoutTransformMember& Member : Command.Members)
-				if (Member.RackId == Rack->LayoutId) Member.Actor = Rack;
+				if (Member.RackId == VrgRackLifecycle::Identity(Rack)) Member.Actor = Rack;
+	// Failed deletion rollback must preserve selection/hover, including stale weak pointers.
+	if (Previous)
+	{
+		const TWeakObjectPtr<AActor> Old(Previous);
+		for (auto& Selected : LayoutSelection) if (Selected == Old) Selected = Rack;
+		if (TargetRack == TWeakObjectPtr<ARackThermalActor>(Previous)) TargetRack = Rack;
+		if (HoveredPlaceable == Old) HoveredPlaceable = Rack;
+	}
 }
 
 bool ADataCenterDebugController::RestoreRackPresence(const FLayoutTransformCommand& Command, bool bRedo)
 {
-	if (!GetWorld()->IsGameWorld() || !Command.RackClass.IsValid() || !Command.RackSettings.IsSet()) return false;
+	if (!GetWorld()->IsGameWorld() || Command.Racks.IsEmpty()) return false;
 	const bool bTargetPresent = bRedo ? !Command.bBeforePresent : Command.bBeforePresent;
-	auto* Rack = VrgRackLifecycle::Find(GetWorld(), Command.RackId);
+	TArray<ARackThermalActor*> Present;
+	TArray<FLayoutFootprint> Footprints;
+	TSet<FString> Ids; TSet<FName> Names;
+	// Validate every member before changing the world. Both external and group-internal
+	// overlaps use the same total 1 cm placement clearance as drag/rotation.
+	for (const FLayoutRackMember& Member : Command.Racks)
+	{
+		if (!Member.Class.IsValid() || Ids.Contains(Member.Id) || Names.Contains(Member.Name)) return false;
+		Ids.Add(Member.Id); Names.Add(Member.Name);
+		auto* Rack = VrgRackLifecycle::Find(GetWorld(), Member.Id);
+		if (bTargetPresent)
+		{
+			if (Rack || FindObjectFast<UObject>(GetWorld()->PersistentLevel, Member.Name)
+				|| IsLayoutBoxBlocked(GetWorld(), Member.Settings.RackSizeM, Member.Transform)) return false;
+			FLayoutFootprint Candidate;
+			if (!MakeLayoutFootprint(Member.Settings.RackSizeM, Member.Transform, Candidate)) return false;
+			for (const auto& Other : Footprints) if (FootprintsConflict(Candidate, Other)) return false;
+			Footprints.Add(Candidate);
+		}
+		else
+		{
+			if (!Rack || Rack->GetClass() != Member.Class.Get() || Rack->GetFName() != Member.Name
+				|| !Rack->GetActorTransform().Equals(Member.Transform)) return false;
+			const FRackLayoutSettings Current = Rack->CaptureLayoutSettings();
+			if (!FRackLayoutSettings::StaticStruct()->CompareScriptStruct(&Current, &Member.Settings, 0)) return false;
+			Present.Add(Rack);
+		}
+	}
 	if (bTargetPresent)
 	{
-		if (Rack || IsLayoutBoxBlocked(GetWorld(), Command.RackSettings->RackSizeM, Command.RackTransform)) return false;
-		Rack = VrgRackLifecycle::Spawn(GetWorld(), Command.RackName, Command.RackId, Command.RackClass.Get(), Command.RackTransform, Command.RackSettings.GetValue());
-		if (!Rack) return false;
-		RebindLayoutRack(Rack);
+		for (const FLayoutRackMember& Member : Command.Racks)
+		{
+			auto* Rack = VrgRackLifecycle::Spawn(GetWorld(), Member.Name, Member.Id, Member.Class.Get(), Member.Transform, Member.Settings);
+			if (!Rack)
+			{
+				if (!Present.IsEmpty()) verify(VrgRackLifecycle::RemoveBatch(Present));
+				return false;
+			}
+			Present.Add(Rack);
+		}
+		for (auto* Rack : Present) RebindLayoutRack(Rack);
 	}
-	else
-	{
-		if (!Rack || Rack->GetClass() != Command.RackClass.Get() || Rack->GetFName() != Command.RackName
-			|| !Rack->GetActorTransform().Equals(Command.RackTransform)) return false;
-		const FRackLayoutSettings Current = Rack->CaptureLayoutSettings();
-		if (!FRackLayoutSettings::StaticStruct()->CompareScriptStruct(&Current, &Command.RackSettings.GetValue(), 0)) return false;
-		if (!VrgRackLifecycle::Remove(Rack)) return false;
-	}
+	else if (!VrgRackLifecycle::RemoveBatch(Present)) return false;
 	VrgRackLifecycle::Rebuild(GetWorld());
 	return true;
 }
@@ -1978,7 +2009,7 @@ void ADataCenterDebugController::DrawHelp() const
 
 	GEngine->AddOnScreenDebugMessage(BaseKey, 0.0f, FColor(180, 220, 255),
 		IsLayoutMode()
-		? TEXT("[배치 키] Shift+클릭 추가/제거 | 빈 곳 드래그 사각형 선택·Shift 추가 | 장비 드래그 그룹 이동/빨강 거절/Esc 취소 | 단일 랙 줄 붙이기/Alt 해제 | Ctrl+D 단일 랙 복제 | Ctrl+Z/Y 배치 실행 취소/다시 실행 | 추가/복제: 클릭 확정/R 회전/Esc 취소 | R 선택 90도 회전 | Delete 단일 랙 삭제 | F 선택/없으면 전체 | 우클릭+마우스/WASD/QE 비행·휠 속도 | 휠 전후 | G/T 단일만 C 컨테인먼트 Enter 시뮬레이션 H 도움말")
+		? TEXT("[배치 키] Shift+클릭 추가/제거 | 빈 곳 드래그 사각형 선택·Shift 추가 | 장비 드래그 그룹 이동/빨강 거절/Esc 취소 | 단일 랙 줄 붙이기/Alt 해제 | Ctrl+D 단일 랙 복제 | Ctrl+Z/Y 배치 실행 취소/다시 실행 | 추가/복제: 클릭 확정/R 회전/Esc 취소 | R 선택 90도 회전 | Delete 선택 랙 전체 삭제 | F 선택/없으면 전체 | 우클릭+마우스/WASD/QE 비행·휠 속도 | 휠 전후 | G/T 단일만 C 컨테인먼트 Enter 시뮬레이션 H 도움말")
 		: TEXT("[디버그 키] Enter 배치 모드 | 1/2 CPU 발열  3/4 GPU 발열  5/6 펌프 회전수  7/8 라디에이터 UA(랙별 모드)  9/0 부하율  E 바라보는 유닛 뽑기/꽂기  R 리셋  H 도움말"));
 
 	const ARackThermalActor* Rack = TargetRack.Get();

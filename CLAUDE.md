@@ -2799,3 +2799,29 @@ Load 뒤 콘솔 상태를 재확인하지 않은 진단 종료 입력은 게임�
 직접 절차와 실제 범위: Tools/배치Undo_저장확장_확인_2026-10-04.md. 전체/FPS/장시간/패키징 반복 없음.
 도움말의 Ctrl+Z/Y 단일 이동·R 문구는 배치 실행 취소/다시 실행으로 갱신했다. 동작 코드 변경 없이 안내만 수정, 재캡처 없음.
 안내 수정 후 Editor 빌드55.72s 성공(Saved/Build_LayoutUndoHelp.log). 문자열만 변경하여 자동화는 반복하지 않았다.
+
+### S7 새 L_Test 저장 복원·다중 랙 삭제/Undo (2026-10-04)
+
+새 게임 프로세스에서 기존 extended_after v2를 Load: 장비43 적용, 랙1 생성/1 제거. 재Load는0/0으로 중복 없음.
+재저장한43개 장비 전체 항목을 원본과 대조하여 변환/ID/설정 차이0. 런타임 랙 클릭/R로 기록 생성 후 Load/Ctrl+Z는 Undo0/Redo0 거절로 기록 초기화 확인.
+그래픽 드라이버 안내 아니오(n), Alt+Print Screen→클립보드 PNG→이미지 확인. 기존 캡처 API 재시도 없음.
+Delete는 선택 전체가 랙인 경우 한 기록으로 모두 제거한다. 혼합 선택/편집·패치·시뮬레이션 입력 차단 유지.
+Undo는 전체 ID/이름/클래스 및 외부·대상 내부의 총1cm 충돌을 먼저 검사한다. 하나라도 실패하면 기록/배치 유지.
+전체 생성 성공 후 이전 이동 기록의 ID 참조를 재연결한다. 성공 Undo에는 설정·전체 변환만 전달하고 열 상태/적분/시계는 초기화한다.
+RemoveBatch는 전체 유효성·권한·중복을 검사하고 이름 준비 후 제거한다. 엔진 제거 실패는 메모리 백업으로 이미 제거한 랙·라이브 상태·선택·이전 기록을 원복한다.
+이 백업은 실패 복구 전용으로 기록/파일에는 들어가지 않는다. 자원 고갈로 복구 생성까지 실패하면 조용히 부분 완료하지 않고 checkf로 중단한다(이 극단 조건은 미검증).
+공유 Rebuild를 사용하여 줄/분기/CDU/패치/열·공기 참조를 갱신하고 실행 월드만 바꾼다. 제거는 레벨 Modify를 요청하지 않는다.
+Editor84.83s 성공. 신규 검사에서 이름 충돌용 추상 UObject로 ensure가 발생해 fixture만 SceneComponent로 수정했다.
+Editor6.91s/신규 RackBatchDeletionUndoRedo 무경고 성공. 기존 RackPresenceUndoRedo/SingleRackDeletion2건은 첫 실행 성공하여 반복하지 않았다.
+
+| 다중 삭제 검증 | 측정 | 기준·정규화·단위 |
+|---|---|---|
+| 전체 삭제·Undo/Redo | 랙2→0→2→0→2, 한 기록 | 정수 개수 정확 일치 |
+| 변환 복원 | 위치0cm, 전체 변환 일치 | 기존 Equals1e-9, 액터 cm 경계/스케일 무차원 |
+| 성공 Undo 시계 | 0s | 새 모델·새 시계, 기존 동적 상태 복사 없음 |
+| 전체 거절/실패 원복 | 개수·선택·기록 유지 | 혼합/둘째 충돌·0.5cm 간격/이름/설정 및 첫 제거·첫 생성 뒤 실제 엔진 실패 주입 |
+
+관련 코드·자동화 호출과 실제 UI 입력 확인을 구분한다. 실제 다중 선택/Delete/Ctrl+Z/Y는 도구가 Shift 유지+클릭을 지원하지 않아 미검증이며 재시도하지 않았다.
+절차·증거: Tools/배치다중삭제_확인_2026-10-04.md, Saved/Logs/MultiRackDelete_Reload_UI.log와 Saved/MultiRackDelete_UI_2026-10-04 PNG.
+빌드/검사: Saved/Build_RackBatchDeletion*.log, Saved/Logs/RackBatchDeletion*_Tests.log, Saved/Automation/RackBatchDeletion*.
+다중 삭제 후 IT/전역 열수지·공기/분기 검사는 다음 검증 기록으로 마무리한다. 새 물리 값/기준 변경 없음. 전체/FPS/그룹 복제/비랙 삭제는 제외.

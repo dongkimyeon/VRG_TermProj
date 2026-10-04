@@ -120,15 +120,15 @@ public:
 	bool TryLayoutMove(AActor* Actor, const FVector& TargetCm);
 	bool TryLayoutRotation(AActor* Actor, const FRotator& Rotation, bool bRecordHistory = false);
 	bool TryRotateLayoutSelection();
-	// Runtime layout only: exactly one selected rack, with no placement gesture in progress.
+	// Runtime layout only: all selected equipment must be racks, with no gesture in progress.
 	bool TryDeleteLayoutRack();
 	// Game-thread layout transforms only (UE cm at this actor boundary), not simulation state.
 	bool TryUndoLayout();
 	bool TryRedoLayout();
 	void ClearLayoutHistory();
 	void ResetLayoutEditsForLoad();
-	void RefreshLayoutEquipmentReferences();
-	void NotifyLayoutRackRecreated(ARackThermalActor* Rack) { RebindLayoutRack(Rack); }
+	void RefreshLayoutEquipmentReferences(bool bKeepSelection = false);
+	void NotifyLayoutRackRecreated(ARackThermalActor* Rack, ARackThermalActor* Previous = nullptr) { RebindLayoutRack(Rack, Previous); }
 	int32 GetLayoutUndoCount() const { return LayoutUndo.Num(); }
 	int32 GetLayoutRedoCount() const { return LayoutRedo.Num(); }
 
@@ -186,16 +186,20 @@ private:
 		FTransform After;
 		FString RackId;
 	};
+	struct FLayoutRackMember
+	{
+		FString Id;
+		FName Name;
+		TWeakObjectPtr<UClass> Class;
+		FTransform Transform;
+		FRackLayoutSettings Settings;
+	};
 	struct FLayoutTransformCommand
 	{
 		TArray<FLayoutTransformMember> Members;
 		bool bRackPresence = false;
 		bool bBeforePresent = false;
-		FString RackId;
-		FName RackName;
-		TWeakObjectPtr<UClass> RackClass;
-		FTransform RackTransform;
-		TOptional<FRackLayoutSettings> RackSettings;
+		TArray<FLayoutRackMember> Racks;
 	};
 	TArray<FLayoutTransformCommand> LayoutUndo;
 	TArray<FLayoutTransformCommand> LayoutRedo;
@@ -205,7 +209,7 @@ private:
 	void PushLayoutCommand(FLayoutTransformCommand Command);
 	FLayoutTransformCommand CaptureRackPresence(ARackThermalActor* Rack, bool bBeforePresent);
 	bool RestoreRackPresence(const FLayoutTransformCommand& Command, bool bRedo);
-	void RebindLayoutRack(ARackThermalActor* Rack);
+	void RebindLayoutRack(ARackThermalActor* Rack, ARackThermalActor* Previous = nullptr);
 	UPROPERTY(Transient)
 	TObjectPtr<ULayoutRackPalette> RackPalette;
 	bool bAddingRack = false;

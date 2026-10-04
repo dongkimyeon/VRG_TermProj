@@ -60,8 +60,8 @@ bool FLayoutRackDeletionTest::RunTest(const FString& Parameters)
 	auto* Added = Controller->ConfirmRackAddition();
 	if (!TestNotNull(TEXT("Runtime added rack"), Added)) { GEngine->DestroyWorldContext(World); World->DestroyWorld(false); return false; }
 	const FString AddedName = Added->GetActorNameOrLabel();
-	Select(Existing, true);
-	Reject(TEXT("Multiple selection rejects deletion")); Select(Added);
+	Select(Cdu, true);
+	Reject(TEXT("Mixed selection rejects deletion")); Select(Added);
 	Sim->EnterSimulationMode();
 	Reject(TEXT("Simulation rejects deletion"));
 	Sim->Tick(.021f); // float Tick must exceed the double .02 s step, as established by the addition test.

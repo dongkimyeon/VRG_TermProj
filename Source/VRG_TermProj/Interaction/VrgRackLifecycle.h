@@ -9,5 +9,8 @@ namespace VrgRackLifecycle
 	ARackThermalActor* Spawn(UWorld* World, FName Name, const FString& Id, UClass* Class,
 		const FTransform& Transform, const FRackLayoutSettings& Settings);
 	bool Remove(ARackThermalActor* Rack);
-	void Rebuild(UWorld* World);
+	// Preflight the entire batch; a failed engine removal rolls back live state in memory.
+	// Successful Undo uses configuration-only Spawn and never transfers this rollback state.
+	bool RemoveBatch(const TArray<ARackThermalActor*>& Racks);
+	void Rebuild(UWorld* World, bool bKeepSelection = false);
 }
