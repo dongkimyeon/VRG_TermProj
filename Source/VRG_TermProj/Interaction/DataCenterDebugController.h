@@ -112,7 +112,8 @@ public:
 	bool BeginRackDuplication();
 	void CancelRackAddition();
 	void UpdateRackAdditionAlongRay(const FVector& EyeCm, const FVector& Direction);
-	bool GetRackAdditionPreview(FTransform& Out, FVector& SizeM) const;
+	bool GetRackAdditionPreview(FTransform& Out, FVector& SizeM, int32 Index = 0) const;
+	int32 GetRackAdditionPreviewCount() const { return bAddingRack ? FMath::Max(1, RackGroupDuplication.Num()) : 0; }
 	bool IsRackAdditionBlocked() const;
 	ARackThermalActor* ConfirmRackAddition();
 	bool IsAddingRack() const { return bAddingRack; }
@@ -216,6 +217,13 @@ private:
 	bool bRackAdditionHasFloor = false;
 	FTransform RackAdditionTransform = FTransform::Identity;
 	TOptional<FRackLayoutSettings> RackDuplicationSettings;
+	struct FLayoutRackDuplicate
+	{
+		FTransform Start;
+		FRackLayoutSettings Settings;
+	};
+	TArray<FLayoutRackDuplicate> RackGroupDuplication;
+	FVector RackGroupPivotCm = FVector::ZeroVector;
 	// Capture Ctrl at the D press event, before a short chord's release can reach frame-based actions.
 	bool bLayoutLeftControl = false;
 	bool bLayoutRightControl = false;

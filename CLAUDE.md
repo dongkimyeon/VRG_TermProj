@@ -2848,3 +2848,24 @@ Editor63.61s/신규 RackBatchDeletionCoupling·기존 InventorySaveLoad2건 무�
 증거: Saved/Build_RackBatchCoupling.log와 Saved/Build_RackBatchFinal.log, Saved/Logs/RackBatch{Coupling,Final}_Tests.log, Saved/Automation/RackBatch{Coupling,Final}.
 새 수치 피팅/기준 변경 없음. NullRHI 축소 fixture의 보존/타당성 확인이며 L_Test 전체 운전·FPS 검증으로 주장하지 않는다.
 실제 다중 입력은 앞 절처럼 미검증. 직접 절차와 원복 한계는 Tools/배치다중삭제_확인_2026-10-04.md를 따른다.
+
+
+### S7 그룹 랙 복제·한 명령 Undo/Redo (2026-10-04)
+
+배치 모드에서 랙만 여러 대 선택하고 Ctrl+D를 누르면 전체 설정/변환의 값 스냅샷으로 미리보기를 만든다.
+그룹 바닥 투영 경계 중심을 커서의 5cm 스냅 위치에 놓으며 각 랙의 상대 위치·높이·스케일·기울기를 보존한다.
+R은 그 중심의 월드 Z축 90도 회전이다. 단일 랙 복제의 기존 원점 기준 동작은 유지한다.
+원본을 포함한 외부 장비 및 복제 멤버끼리 기존 총1cm 간격을 검사한다. 하나라도 충돌하면 전체 빨강/확정 거절.
+목적지 상자에 각 랙 스케일을 적용한다. 클릭 전 실제 랙/배관 생성 없음, Esc·패치·모드 전환은 전체 취소.
+클릭 확정은 기존 생명주기 배열의 전체 사전 검사·생성 실패 원복을 사용한다. 성공 후에만 기록 한 개를 추가하고 복제본 전체를 선택한다.
+각 복제본은 고유 이름/ID의 네이티브 랙이며 설정만 복사한다. 온도·적분·시계는 새 상태, 원본 배열과 모델은 독립적이다.
+Ctrl+Z/Y는 그룹 전체 제거/재생성이다. 충돌/실패는 기록을 유지하고 새 확정은 Redo를 비운다. 비랙 혼합 선택은 전체 거절한다.
+
+Editor 빌드319.95s 성공. VRG.Interaction.Layout: 22건 무경고+2건 경고 동반 성공, 실패0/미실행0. 그룹 입력은 InputKey/선택 API 자동화이며 실제 마우스 화면 확인과 구분한다.
+신규 RackGroupDuplication은 그룹 Ctrl+D, 상대 배치/4회 회전 복원, 개별 설정·새 상태·원본 불변,
+외부/내부 충돌·혼합 선택·취소·한 Undo/Redo·둘째 생성 실패 시 첫 생성 원복·새 편집 Redo 초기화를 확인했다.
+그룹 회전 상대 위치 오차 6.355e-14cm, 기존 위치 기준 ≤1e-6cm 안. 전체 변환 비교 Equals1e-9(액터 cm 경계, 스케일 무차원), 새 복제본 시계0s.
+경고 동반2건은 기존 복제 미리보기의 축 근사2개와 단일 삭제의 빈 랙 안내6개다. 신규 그룹 검사는 무경고 성공.
+이 단계의 물리 수치 기준 변경 없음. 그룹 복제의 열/공기/배관·v2 저장 결합은 다음 검증 커밋에서 기록한다.
+로그/리포트: Saved/Build_RackGroupDuplication.log, Saved/Logs/RackGroupDuplication_Tests.log, Saved/Automation/RackGroupDuplication.
+실제 Shift/사각형/Ctrl+D/클릭 입력·표시 품질/FPS·장시간·패키징은 미검증. 기존 도구 입력 실패를 반복하지 않았다.
