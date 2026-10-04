@@ -2861,6 +2861,33 @@ Ctrl+D는 선택 전체가 랙이면 값 기반 그룹 미리보기를 시작한
 Editor64.21s 성공, RackGroupDuplication/RackDuplicationPreview/RackPresenceUndoRedo3건 성공(무경고2+기존 축 근사 경고2 동반1).
 그룹 위치오차0cm(기존 Equals1e-9, 액터 cm 경계), 개수2→4→2→4/한 명령, 원본 설정/동적 상태 불변·배열 독립·새 ID·모델 시계/누적 입력 에너지0 확인.
 둘째 목적지 충돌/혼합 선택 전체 거절 및 둘째 deferred 생성 뒤 파괴 주입으로 첫 생성분 제거·선택/스택 불변 확인.
-물리·저장 검증은 다음 기록으로 마무리한다. 새 물리 수치/기준 없음. 실제 그룹 입력은 도구 제약으로 미검증, 실패 반복 없음.
+물리·저장 검증은 아래 기록을 따른다. 새 물리 수치/기준 없음. 실제 그룹 입력은 도구 제약으로 미검증, 실패 반복 없음.
 근거: Saved/Build_RackGroupDuplication.log, Saved/Logs/RackGroupDuplication_Tests.log, Saved/Automation/RackGroupDuplication.
 직접 절차·최종 화면 범위는 Tools/배치다중복제_확인_2026-10-04.md를 따른다. 전체/FPS/비랙 복제/그룹 미리보기 회전은 제외.
+
+### S7 다중 복제·Undo/Redo·저장 v2 물리 검증 (2026-10-04)
+
+기본/합성 부하 랙2대의 그룹을 기존 값으로 복제해 줄·분기·CDU·패치 및 열/냉각수/공기/덕트 결합을 검사했다.
+합성 부하0.7/슬롯2 미도킹/부품0 발열1.05배는 테스트 설정이며 하드웨어 추정값이 아니다. 새 기본값/파일 형식 없음.
+동일 초기조건 첫0.02s 스텝에서 복제/Redo/재로드의 IT 증가와 Undo 감소를 두 독립 기준 모델 합에 비교했다.
+랙2→4→2→4와 배관7→14→7→14, 총2개 줄/CDU 유지. 기존 v2 저장 후 Undo·Load로 두 복제 랙의 ID/설정/전체 변환·시계0/누적 입력 에너지0 복원.
+반복 Load는 랙0 생성/0 제거·총4대 유지, Undo/Redo0. 각 상태0.82s 물리 검사 결과:
+
+| 검사 | 측정 | 기존 기준·정규화·단위 |
+|---|---|---|
+| 복제/Undo/Redo/재로드 IT 오차 | 모두0, 두 랙 합205164.529523W | <1e-9, abs(현재 첫 스텝 IT-기준 전체 IT)/두 랙 기준 전력W, 무차원 |
+| 전력 타당성 | 기본116512.612431W·합성88651.917092W | 기본114000~126000W, 합성 양수·기본보다 작음(기존 NVL72 안전망) |
+| 전역 열수지 잔차 절댓값 최대 | 6.172e-14 | <1e-9, (EnergyInJ-EnergyOutJ-StoredJ)/EnergyInJ, 유입+열원 장부J 정규화·무차원 |
+| 덕트 질량유량 상대오차 최대 | 8.884e-16 | <1e-9, abs(덕트-랙 유량)/랙 유량kg/s, 무차원·양의 유량/거절 없음 |
+| 공기 정규화 발산 최대 | 4.139e-08 | <1e-5 및 압력 수렴, maxAbsDiv(1/s)/(maxAbsVelocity(m/s)/cellSize(m)), 무차원 |
+
+Editor50.75s 성공. RackGroupDuplicationCoupling/기존 RackDuplicationCoupling/InventorySaveLoad3건 무경고 성공(실패0/미실행0/종료0).
+앞선 입력3건과 합쳐 영향 검사6종 모두 성공, 기존 단일 미리보기의 축 근사 경고2 유지. 전체 재실행 없음.
+NullRHI 축소 fixture의 결과이며 실제 L_Test 전체 운전/FPS 검증은 아니다. 새 기준/물리 피팅 없음.
+근거: Saved/Build_RackGroupCoupling.log, Saved/Logs/RackGroupCoupling_Tests.log, Saved/Automation/RackGroupCoupling.
+
+최종 빌드의 새 L_Test 프로세스에서 드라이버 안내는 아니오로 진행하고 Alt+Print Screen으로 단일 복제 회귀를 확인했다.
+기존 랙 Ctrl+D의 빨간 중첩 표시·Esc 취소, 유효 위치 클릭 확정(랙32→33), Ctrl+Z/Y의 복제 랙/배관 제거·복원과 마지막 Undo의 원래 장면 복귀를 확인했다.
+실제 그룹 선택/복제/Undo·Redo/저장 UI, 이번 실행의 단일 R·런타임 원본 복제·전체 운전/FPS는 확인하지 않았다. API 자동화 성공과 구분한다.
+Saved/Logs/RackGroupDuplication_UI.log와 Saved/RackGroupDuplication_UI_2026-10-04의01~06 PNG가 증거다. 화면04는 재구축 전 프레임이며 생성 완료는 로그 및05로 확인했다.
+직접 확인 절차와 실제 확인 범위는 Tools/배치다중복제_확인_2026-10-04.md를 따른다.
