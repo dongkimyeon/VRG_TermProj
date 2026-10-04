@@ -93,6 +93,11 @@ bool FLayoutRackBatchDeletionTest::RunTest(const FString& Parameters)
 		TestTrue(TEXT("Name/config/height/scale/direction restored"), Rack->GetFName()==Names[I]
 			&& FRackLayoutSettings::StaticStruct()->CompareScriptStruct(&Config,&Configs[I],0) && Rack->GetActorTransform().Equals(Moved[I],1e-9));
 		TestEqual(TEXT("Successful Undo starts fresh clock"), Rack->GetSnapshot().SimTimeS, 0.0);
+		FRackThermalModel Fresh;
+		Fresh.Initialize(Configs[I].Params, FRackThermalState());
+		TestTrue(TEXT("Successful Undo starts fresh temperatures and integral state"),
+			Rack->GetMutableModel().GetState().ComponentTempK==Fresh.GetState().ComponentTempK
+			&& Rack->GetMutableModel().GetEnergyResidualJ()==Fresh.GetEnergyResidualJ());
 		MaxCm=FMath::Max(MaxCm,FVector::Distance(Rack->GetActorLocation(),Moved[I].GetLocation()));
 	}
 	TestTrue(TEXT("Undo earlier group move rebinds both actors"), C->TryUndoLayout());

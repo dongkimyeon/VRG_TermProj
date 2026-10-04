@@ -2824,4 +2824,27 @@ Editor6.91s/신규 RackBatchDeletionUndoRedo 무경고 성공. 기존 RackPresen
 관련 코드·자동화 호출과 실제 UI 입력 확인을 구분한다. 실제 다중 선택/Delete/Ctrl+Z/Y는 도구가 Shift 유지+클릭을 지원하지 않아 미검증이며 재시도하지 않았다.
 절차·증거: Tools/배치다중삭제_확인_2026-10-04.md, Saved/Logs/MultiRackDelete_Reload_UI.log와 Saved/MultiRackDelete_UI_2026-10-04 PNG.
 빌드/검사: Saved/Build_RackBatchDeletion*.log, Saved/Logs/RackBatchDeletion*_Tests.log, Saved/Automation/RackBatchDeletion*.
-다중 삭제 후 IT/전역 열수지·공기/분기 검사는 다음 검증 기록으로 마무리한다. 새 물리 값/기준 변경 없음. 전체/FPS/그룹 복제/비랙 삭제는 제외.
+다중 삭제 후 IT/전역 열수지·공기/분기는 아래 후속 검증 기록을 따른다. 새 물리 값/기준 변경 없음. 전체/FPS/그룹 복제/비랙 삭제는 제외.
+
+### S7 다중 삭제·Undo/Redo 시뮬레이션 검증 (2026-10-04)
+
+기존 랙2+실행 중 추가 랙1의 축소 fixture에서 기존1대+런타임1대를 함께 삭제한다. 기존 프리셋/물성을 그대로 사용한다.
+비기본 부하0.7·슬롯2 미도킹·부품0 발열1.05배는 합성 테스트 설정이며 새 하드웨어 추정값이 아니다.
+서로 같은 초기조건에서 고정 스텝0.02s 첫 적분을 비교: 제거 IT205164.529523W=기본116512.612431W+합성 부하88651.917092W.
+삭제·Undo·Redo의 랙3→1→3→1/배관11→3→11→3 및 줄·CDU·패치·유효 분기, 열/냉각수/공기/덕트 결합 개수를 함께 검사했다.
+성공 Undo의 새 온도·적분 상태·시계0s를 검사했다. 이전 라이브 상태는 실패 원복에만 사용한다.
+
+| 다중 삭제·Undo·Redo 검증 | 측정 | 기존 기준·정규화·단위 |
+|---|---|---|
+| 삭제/복원/재삭제 IT 상대오차 | 모두0 | <1e-9, abs(차이)/기준 전력W. 삭제·Redo는 두 모델 합, Undo는 원래3랙 전체 첫 스텝 기준 |
+| 전력 타당성 안전망 | 기본116512.612431W, 합성88651.917092W | 기존 NVL72 기본114000~126000W, 합성 부하는 양수·기본보다 작고126000W 미만 |
+| 전역 열수지 잔차, 각 t=0.82s | 삭제/Redo1.203e-13, Undo-9.159e-14 | abs(residual)<1e-9, (EnergyInJ-EnergyOutJ-StoredJ)/EnergyInJ, 무차원. EnergyInJ는 유입+열원 장부 |
+| 덕트 유량 상대오차 최대 | 8.884e-16 | <1e-9, abs(덕트-랙 유량)/랙 유량kg/s, 무차원; 양의 유량 및 덕트 거절 없음 |
+| 정규화 발산 최대 | 3.564e-08 | <1e-5 및 압력 수렴, maxAbsDiv(1/s)/(maxAbsVelocity(m/s)/cellSize(m)), 무차원 |
+
+Editor63.61s/신규 RackBatchDeletionCoupling·기존 InventorySaveLoad2건 무경고 성공.
+초기 온도/적분 상태 및 복원 배관 개수 검사를 보강하고 Editor20.24s/신규2건 무경고 성공(실패0/미실행0/종료0).
+이번 변경의 영향받은5종(신규2, 기존 생명주기/단일 삭제/저장3)은 모두 최종 성공. 기존 단일 삭제의 빈 랙 경고6은 유지한다.
+증거: Saved/Build_RackBatchCoupling.log와 Saved/Build_RackBatchFinal.log, Saved/Logs/RackBatch{Coupling,Final}_Tests.log, Saved/Automation/RackBatch{Coupling,Final}.
+새 수치 피팅/기준 변경 없음. NullRHI 축소 fixture의 보존/타당성 확인이며 L_Test 전체 운전·FPS 검증으로 주장하지 않는다.
+실제 다중 입력은 앞 절처럼 미검증. 직접 절차와 원복 한계는 Tools/배치다중삭제_확인_2026-10-04.md를 따른다.
