@@ -56,7 +56,7 @@ public:
 	FSpineLayoutSettings CaptureLayoutSettings() const;
 	void ApplyLayoutSettings(const FSpineLayoutSettings& Settings);
 	UPROPERTY(Transient) FString LayoutId;
-	// Only runtime palette equipment participates in authoritative inventory reconciliation.
+	// Provenance survives recreation; placed equipment is deleted only by an explicit edit/file record.
 	UPROPERTY(Transient) bool bRuntimeLayoutSpine = false;
 	FRackThermalModel& GetMutableModel() { return Model; }
 	FRackThermalInput& GetMutableInput() { return Input; }

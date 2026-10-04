@@ -3040,3 +3040,11 @@ Editor96.39s 성공. 신규 SpineAdditionUndoRedo는 무경고 성공(첫 영향
 실제 L_Test에서 그래픽 드라이버 안내를 키보드 아니오로 닫고 Alt+Print Screen → 클립보드 PNG → 이미지 확인으로 배치 화면의 기존 랙/배관·두 추가 버튼·스파인 라벨을 확인했다. 클릭 도구는 안내 버튼에서 `coordinate input geometry is unavailable`로 실패해 같은 클릭/WGC 캡처를 재시도하지 않았다. 이후 Enter 입력 뒤에도 캡처는 배치 상태여서 모드 전환 성공으로 계산하지 않는다. 스파인 클릭/미리보기/충돌/R/Esc/확정/Undo/Redo/저장 UI·패치/모드 취소는 실제 입력 미검증으로 남긴다. 직접 절차는 Tools/배치스파인추가_확인_2026-10-05.md.
 
 근거(커밋 제외): Saved/Build_SpineAddition.log·Saved/Build_SpineSaveCompat.log, Saved/Logs/SpineAddition_Tests.log·SpineSaveCompat_Tests.log, Saved/Automation/SpineAddition·SpineSaveCompat, Saved/Logs/SpineAddition_UI.log·Saved/SpineAddition_UI_2026-10-05/01_Button.png. 사용자 그룹 줄 붙이기 정상 보고 외 과거 미검증 항목을 자동 완료 처리하지 않는다.
+
+### S7 사용자 스파인 추가 확인·단일 스파인 삭제/Undo (2026-10-05)
+
+사용자가 Tools/배치스파인추가_확인_2026-10-05.md의 직접 절차 모두 정상이라고 보고했다. 추가/미리보기/R/Esc/충돌/확정·Undo/Redo·패치/모드 취소·케이블·저장 반복/기록 초기화만 사용자 확인으로 갱신한다. 로그/캡처/FPS는 제공되지 않았으며 이전 도구 실패 원인을 소급 확정하지 않는다.
+
+Delete는 기존 랙 전체 삭제 또는 네이티브 스파인 한 대 삭제로 분기한다. 기존 배치/실행 중 추가 스파인을 지원하고 다중·혼합/비선택·드래그/사각형/추가 미리보기·패치/시뮬레이션 차단을 유지한다. 성공 삭제 후 기존 재구축으로 선택·참조·패치/결합을 비운다. Undo는 동일 ID/이름/설정/전체 변환/기존 출처를 복원하고 이전 이동/R 참조를 재연결하며 현재 열 상태/시계는 전달하지 않는다. 총1cm 충돌/설정 변경/이름 점유 거절은 기록을 유지한다. 기존 랙 다중 삭제는 유지한다.
+
+Editor90.33s 성공. SpineDeletionUndoRedo/SpineAdditionUndoRedo/RackBatchDeletionUndoRedo3건 성공, 실패0/미실행0/종료0. 변환 복원은 기존 FTransform Equals1e-9(UE 액터cm·스케일 무차원), 배치 시계0s. 새 물성/오차 기준 없음. 근거 Saved/Build_SpineDeletion.log·Saved/Logs/SpineDeletion_Tests.log·Saved/Automation/SpineDeletion. 새 삭제의 실제 UI는 기존 클릭 도구 실패 때문에 재시도하지 않았고 사용자 추가 확인과 구분한다. 저장 삭제 기록/열 결합 최종 검증은 다음 작은 커밋에서 이어간다.

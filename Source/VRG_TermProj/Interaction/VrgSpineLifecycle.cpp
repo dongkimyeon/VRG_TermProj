@@ -15,7 +15,7 @@ ASpineCabinetActor* VrgSpineLifecycle::Find(UWorld* World, const FString& Id)
 }
 
 ASpineCabinetActor* VrgSpineLifecycle::Spawn(UWorld* World, FName Name, const FString& Id,
-	const FTransform& Transform, const FSpineLayoutSettings& Settings)
+	const FTransform& Transform, const FSpineLayoutSettings& Settings, bool bRuntime)
 {
 	if (!World || !World->IsGameWorld() || !Settings.IsValid() || Id.IsEmpty()
 		|| Find(World, Id) || FindObjectFast<UObject>(World->PersistentLevel, Name)) return nullptr;
@@ -25,7 +25,7 @@ ASpineCabinetActor* VrgSpineLifecycle::Spawn(UWorld* World, FName Name, const FS
 	P.bDeferConstruction = true;
 	auto* Spine = World->SpawnActor<ASpineCabinetActor>(ASpineCabinetActor::StaticClass(), Transform, P);
 	if (!IsValid(Spine)) return nullptr;
-	Spine->LayoutId = Id; Spine->bRuntimeLayoutSpine = true;
+	Spine->LayoutId = Id; Spine->bRuntimeLayoutSpine = bRuntime;
 	Spine->ApplyLayoutSettings(Settings);
 	Spine->FinishSpawning(Transform);
 	return IsValid(Spine) ? Spine : nullptr;
@@ -33,7 +33,8 @@ ASpineCabinetActor* VrgSpineLifecycle::Spawn(UWorld* World, FName Name, const FS
 
 bool VrgSpineLifecycle::Remove(ASpineCabinetActor* Spine)
 {
-	if (!IsValid(Spine) || !Spine->GetWorld()->IsGameWorld() || !Spine->bRuntimeLayoutSpine
+	if (!IsValid(Spine) || !Spine->GetWorld() || !Spine->GetWorld()->IsGameWorld()
+		|| Spine->IsActorBeingDestroyed() || Spine->IsActorBeginningPlay()
 		|| Spine->GetClass() != ASpineCabinetActor::StaticClass() || Spine->GetLocalRole() != ROLE_Authority) return false;
 	const FName Name = Spine->GetFName();
 	const FName Retired = MakeUniqueObjectName(Spine->GetOuter(), Spine->GetClass(), TEXT("RetiredLayoutSpine"));
