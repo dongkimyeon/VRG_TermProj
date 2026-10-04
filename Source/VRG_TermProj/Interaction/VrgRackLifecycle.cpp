@@ -28,11 +28,12 @@ ARackThermalActor* VrgRackLifecycle::Spawn(UWorld* World, FName Name, const FStr
 	P.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
 	P.bDeferConstruction = true;
 	auto* Rack = World->SpawnActor<ARackThermalActor>(Class, Transform, P);
-	if (!Rack) return nullptr;
+	if (!IsValid(Rack)) return nullptr; // Spawn callbacks may destroy the deferred actor.
 	Rack->LayoutId = Id;
 	Rack->bDrivenExternally = true;
 	Rack->ApplyLayoutSettings(Settings);
 	Rack->FinishSpawning(Transform);
+	if (!IsValid(Rack)) return nullptr;
 	Rack->PauseSim(); Rack->RefreshVisuals();
 	return Rack;
 }

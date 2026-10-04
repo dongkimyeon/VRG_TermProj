@@ -2848,3 +2848,19 @@ Editor63.61s/신규 RackBatchDeletionCoupling·기존 InventorySaveLoad2건 무�
 증거: Saved/Build_RackBatchCoupling.log와 Saved/Build_RackBatchFinal.log, Saved/Logs/RackBatch{Coupling,Final}_Tests.log, Saved/Automation/RackBatch{Coupling,Final}.
 새 수치 피팅/기준 변경 없음. NullRHI 축소 fixture의 보존/타당성 확인이며 L_Test 전체 운전·FPS 검증으로 주장하지 않는다.
 실제 다중 입력은 앞 절처럼 미검증. 직접 절차와 원복 한계는 Tools/배치다중삭제_확인_2026-10-04.md를 따른다.
+
+### S7 다중 랙 복제 입력·기록 (2026-10-04)
+
+Ctrl+D는 선택 전체가 랙이면 값 기반 그룹 미리보기를 시작한다. 혼합 선택·편집 중·패치·시뮬레이션 차단 유지.
+첫 선택 랙의 기존 높이 평면에서5cm 스냅한 XY 이동량만 그룹 전체에 더하고 상대 위치/높이/방향/스케일을 보존한다.
+그룹 미리보기 R은 거절, 단일 추가/복제 R은 유지한다. 총1cm 외부/내부 충돌이면 전체 빨강/거절, Esc·패치·모드 전환 취소는 기존 경로.
+확정은 기존 RestoreRackPresence의 전체 검증/생성/원복/Rebuild를 사용하고 한 기록으로 Undo/Redo한다. 온도/적분/시계/참조는 복사하지 않는다.
+원본별 CaptureLayoutSettings 값만 복사하여 네이티브 랙을 만든다(기존 단일 복제 규칙 유지, 임의 Blueprint 상태 복제 아님). ID/이름은 새로 만든다.
+생성 콜백이 deferred 액터를 제거한 경우 실패로 반환하도록 공유 Spawn의 생성/FinishSpawning 뒤 유효성을 확인한다.
+전체 목적지 상자는 실제 스케일을 반영하고 선택선 뒤에 제출한다. 이전 추가/복제 상자의 스케일 누락도 해당 표시 경로에서 수정했다. 충돌/장비 변환은 변경하지 않았다.
+Editor64.21s 성공, RackGroupDuplication/RackDuplicationPreview/RackPresenceUndoRedo3건 성공(무경고2+기존 축 근사 경고2 동반1).
+그룹 위치오차0cm(기존 Equals1e-9, 액터 cm 경계), 개수2→4→2→4/한 명령, 원본 설정/동적 상태 불변·배열 독립·새 ID·모델 시계/누적 입력 에너지0 확인.
+둘째 목적지 충돌/혼합 선택 전체 거절 및 둘째 deferred 생성 뒤 파괴 주입으로 첫 생성분 제거·선택/스택 불변 확인.
+물리·저장 검증은 다음 기록으로 마무리한다. 새 물리 수치/기준 없음. 실제 그룹 입력은 도구 제약으로 미검증, 실패 반복 없음.
+근거: Saved/Build_RackGroupDuplication.log, Saved/Logs/RackGroupDuplication_Tests.log, Saved/Automation/RackGroupDuplication.
+직접 절차·최종 화면 범위는 Tools/배치다중복제_확인_2026-10-04.md를 따른다. 전체/FPS/비랙 복제/그룹 미리보기 회전은 제외.
