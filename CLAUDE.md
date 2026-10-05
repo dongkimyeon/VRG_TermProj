@@ -3178,3 +3178,15 @@ SpineBatchDuplicationPersistenceCoupling은 NVL72 한 랙/CDU/공기와 기존4�
 새 다중 복제 UI는 미검증. Windows 플러그인 초기화/창 목록 조회는 성공했으나 이전 geometry unavailable/Shift 유지 제약 해소 근거가 없어 같은 실패를 재시도하지 않았다. 사용자 다중 삭제 정상 보고와 구분한다. 직접 절차 Tools/배치스파인다중복제_확인_2026-10-05.md. NullRHI 축소 fixture 결과를 L_Test 전체 열운전/정상상태/FPS 보장으로 쓰지 않는다. 중간 생성 실패 원복은 앞 입력 검사에서 확인했으며 원복 자체의 연쇄 실패/자원 고갈은 기존 한계다. 다른 장비/Blueprint 복제는 후속이다.
 
 근거(커밋 제외): Saved/Build_SpineBatchDuplicationCoupling.log·Build_SpineBatchDuplicationCoupling_TestFix.log, Saved/Logs/SpineBatchDuplicationCoupling_Tests.log·Saved/Automation/SpineBatchDuplicationCoupling. 기능 빌드/입력 근거는 앞 절.
+
+
+### S7 사용자 다중 스파인 복제 확인·CDU 단일 추가 (2026-10-05)
+
+사용자가 Tools/배치스파인다중복제_확인_2026-10-05.md 직접 절차 모두 정상이라고 보고했다. 해당 그룹 복제/취소/충돌/Undo/Redo/저장 확인만 사용자 확인으로 기록하며 로그/캡처/FPS 및 도구 오류 원인 확인으로 확대하지 않는다.
+
+배치 전용 CDU 버튼은 기존 값 기반 추가 미리보기·앵커5cm·총1cm 충돌·주황/빨강·R90°/Esc·패치/모드 취소를 공유한다. 드래그/사각형/추가 진행 중에는 CDU 버튼을 거절한다. 클릭 때만 네이티브 ACoolingDistributionUnitActor를 새 GUID/이름/runtime 출처로 한 대 생성한다. 설정/외형/펌프/열교환기 기본값은 액터에서 캡처하며 새 물성/추정/실측값이 없다. 레벨 에셋 변경 없음.
+
+추가 한 기록의 Undo/Redo는 같은 ID/이름/설정/전체 변환을 복원하고 이전 이동/R 참조를 재연결한다. 이름 점유/충돌/생성 또는 제거 실패 시 기록을 옮기지 않는다. 온도·적분·시계는 기록에 없으며 기존 방/시뮬레이션 재구축을 호출한다. CDU 삭제/복제 입력은 이번 범위 밖이다.
+
+Editor108.22s 성공. CduAdditionUndoRedo/Gb200RackAddition/SpineAdditionUndoRedo 3건 무경고 성공(실패0). 값 기반 취소/충돌 개수 불변·5cm/총1cm 경계·R·패치/모드 취소·확정 한 대/한 기록·Redo 충돌/이름 점유 상태 불변·이전 이동/R 참조 재연결을 검사했다. 변환은 기존 FTransform Equals1e-9(액터cm/스케일 무차원), 배치 시계0s. 저장/물리 검증은 후속 절을 따른다. 새 UI는 기존 geometry unavailable 실패 해소 근거가 없어 재시도하지 않았으며 직접 확인 절차를 후속 작성한다. 전체/FPS 반복 없음.
+근거: Saved/Build_CduAddition.log·Saved/Logs/CduAddition_Tests.log(커밋 제외).

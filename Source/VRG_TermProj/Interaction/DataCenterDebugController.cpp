@@ -3,6 +3,7 @@
 #include "Interaction/DataCenterDebugController.h"
 #include "Interaction/VrgRackLifecycle.h"
 #include "Interaction/VrgSpineLifecycle.h"
+#include "Interaction/VrgCduLifecycle.h"
 #include "Interaction/VrgSpineLayoutState.h"
 #include "Interaction/LayoutRackPalette.h"
 #include "Simulation/Core/VrgHud.h"
@@ -673,6 +674,7 @@ void ADataCenterDebugController::BeginRackAddition()
 	RackDuplicationMembers.Reset();
 	SpineDuplicationMembers.Reset();
 	bAddingSpine = false;
+	bAddingCdu = false;
 	bAddingRack = true;
 	bRackAdditionHasFloor = false;
 	RackAdditionTransform = FTransform::Identity;
@@ -684,6 +686,14 @@ void ADataCenterDebugController::BeginSpineAddition()
  if (!IsLayoutMode() || !IsCameraInputAvailable()) return;
  BeginRackAddition();
  if (bAddingRack) bAddingSpine = true;
+}
+
+void ADataCenterDebugController::BeginCduAddition()
+{
+ if (!IsLayoutMode() || !IsCameraInputAvailable() || IsLayoutDragging() || bMarqueeActive || bAddingRack
+  || Grabbed.IsValid() || IsInputKeyDown(EKeys::RightMouseButton)) return;
+ BeginRackAddition();
+ if (bAddingRack) bAddingCdu = true;
 }
 
 bool ADataCenterDebugController::BeginRackDuplication()
@@ -778,6 +788,7 @@ void ADataCenterDebugController::CancelRackAddition()
 {
 	bAddingRack = false;
 	bAddingSpine = false;
+	bAddingCdu = false;
 	bRackAdditionHasFloor = false;
 	RackDuplicationMembers.Reset();
 	SpineDuplicationMembers.Reset();
@@ -847,7 +858,8 @@ bool ADataCenterDebugController::GetRackAdditionPreview(FTransform& Out, FVector
 		|| MemberIndex < 0 || MemberIndex >= GetRackAdditionPreviewCount()) return false;
 	Out = RackAdditionTransform;
 	// Reuse the authored GJ geometry; no new equipment dimensions or physical defaults.
-	if (!RackDuplicationMembers.IsEmpty())
+	if (bAddingCdu) SizeM = GetDefault<ACoolingDistributionUnitActor>()->SizeM;
+	else if (!RackDuplicationMembers.IsEmpty())
 	{
 		SizeM = RackDuplicationMembers[MemberIndex].Settings.RackSizeM;
 		if (RackDuplicationMembers.Num() > 1)
@@ -893,6 +905,7 @@ bool ADataCenterDebugController::IsRackAdditionBlocked() const
 
 ARackThermalActor* ADataCenterDebugController::ConfirmRackAddition()
 {
+	if (bAddingCdu) { ConfirmCduAddition(); return nullptr; }
 	if (bAddingSpine) { ConfirmSpineAddition(); return nullptr; }
 	LogLayoutInputState(TEXT("Confirm"));
 	FTransform Proposed; FVector SizeM;
@@ -957,6 +970,24 @@ ARackThermalActor* ADataCenterDebugController::ConfirmRackAddition()
 	UE_LOG(LogTemp, Display, TEXT("[VrgLayout] GB200 NVL72 추가: %s %s yaw %.0f deg"),
 		*AddedRack->GetName(), *AddedRack->GetActorLocation().ToCompactString(), AddedRack->GetActorRotation().Yaw);
 	return AddedRack;
+}
+
+ACoolingDistributionUnitActor* ADataCenterDebugController::ConfirmCduAddition()
+{
+ FTransform Proposed; FVector SizeM;
+ if (!bAddingCdu || !GetWorld() || !GetWorld()->IsGameWorld()
+  || !GetRackAdditionPreview(Proposed, SizeM) || IsRackAdditionBlocked()) return nullptr;
+ const FString Id = FGuid::NewGuid().ToString();
+ const FName Name = MakeUniqueObjectName(GetWorld()->PersistentLevel, ACoolingDistributionUnitActor::StaticClass(),
+  FName(*(TEXT("AddedCdu_") + Id)));
+ FLayoutTransformCommand Command;
+ Command.Cdu = FLayoutCduMember{Id, Name, Proposed, GetDefault<ACoolingDistributionUnitActor>()->CaptureLayoutSettings()};
+ if (!RestoreCduPresence(Command, true)) return nullptr;
+ PushLayoutCommand(Command); CancelRackAddition();
+ auto* Cdu = VrgCduLifecycle::Find(GetWorld(), Id); LayoutSelection.Add(Cdu);
+ UE_LOG(LogTemp, Display, TEXT("[VrgLayout] CDU 추가: %s %s yaw %.0f deg"), *Cdu->GetName(),
+  *Cdu->GetActorLocation().ToCompactString(), Cdu->GetActorRotation().Yaw);
+ return Cdu;
 }
 
 ASpineCabinetActor* ADataCenterDebugController::ConfirmSpineAddition()
@@ -1084,7 +1115,8 @@ void ADataCenterDebugController::RecordLayoutTransforms(const TArray<AActor*>& A
 		if (Rack && Rack->LayoutId.IsEmpty()) Rack->LayoutId = VrgRackLifecycle::Identity(Rack);
 		auto* Spine = Cast<ASpineCabinetActor>(Actors[I]);
   Command.Members.Add({Actors[I], Before[I], After, Rack ? Rack->LayoutId : FString(),
-   Spine ? VrgSpineLifecycle::Identity(Spine) : FString()});
+   Spine ? VrgSpineLifecycle::Identity(Spine) : FString(),
+   Cast<ACoolingDistributionUnitActor>(Actors[I]) ? VrgCduLifecycle::Identity(CastChecked<ACoolingDistributionUnitActor>(Actors[I])) : FString()});
 	}
 	if (!bChanged) return;
 	PushLayoutCommand(MoveTemp(Command));
@@ -1105,6 +1137,11 @@ bool ADataCenterDebugController::RestoreLayoutTransform(bool bRedo)
 	TArray<FLayoutTransformCommand>& To = bRedo ? LayoutUndo : LayoutRedo;
 	if (From.IsEmpty()) return false;
 	const FLayoutTransformCommand Command = From.Last();
+	if (Command.Cdu.IsSet())
+	{
+		if (!RestoreCduPresence(Command, bRedo)) return false;
+		From.Pop(); To.Add(Command); return true;
+	}
 	if (!Command.Spines.IsEmpty())
 	{
 		if (!RestoreSpinePresence(Command, bRedo)) return false;
@@ -1235,6 +1272,35 @@ bool ADataCenterDebugController::RestoreRackPresence(const FLayoutTransformComma
 	else if (!VrgRackLifecycle::RemoveBatch(Present)) return false;
 	VrgRackLifecycle::Rebuild(GetWorld());
 	return true;
+}
+
+bool ADataCenterDebugController::RestoreCduPresence(const FLayoutTransformCommand& Command, bool bRedo)
+{
+ if (!GetWorld()->IsGameWorld() || !Command.Cdu.IsSet()) return false;
+ const auto& M = Command.Cdu.GetValue();
+ if (M.Id.IsEmpty() || !M.Settings.IsValid()) return false;
+ auto* Cdu = VrgCduLifecycle::Find(GetWorld(), M.Id);
+ const bool bTargetPresent = bRedo ? !Command.bBeforePresent : Command.bBeforePresent;
+ if (bTargetPresent)
+ {
+  if (Cdu || FindObjectFast<UObject>(GetWorld()->PersistentLevel, M.Name)
+   || IsLayoutBoxBlocked(GetWorld(), M.Settings.SizeM, M.Transform)) return false;
+  Cdu = VrgCduLifecycle::Spawn(GetWorld(), M.Name, M.Id, M.Transform, M.Settings);
+  if (!Cdu) return false;
+  NotifyLayoutCduRecreated(Cdu);
+ }
+ else
+ {
+  if (!Cdu || Cdu->GetFName() != M.Name || !Cdu->GetActorTransform().Equals(M.Transform)
+   || !(Cdu->CaptureLayoutSettings() == M.Settings) || !VrgCduLifecycle::Remove(Cdu)) return false;
+ }
+ VrgRackLifecycle::Rebuild(GetWorld()); return true;
+}
+
+void ADataCenterDebugController::NotifyLayoutCduRecreated(ACoolingDistributionUnitActor* Cdu)
+{
+ for (auto* Stack : {&LayoutUndo, &LayoutRedo}) for (auto& Command : *Stack) for (auto& M : Command.Members)
+  if (M.CduId == VrgCduLifecycle::Identity(Cdu)) M.Actor = Cdu;
 }
 
 bool ADataCenterDebugController::RestoreSpinePresence(const FLayoutTransformCommand& Command, bool bRedo)

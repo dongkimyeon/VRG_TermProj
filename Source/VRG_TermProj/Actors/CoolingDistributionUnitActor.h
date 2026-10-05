@@ -6,6 +6,29 @@
 #include "GameFramework/Actor.h"
 #include "CoolingDistributionUnitActor.generated.h"
 
+// Authored layout values only. Defaults are captured from the actor, never duplicated here.
+USTRUCT()
+struct FCduLayoutSettings
+{
+	GENERATED_BODY()
+	UPROPERTY() FVector SizeM = FVector::ZeroVector;
+	UPROPERTY() double ConnectionHeightM = 0;
+	UPROPERTY() double ConnectionSpacingM = 0;
+	UPROPERTY() bool bUseReferenceModel = false;
+	UPROPERTY() double ReferencePressurePa = 0;
+	UPROPERTY() double PumpShutoffHeadPa = 0;
+	UPROPERTY() double PumpCurveCoeffPaS2M6 = 0;
+	UPROPERTY() double PumpEfficiency = 0;
+	UPROPERTY() double PumpSpeedRatio = 0;
+	UPROPERTY() double FacilitySupplyTempK = 0;
+	UPROPERTY() double FacilityMassFlowKgs = 0;
+	UPROPERTY() double HxUAWK = 0;
+	UPROPERTY() double FacilityDesignRiseK = 0;
+	UPROPERTY() double HxDesignApproachK = 0;
+	bool IsValid() const;
+	bool operator==(const FCduLayoutSettings& Other) const;
+};
+
 class UStaticMeshComponent;
 
 // CDU(냉각수 분배 장치). 레벨에 직접 놓는다.
@@ -24,6 +47,10 @@ class VRG_TERMPROJ_API ACoolingDistributionUnitActor : public AActor
 
 public:
 	ACoolingDistributionUnitActor();
+	UPROPERTY(VisibleInstanceOnly, Category = "Layout") FString LayoutId;
+	UPROPERTY(Transient) bool bRuntimeLayoutCdu = false;
+	FCduLayoutSettings CaptureLayoutSettings() const;
+	void ApplyLayoutSettings(const FCduLayoutSettings& Settings);
 
 	virtual void Tick(float DeltaTime) override;
 

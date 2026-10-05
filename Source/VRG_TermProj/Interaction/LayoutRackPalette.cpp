@@ -32,6 +32,13 @@ void ULayoutRackPalette::NativeOnInitialized()
  auto* SpineSlot = Canvas->AddChildToCanvas(SpineButton);
  SpineSlot->SetAnchors(FAnchors(0, 1)); SpineSlot->SetAlignment(FVector2D(0, 1));
  SpineSlot->SetPosition(FVector2D(270, -20)); SpineSlot->SetSize(FVector2D(240, 44));
+ auto* CduButton = WidgetTree->ConstructWidget<ULayoutRackButton>();
+ CduButton->OnClicked.AddDynamic(this, &ULayoutRackPalette::OnAddCdu);
+ auto* CduLabel = WidgetTree->ConstructWidget<UTextBlock>();
+ CduLabel->SetText(FText::FromString(TEXT("CDU 추가"))); CduLabel->SetFont(Font); CduButton->AddChild(CduLabel);
+ auto* CduSlot = Canvas->AddChildToCanvas(CduButton);
+ CduSlot->SetAnchors(FAnchors(0, 1)); CduSlot->SetAlignment(FVector2D(0, 1));
+ CduSlot->SetPosition(FVector2D(520, -20)); CduSlot->SetSize(FVector2D(180, 44));
 }
 
 void ULayoutRackPalette::OnAddRack()
@@ -42,4 +49,9 @@ void ULayoutRackPalette::OnAddRack()
 void ULayoutRackPalette::OnAddSpine()
 {
  if (auto* Controller = Cast<ADataCenterDebugController>(GetOwningPlayer())) Controller->BeginSpineAddition();
+}
+
+void ULayoutRackPalette::OnAddCdu()
+{
+ if (auto* Controller = Cast<ADataCenterDebugController>(GetOwningPlayer())) Controller->BeginCduAddition();
 }

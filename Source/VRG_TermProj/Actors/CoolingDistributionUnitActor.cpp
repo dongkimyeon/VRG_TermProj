@@ -142,3 +142,69 @@ void ACoolingDistributionUnitActor::Tick(float DeltaTime)
 		bMeshesDirty = false;
 	}
 }
+
+FCduLayoutSettings ACoolingDistributionUnitActor::CaptureLayoutSettings() const
+{
+	FCduLayoutSettings S;
+	S.SizeM = SizeM;
+	S.ConnectionHeightM = ConnectionHeightM;
+	S.ConnectionSpacingM = ConnectionSpacingM;
+	S.bUseReferenceModel = bUseReferenceModel;
+	S.ReferencePressurePa = ReferencePressurePa;
+	S.PumpShutoffHeadPa = PumpShutoffHeadPa;
+	S.PumpCurveCoeffPaS2M6 = PumpCurveCoeffPaS2M6;
+	S.PumpEfficiency = PumpEfficiency;
+	S.PumpSpeedRatio = PumpSpeedRatio;
+	S.FacilitySupplyTempK = FacilitySupplyTempK;
+	S.FacilityMassFlowKgs = FacilityMassFlowKgs;
+	S.HxUAWK = HxUAWK;
+	S.FacilityDesignRiseK = FacilityDesignRiseK;
+	S.HxDesignApproachK = HxDesignApproachK;
+	return S;
+}
+
+void ACoolingDistributionUnitActor::ApplyLayoutSettings(const FCduLayoutSettings& S)
+{
+	SizeM = S.SizeM;
+	ConnectionHeightM = S.ConnectionHeightM;
+	ConnectionSpacingM = S.ConnectionSpacingM;
+	bUseReferenceModel = S.bUseReferenceModel;
+	ReferencePressurePa = S.ReferencePressurePa;
+	PumpShutoffHeadPa = S.PumpShutoffHeadPa;
+	PumpCurveCoeffPaS2M6 = S.PumpCurveCoeffPaS2M6;
+	PumpEfficiency = S.PumpEfficiency;
+	PumpSpeedRatio = S.PumpSpeedRatio;
+	FacilitySupplyTempK = S.FacilitySupplyTempK;
+	FacilityMassFlowKgs = S.FacilityMassFlowKgs;
+	HxUAWK = S.HxUAWK;
+	FacilityDesignRiseK = S.FacilityDesignRiseK;
+	HxDesignApproachK = S.HxDesignApproachK;
+	bMeshesDirty = true;
+}
+
+bool FCduLayoutSettings::operator==(const FCduLayoutSettings& Other) const
+{
+	return SizeM == Other.SizeM && ConnectionHeightM == Other.ConnectionHeightM && ConnectionSpacingM == Other.ConnectionSpacingM && bUseReferenceModel == Other.bUseReferenceModel && ReferencePressurePa == Other.ReferencePressurePa && PumpShutoffHeadPa == Other.PumpShutoffHeadPa && PumpCurveCoeffPaS2M6 == Other.PumpCurveCoeffPaS2M6 && PumpEfficiency == Other.PumpEfficiency && PumpSpeedRatio == Other.PumpSpeedRatio && FacilitySupplyTempK == Other.FacilitySupplyTempK && FacilityMassFlowKgs == Other.FacilityMassFlowKgs && HxUAWK == Other.HxUAWK && FacilityDesignRiseK == Other.FacilityDesignRiseK && HxDesignApproachK == Other.HxDesignApproachK;
+}
+
+bool FCduLayoutSettings::IsValid() const
+{
+	// Admissibility and existing actor authoring limits; no new hardware rating or fitted physics.
+	return !SizeM.ContainsNaN() && SizeM.X > 0 && SizeM.Y > 0 && SizeM.Z > 0
+		&& FMath::IsFinite(ConnectionHeightM)
+		&& FMath::IsFinite(ConnectionSpacingM)
+		&& FMath::IsFinite(ReferencePressurePa)
+		&& FMath::IsFinite(PumpShutoffHeadPa)
+		&& FMath::IsFinite(PumpCurveCoeffPaS2M6)
+		&& FMath::IsFinite(PumpEfficiency)
+		&& FMath::IsFinite(PumpSpeedRatio)
+		&& FMath::IsFinite(FacilitySupplyTempK)
+		&& FMath::IsFinite(FacilityMassFlowKgs)
+		&& FMath::IsFinite(HxUAWK)
+		&& FMath::IsFinite(FacilityDesignRiseK)
+		&& FMath::IsFinite(HxDesignApproachK)
+		&& ConnectionHeightM >= 0 && ConnectionSpacingM >= 0 && ReferencePressurePa >= 0
+		&& PumpShutoffHeadPa >= 0 && PumpCurveCoeffPaS2M6 >= 0 && PumpEfficiency >= .01 && PumpEfficiency <= 1
+		&& PumpSpeedRatio >= 0 && PumpSpeedRatio <= 1.5 && FacilitySupplyTempK > 0
+		&& FacilityMassFlowKgs >= 0 && HxUAWK >= 0 && FacilityDesignRiseK >= 1 && HxDesignApproachK >= .5;
+}
