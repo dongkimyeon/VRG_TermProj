@@ -3575,3 +3575,34 @@ Editor64.13s 및 신규 냉각 검사 수집/정확한 0.5cm 간격 보강 뒤35
 저장/냉각·마지막 자동 복귀 물리/UI 최종 검증은 후속 커밋에 기록한다. 전체/FPS 반복 없음.
 실행: L_Test 배치에서 CRAH 여러 대 선택→Delete→Ctrl+Z/Y. Automation은 위5종을 RunTests의 +로 묶어 -unattended -NullRHI 실행, 수정 후 해당1종만 실행.
 근거(커밋 제외): Saved/Build_CrahBatchDeletion{,_Final,_Repair}.log, Saved/Logs/CrahBatchDeletion{,Repair}_Tests.log, Saved/Automation/CrahBatchDeletionRepair/index.json.
+
+## 2026-10-06 다중 CRAH 삭제 저장·냉각 연결 검증
+
+기존 v2/crahInventory/deletedCrahs와 Load 전체 트랜잭션을 재사용한다. 저장 형식 확장 없음. 기본 배치 한 대+런타임 추가 한 대를 함께 삭제하며 기존 장비의 삭제 의도만 명시 장부에 남는다. 같은/새 월드에서 삭제 전후 및 실제 장비0 파일을 반복 Load해 동일 ID/이름/종류/설정/전체 변환/출처/원래 자동 경계·삭제 의도를 복원하고 중복 생성 없음/Undo0·Redo0를 확인했다. 삭제 의도는 기록 상한·초기화와 별개이며 기존 파일 호환은 CRAH 삭제 저장 및 랙 InventorySaveLoad/SaveLoadRoundTrip 회귀로 확인했다. 온도·적분·시계는 복사하지 않는다.
+
+CrahBatchDeletionPersistenceCoupling은 NVL72 한 랙·기존 CDU·공기 fixture에서 전환2+런타임1+기존 배치1=실제4→혼합 출처2대 삭제 후2→Undo4→Redo2→반복 Load2 및 마지막 전환2대 삭제→실제0/자동2→Undo실제2→Redo자동2를 검사했다. 같은/새 월드에서4/2/0 파일을 반복 복원하며 기록을 초기화한다. 기존 배치 Perimeter와 설계 풍량10% 지정은 합성 검사 조건이며 주석에 명시했다(실측/새 하드웨어 수치·기본 물성·피팅 아님).
+따뜻한 t1.02s의 둘째 삭제 실패는 첫 삭제를 원복해 개수·선택·설정/변환·삭제 의도/기록·시계·입출력/축적 장부·코일/풍량·랙 공기/냉각수 및 CDU duty 배열을 정확히 유지한다. 성공 뒤 기존 재구축을 사용해 활성 CRAH/덕트/코일·팬 평가를 갱신하며 랙 분기/CDU 배정/배관 수는 유지된다. 마지막 실제 CRAH가 없어지면 기존 자동 계획으로 돌아가며 냉각 중지 명령이 아니다. 풍량0 분담 및 지정 풍량 배분 때문에 개수 감소로 총풍량/UA/팬을 비례 감소시키지 않는다.
+
+| 검사 | 측정 최대/범위 | 기존 기준·정규화/단위 |
+|---|---:|---|
+| 첫 스텝 랙 IT / 삭제에 따른 변화 | 116512.612431 / 0 | W; 같은 부하·초기조건, 기준 IT 대비 상대 <1e-9 |
+| 설계 총풍량 / UA / 팬 | 1.204320 / 1753.725107 / 501.800146 | m³/s / W/K / W; 기존 배분 식 기대값 상대 차 <1e-12 |
+| 풍량/UA/팬 상대 차 | 2.266e-16 | 각각 설계 풍량m³/s·UA W/K·팬 전력W 기대값 기준, 무차원 <1e-12 |
+| 랙+CRAH 덕트 풍량 잔차 | 6.784e-16 | abs(덕트−랙 질량유량/ρ−CRAH 풍량)/전체 덕트 풍량m³/s, 무차원 <1e-9 |
+| 냉각수 전달 / 수력 잔차 | 5.956e-15 / 7.348e-14 | abs(duty−mdot·cp·ΔT)/dutyW <1e-12; 기존 ReferenceFlowM3s·ReferencePressurePa 정규화 목표 |
+| 전역 열수지 | 1.314e-13 | abs(입력J−유출J−축적J)/EnergyInJ(IT+CRAH 팬), 무차원 <1e-9 |
+| 압력 투영 뒤 발산 | 3.517e-08, 수렴 | maxAbsDiv(1/s)/(maxAbsVelocity(m/s)/cellSize(m)), 무차원 <1e-5 |
+| 흡기 / 코일 duty | 295.927988~296.507852 / 6267.046658~6383.165127 | K / W, t1.02s; 기존 288.15~308.15K·양의 코일 냉각·전체 공기 냉각 일치 |
+| 저장/복원 / 시계 | 실제4/2/0 반복·별도 월드, 기록0·새 월드0s | ID/이름/출처/설정 정확 일치, 전체 변환 Equals1e-9(액터cm·스케일 무차원) |
+
+공급≥설비수 공급·회수>공급·양의 유량/duty·펌프/IT<5%를 별도 검사했다. 팬 전기입력은 IT와 분리하고 전역 입력에 한 번만 계상한다. 기존 고정 CRAH 냉수 공급과 펌프 손실 열 분배 부채는 유지한다. 새 물리 값/허용치/솔버 식/레벨 에셋 변경 없음. NullRHI t1.02s fixture이며 장시간 정상상태나 L_Test 전체 운전/FPS로 확대하지 않는다.
+
+후속 CrahBatchDeletionPersistenceCoupling/CrahDeletionCoupling/CrahDeletionPersistence/InventorySaveLoad/SaveLoadRoundTrip **5건 무경고 성공, 실패0/미실행0/진행0/종료0**. 앞 입력5종 포함 **고유 영향10종 무경고 성공**. 수정/실패한 신규 입력1종만 재검사했으며 통과한 검사·전체 VRG·FPS 반복 없음.
+실행: Editor 빌드 뒤 위5종을 Automation RunTests의 +로 묶어 -unattended -NullRHI 실행.
+근거(커밋 제외): Saved/Logs/CrahBatchDeletionCoupling_Tests.log, Saved/Automation/CrahBatchDeletionCoupling/index.json. 실제 UI 확인 범위는 아래 후속 기록을 따른다.
+
+L_Test 실제 UI: 드라이버 안내의 아니오 버튼 접근성 클릭은 geometry unavailable로1회 실패했다. 같은 클릭은 반복하지 않고 Right 키 뒤 Alt+Print Screen에서 아니오 포커스를 확인한 후 Enter로 닫았다. 드라이버/렌더 API 설정 변경·다운로드 없음. 새 일반 게임 창에서 인로우 두 대를 빈 곳에 추가한 화면을 Alt+Print Screen→클립보드 PNG→이미지 확인했다.
+사각형 선택을 sky.drag로1회 보냈으나 두 대 강조가 나타나지 않았다. 이후 선택 없는 Delete 거절 로그, 확인용 추가를 Undo 두 번(Undo0/Redo2)으로 취소한 로그를 확인했다. 실제 그룹 삭제/Undo/Redo는 확인하지 못했다. API 호출 성공만으로 드래그 이벤트 전달/제품 정상으로 해석하지 않으며 이번 입력 문제의 도구/제품 원인은 미확정이다. 같은 드래그·지원하지 않는 Shift 유지 조합을 재시도하지 않았고 추측으로 제품 입력 코드를 수정하지 않았다. 기존 캡처 API/전체 테스트/FPS 반복·레벨/배치 파일 저장 없음.
+미검증 UI: 기존/전환/런타임 그룹 삭제·전체 Undo/Redo·이전 이동/R·복원 충돌·차단·마지막 자동 복귀·저장/새 실행 Load. 자동화 성공과 구분하며 직접 절차 Tools/배치CRAH다중삭제_확인_2026-10-06.md.
+근거(커밋 제외): Saved/Logs/CrahBatchDeletion_UI.log, Saved/CrahBatchDeletion_{Driver,Start,Added,Selected}.png. Selected 파일은 선택 실패 관찰용이며 선택 성공 증거가 아니다.
+다중 CRAH 복제·벽면 추가·물리 모델 확장은 후속이다.
