@@ -3074,3 +3074,15 @@ Editor 저장 확장63.34s 성공. 영향6건은5 성공/1 실패(종료255); �
 새 물성/오차 피팅 없음. 전체 VRG·L_Test 전체 열운전·정상상태/FPS·극단 자원 고갈/Destroy 실패 주입은 제외했다. 다중 스파인 삭제·복제·Blueprint 재생성도 후속이다. 실제 삭제 UI는 기존 클릭 geometry unavailable 오류와 환경 변화 근거가 없어 재시도하지 않았다. 사용자 추가 확인은 새 삭제 UI 확인으로 확대하지 않는다. 직접 절차 Tools/배치스파인삭제_확인_2026-10-05.md.
 
 근거(커밋 제외): Saved/Build_SpineDeletionPersistence.log·Saved/Build_SpineDeletionPersistence_TestFix.log, Saved/Logs/SpineDeletionPersistence_Tests.log·SpineDeletionPersistence_TestFix.log, Saved/Automation/SpineDeletionPersistence·SpineDeletionPersistence_TestFix. 이미 확인한 동일 도구 실패/전체 검사를 반복하지 않았다.
+
+### S7 사용자 스파인 삭제 확인·단일 스파인 복제 입력 (2026-10-05)
+
+사용자가 Tools/배치스파인삭제_확인_2026-10-05.md 직접 절차 모두 정상이라고 보고했다. 기존/런타임 Delete·Undo/Redo·충돌 거절·이전 이동/R 참조·입력 차단·케이블/미연결·저장 반복/기록 초기화·새 L_Test Load만 사용자 확인으로 기록한다. 로그/캡처/FPS 및 이전 도구 오류 원인의 확인으로 확대하지 않는다.
+
+Ctrl+D는 기존 랙 선택 전체 또는 네이티브 스파인 한 대로 분기한다. 스파인 원본의 NumSwitches/FirstSwitchSlot·전체 변환을 값으로 캡처하고 기존 추가 미리보기/생성/재구축 경로를 공유한다. 원본은 유지하고 새 GUID/이름/runtime 출처를 사용하며 현재 열 상태·장부·적분·시계·입력 배열/장비 참조는 전달하지 않는다. 바닥 교점은 원본 높이에 두고 XY 5cm 스냅·총1cm 충돌·R90°·Esc·패치/모드 취소를 유지한다. 미선택/다중·혼합/비랙·비네이티브 스파인 및 편집/패치/시뮬레이션 차단은 유지한다.
+
+클릭 확정 한 건을 기존 스파인 생명주기 기록으로 Undo/Redo한다. 취소/충돌에는 생성·기록이 없고 복원 충돌은 상태와 기록을 유지한다. 기존 QM9700 물성 기본값/프리셋·저장 형식·레벨 에셋 변경 없음. 새 물성/오차 기준 없음.
+
+Editor103.10s 성공. SpineDuplicationUndoRedo/SpineAdditionUndoRedo/SpineDeletionUndoRedo/RackDuplicationPreview 4건 성공(3 무경고+기존 랙 축 근사 경고 동반1), 실패0/미실행0/진행0/종료0. 새 검사는 실제 Ctrl+D 키 이벤트·입력 차단·기존 기본/런타임 비기본 설정·원본 불변/입력 배열 독립·5cm/R/Esc·충돌/반복 확정·Undo/Redo/Redo 충돌·모드 취소를 확인한다. 변환은 기존 전체 FTransform Equals1e-9(액터cm 경계/스케일 무차원), 배치 시계0s·복제 초기 장부0J. 저장/케이블/열·공기 최종 검증은 다음 절로 남긴다. 새 복제 실제 UI는 기존 geometry unavailable 오류에 환경 변화 근거가 없어 재시도하지 않았다. 전체/FPS 반복 없음.
+
+근거(커밋 제외): Saved/Build_SpineDuplication.log·Saved/Logs/SpineDuplication_Tests.log·Saved/Automation/SpineDuplication.

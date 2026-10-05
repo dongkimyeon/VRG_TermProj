@@ -113,6 +113,7 @@ public:
 	void BeginSpineAddition();
 	ASpineCabinetActor* ConfirmSpineAddition();
 	bool BeginRackDuplication();
+	bool BeginSpineDuplication();
 	void CancelRackAddition();
 	void UpdateRackAdditionAlongRay(const FVector& EyeCm, const FVector& Direction);
 	bool GetRackAdditionPreview(FTransform& Out, FVector& SizeM, int32 MemberIndex = 0) const;
@@ -232,6 +233,7 @@ private:
 	bool bRackAdditionHasFloor = false;
 	FTransform RackAdditionTransform = FTransform::Identity;
 	TArray<FLayoutRackMember> RackDuplicationMembers;
+	TOptional<FSpineLayoutSettings> SpineDuplicationSettings; // Authored values only, no source actor/model references.
 	// Capture Ctrl at the D press event, before a short chord's release can reach frame-based actions.
 	bool bLayoutLeftControl = false;
 	bool bLayoutRightControl = false;

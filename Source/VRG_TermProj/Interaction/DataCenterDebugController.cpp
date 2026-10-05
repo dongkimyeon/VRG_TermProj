@@ -670,6 +670,7 @@ void ADataCenterDebugController::BeginRackAddition()
 	EndLayoutMarquee(false);
 	Grabbed.Reset();
 	RackDuplicationMembers.Reset();
+	SpineDuplicationSettings.Reset();
 	bAddingSpine = false;
 	bAddingRack = true;
 	bRackAdditionHasFloor = false;
@@ -710,9 +711,28 @@ bool ADataCenterDebugController::BeginRackDuplication()
 
 void ADataCenterDebugController::OnDuplicateLayoutRack()
 {
-	if (!BeginRackDuplication())
-		UE_LOG(LogTemp, Display, TEXT("[VrgLayout] 랙 복제 거절: 선택 전체가 랙이어야 하며 배치 대기 상태가 필요합니다."));
+	if (!BeginRackDuplication() && !BeginSpineDuplication())
+		UE_LOG(LogTemp, Display, TEXT("[VrgLayout] 복제 거절: 랙 선택 전체 또는 스파인 한 대와 배치 대기 상태가 필요합니다."));
 	LogLayoutInputState(TEXT("Ctrl+D"));
+}
+
+bool ADataCenterDebugController::BeginSpineDuplication()
+{
+	UWorld* World = GetWorld();
+	if (!World || !World->IsGameWorld() || !IsLayoutMode() || !IsCameraInputAvailable()
+		|| bAddingRack || IsLayoutDragging() || bMarqueeActive || Grabbed.IsValid() || IsInputKeyDown(EKeys::RightMouseButton)) return false;
+	const auto Selected = GetSelectedLayoutActors();
+	if (Selected.Num() != 1) return false;
+	const auto* Spine = Cast<ASpineCabinetActor>(Selected[0]);
+	if (!IsValid(Spine) || Spine->GetWorld() != World || Spine->GetClass() != ASpineCabinetActor::StaticClass()) return false;
+	const auto Settings = Spine->CaptureLayoutSettings();
+	if (!Settings.IsValid()) return false;
+	RackDuplicationMembers.Reset();
+	SpineDuplicationSettings = Settings;
+	RackAdditionTransform = Spine->GetActorTransform();
+	bAddingRack = true; bAddingSpine = true; bRackAdditionHasFloor = false;
+	UpdateRackAdditionFromCursor();
+	return true;
 }
 
 bool ADataCenterDebugController::InputKey(const FInputKeyEventArgs& Params)
@@ -754,6 +774,7 @@ void ADataCenterDebugController::CancelRackAddition()
 	bAddingSpine = false;
 	bRackAdditionHasFloor = false;
 	RackDuplicationMembers.Reset();
+	SpineDuplicationSettings.Reset();
 }
 
 void ADataCenterDebugController::UpdateRackAdditionAlongRay(const FVector& EyeCm, const FVector& Direction)
@@ -761,7 +782,7 @@ void ADataCenterDebugController::UpdateRackAdditionAlongRay(const FVector& EyeCm
 	if (!bAddingRack) return;
 	FVector FloorCm;
 	bRackAdditionHasFloor = IsLayoutMode() && IsCameraInputAvailable()
-		&& FloorPointSnapped(EyeCm, Direction, !RackDuplicationMembers.IsEmpty() ? RackAdditionTransform.GetLocation().Z : 0.0, PlaceSnapM, FloorCm);
+		&& FloorPointSnapped(EyeCm, Direction, (!RackDuplicationMembers.IsEmpty() || SpineDuplicationSettings.IsSet()) ? RackAdditionTransform.GetLocation().Z : 0.0, PlaceSnapM, FloorCm);
 	if (bRackAdditionHasFloor) RackAdditionTransform.SetLocation(FloorCm);
 }
 
@@ -796,7 +817,7 @@ void ADataCenterDebugController::LogLayoutInputState(const TCHAR* Context) const
 	FVector EyeCm, Direction, FloorCm;
 	const bool bRay = DeprojectMousePositionToWorld(EyeCm, Direction);
 	const bool bFloor = bRay && FloorPointSnapped(EyeCm, Direction,
-		!RackDuplicationMembers.IsEmpty() ? RackAdditionTransform.GetLocation().Z : 0.0, PlaceSnapM, FloorCm);
+		(!RackDuplicationMembers.IsEmpty() || SpineDuplicationSettings.IsSet()) ? RackAdditionTransform.GetLocation().Z : 0.0, PlaceSnapM, FloorCm);
 	FTransform Proposed; FVector SizeM;
 	const bool bPreview = GetRackAdditionPreview(Proposed, SizeM);
 	// Opt-in, event-only diagnostics. Observing a ray does not update placement or weaken any guard.
@@ -931,17 +952,19 @@ ASpineCabinetActor* ADataCenterDebugController::ConfirmSpineAddition()
   || !GetRackAdditionPreview(Proposed, SizeM) || IsRackAdditionBlocked()) return nullptr;
  FLayoutTransformCommand Command;
  const FString Id = FGuid::NewGuid().ToString();
+ const bool bDuplicating = SpineDuplicationSettings.IsSet();
  const FName Name = MakeUniqueObjectName(GetWorld()->PersistentLevel, ASpineCabinetActor::StaticClass(),
-  FName(*(TEXT("AddedSpine_") + Id)));
+  FName(*((bDuplicating ? TEXT("DuplicatedSpine_") : TEXT("AddedSpine_")) + Id)));
  // Default object owns configuration; QM9700 physical values remain in MakeQuantumSpineParams.
- Command.Spines.Add({Id, Name, Proposed, GetDefault<ASpineCabinetActor>()->CaptureLayoutSettings()});
+ Command.Spines.Add({Id, Name, Proposed, bDuplicating ? SpineDuplicationSettings.GetValue()
+  : GetDefault<ASpineCabinetActor>()->CaptureLayoutSettings()});
  if (!RestoreSpinePresence(Command, true)) return nullptr;
  PushLayoutCommand(Command);
  CancelRackAddition();
  auto* Spine = VrgSpineLifecycle::Find(GetWorld(), Id);
  LayoutSelection.Add(Spine);
- UE_LOG(LogTemp, Display, TEXT("[VrgLayout] 스파인 추가: %s %s yaw %.0f deg"),
-  *Spine->GetName(), *Spine->GetActorLocation().ToCompactString(), Spine->GetActorRotation().Yaw);
+ UE_LOG(LogTemp, Display, TEXT("[VrgLayout] 스파인 %s: %s %s yaw %.0f deg"),
+  bDuplicating ? TEXT("복제") : TEXT("추가"), *Spine->GetName(), *Spine->GetActorLocation().ToCompactString(), Spine->GetActorRotation().Yaw);
  return Spine;
 }
 
