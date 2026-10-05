@@ -3487,3 +3487,13 @@ Editor 빌드 **152.02s 성공**, 마지막 접촉 guard/메타데이터·검사
 추가 전 저장 Load의 자동 복귀, 반복 Load 중복 없음·기록 초기화, 이전 표식 없는 파일과 음수 풍량 거절, 따뜻한 생성/제거 실패의 장부·시계 정확 유지를 확인했다. 저장 검사에서 전환 CRAH를 바깥쪽으로50cm 이동해 원래 경계와 현재 변환이 구분되는지도 검사했다(합성 시험 위치, 하드웨어 값 아님). 총 설계 풍량/팬은 기존 배분 정책이며 대수 증가 자체로 용량을 늘리지 않는다. NullRHI 순간 fixture 결과를 L_Test 화면·장시간·시설 전체 정상상태로 확대하지 않는다. UI 직접 절차는 Tools/배치인로우추가_확인_2026-10-05.md와 원격 Tools/배치CRAH추가_확인_2026-10-05.md. 네이티브 도구 비활성으로 UI 재시도 없음. 쿨러 삭제/복제·벽면 추가·펌프 손실 열 분배는 후속이다.
 
 근거(커밋 제외): Saved/Build_MergeCrah.log, Saved/Build_MergeCrah_Final.log, Saved/Logs/MergeCrah_Tests.log, Saved/Automation/MergeCrah/index.json. 실행: Editor 빌드 후 UnrealEditor-Cmd에서 위12종 접두어/이름을 `Automation RunTests`의 `+`로 묶고 `-unattended -NullRHI` 실행.
+
+
+## 2026-10-06 단일 CRAH 삭제 입력·Undo/Redo
+
+사용자 인로우 추가·저장 직접 확인 모두 정상 보고를 반영한다. 해당 절차의 확인이며 로그/캡처/FPS 검증으로 확대하지 않는다.
+Delete는 단일 네이티브 CRAH만 지원한다(기존 배치/자동 전환/런타임 추가). 다중·혼합/미선택, 편집/패치/시뮬레이션 중 입력은 기존대로 거절한다. 기존 presence/기록/성공 재구축 경로를 재사용하고 이전 이동/R 참조를 같은 ID로 재연결한다. ID/설정/전체 변환/출처/원래 자동 경계를 복원하되 온도·적분·시계는 복사하지 않는다. 원래 위치를 유지한 자동 전환 장비의 변하지 않은 접촉만 보존하고 다른 목적지는 총1cm를 유지한다. 삭제 의도는 UVrgCrahLayoutState에 기록해 기록 상한/초기화와 독립적으로 유지한다.
+마지막 실제 CRAH가 없어지면 기존 PlanCrahUnits의 자동 배치가 다시 사용된다. 삭제는 냉각 전체 끄기 기능이 아니다. 물성/정책/레벨 에셋 변경 없음.
+Editor165.37s 성공. CrahDeletionUndoRedo/CrahAdditionUndoRedo/CduDeletionUndoRedo 3건 무경고 성공(실패0/미실행0/종료0). 충돌·이름 점유·실제 생성 실패·제거 권한 실패에서 상태/기록 유지, 기존/런타임/전환 출처·변하지 않은 접촉·이웃 변경 거절·이전 이동/R 참조를 검사했다. 변환 Equals1e-9는 기존 cm 경계/스케일 무차원 기준이며 합성 위치/설정은 하드웨어 참고값이 아니다.
+저장 deletedCrahs와 삭제 후 물리 검증은 다음 커밋이다. 새 삭제 UI는 최종 확인 전이며 직접 절차 Tools/배치CRAH삭제_확인_2026-10-06.md. 전체/FPS 반복 없음.
+근거(커밋 제외): Saved/Build_CrahDeletion.log, Saved/Logs/CrahDeletion_Tests.log, Saved/Automation/CrahDeletion/index.json.

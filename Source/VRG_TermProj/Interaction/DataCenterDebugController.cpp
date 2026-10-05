@@ -5,6 +5,7 @@
 #include "Interaction/VrgSpineLifecycle.h"
 #include "Interaction/VrgCduLifecycle.h"
 #include "Interaction/VrgCduLayoutState.h"
+#include "Interaction/VrgCrahLayoutState.h"
 #include "Interaction/VrgSpineLayoutState.h"
 #include "Interaction/LayoutRackPalette.h"
 #include "Simulation/Core/VrgHud.h"
@@ -734,7 +735,7 @@ bool ADataCenterDebugController::BeginRackDuplication()
 void ADataCenterDebugController::OnDuplicateLayoutRack()
 {
 	if (!BeginRackDuplication() && !BeginSpineDuplication() && !BeginCduDuplication())
-		UE_LOG(LogTemp, Display, TEXT("[VrgLayout] 복제 거절: 랙 선택 전체 또는 네이티브 스파인 선택 전체 또는 네이티브 CDU 선택 전체와 배치 대기 상태가 필요합니다."));
+		UE_LOG(LogTemp, Display, TEXT("[VrgLayout] 복제 거절: 랙 선택 전체 또는 네이티브 스파인 선택 전체 또는 네이티브 CDU 선택 전체 또는 단일 네이티브 CRAH와 배치 대기 상태가 필요합니다."));
 	LogLayoutInputState(TEXT("Ctrl+D"));
 }
 
@@ -1142,8 +1143,39 @@ bool ADataCenterDebugController::TryDeleteLayoutRack()
 
 void ADataCenterDebugController::OnDeleteLayoutEquipment()
 {
-	if (!TryDeleteLayoutRack() && !TryDeleteLayoutSpine() && !TryDeleteLayoutCdu())
-		UE_LOG(LogTemp, Display, TEXT("[VrgLayout] 삭제 거절: 랙 선택 전체 또는 네이티브 스파인 선택 전체 또는 네이티브 CDU 선택 전체와 배치 대기 상태가 필요합니다."));
+	if (!TryDeleteLayoutRack() && !TryDeleteLayoutSpine() && !TryDeleteLayoutCdu() && !TryDeleteLayoutCrah())
+		UE_LOG(LogTemp, Display, TEXT("[VrgLayout] 삭제 거절: 랙 선택 전체 또는 네이티브 스파인 선택 전체 또는 네이티브 CDU 선택 전체 또는 단일 네이티브 CRAH와 배치 대기 상태가 필요합니다."));
+}
+
+bool ADataCenterDebugController::TryDeleteLayoutCrah()
+{
+ auto* World=GetWorld();
+ if(!World || !World->IsGameWorld() || !IsLayoutMode() || !IsCameraInputAvailable()
+  || bAddingRack || IsLayoutDragging() || bMarqueeActive || Grabbed.IsValid() || IsInputKeyDown(EKeys::RightMouseButton)) return false;
+ const auto Selected=GetSelectedLayoutActors();
+ if(Selected.Num()!=1) return false;
+ auto* Crah=Cast<ACrahUnitActor>(Selected[0]);
+ if(!IsValid(Crah) || Crah->GetWorld()!=World || Crah->GetClass()!=ACrahUnitActor::StaticClass()) return false;
+ FLayoutTransformCommand Command; Command.bBeforePresent=true;
+ FLayoutCrahMember M{{VrgCrahLifecycle::Identity(Crah),Crah->GetFName(),Crah->GetActorTransform(),Crah->CaptureLayoutSettings(),
+  Crah->bRuntimeLayoutCrah,Crah->bConvertedAutomaticCrah,Crah->AutomaticLayoutTransform,Crah->AutomaticLayoutSizeM},{}};
+ // Only original automatic contacts qualify; moving/resizing the cooler cannot create new exemptions.
+ if(Crah->PreservesAutomaticAirBounds()) {
+  FLayoutFootprint Candidate;
+  if(!MakeLayoutFootprint(Crah->SizeM,Crah->GetActorTransform(),Candidate)) return false;
+  for(TActorIterator<AActor> It(World);It;++It) {
+   if(*It==Crah) continue;
+   FVector Size; FLayoutFootprint Other;
+   if(PlaceableBoxM(*It,Size) && MakeLayoutFootprint(Size,It->GetActorTransform(),Other)
+    && FootprintsConflict(Candidate,Other) && !FootprintsConflict(Candidate,Other,-1e-6))
+    M.ExistingContacts.Add({It->GetFName(),It->GetClass(),It->GetActorTransform(),Size});
+  }
+ }
+ Command.Crahs.Add(M);
+ if(!RestoreCrahPresence(Command,true)) return false;
+ PushLayoutCommand(MoveTemp(Command));
+ UE_LOG(LogTemp,Display,TEXT("[VrgLayout] CRAH 삭제: 1대 (실제 장비가 없으면 기존 자동 배치 복귀)"));
+ return true;
 }
 
 bool ADataCenterDebugController::TryDeleteLayoutCdu()
@@ -1403,9 +1435,10 @@ bool ADataCenterDebugController::RestoreRackPresence(const FLayoutTransformComma
 bool ADataCenterDebugController::RestoreCrahPresence(const FLayoutTransformCommand& Command,bool bRedo)
 {
  if(!GetWorld() || !GetWorld()->IsGameWorld() || Command.Crahs.IsEmpty()) return false;
+ const bool bTargetPresent=bRedo ? !Command.bBeforePresent : Command.bBeforePresent;
  auto* Sim=FindSimActor(); if(!Sim) return false;
  if(Command.bCrahAutomaticBefore && uint8(Sim->CrahLayout)!=Command.CrahLayoutBefore) return false;
- if(bRedo && Command.bCrahAutomaticBefore) {
+ if(bTargetPresent && Command.bCrahAutomaticBefore) {
   for(TActorIterator<ACrahUnitActor> It(GetWorld());It;++It) return false;
   TArray<FCrahLayoutRecord> Automatic;
   if(!Sim->CaptureAutomaticCrahLayout(Automatic)) return false;
@@ -1427,7 +1460,7 @@ bool ADataCenterDebugController::RestoreCrahPresence(const FLayoutTransformComma
   if(R.Id.IsEmpty() || R.Name.IsNone() || !R.Settings.IsValid() || Ids.Contains(R.Id) || Names.Contains(R.Name)) return false;
   Ids.Add(R.Id); Names.Add(R.Name);
   auto* Crah=VrgCrahLifecycle::Find(GetWorld(),R.Id);
-  if(bRedo) {
+  if(bTargetPresent) {
    if(Crah || FindObjectFast<UObject>(GetWorld()->PersistentLevel,R.Name)) return false;
    FLayoutFootprint Candidate;
    if(!MakeLayoutFootprint(R.Settings.SizeM,R.Transform,Candidate)) return false;
@@ -1449,17 +1482,21 @@ bool ADataCenterDebugController::RestoreCrahPresence(const FLayoutTransformComma
     }
    Footprints.Add(Candidate);
   } else {
-   if(!Crah || Crah->GetClass()!=ACrahUnitActor::StaticClass() || Crah->GetFName()!=R.Name || !Crah->bRuntimeLayoutCrah
+   if(!Crah || Crah->GetClass()!=ACrahUnitActor::StaticClass() || Crah->GetFName()!=R.Name || Crah->bRuntimeLayoutCrah!=R.bRuntime
     || Crah->bConvertedAutomaticCrah!=R.bConvertedAutomatic || !Crah->GetActorTransform().Equals(R.Transform,1e-9)
-    || !(Crah->CaptureLayoutSettings()==R.Settings)) return false;
+    || !(Crah->CaptureLayoutSettings()==R.Settings)
+    || (R.bConvertedAutomatic && R.AutomaticSizeM.GetMin()>0
+     && (!Crah->AutomaticLayoutTransform.Equals(R.AutomaticTransform,1e-9) || !Crah->AutomaticLayoutSizeM.Equals(R.AutomaticSizeM,1e-9)))) return false;
    Present.Add(Crah);
   }
  }
- if(bRedo) {
+ if(bTargetPresent) {
+  const auto DeletedBefore=GetWorld()->GetSubsystem<UVrgCrahLayoutState>()->DeletedPlaced;
   for(const auto& M:Command.Crahs) {
    auto* Crah=VrgCrahLifecycle::Spawn(GetWorld(),M.Record);
    if(!Crah) {
     if(!Present.IsEmpty()) verify(VrgCrahLifecycle::RemoveBatch(Present));
+    GetWorld()->GetSubsystem<UVrgCrahLayoutState>()->DeletedPlaced=DeletedBefore;
     return false; // No rebuild/history change: warm shared bridge and clock are retained on failure.
    }
    Present.Add(Crah);
@@ -2565,7 +2602,7 @@ void ADataCenterDebugController::DrawHelp() const
 
 	GEngine->AddOnScreenDebugMessage(BaseKey, 0.0f, FColor(180, 220, 255),
 		IsLayoutMode()
-		? TEXT("[배치 키] Shift+클릭 추가/제거 | 빈 곳 드래그 사각형 선택·Shift 추가 | 장비 드래그 그룹 이동/빨강 거절/Esc 취소 | 단일 랙 줄 붙이기/Alt 해제 | Ctrl+D 랙/스파인/CDU 선택 전체 복제 | Ctrl+Z/Y 배치 실행 취소/다시 실행 | 추가/복제: 클릭 확정/R 회전/Esc 취소 | R 선택 90도 회전 | Delete 랙/스파인/CDU 선택 전체 삭제 | F 선택/없으면 전체 | 우클릭+마우스/WASD/QE 비행·휠 속도 | 휠 전후 | G/T 단일만 C 컨테인먼트 Enter 시뮬레이션 H 도움말")
+		? TEXT("[배치 키] Shift+클릭 추가/제거 | 빈 곳 드래그 사각형 선택·Shift 추가 | 장비 드래그 그룹 이동/빨강 거절/Esc 취소 | 단일 랙 줄 붙이기/Alt 해제 | Ctrl+D 랙/스파인/CDU 선택 전체 복제 | Ctrl+Z/Y 배치 실행 취소/다시 실행 | 추가/복제: 클릭 확정/R 회전/Esc 취소 | R 선택 90도 회전 | Delete 랙/스파인/CDU 선택 전체·CRAH 단일 삭제 | F 선택/없으면 전체 | 우클릭+마우스/WASD/QE 비행·휠 속도 | 휠 전후 | G/T 단일만 C 컨테인먼트 Enter 시뮬레이션 H 도움말")
 		: TEXT("[디버그 키] Enter 배치 모드 | 1/2 CPU 발열  3/4 GPU 발열  5/6 펌프 회전수  7/8 라디에이터 UA(랙별 모드)  9/0 부하율  E 바라보는 유닛 뽑기/꽂기  R 리셋  H 도움말"));
 
 	const ARackThermalActor* Rack = TargetRack.Get();

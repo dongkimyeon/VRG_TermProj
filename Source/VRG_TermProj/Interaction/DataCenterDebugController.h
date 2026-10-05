@@ -136,7 +136,8 @@ public:
 	bool TryRotateLayoutSelection();
 	// Runtime layout only: all selected equipment must be racks, with no gesture in progress.
 	bool TryDeleteLayoutRack();
-	bool TryDeleteLayoutCdu(); // Entire native CDU selection; other equipment remains separate.
+	bool TryDeleteLayoutCdu();
+ bool TryDeleteLayoutCrah(); // Entire native CDU selection; other equipment remains separate.
 	bool TryDeleteLayoutSpine(); // Entire native spine selection; rack deletion remains separate.
 	// Game-thread layout transforms only (UE cm at this actor boundary), not simulation state.
 	bool TryUndoLayout();

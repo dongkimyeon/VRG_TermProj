@@ -1,4 +1,5 @@
 #include "Interaction/VrgCrahLifecycle.h"
+#include "Interaction/VrgCrahLayoutState.h"
 #include "Interaction/DataCenterDebugController.h"
 #include "Engine/World.h"
 #include "EngineUtils.h"
@@ -37,6 +38,7 @@ ACrahUnitActor* VrgCrahLifecycle::Spawn(UWorld* World, const FCrahLayoutRecord& 
  Crah->FinishSpawning(Transform);
  // CRAH thermal/time state lives in the shared coupling, rebuilt fresh after a successful transaction.
  if (!IsValid(Crah)) { RetireFailedSpawn(); return nullptr; }
+ World->GetSubsystem<UVrgCrahLayoutState>()->DeletedPlaced.Remove(Id);
  return Crah;
 }
 bool VrgCrahLifecycle::Remove(ACrahUnitActor* Crah)
@@ -45,10 +47,13 @@ bool VrgCrahLifecycle::Remove(ACrahUnitActor* Crah)
   || Crah->IsActorBeingDestroyed() || Crah->IsActorBeginningPlay()
   || Crah->GetClass() != ACrahUnitActor::StaticClass() || Crah->GetLocalRole() != ROLE_Authority) return false;
  const FName Name = Crah->GetFName();
+ const FCrahLayoutRecord Record{Identity(Crah),Name,Crah->GetActorTransform(),Crah->CaptureLayoutSettings(),
+  Crah->bRuntimeLayoutCrah,Crah->bConvertedAutomaticCrah,Crah->AutomaticLayoutTransform,Crah->AutomaticLayoutSizeM};
  const FName Retired = MakeUniqueObjectName(Crah->GetOuter(), Crah->GetClass(), TEXT("RetiredLayoutCrah"));
  if (!Crah->Rename(*Retired.ToString(), nullptr, REN_DontCreateRedirectors | REN_NonTransactional)) return false;
  if (Crah->Destroy(false, false))
  {
+  if(!Record.bRuntime) Crah->GetWorld()->GetSubsystem<UVrgCrahLayoutState>()->DeletedPlaced.Add(Record.Id,Record);
   return true;
  }
  Crah->Rename(*Name.ToString(), nullptr, REN_DontCreateRedirectors | REN_NonTransactional); return false;
@@ -71,6 +76,7 @@ bool VrgCrahLifecycle::RemoveBatch(const TArray<ACrahUnitActor*>& Crahs)
  TArray<FBackup> Backups;
  for (auto* Crah : Crahs) Backups.Add({Crah,{Identity(Crah),Crah->GetFName(),Crah->GetActorTransform(),Crah->CaptureLayoutSettings(),Crah->bRuntimeLayoutCrah,Crah->bConvertedAutomaticCrah},
   Crah->LayoutId,Crah->GetLocalRole(),Crah->bRuntimeLayoutCrah,Crah->AutomaticLayoutTransform,Crah->AutomaticLayoutSizeM});
+ const auto DeletedBefore=World->GetSubsystem<UVrgCrahLayoutState>()->DeletedPlaced;
  for (auto* Crah : Crahs) if (!Remove(Crah))
  {
   for (const auto& B : Backups) if (IsValid(B.Actor)) B.Actor->SetRole(B.Role);
@@ -85,6 +91,7 @@ bool VrgCrahLifecycle::RemoveBatch(const TArray<ACrahUnitActor*>& Crahs)
    Restored->LayoutId = B.PreviousId; Restored->bRuntimeLayoutCrah=B.bRuntime;
   }
   for (TActorIterator<ADataCenterDebugController> It(World);It;++It) It->RefreshLayoutEquipmentReferences(true);
+  World->GetSubsystem<UVrgCrahLayoutState>()->DeletedPlaced=DeletedBefore;
   // Only actor links were replaced; the shared air/thermal bridge and clock stay intact on failure.
   // Successful edits use the normal full rebuild; Undo never copies thermal/integral state.
   return false;
