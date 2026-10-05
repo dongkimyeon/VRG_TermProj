@@ -3110,3 +3110,15 @@ Editor45.10s 성공. 영향4건은3 성공/1 실패(종료255), 실패는 검사
 NullRHI 축소 fixture 결과이며 L_Test 전체 열운전/정상상태/FPS 검증으로 확대하지 않는다. 기존 geometry unavailable 도구 오류의 환경 변화 근거가 없어 UI 재시도하지 않았다. 새 복제 실제 UI만 미검증이며 직접 절차는 Tools/배치스파인복제_확인_2026-10-05.md. 다중 스파인/Blueprint/다른 장비 복제·극단 자원 고갈/Destroy 실패 주입은 범위 밖이다.
 
 근거(커밋 제외): Saved/Build_SpineDuplicationCoupling.log·Build_SpineDuplicationCoupling_TestFix.log·Build_SpineDuplicationCoupling_RowFix.log, Saved/Logs/SpineDuplicationCoupling_Tests.log·SpineDuplicationCoupling_RowFix.log, Saved/Automation/SpineDuplicationCoupling·SpineDuplicationCoupling_RowFix. 기존 코드/충돌/차단 조건 완화 없음.
+
+### S7 사용자 단일 스파인 복제 확인·다중 스파인 삭제 입력 (2026-10-05)
+
+사용자가 Tools/배치스파인복제_확인_2026-10-05.md 직접 절차 모두 정상이라고 보고했다. 기존/런타임 복제·R/Esc/충돌·확정/원본 유지·Undo/Redo·차단/전환 취소·케이블·반복/새 실행 Load만 사용자 확인으로 기록한다. 로그/캡처/FPS와 기존 도구 오류 원인 확인으로 확대하지 않는다.
+
+Delete는 선택 전체가 네이티브 스파인인 경우 기존/런타임 출처를 함께 삭제한다. 랙 다중 삭제는 유지하고, 종류 혼합/미선택·편집/패치/시뮬레이션 등 기존 차단을 유지한다. 전체를 한 기록으로 Undo/Redo하며 ID/이름/설정/변환/출처와 이전 그룹 이동/R 참조를 복원한다. 현재 열 상태·적분·시계는 성공 Undo로 전달하지 않는다. 기록 상한100개·모드 유지·새 편집 Redo 초기화·Load 기록 초기화는 기존 경로다.
+
+삭제/복원 전에 전체 ID/설정/이름/종류/출처 및 복원 위치의 총1cm 외부/그룹 내부 충돌을 검사한다. 실제 중간 삭제 실패는 기존 열 상태/입력·선택·기록·삭제 의도를 원복한다. 이 실패 전용 메모리 백업은 성공 Undo/파일의 설정 기록과 구분한다. 복원 중 두 번째 생성 실패도 앞 생성분 제거/삭제 의도 원복 후 기록을 유지한다. 기존 생성/Remove·재구축 경로를 공유하고 새 물성/저장 형식/레벨 에셋 변경 없음.
+
+Editor77.39s 성공. SpineBatchDeletionUndoRedo/SpineDeletionUndoRedo/SpineDuplicationUndoRedo/RackBatchDeletionUndoRedo 4건 무경고 성공, 실패0/미실행0/진행0/종료0. 새 검사는 기존4스위치/런타임2스위치·비기본 높이/스케일(합성 설정, 새 물성 아님), 차단/전체 개수·선택/한 기록·두 번째 목적지 충돌/0.5cm 여유 거절·이름 점유·중간 삭제/생성 실패·열 장부 원복·이전 그룹 이동/R 참조 재연결·오래된 설정 Redo 거절을 확인한다. 전체 FTransform Equals1e-9(액터cm 경계/스케일 무차원)·성공 Undo 장부0J·배치 시계0s는 기존 기준이다. 저장/열·공기 결합의 최종 결과는 후속 절로 남긴다. 전체/FPS 반복 없음.
+
+새 다중 삭제 UI는 기존 geometry unavailable 클릭/Shift 유지 입력 실패에 환경 변화 근거가 없어 재시도하지 않았다. 사용자 단일 복제 정상 보고와 구분한다. 근거(커밋 제외): Saved/Build_SpineBatchDeletion.log·Saved/Logs/SpineBatchDeletion_Tests.log·Saved/Automation/SpineBatchDeletion.

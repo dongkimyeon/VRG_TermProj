@@ -128,7 +128,7 @@ public:
 	bool TryRotateLayoutSelection();
 	// Runtime layout only: all selected equipment must be racks, with no gesture in progress.
 	bool TryDeleteLayoutRack();
-	bool TryDeleteLayoutSpine(); // Single native spine only; existing rack group deletion remains separate.
+	bool TryDeleteLayoutSpine(); // Entire native spine selection; rack deletion remains separate.
 	// Game-thread layout transforms only (UE cm at this actor boundary), not simulation state.
 	bool TryUndoLayout();
 	bool TryRedoLayout();
@@ -136,7 +136,7 @@ public:
 	void ResetLayoutEditsForLoad();
 	void RefreshLayoutEquipmentReferences(bool bKeepSelection = false);
 	void NotifyLayoutRackRecreated(ARackThermalActor* Rack, ARackThermalActor* Previous = nullptr) { RebindLayoutRack(Rack, Previous); }
-	void NotifyLayoutSpineRecreated(ASpineCabinetActor* Spine);
+	void NotifyLayoutSpineRecreated(ASpineCabinetActor* Spine, ASpineCabinetActor* Previous = nullptr);
 	int32 GetLayoutUndoCount() const { return LayoutUndo.Num(); }
 	int32 GetLayoutRedoCount() const { return LayoutRedo.Num(); }
 

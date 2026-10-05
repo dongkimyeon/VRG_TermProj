@@ -3,6 +3,7 @@
 #include "Interaction/DataCenterDebugController.h"
 #include "Interaction/VrgRackLifecycle.h"
 #include "Interaction/VrgSpineLifecycle.h"
+#include "Interaction/VrgSpineLayoutState.h"
 #include "Interaction/LayoutRackPalette.h"
 #include "Simulation/Core/VrgHud.h"
 
@@ -995,7 +996,7 @@ bool ADataCenterDebugController::TryDeleteLayoutRack()
 void ADataCenterDebugController::OnDeleteLayoutEquipment()
 {
 	if (!TryDeleteLayoutRack() && !TryDeleteLayoutSpine())
-		UE_LOG(LogTemp, Display, TEXT("[VrgLayout] 삭제 거절: 랙 선택 전체 또는 스파인 한 대와 배치 대기 상태가 필요합니다."));
+		UE_LOG(LogTemp, Display, TEXT("[VrgLayout] 삭제 거절: 랙 선택 전체 또는 네이티브 스파인 선택 전체와 배치 대기 상태가 필요합니다."));
 }
 
 bool ADataCenterDebugController::TryDeleteLayoutSpine()
@@ -1004,16 +1005,19 @@ bool ADataCenterDebugController::TryDeleteLayoutSpine()
 	if (!World || !World->IsGameWorld() || !IsLayoutMode() || !IsCameraInputAvailable()
 		|| bAddingRack || IsLayoutDragging() || bMarqueeActive || Grabbed.IsValid() || IsInputKeyDown(EKeys::RightMouseButton)) return false;
 	const auto Selected = GetSelectedLayoutActors();
-	if (Selected.Num() != 1) return false;
-	auto* Spine = Cast<ASpineCabinetActor>(Selected[0]);
-	if (!IsValid(Spine) || Spine->GetWorld() != World || Spine->GetClass() != ASpineCabinetActor::StaticClass()) return false;
+	if (Selected.IsEmpty()) return false;
 	FLayoutTransformCommand Command;
 	Command.bBeforePresent = true;
-	Command.Spines.Add({VrgSpineLifecycle::Identity(Spine), Spine->GetFName(), Spine->GetActorTransform(),
-		Spine->CaptureLayoutSettings(), Spine->bRuntimeLayoutSpine});
+	for (auto* Actor : Selected)
+	{
+		auto* Spine = Cast<ASpineCabinetActor>(Actor);
+		if (!IsValid(Spine) || Spine->GetWorld() != World || Spine->GetClass() != ASpineCabinetActor::StaticClass()) return false;
+		Command.Spines.Add({VrgSpineLifecycle::Identity(Spine), Spine->GetFName(), Spine->GetActorTransform(),
+			Spine->CaptureLayoutSettings(), Spine->bRuntimeLayoutSpine});
+	}
 	if (!RestoreSpinePresence(Command, true)) return false;
 	PushLayoutCommand(MoveTemp(Command));
-	UE_LOG(LogTemp, Display, TEXT("[VrgLayout] 스파인 삭제: 1대"));
+	UE_LOG(LogTemp, Display, TEXT("[VrgLayout] 스파인 삭제: %d대"), Selected.Num());
 	return true;
 }
 
@@ -1218,34 +1222,67 @@ bool ADataCenterDebugController::RestoreRackPresence(const FLayoutTransformComma
 
 bool ADataCenterDebugController::RestoreSpinePresence(const FLayoutTransformCommand& Command, bool bRedo)
 {
- if (!GetWorld()->IsGameWorld() || Command.Spines.Num() != 1) return false;
- const auto& Member = Command.Spines[0];
- const bool bTargetPresent = bRedo ? !Command.bBeforePresent : Command.bBeforePresent;
- auto* Spine = VrgSpineLifecycle::Find(GetWorld(), Member.Id);
- if (bTargetPresent)
- {
-  const FVector SizeM(GjRackLayout::FrameDepthM, GjRackLayout::FrameWidthM, GjRackLayout::FrameHeightM);
-  if (Spine || IsLayoutBoxBlocked(GetWorld(), SizeM, Member.Transform)) return false;
-  Spine = VrgSpineLifecycle::Spawn(GetWorld(), Member.Name, Member.Id, Member.Transform, Member.Settings, Member.bRuntime);
-  if (!Spine) return false;
-  NotifyLayoutSpineRecreated(Spine);
- }
- else
- {
-  if (!Spine || Spine->GetFName() != Member.Name || !Spine->GetActorTransform().Equals(Member.Transform)
-   || Spine->bRuntimeLayoutSpine != Member.bRuntime || !(Spine->CaptureLayoutSettings() == Member.Settings)
-   || !VrgSpineLifecycle::Remove(Spine)) return false;
- }
- VrgRackLifecycle::Rebuild(GetWorld());
- return true;
+	if (!GetWorld()->IsGameWorld() || Command.Spines.IsEmpty()) return false;
+	const bool bTargetPresent = bRedo ? !Command.bBeforePresent : Command.bBeforePresent;
+	const FVector SizeM(GjRackLayout::FrameDepthM, GjRackLayout::FrameWidthM, GjRackLayout::FrameHeightM);
+	TArray<ASpineCabinetActor*> Present; TArray<FLayoutFootprint> Footprints;
+	TSet<FString> Ids; TSet<FName> Names;
+	// Preflight all identities, configurations, names and external/internal overlaps.
+	for (const auto& Member : Command.Spines)
+	{
+		if (Member.Id.IsEmpty() || !Member.Settings.IsValid() || Ids.Contains(Member.Id) || Names.Contains(Member.Name)) return false;
+		Ids.Add(Member.Id); Names.Add(Member.Name);
+		auto* Spine = VrgSpineLifecycle::Find(GetWorld(), Member.Id);
+		if (bTargetPresent)
+		{
+			if (Spine || FindObjectFast<UObject>(GetWorld()->PersistentLevel, Member.Name)
+				|| IsLayoutBoxBlocked(GetWorld(), SizeM, Member.Transform)) return false;
+			FLayoutFootprint Candidate;
+			if (!MakeLayoutFootprint(SizeM, Member.Transform, Candidate)) return false;
+			for (const auto& Other : Footprints) if (FootprintsConflict(Candidate, Other)) return false;
+			Footprints.Add(Candidate);
+		}
+		else
+		{
+			if (!Spine || Spine->GetClass() != ASpineCabinetActor::StaticClass() || Spine->GetFName() != Member.Name
+				|| !Spine->GetActorTransform().Equals(Member.Transform) || Spine->bRuntimeLayoutSpine != Member.bRuntime
+				|| !(Spine->CaptureLayoutSettings() == Member.Settings)) return false;
+			Present.Add(Spine);
+		}
+	}
+	if (bTargetPresent)
+	{
+		const auto DeletedBefore = GetWorld()->GetSubsystem<UVrgSpineLayoutState>()->DeletedPlaced;
+		for (const auto& Member : Command.Spines)
+		{
+			auto* Spine = VrgSpineLifecycle::Spawn(GetWorld(), Member.Name, Member.Id, Member.Transform, Member.Settings, Member.bRuntime);
+			if (!Spine)
+			{
+				if (!Present.IsEmpty()) verify(VrgSpineLifecycle::RemoveBatch(Present));
+				GetWorld()->GetSubsystem<UVrgSpineLayoutState>()->DeletedPlaced = DeletedBefore;
+				return false;
+			}
+			Present.Add(Spine);
+		}
+		for (auto* Spine : Present) NotifyLayoutSpineRecreated(Spine);
+	}
+	else if (!VrgSpineLifecycle::RemoveBatch(Present)) return false;
+	VrgRackLifecycle::Rebuild(GetWorld());
+	return true;
 }
 
-void ADataCenterDebugController::NotifyLayoutSpineRecreated(ASpineCabinetActor* Spine)
+void ADataCenterDebugController::NotifyLayoutSpineRecreated(ASpineCabinetActor* Spine, ASpineCabinetActor* Previous)
 {
 	// Only sanctioned recreation reconnects previous transform records, never an arbitrary replacement.
 	for (auto* Stack : {&LayoutUndo, &LayoutRedo})
 		for (auto& Command : *Stack) for (auto& Member : Command.Members)
 			if (Member.SpineId == VrgSpineLifecycle::Identity(Spine)) Member.Actor = Spine;
+	if (Previous)
+	{
+		const TWeakObjectPtr<AActor> Old(Previous);
+		for (auto& Selected : LayoutSelection) if (Selected == Old) Selected = Spine;
+		if (HoveredPlaceable == Old) HoveredPlaceable = Spine;
+	}
 }
 
 bool ADataCenterDebugController::TryUndoLayout() { return RestoreLayoutTransform(false); }

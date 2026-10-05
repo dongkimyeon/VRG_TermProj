@@ -9,4 +9,5 @@ namespace VrgSpineLifecycle
 	ASpineCabinetActor* Spawn(UWorld* World, FName Name, const FString& Id,
 		const FTransform& Transform, const FSpineLayoutSettings& Settings, bool bRuntime = true);
 	bool Remove(ASpineCabinetActor* Spine);
+	bool RemoveBatch(const TArray<ASpineCabinetActor*>& Spines);
 }
