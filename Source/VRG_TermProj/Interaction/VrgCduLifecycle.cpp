@@ -22,11 +22,17 @@ ACoolingDistributionUnitActor* VrgCduLifecycle::Spawn(UWorld* World, FName Name,
  P.NameMode = FActorSpawnParameters::ESpawnActorNameMode::Required_ErrorAndReturnNull;
  P.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn; P.bDeferConstruction = true;
  auto* Cdu = World->SpawnActor<ACoolingDistributionUnitActor>(ACoolingDistributionUnitActor::StaticClass(), Transform, P);
- if (!IsValid(Cdu)) return nullptr;
+ // Only retire our failed instance: a destroyed deferred actor can retain the requested name until GC.
+ auto RetireFailedSpawn = [&]() {
+  if (Cdu && Cdu->GetFName() == Name)
+   Cdu->Rename(*MakeUniqueObjectName(Cdu->GetOuter(),Cdu->GetClass(),TEXT("FailedLayoutCdu")).ToString(),
+    nullptr,REN_DontCreateRedirectors|REN_NonTransactional);
+ };
+ if (!IsValid(Cdu)) { RetireFailedSpawn(); return nullptr; }
  Cdu->LayoutId = Id; Cdu->bRuntimeLayoutCdu = bRuntime; Cdu->ApplyLayoutSettings(Settings);
  Cdu->FinishSpawning(Transform);
  // CDU thermal/time state lives in the shared coupling, rebuilt fresh after a successful transaction.
- if (!IsValid(Cdu)) return nullptr;
+ if (!IsValid(Cdu)) { RetireFailedSpawn(); return nullptr; }
  World->GetSubsystem<UVrgCduLayoutState>()->DeletedPlaced.Remove(Id);
  return Cdu;
 }

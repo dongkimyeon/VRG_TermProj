@@ -3254,3 +3254,16 @@ Editor75.47s 성공. CduDeletionPersistenceCoupling/CduPersistenceCoupling/Inven
 
 새 삭제 실제 UI는 geometry unavailable 해소 근거가 없어 같은 도구 실패를 재시도하지 않았으며 미검증이다. 사용자 CDU 추가 정상 보고와 구분한다. 직접 절차: Tools/배치CDU삭제_확인_2026-10-05.md. 다중 CDU 삭제/복제·쿨러·펌프 손실 열 분배 확장 및 자원 고갈/엔진 Destroy·원복 자체 연쇄 실패 주입은 범위 밖이다.
 근거(커밋 제외): Saved/Build_CduDeletionPersistence.log·Saved/Logs/CduDeletionPersistence_Tests.log·Saved/Automation/CduDeletionPersistence/index.json. 기능 입력 근거는 앞 절.
+
+
+### S7 사용자 CDU 삭제 확인·단일 CDU 복제 입력 (2026-10-05)
+
+사용자가 Tools/배치CDU삭제_확인_2026-10-05.md 직접 절차 전부 정상으로 보고했다. 삭제/Undo/Redo·입력 차단·재배정/대체 냉각 표시·저장/재Load 범위의 사용자 확인이며 로그/캡처/FPS 확인으로 확대하지 않는다.
+
+Ctrl+D는 네이티브 CDU 한 대의 기존/런타임 원본 설정과 전체 변환을 값으로 캡처한다. ID/이름·액터 참조·현재 온도/적분/시계는 캡처하지 않는다. 기존 추가 경로의 커서 미리보기·앵커5cm·총1cm·주황/빨강·R90°/Esc·패치/모드 취소를 공유하며 비기본 크기/높이/스케일도 반영한다. 다중/혼합/비CDU·각 편집/패치/시뮬레이션 차단을 유지한다. 클릭 때만 새 GUID/이름/runtime 출처의 CDU 한 대를 생성하고 기존 한 Undo/Redo·재구축/복원 검증을 사용한다. 원본 불변·설정 독립, 레벨 에셋/물성 기본값 변경 없음.
+
+첫 Editor101.94s 성공, 영향6건 중5 성공/신규 CduDuplicationUndoRedo1 실패(종료255). 실제 Spawn 파괴 실패 주입 뒤 파괴된 지연 생성 액터가 이름을 점유해 다음 Redo를 막는 제품 원인을 확인했다. VrgCduLifecycle에서 자신이 생성한 실패 인스턴스의 이름만 퇴역시키도록 수정했다. 충돌/이름 점유 차단은 완화하지 않았으며 기존 장비를 정리 대상으로 삼지 않는다. Editor46.57s 성공. 재검사 결과는 아래 검증 기록을 따른다.
+
+CduDuplicationUndoRedo/CduAdditionUndoRedo/CduDeletionUndoRedo 재검사3건 무경고 성공(실패0/미실행0/진행0/종료0). 앞에서 통과한 RackGroupDuplication/RackGroupDuplicationCoupling/SpineDuplicationUndoRedo는 반복하지 않아 입력 영향6종 성공 확인. 새 검사는 실제 Ctrl+D·차단/취소·기존 기본/런타임 비기본 원본·설정 독립/원본 불변·미리보기 크기/높이/스케일/R·한 확정/Undo/Redo·충돌/이름/실제 Spawn 실패 시 개수/선택/기록 유지 및 GC 없이 재Redo 성공을 확인했다. 변환은 기존 FTransform Equals1e-9(액터cm 경계/스케일 무차원), 배치 시계0s. 비기본 설정/배치는 합성 검사 조건이며 새 하드웨어 물성이 아니다.
+저장·재배정/냉각/수력/열수지 최종 검증은 후속 절을 따른다. 새 복제 UI는 기존 geometry unavailable 해소 근거가 없어 반복하지 않으며 미검증이다. 전체 VRG/FPS·다중 CDU 삭제/복제·쿨러·펌프 손실 열 분배 확장은 제외한다.
+근거(커밋 제외): Saved/Build_CduDuplication.log·Build_CduDuplication_Repair.log·Saved/Logs/CduDuplication_Tests.log·CduDuplication_Repair_Tests.log·Saved/Automation/CduDuplicationRepair.

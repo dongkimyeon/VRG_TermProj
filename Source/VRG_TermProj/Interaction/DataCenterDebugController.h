@@ -117,6 +117,7 @@ public:
 	ASpineCabinetActor* ConfirmSpineAddition();
 	bool BeginRackDuplication();
 	bool BeginSpineDuplication();
+	bool BeginCduDuplication(); // One native CDU; authored settings only.
 	void CancelRackAddition();
 	void UpdateRackAdditionAlongRay(const FVector& EyeCm, const FVector& Direction);
 	bool GetRackAdditionPreview(FTransform& Out, FVector& SizeM, int32 MemberIndex = 0) const;
@@ -248,6 +249,7 @@ private:
 	FTransform RackAdditionTransform = FTransform::Identity;
 	TArray<FLayoutRackMember> RackDuplicationMembers;
 	TArray<FLayoutSpineMember> SpineDuplicationMembers; // Authored values only, no source actor/model references.
+	TOptional<FCduLayoutSettings> CduDuplicationSettings;
 	// Capture Ctrl at the D press event, before a short chord's release can reach frame-based actions.
 	bool bLayoutLeftControl = false;
 	bool bLayoutRightControl = false;
