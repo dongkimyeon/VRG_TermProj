@@ -677,6 +677,7 @@ void ADataCenterDebugController::BeginRackAddition()
 	CduDuplicationMembers.Reset();
 	bAddingSpine = false;
 	bAddingCdu = false;
+ bAddingCrah = false;
 	bAddingRack = true;
 	bRackAdditionHasFloor = false;
 	RackAdditionTransform = FTransform::Identity;
@@ -696,6 +697,15 @@ void ADataCenterDebugController::BeginCduAddition()
   || Grabbed.IsValid() || IsInputKeyDown(EKeys::RightMouseButton)) return;
  BeginRackAddition();
  if (bAddingRack) bAddingCdu = true;
+}
+
+void ADataCenterDebugController::BeginInRowCrahAddition()
+{
+ if (!GetWorld() || !GetWorld()->IsGameWorld() || !IsLayoutMode() || !IsCameraInputAvailable()
+  || IsLayoutDragging() || bMarqueeActive || bAddingRack || Grabbed.IsValid() || IsInputKeyDown(EKeys::RightMouseButton)) return;
+ auto* Sim=FindSimActor(); TArray<FCrahLayoutRecord> Automatic;
+ if (!Sim || !Sim->CaptureAutomaticCrahLayout(Automatic)) return; // Never implicitly change the ceiling-coil model.
+ BeginRackAddition(); if (bAddingRack) bAddingCrah=true;
 }
 
 bool ADataCenterDebugController::BeginRackDuplication()
@@ -815,6 +825,7 @@ void ADataCenterDebugController::CancelRackAddition()
 	bAddingRack = false;
 	bAddingSpine = false;
 	bAddingCdu = false;
+ bAddingCrah = false;
 	bRackAdditionHasFloor = false;
 	RackDuplicationMembers.Reset();
 	SpineDuplicationMembers.Reset();
@@ -885,7 +896,8 @@ bool ADataCenterDebugController::GetRackAdditionPreview(FTransform& Out, FVector
 		|| MemberIndex < 0 || MemberIndex >= GetRackAdditionPreviewCount()) return false;
 	Out = RackAdditionTransform;
 	// Reuse the authored GJ geometry; no new equipment dimensions or physical defaults.
-	if (bAddingCdu)
+	if (bAddingCrah) SizeM=GetDefault<ACrahUnitActor>()->SizeM;
+ else if (bAddingCdu)
  {
   SizeM = !CduDuplicationMembers.IsEmpty() ? CduDuplicationMembers[MemberIndex].Settings.SizeM : GetDefault<ACoolingDistributionUnitActor>()->SizeM;
   if (CduDuplicationMembers.Num() > 1)
@@ -927,20 +939,30 @@ bool ADataCenterDebugController::IsRackAdditionBlocked() const
 {
 	if (GetRackAdditionPreviewCount() == 0) return true;
 	TArray<FLayoutFootprint> Footprints;
+ TArray<FCrahLayoutRecord> Automatic;
+ if(bAddingCrah) {
+  auto* Sim=FindSimActor();
+  if(!Sim || !Sim->CaptureAutomaticCrahLayout(Automatic)) return true;
+ }
 	for (int32 I = 0; I < GetRackAdditionPreviewCount(); ++I)
 	{
 		FTransform Proposed; FVector SizeM; FLayoutFootprint Candidate;
 		if (!GetRackAdditionPreview(Proposed, SizeM, I) || IsLayoutBoxBlocked(GetWorld(), SizeM, Proposed)
 			|| !MakeLayoutFootprint(SizeM, Proposed, Candidate)) return true;
 		for (const auto& Other : Footprints) if (FootprintsConflict(Candidate, Other)) return true;
-		Footprints.Add(Candidate);
+		for(const auto& R:Automatic) {
+   FLayoutFootprint Other;
+   if(!MakeLayoutFootprint(R.Settings.SizeM,R.Transform,Other) || FootprintsConflict(Candidate,Other)) return true;
+  }
+  Footprints.Add(Candidate);
 	}
 	return false;
 }
 
 ARackThermalActor* ADataCenterDebugController::ConfirmRackAddition()
 {
-	if (bAddingCdu) { ConfirmCduAddition(); return nullptr; }
+	if (bAddingCrah) { ConfirmCrahAddition(); return nullptr; }
+ if (bAddingCdu) { ConfirmCduAddition(); return nullptr; }
 	if (bAddingSpine) { ConfirmSpineAddition(); return nullptr; }
 	LogLayoutInputState(TEXT("Confirm"));
 	FTransform Proposed; FVector SizeM;
@@ -1005,6 +1027,38 @@ ARackThermalActor* ADataCenterDebugController::ConfirmRackAddition()
 	UE_LOG(LogTemp, Display, TEXT("[VrgLayout] GB200 NVL72 추가: %s %s yaw %.0f deg"),
 		*AddedRack->GetName(), *AddedRack->GetActorLocation().ToCompactString(), AddedRack->GetActorRotation().Yaw);
 	return AddedRack;
+}
+
+ACrahUnitActor* ADataCenterDebugController::ConfirmCrahAddition()
+{
+ FTransform Proposed; FVector SizeM;
+ if(!bAddingCrah || !GetWorld() || !GetWorld()->IsGameWorld()
+  || !GetRackAdditionPreview(Proposed,SizeM) || IsRackAdditionBlocked()) return nullptr;
+ auto* Sim=FindSimActor(); TArray<FCrahLayoutRecord> Automatic;
+ if(!Sim || !Sim->CaptureAutomaticCrahLayout(Automatic)) return nullptr;
+ FLayoutTransformCommand Command;
+ Command.bCrahAutomaticBefore=true;
+ for(TActorIterator<ACrahUnitActor> It(GetWorld());It;++It) { Command.bCrahAutomaticBefore=false; break; }
+ Command.CrahLayoutBefore=uint8(Sim->CrahLayout);
+ for(auto R:Automatic) {
+  R.Name=FName(*(TEXT("ConvertedCrah_")+R.Id)); FLayoutCrahMember M; M.Record=R;
+  FLayoutFootprint Candidate; if(!MakeLayoutFootprint(R.Settings.SizeM,R.Transform,Candidate)) return nullptr;
+  // Preserve only pre-existing, unchanged automatic contacts. New/changed neighbours remain subject to 1 cm.
+  for(TActorIterator<AActor> It(GetWorld());It;++It) {
+   FVector OtherSize; FLayoutFootprint Other;
+   if(PlaceableBoxM(*It,OtherSize) && MakeLayoutFootprint(OtherSize,It->GetActorTransform(),Other)
+    && FootprintsConflict(Candidate,Other)) M.ExistingContacts.Add({It->GetFName(),It->GetClass(),It->GetActorTransform(),OtherSize});
+  }
+  Command.Crahs.Add(M);
+ }
+ FCrahLayoutRecord Added;
+ Added.Id=FGuid::NewGuid().ToString(); Added.Name=FName(*(TEXT("AddedCrah_")+Added.Id));
+ Added.Transform=Proposed; Added.Settings=GetDefault<ACrahUnitActor>()->CaptureLayoutSettings(); Added.Settings.Kind=ECrahUnitKind::InRow;
+ Command.Crahs.Add({Added,{}});
+ if(!RestoreCrahPresence(Command,true)) return nullptr;
+ PushLayoutCommand(Command); CancelRackAddition();
+ auto* Crah=VrgCrahLifecycle::Find(GetWorld(),Added.Id); LayoutSelection.Add(Crah); HoveredPlaceable=Crah;
+ return Crah;
 }
 
 ACoolingDistributionUnitActor* ADataCenterDebugController::ConfirmCduAddition()
@@ -1179,7 +1233,8 @@ void ADataCenterDebugController::RecordLayoutTransforms(const TArray<AActor*>& A
 		auto* Spine = Cast<ASpineCabinetActor>(Actors[I]);
   Command.Members.Add({Actors[I], Before[I], After, Rack ? Rack->LayoutId : FString(),
    Spine ? VrgSpineLifecycle::Identity(Spine) : FString(),
-   Cast<ACoolingDistributionUnitActor>(Actors[I]) ? VrgCduLifecycle::Identity(CastChecked<ACoolingDistributionUnitActor>(Actors[I])) : FString()});
+   Cast<ACoolingDistributionUnitActor>(Actors[I]) ? VrgCduLifecycle::Identity(CastChecked<ACoolingDistributionUnitActor>(Actors[I])) : FString(),
+   Cast<ACrahUnitActor>(Actors[I]) ? VrgCrahLifecycle::Identity(CastChecked<ACrahUnitActor>(Actors[I])) : FString()});
 	}
 	if (!bChanged) return;
 	PushLayoutCommand(MoveTemp(Command));
@@ -1200,7 +1255,12 @@ bool ADataCenterDebugController::RestoreLayoutTransform(bool bRedo)
 	TArray<FLayoutTransformCommand>& To = bRedo ? LayoutUndo : LayoutRedo;
 	if (From.IsEmpty()) return false;
 	const FLayoutTransformCommand Command = From.Last();
-	if (!Command.Cdus.IsEmpty())
+	if (!Command.Crahs.IsEmpty())
+ {
+  if(!RestoreCrahPresence(Command,bRedo)) return false;
+  From.Pop(); To.Add(Command); return true;
+ }
+ if (!Command.Cdus.IsEmpty())
 	{
 		if (!RestoreCduPresence(Command, bRedo)) return false;
 		From.Pop(); To.Add(Command); return true;
@@ -1335,6 +1395,72 @@ bool ADataCenterDebugController::RestoreRackPresence(const FLayoutTransformComma
 	else if (!VrgRackLifecycle::RemoveBatch(Present)) return false;
 	VrgRackLifecycle::Rebuild(GetWorld());
 	return true;
+}
+
+bool ADataCenterDebugController::RestoreCrahPresence(const FLayoutTransformCommand& Command,bool bRedo)
+{
+ if(!GetWorld() || !GetWorld()->IsGameWorld() || Command.Crahs.IsEmpty()) return false;
+ auto* Sim=FindSimActor(); if(!Sim) return false;
+ if(Command.bCrahAutomaticBefore && uint8(Sim->CrahLayout)!=Command.CrahLayoutBefore) return false;
+ if(bRedo && Command.bCrahAutomaticBefore) {
+  for(TActorIterator<ACrahUnitActor> It(GetWorld());It;++It) return false;
+  TArray<FCrahLayoutRecord> Automatic;
+  if(!Sim->CaptureAutomaticCrahLayout(Automatic)) return false;
+  int32 Converted=0;
+  for(const auto& M:Command.Crahs) if(M.Record.bConvertedAutomatic) {
+   ++Converted;
+   const int32 Match=Automatic.IndexOfByPredicate([&](const auto& R) {
+    return R.Transform.Equals(M.Record.Transform,1e-9) && R.Settings==M.Record.Settings;
+   });
+   if(Match==INDEX_NONE) return false; Automatic.RemoveAt(Match);
+  }
+  // A changed automatic plan must not be silently replaced by an old set of actors.
+  if(!Automatic.IsEmpty() || Converted!=Command.Crahs.Num()-1) return false;
+ }
+ TArray<ACrahUnitActor*> Present; TArray<FLayoutFootprint> Footprints;
+ TSet<FString> Ids; TSet<FName> Names;
+ for(const auto& M:Command.Crahs) {
+  const auto& R=M.Record;
+  if(R.Id.IsEmpty() || R.Name.IsNone() || !R.Settings.IsValid() || Ids.Contains(R.Id) || Names.Contains(R.Name)) return false;
+  Ids.Add(R.Id); Names.Add(R.Name);
+  auto* Crah=VrgCrahLifecycle::Find(GetWorld(),R.Id);
+  if(bRedo) {
+   if(Crah || FindObjectFast<UObject>(GetWorld()->PersistentLevel,R.Name)) return false;
+   FLayoutFootprint Candidate;
+   if(!MakeLayoutFootprint(R.Settings.SizeM,R.Transform,Candidate)) return false;
+   for(TActorIterator<AActor> It(GetWorld());It;++It) {
+    FVector OtherSize; FLayoutFootprint Other;
+    if(!PlaceableBoxM(*It,OtherSize)) continue;
+    if(!MakeLayoutFootprint(OtherSize,It->GetActorTransform(),Other)) return false;
+    if(!FootprintsConflict(Candidate,Other)) continue;
+    const bool bPreserved=R.bConvertedAutomatic && M.ExistingContacts.ContainsByPredicate([&](const auto& Contact) {
+     return Contact.Name==It->GetFName() && Contact.Class.Get()==It->GetClass()
+      && Contact.Transform.Equals(It->GetActorTransform(),1e-9) && Contact.SizeM.Equals(OtherSize,1e-9);
+    });
+    if(!bPreserved) return false;
+   }
+   for(int32 I=0;I<Footprints.Num();++I)
+    if(FootprintsConflict(Candidate,Footprints[I]) && !(R.bConvertedAutomatic && Command.Crahs[I].Record.bConvertedAutomatic)) return false;
+   Footprints.Add(Candidate);
+  } else {
+   if(!Crah || Crah->GetClass()!=ACrahUnitActor::StaticClass() || Crah->GetFName()!=R.Name || !Crah->bRuntimeLayoutCrah
+    || Crah->bConvertedAutomaticCrah!=R.bConvertedAutomatic || !Crah->GetActorTransform().Equals(R.Transform,1e-9)
+    || !(Crah->CaptureLayoutSettings()==R.Settings)) return false;
+   Present.Add(Crah);
+  }
+ }
+ if(bRedo) {
+  for(const auto& M:Command.Crahs) {
+   auto* Crah=VrgCrahLifecycle::Spawn(GetWorld(),M.Record);
+   if(!Crah) {
+    if(!Present.IsEmpty()) verify(VrgCrahLifecycle::RemoveBatch(Present));
+    return false; // No rebuild/history change: warm shared bridge and clock are retained on failure.
+   }
+   Present.Add(Crah);
+  }
+  for(auto* Crah:Present) NotifyLayoutCrahRecreated(Crah);
+ } else if(!VrgCrahLifecycle::RemoveBatch(Present)) return false;
+ VrgRackLifecycle::Rebuild(GetWorld()); Sim->RefreshCrahLayoutDisplay(); return true;
 }
 
 bool ADataCenterDebugController::RestoreCduPresence(const FLayoutTransformCommand& Command, bool bRedo)
@@ -2461,7 +2587,7 @@ void ADataCenterDebugController::DrawHelp() const
 void ADataCenterDebugController::NotifyLayoutCrahRecreated(ACrahUnitActor* Crah, ACrahUnitActor* Previous)
 {
  for(auto* Stack:{&LayoutUndo,&LayoutRedo}) for(auto& Command:*Stack) for(auto& M:Command.Members)
-  if(M.CrahId==Crah->LayoutId) M.Actor=Crah;
+  if(M.CrahId==VrgCrahLifecycle::Identity(Crah)) M.Actor=Crah;
  if(Previous) {
   const TWeakObjectPtr<AActor> Old(Previous);
   for(auto& A:LayoutSelection) if(A==Old) A=Crah;

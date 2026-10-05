@@ -39,6 +39,14 @@ void ULayoutRackPalette::NativeOnInitialized()
  auto* CduSlot = Canvas->AddChildToCanvas(CduButton);
  CduSlot->SetAnchors(FAnchors(0, 1)); CduSlot->SetAlignment(FVector2D(0, 1));
  CduSlot->SetPosition(FVector2D(520, -20)); CduSlot->SetSize(FVector2D(180, 44));
+ auto* CrahButton=WidgetTree->ConstructWidget<ULayoutRackButton>();
+ CrahButton->OnClicked.AddDynamic(this,&ULayoutRackPalette::OnAddCrah);
+ auto* CrahLabel=WidgetTree->ConstructWidget<UTextBlock>();
+ CrahLabel->SetText(FText::FromString(TEXT("인로우 쿨러 추가")));
+ CrahLabel->SetFont(Font); CrahButton->AddChild(CrahLabel);
+ auto* CrahSlot=Canvas->AddChildToCanvas(CrahButton);
+ CrahSlot->SetAnchors(FAnchors(0,1)); CrahSlot->SetAlignment(FVector2D(0,1));
+ CrahSlot->SetPosition(FVector2D(710,-20)); CrahSlot->SetSize(FVector2D(200,44));
 }
 
 void ULayoutRackPalette::OnAddRack()
@@ -54,4 +62,9 @@ void ULayoutRackPalette::OnAddSpine()
 void ULayoutRackPalette::OnAddCdu()
 {
  if (auto* Controller = Cast<ADataCenterDebugController>(GetOwningPlayer())) Controller->BeginCduAddition();
+}
+
+void ULayoutRackPalette::OnAddCrah()
+{
+ if(auto* Controller=Cast<ADataCenterDebugController>(GetOwningPlayer())) Controller->BeginInRowCrahAddition();
 }

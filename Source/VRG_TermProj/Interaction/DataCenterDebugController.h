@@ -8,7 +8,7 @@
 #include "Actors/RackThermalActor.h"
 #include "Actors/SpineCabinetActor.h"
 #include "Actors/CoolingDistributionUnitActor.h"
-#include "Actors/CrahUnitActor.h"
+#include "Interaction/VrgCrahLifecycle.h"
 #include "DataCenterDebugController.generated.h"
 
 class ARackThermalActor;
@@ -114,6 +114,8 @@ public:
 	void BeginRackAddition();
 	void BeginSpineAddition();
 	void BeginCduAddition();
+ void BeginInRowCrahAddition();
+ ACrahUnitActor* ConfirmCrahAddition();
 	ACoolingDistributionUnitActor* ConfirmCduAddition();
 	ASpineCabinetActor* ConfirmSpineAddition();
 	bool BeginRackDuplication();
@@ -223,7 +225,10 @@ private:
 		FString Id; FName Name; FTransform Transform; FCduLayoutSettings Settings;
 		bool bRuntime = true;
 	};
-	struct FLayoutTransformCommand
+	// Existing automatic boxes may touch rack ends. Preserve only those unchanged contacts on conversion/Redo.
+ struct FLayoutCrahContact { FName Name; TWeakObjectPtr<UClass> Class; FTransform Transform; FVector SizeM; };
+ struct FLayoutCrahMember { FCrahLayoutRecord Record; TArray<FLayoutCrahContact> ExistingContacts; };
+ struct FLayoutTransformCommand
 	{
 		TArray<FLayoutTransformMember> Members;
 		bool bRackPresence = false;
@@ -231,6 +236,9 @@ private:
 		TArray<FLayoutRackMember> Racks;
 		TArray<FLayoutSpineMember> Spines;
 		TArray<FLayoutCduMember> Cdus;
+  TArray<FLayoutCrahMember> Crahs;
+  bool bCrahAutomaticBefore = false;
+  uint8 CrahLayoutBefore = 0;
 	};
 	TArray<FLayoutTransformCommand> LayoutUndo;
 	TArray<FLayoutTransformCommand> LayoutRedo;
@@ -240,7 +248,8 @@ private:
 	void PushLayoutCommand(FLayoutTransformCommand Command);
 	FLayoutTransformCommand CaptureRackPresence(ARackThermalActor* Rack, bool bBeforePresent);
 	bool RestoreRackPresence(const FLayoutTransformCommand& Command, bool bRedo);
-	bool RestoreCduPresence(const FLayoutTransformCommand& Command, bool bRedo);
+	bool RestoreCrahPresence(const FLayoutTransformCommand& Command, bool bRedo);
+ bool RestoreCduPresence(const FLayoutTransformCommand& Command, bool bRedo);
 	bool RestoreSpinePresence(const FLayoutTransformCommand& Command, bool bRedo);
 	void RebindLayoutRack(ARackThermalActor* Rack, ARackThermalActor* Previous = nullptr);
 	UPROPERTY(Transient)
@@ -248,6 +257,7 @@ private:
 	bool bAddingRack = false; // Shared equipment preview activity; existing input guards use this flag.
 	bool bAddingSpine = false;
 	bool bAddingCdu = false;
+ bool bAddingCrah = false;
 	bool bRackAdditionHasFloor = false;
 	FTransform RackAdditionTransform = FTransform::Identity;
 	TArray<FLayoutRackMember> RackDuplicationMembers;

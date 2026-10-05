@@ -236,6 +236,7 @@ public:
 	bool IsUsingPlacedCrahs() const { return bUsingPlacedCrahs; }
  // Read current automatic geometry without touching solver, mesh, clock or active planning caches.
  bool CaptureAutomaticCrahLayout(TArray<FCrahLayoutRecord>& Out);
+ void RefreshCrahLayoutDisplay();
  int32 GetActiveCrahUnitCount() const { return CrahUnits.Num(); }
  double GetCrahTotalFlowM3s() const { return CrahUnitFlowM3s*CrahUnits.Num(); }
  double GetCrahTotalUAWK() const { return CrahUnitUAWK*CrahUnits.Num(); }

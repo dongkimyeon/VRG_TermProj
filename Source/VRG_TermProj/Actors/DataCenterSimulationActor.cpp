@@ -1827,3 +1827,10 @@ bool ADataCenterSimulationActor::CaptureAutomaticCrahLayout(TArray<FCrahLayoutRe
  }
  return true;
 }
+
+void ADataCenterSimulationActor::RefreshCrahLayoutDisplay()
+{
+ if(Mode!=ESimMode::Layout) return;
+ // Geometry only after a successful edit: remove virtual mesh duplicates, or show automatic boxes after Undo.
+ FindTargetActors(); GroupCabinetRows(); PlanCrahUnits(); UpdateCrahMeshes();
+}
