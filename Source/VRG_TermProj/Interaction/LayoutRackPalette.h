@@ -24,4 +24,5 @@ private:
 	void OnAddRack();
 	UFUNCTION() void OnAddSpine();
 	UFUNCTION() void OnAddCdu();
+	UFUNCTION() void OnAddCrah();
 };

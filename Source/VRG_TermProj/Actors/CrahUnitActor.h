@@ -19,6 +19,23 @@ enum class ECrahUnitKind : uint8
 	Perimeter,
 };
 
+// Authored placement settings only; coil/fan thermal state belongs to the coupling bridge.
+USTRUCT()
+struct FCrahLayoutSettings
+{
+	GENERATED_BODY()
+	UPROPERTY() ECrahUnitKind Kind = ECrahUnitKind::InRow;
+	UPROPERTY() FVector SizeM = FVector::ZeroVector;
+	UPROPERTY() double VolumeFlowM3s = 0.0;
+	bool IsValid() const { return (Kind == ECrahUnitKind::InRow || Kind == ECrahUnitKind::Perimeter)
+		&& !SizeM.ContainsNaN() && SizeM.GetMin() > 0 && FMath::IsFinite(VolumeFlowM3s) && VolumeFlowM3s >= 0; }
+	bool operator==(const FCrahLayoutSettings& R) const { return Kind == R.Kind && SizeM == R.SizeM && VolumeFlowM3s == R.VolumeFlowM3s; }
+};
+struct FCrahLayoutRecord
+{
+	FString Id; FName Name; FTransform Transform; FCrahLayoutSettings Settings; bool bRuntime = true;
+};
+
 // A CRAH / in-row cooler placed by hand (2026-09-27). The actor's forward (+X, the arrow) is the supply direction.
 // When the level has any of these, ADataCenterSimulationActor uses them instead of its automatic layout
 // (unless it runs the lumped ceiling coil). Rotate in 90 degree steps: the air grid is axis-aligned and the unit's
@@ -31,6 +48,11 @@ class VRG_TERMPROJ_API ACrahUnitActor : public AActor
 
 public:
 	ACrahUnitActor();
+	UPROPERTY(Transient) FString LayoutId;
+	UPROPERTY(Transient) bool bRuntimeLayoutCrah = false;
+	FCrahLayoutSettings CaptureLayoutSettings() const;
+	void ApplyLayoutSettings(const FCrahLayoutSettings& Settings);
+	void RefreshVisuals();
 
 	virtual void OnConstruction(const FTransform& Transform) override;
 

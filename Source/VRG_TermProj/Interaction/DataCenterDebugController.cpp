@@ -4,6 +4,7 @@
 #include "Interaction/VrgRackLifecycle.h"
 #include "Interaction/VrgSpineLifecycle.h"
 #include "Interaction/VrgCduLifecycle.h"
+#include "Interaction/VrgCrahLifecycle.h"
 #include "Interaction/VrgCduLayoutState.h"
 #include "Interaction/VrgSpineLayoutState.h"
 #include "Interaction/LayoutRackPalette.h"
@@ -620,11 +621,11 @@ namespace
 		FVector SizeM;
 		return ADataCenterDebugController::PlaceableBoxM(Actor, SizeM) && MakeLayoutFootprint(SizeM, Transform, Out);
 	}
-	bool FootprintsConflict(const FLayoutFootprint& A, const FLayoutFootprint& B)
+	bool FootprintsConflict(const FLayoutFootprint& A, const FLayoutFootprint& B, double ClearanceCm = 1.0)
 	{
 		const FVector2D Delta = B.Centre - A.Centre;
 		// Team placement plan: 1 cm total clearance, not 1 cm expansion on each box and not a physical constant.
-		constexpr double ClearanceCm = 1.0;
+		// Automatic CRAH materialization separately permits existing touching row-end faces.
 		for (const FLayoutFootprint* Footprint : { &A, &B })
 			for (const FVector2D& Edge : Footprint->HalfEdges)
 			{
@@ -676,7 +677,7 @@ void ADataCenterDebugController::BeginRackAddition()
 	SpineDuplicationMembers.Reset();
 	CduDuplicationMembers.Reset();
 	bAddingSpine = false;
-	bAddingCdu = false;
+	bAddingCdu = false; bAddingCrah = false;
 	bAddingRack = true;
 	bRackAdditionHasFloor = false;
 	RackAdditionTransform = FTransform::Identity;
@@ -688,6 +689,15 @@ void ADataCenterDebugController::BeginSpineAddition()
  if (!IsLayoutMode() || !IsCameraInputAvailable()) return;
  BeginRackAddition();
  if (bAddingRack) bAddingSpine = true;
+}
+
+void ADataCenterDebugController::BeginCrahAddition()
+{
+	auto* Sim = FindSimActor();
+	if (!GetWorld() || !GetWorld()->IsGameWorld() || !Sim || Sim->CrahLayout == ECrahLayout::CeilingCoil
+		|| !IsLayoutMode() || !IsCameraInputAvailable() || IsLayoutDragging() || bMarqueeActive || bAddingRack
+		|| Grabbed.IsValid() || IsInputKeyDown(EKeys::RightMouseButton)) return;
+	BeginRackAddition(); bAddingCrah = bAddingRack;
 }
 
 void ADataCenterDebugController::BeginCduAddition()
@@ -814,7 +824,7 @@ void ADataCenterDebugController::CancelRackAddition()
 {
 	bAddingRack = false;
 	bAddingSpine = false;
-	bAddingCdu = false;
+	bAddingCdu = false; bAddingCrah = false;
 	bRackAdditionHasFloor = false;
 	RackDuplicationMembers.Reset();
 	SpineDuplicationMembers.Reset();
@@ -885,7 +895,8 @@ bool ADataCenterDebugController::GetRackAdditionPreview(FTransform& Out, FVector
 		|| MemberIndex < 0 || MemberIndex >= GetRackAdditionPreviewCount()) return false;
 	Out = RackAdditionTransform;
 	// Reuse the authored GJ geometry; no new equipment dimensions or physical defaults.
-	if (bAddingCdu)
+	if (bAddingCrah) SizeM = GetDefault<ACrahUnitActor>()->SizeM;
+	else if (bAddingCdu)
  {
   SizeM = !CduDuplicationMembers.IsEmpty() ? CduDuplicationMembers[MemberIndex].Settings.SizeM : GetDefault<ACoolingDistributionUnitActor>()->SizeM;
   if (CduDuplicationMembers.Num() > 1)
@@ -935,11 +946,28 @@ bool ADataCenterDebugController::IsRackAdditionBlocked() const
 		for (const auto& Other : Footprints) if (FootprintsConflict(Candidate, Other)) return true;
 		Footprints.Add(Candidate);
 	}
+	if (bAddingCrah)
+	{
+		auto* Sim = FindSimActor();
+		if (!Sim || Sim->CrahLayout == ECrahLayout::CeilingCoil) return true;
+		bool bPlaced = false; for (TActorIterator<ACrahUnitActor> It(GetWorld()); It; ++It) bPlaced = true;
+		if (!bPlaced)
+		{
+			TArray<FCrahLayoutRecord> Auto;
+			if (!Sim->GetAutomaticCrahLayout(Auto)) return true;
+			for (const auto& R : Auto)
+			{
+				FLayoutFootprint Other;
+				if (!MakeLayoutFootprint(R.Settings.SizeM, R.Transform, Other) || FootprintsConflict(Footprints[0], Other)) return true;
+			}
+		}
+	}
 	return false;
 }
 
 ARackThermalActor* ADataCenterDebugController::ConfirmRackAddition()
 {
+	if (bAddingCrah) { ConfirmCrahAddition(); return nullptr; }
 	if (bAddingCdu) { ConfirmCduAddition(); return nullptr; }
 	if (bAddingSpine) { ConfirmSpineAddition(); return nullptr; }
 	LogLayoutInputState(TEXT("Confirm"));
@@ -1005,6 +1033,111 @@ ARackThermalActor* ADataCenterDebugController::ConfirmRackAddition()
 	UE_LOG(LogTemp, Display, TEXT("[VrgLayout] GB200 NVL72 추가: %s %s yaw %.0f deg"),
 		*AddedRack->GetName(), *AddedRack->GetActorLocation().ToCompactString(), AddedRack->GetActorRotation().Yaw);
 	return AddedRack;
+}
+
+ACrahUnitActor* ADataCenterDebugController::ConfirmCrahAddition()
+{
+	FTransform Target; FVector SizeM;
+	if (!bAddingCrah || !GetWorld() || !GetWorld()->IsGameWorld() || !GetRackAdditionPreview(Target, SizeM) || IsRackAdditionBlocked()) return nullptr;
+	FLayoutTransformCommand Command;
+	bool bPlaced = false; for (TActorIterator<ACrahUnitActor> It(GetWorld()); It; ++It) bPlaced = true;
+	Command.bCrahConversion = !bPlaced;
+	if (!bPlaced && !FindSimActor()->GetAutomaticCrahLayout(Command.Crahs)) return nullptr;
+	Command.Crahs.Add({{}, NAME_None, Target, GetDefault<ACrahUnitActor>()->CaptureLayoutSettings()});
+	for (auto& R : Command.Crahs)
+	{
+		R.Id = FGuid::NewGuid().ToString();
+		R.Name = MakeUniqueObjectName(GetWorld()->PersistentLevel, ACrahUnitActor::StaticClass(), FName(*(TEXT("AddedCrah_") + R.Id)));
+	}
+	if (!RestoreCrahPresence(Command, true)) return nullptr;
+	PushLayoutCommand(Command); CancelRackAddition();
+	auto* Added = VrgCrahLifecycle::Find(GetWorld(), Command.Crahs.Last().Id);
+	LayoutSelection.Add(Added);
+	UE_LOG(LogTemp, Display, TEXT("[VrgLayout] CRAH 추가: 자동 전환%d대 + 새1대, 한 Undo/Redo"), Command.Crahs.Num() - 1);
+	return Added;
+}
+
+bool ADataCenterDebugController::RestoreCrahPresence(const FLayoutTransformCommand& Command, bool bRedo)
+{
+	UWorld* World = GetWorld();
+	if (!World || !World->IsGameWorld() || Command.Crahs.IsEmpty()) return false;
+	const bool bPresent = bRedo;
+	int32 Count = 0; for (TActorIterator<ACrahUnitActor> It(World); It; ++It) ++Count;
+	if (Command.bCrahConversion)
+	{
+		if (Count != (bPresent ? 0 : Command.Crahs.Num())) return false;
+		if (bPresent)
+		{
+			TArray<FCrahLayoutRecord> Auto; auto* Sim = FindSimActor();
+			if (!Sim || !Sim->GetAutomaticCrahLayout(Auto) || Auto.Num() + 1 != Command.Crahs.Num()) return false;
+			// Preserve authored auto placements (which can touch row ends). Refuse a changed auto plan on Redo.
+			for (int32 I = 0; I < Auto.Num(); ++I) if (!(Auto[I].Settings == Command.Crahs[I].Settings)
+				|| !Auto[I].Transform.Equals(Command.Crahs[I].Transform, 1e-9)) return false;
+		}
+	}
+	TArray<ACrahUnitActor*> Present;
+	TSet<FString> Ids; TSet<FName> Names;
+	for (int32 I = 0; I < Command.Crahs.Num(); ++I)
+	{
+		const auto& R = Command.Crahs[I];
+		if (R.Id.IsEmpty() || !R.Settings.IsValid() || Ids.Contains(R.Id) || Names.Contains(R.Name)) return false;
+		Ids.Add(R.Id); Names.Add(R.Name);
+		auto* Crah = VrgCrahLifecycle::Find(World, R.Id);
+		if (bPresent)
+		{
+			if (Crah || FindObjectFast<UObject>(World->PersistentLevel, R.Name)) return false;
+			if (Command.bCrahConversion && I < Command.Crahs.Num()-1)
+			{
+				FLayoutFootprint Candidate; if (!MakeLayoutFootprint(R.Settings.SizeM, R.Transform, Candidate)) return false;
+				for (TActorIterator<AActor> It(World); It; ++It)
+				{
+					FVector OtherSize; FLayoutFootprint Other;
+					if (PlaceableBoxM(*It, OtherSize) && (!MakeLayoutFootprint(*It, It->GetActorTransform(), Other)
+						|| FootprintsConflict(Candidate, Other, -1e-6))) return false; // cm roundoff at touching auto faces
+				}
+				for (int32 J = 0; J < I; ++J) { FLayoutFootprint Other;
+					if (!MakeLayoutFootprint(Command.Crahs[J].Settings.SizeM, Command.Crahs[J].Transform, Other)
+						|| FootprintsConflict(Candidate, Other, -1e-6)) return false; }
+			}
+			if (!Command.bCrahConversion || I == Command.Crahs.Num()-1)
+			{
+				if (IsLayoutBoxBlocked(World, R.Settings.SizeM, R.Transform)) return false;
+				FLayoutFootprint Candidate; if (!MakeLayoutFootprint(R.Settings.SizeM, R.Transform, Candidate)) return false;
+				for (int32 J = 0; J < I; ++J) { FLayoutFootprint Other;
+					if (!MakeLayoutFootprint(Command.Crahs[J].Settings.SizeM, Command.Crahs[J].Transform, Other) || FootprintsConflict(Candidate, Other)) return false; }
+			}
+		}
+		else
+		{
+			if (!Crah || Crah->GetClass() != ACrahUnitActor::StaticClass() || Crah->GetFName() != R.Name
+				|| Crah->bRuntimeLayoutCrah != R.bRuntime || !(Crah->CaptureLayoutSettings() == R.Settings) || !Crah->GetActorTransform().Equals(R.Transform)) return false;
+			Present.Add(Crah);
+		}
+	}
+	if (bPresent)
+	{
+		for (const auto& R : Command.Crahs)
+		{
+			auto* Crah = VrgCrahLifecycle::Spawn(World, R.Name, R.Id, R.Transform, R.Settings, R.bRuntime);
+			if (!Crah) { if (!Present.IsEmpty()) verify(VrgCrahLifecycle::RemoveBatch(Present)); return false; }
+			Present.Add(Crah);
+		}
+		for (auto* Crah : Present) NotifyLayoutCrahRecreated(Crah);
+	}
+	else if (!VrgCrahLifecycle::RemoveBatch(Present)) return false;
+	VrgRackLifecycle::Rebuild(World); return true;
+}
+
+void ADataCenterDebugController::NotifyLayoutCrahRecreated(ACrahUnitActor* Crah, ACrahUnitActor* Previous)
+{
+	for (auto* Stack : {&LayoutUndo, &LayoutRedo}) for (auto& Command : *Stack) for (auto& M : Command.Members)
+		if (M.CrahId == VrgCrahLifecycle::Identity(Crah)) M.Actor = Crah;
+	if (Previous)
+	{
+		const TWeakObjectPtr<AActor> Old(Previous);
+		for (auto& Selected : LayoutSelection) if (Selected == Old) Selected = Crah;
+		if (HoveredPlaceable == Old) HoveredPlaceable = Crah;
+	}
 }
 
 ACoolingDistributionUnitActor* ADataCenterDebugController::ConfirmCduAddition()
@@ -1179,7 +1312,8 @@ void ADataCenterDebugController::RecordLayoutTransforms(const TArray<AActor*>& A
 		auto* Spine = Cast<ASpineCabinetActor>(Actors[I]);
   Command.Members.Add({Actors[I], Before[I], After, Rack ? Rack->LayoutId : FString(),
    Spine ? VrgSpineLifecycle::Identity(Spine) : FString(),
-   Cast<ACoolingDistributionUnitActor>(Actors[I]) ? VrgCduLifecycle::Identity(CastChecked<ACoolingDistributionUnitActor>(Actors[I])) : FString()});
+   Cast<ACoolingDistributionUnitActor>(Actors[I]) ? VrgCduLifecycle::Identity(CastChecked<ACoolingDistributionUnitActor>(Actors[I])) : FString(),
+   Cast<ACrahUnitActor>(Actors[I]) ? VrgCrahLifecycle::Identity(CastChecked<ACrahUnitActor>(Actors[I])) : FString()});
 	}
 	if (!bChanged) return;
 	PushLayoutCommand(MoveTemp(Command));
@@ -1200,6 +1334,11 @@ bool ADataCenterDebugController::RestoreLayoutTransform(bool bRedo)
 	TArray<FLayoutTransformCommand>& To = bRedo ? LayoutUndo : LayoutRedo;
 	if (From.IsEmpty()) return false;
 	const FLayoutTransformCommand Command = From.Last();
+	if (!Command.Crahs.IsEmpty())
+	{
+		if (!RestoreCrahPresence(Command, bRedo)) return false;
+		From.Pop(); To.Add(Command); return true;
+	}
 	if (!Command.Cdus.IsEmpty())
 	{
 		if (!RestoreCduPresence(Command, bRedo)) return false;

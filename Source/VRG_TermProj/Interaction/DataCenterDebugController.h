@@ -8,6 +8,7 @@
 #include "Actors/RackThermalActor.h"
 #include "Actors/SpineCabinetActor.h"
 #include "Actors/CoolingDistributionUnitActor.h"
+#include "Actors/CrahUnitActor.h"
 #include "DataCenterDebugController.generated.h"
 
 class ARackThermalActor;
@@ -112,6 +113,9 @@ public:
 	// Addition is a value-only preview; no actors or pipes until confirmation.
 	void BeginRackAddition();
 	void BeginSpineAddition();
+	void BeginCrahAddition();
+	ACrahUnitActor* ConfirmCrahAddition();
+	void NotifyLayoutCrahRecreated(ACrahUnitActor* Crah, ACrahUnitActor* Previous = nullptr);
 	void BeginCduAddition();
 	ACoolingDistributionUnitActor* ConfirmCduAddition();
 	ASpineCabinetActor* ConfirmSpineAddition();
@@ -201,6 +205,7 @@ private:
 		FString RackId;
 		FString SpineId;
 		FString CduId;
+		FString CrahId;
 	};
 	struct FLayoutRackMember
 	{
@@ -228,6 +233,8 @@ private:
 		TArray<FLayoutRackMember> Racks;
 		TArray<FLayoutSpineMember> Spines;
 		TArray<FLayoutCduMember> Cdus;
+		TArray<FCrahLayoutRecord> Crahs;
+		bool bCrahConversion = false;
 	};
 	TArray<FLayoutTransformCommand> LayoutUndo;
 	TArray<FLayoutTransformCommand> LayoutRedo;
@@ -237,6 +244,7 @@ private:
 	void PushLayoutCommand(FLayoutTransformCommand Command);
 	FLayoutTransformCommand CaptureRackPresence(ARackThermalActor* Rack, bool bBeforePresent);
 	bool RestoreRackPresence(const FLayoutTransformCommand& Command, bool bRedo);
+	bool RestoreCrahPresence(const FLayoutTransformCommand& Command, bool bRedo);
 	bool RestoreCduPresence(const FLayoutTransformCommand& Command, bool bRedo);
 	bool RestoreSpinePresence(const FLayoutTransformCommand& Command, bool bRedo);
 	void RebindLayoutRack(ARackThermalActor* Rack, ARackThermalActor* Previous = nullptr);
@@ -245,6 +253,7 @@ private:
 	bool bAddingRack = false; // Shared equipment preview activity; existing input guards use this flag.
 	bool bAddingSpine = false;
 	bool bAddingCdu = false;
+	bool bAddingCrah = false;
 	bool bRackAdditionHasFloor = false;
 	FTransform RackAdditionTransform = FTransform::Identity;
 	TArray<FLayoutRackMember> RackDuplicationMembers;

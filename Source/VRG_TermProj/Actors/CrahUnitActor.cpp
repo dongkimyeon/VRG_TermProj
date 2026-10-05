@@ -29,10 +29,24 @@ ACrahUnitActor::ACrahUnitActor()
 void ACrahUnitActor::OnConstruction(const FTransform& Transform)
 {
 	Super::OnConstruction(Transform);
+	RefreshVisuals();
+}
+
+void ACrahUnitActor::RefreshVisuals()
+{
 	// Metres -> cm only here, at the actor boundary (rule 1). The engine cube is 100 cm on a side.
 	Body->SetRelativeLocation(FVector(0.0, 0.0, SizeM.Z * 50.0));
 	Body->SetRelativeScale3D(SizeM);
 	// The arrow leaves the supply face: the front for both kinds, low for a perimeter unit.
 	const double ArrowZCm = Kind == ECrahUnitKind::Perimeter ? SizeM.Z * 25.0 : SizeM.Z * 50.0;
 	SupplyArrow->SetRelativeLocation(FVector(SizeM.X * 50.0, 0.0, ArrowZCm));
+}
+
+FCrahLayoutSettings ACrahUnitActor::CaptureLayoutSettings() const
+{
+	FCrahLayoutSettings S; S.Kind = Kind; S.SizeM = SizeM; S.VolumeFlowM3s = VolumeFlowM3s; return S;
+}
+void ACrahUnitActor::ApplyLayoutSettings(const FCrahLayoutSettings& S)
+{
+	Kind = S.Kind; SizeM = S.SizeM; VolumeFlowM3s = S.VolumeFlowM3s;
 }

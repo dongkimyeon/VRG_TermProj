@@ -7,6 +7,7 @@
 #include "Simulation/Core/SimClock.h"
 #include "Simulation/Coupling/CouplingBridge.h"
 #include "Simulation/Evaluation/VrgEvaluation.h"
+#include "Actors/CrahUnitActor.h"
 #include "DataCenterSimulationActor.generated.h"
 
 class AAirFieldDebugActor;
@@ -230,6 +231,9 @@ public:
 	// starting point to drag around. Run it in the editor, then save the level.
 	UFUNCTION(BlueprintCallable, CallInEditor, Category = "Cooling|CRAH")
 	void SpawnCrahActorsFromLayout();
+	// Value-only automatic plan from current cabinets; preserves live bridge/clock and cached routing.
+	bool GetAutomaticCrahLayout(TArray<FCrahLayoutRecord>& Out);
+	void RefreshCrahLayoutVisuals();
 
 	// True when the last rebuild used hand-placed ACrahUnitActor units.
 	bool IsUsingPlacedCrahs() const { return bUsingPlacedCrahs; }

@@ -1080,6 +1080,49 @@ void ADataCenterSimulationActor::BuildCrahUnits()
 	CrahUnitFanW = SumFan / CrahUnits.Num();
 }
 
+bool ADataCenterSimulationActor::GetAutomaticCrahLayout(TArray<FCrahLayoutRecord>& Out)
+{
+	Out.Reset();
+	if (!GetWorld() || CrahLayout == ECrahLayout::CeilingCoil) return false;
+	TGuardValue<decltype(Racks)> SaveRacks(Racks, {});
+	TGuardValue<decltype(Spines)> SaveSpines(Spines, {});
+	TGuardValue<decltype(CabinetRows)> SaveRows(CabinetRows, {});
+	TGuardValue<decltype(ColdAisles)> SaveAisles(ColdAisles, {});
+	TGuardValue<int32> SaveUnpaired(NumUnpairedRows, 0);
+	TGuardValue<decltype(CrahPlacements)> SavePlacements(CrahPlacements, {});
+	for (TActorIterator<ARackThermalActor> It(GetWorld()); It; ++It) Racks.Add(*It);
+	for (TActorIterator<ASpineCabinetActor> It(GetWorld()); It; ++It) Spines.Add(*It);
+	GroupCabinetRows(); PlanAutoCrahUnits();
+	for (const auto& P : CrahPlacements)
+	{
+		FCrahLayoutSettings S; S.Kind = P.bTopIntake ? ECrahUnitKind::Perimeter : ECrahUnitKind::InRow;
+		S.SizeM = P.SizeM; S.VolumeFlowM3s = P.FlowM3s;
+		if (!S.IsValid()) { Out.Reset(); return false; }
+		Out.Add({{}, NAME_None, FTransform(P.ForwardM.Rotation(), SimUnits::MetersToUnreal(P.BaseM)), S});
+	}
+	return true;
+}
+
+void ADataCenterSimulationActor::RefreshCrahLayoutVisuals()
+{
+	if (Mode != ESimMode::Layout) return;
+	TArray<FCrahLayoutRecord> Auto;
+	bool bPlaced = false;
+	TArray<FCrahPlacement> Placed;
+	for (TActorIterator<ACrahUnitActor> It(GetWorld()); It; ++It)
+	{
+		bPlaced = true;
+		Placed.Add({SimUnits::UnrealToMeters(It->GetActorLocation()), It->GetActorForwardVector(), It->SizeM,
+			It->Kind == ECrahUnitKind::Perimeter, It->VolumeFlowM3s, true});
+	}
+	if (!bPlaced) GetAutomaticCrahLayout(Auto);
+	CrahPlacements = MoveTemp(Placed); bUsingPlacedCrahs = bPlaced;
+	// Placed actors draw themselves; clear the old automatic meshes on conversion.
+	for (const auto& R : Auto) CrahPlacements.Add({SimUnits::UnrealToMeters(R.Transform.GetLocation()),
+		R.Transform.GetRotation().GetForwardVector(), R.Settings.SizeM, R.Settings.Kind == ECrahUnitKind::Perimeter});
+	UpdateCrahMeshes();
+}
+
 void ADataCenterSimulationActor::SpawnCrahActorsFromLayout()
 {
 	UWorld* World = GetWorld();
