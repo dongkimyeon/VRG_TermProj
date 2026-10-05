@@ -9,4 +9,5 @@ namespace VrgCduLifecycle
  ACoolingDistributionUnitActor* Spawn(UWorld* World, FName Name, const FString& Id,
   const FTransform& Transform, const FCduLayoutSettings& Settings, bool bRuntime = true);
  bool Remove(ACoolingDistributionUnitActor* Cdu);
+ bool RemoveBatch(const TArray<ACoolingDistributionUnitActor*>& Cdus);
 }

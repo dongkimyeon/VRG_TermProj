@@ -29,7 +29,7 @@ bool FLayoutCduDeletionTest::RunTest(const FString& Parameters)
 		TestTrue(TEXT("Blocked count/history invariant"), Count()==N && C->GetLayoutUndoCount()==U && C->GetLayoutRedoCount()==R);
 	};
 	Refused(); Select(Rack); Refused(); Select(Placed); Select(Rack,true); Refused();
-	Select(Placed); Select(Other,true); Refused();
+	// Multiple native CDUs are now covered by CduBatchDeletionUndoRedo.
 	Select(Placed); C->BeginLayoutDragAlongRay(FVector(300,0,500),Down); Refused(); C->EndLayoutDrag(false);
 	C->BeginLayoutMarquee(FVector2D(0,0),false); Refused(); C->EndLayoutMarquee(false);
 	C->BeginCduAddition(); Refused(); C->CancelRackAddition(); Select(Placed);

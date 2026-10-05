@@ -3291,3 +3291,15 @@ Editor15.17s는 성공했지만 새 검사 소스가 수집되지 않아 기존 
 
 사용자 단일 CDU 삭제 정상 보고를 반영했다. 새 복제 실제 UI는 환경 변화 없는 geometry unavailable를 재시도하지 않아 미검증이며 직접 절차 Tools/배치CDU복제_확인_2026-10-05.md를 따른다. 다중 CDU 삭제/복제·쿨러·펌프 손실 열 모델 확장·자원 고갈/이름 정리 또는 원복 자체의 연쇄 실패 주입은 제외했다.
 근거(커밋 제외): Saved/Build_CduDuplicationCoupling.log·Build_CduDuplicationCoupling_Discovery.log·Build_CduDuplicationCoupling_Repair.log, Saved/Logs/CduDuplicationCoupling_Tests.log·CduDuplicationCoupling_New_Tests.log·CduDuplicationCoupling_Repair_Tests.log, Saved/Automation/CduDuplicationCouplingRepair/index.json. 입력 근거는 앞 절.
+
+
+### S7 사용자 단일 CDU 복제 확인·다중 CDU 삭제 (2026-10-05)
+
+사용자가 단일 CDU 복제 직접 절차 모두 정상으로 보고했다. 기존/런타임 원본·미리보기/R/Esc/충돌/확정·Undo/Redo·저장/냉각 연결의 사용자 확인이며 로그·캡처·FPS나 도구 오류 원인의 확인으로 확대하지 않는다.
+
+Delete는 선택 전체가 네이티브 CDU일 때 한 기록으로 삭제한다. 기존/런타임 혼합 출처를 지원하되 종류 혼합·편집/패치/시뮬레이션 차단을 유지한다. 기록은 ID/이름/설정/전체 변환/출처만 보관하고 이전 이동/R 참조를 재연결한다. 총1cm 외부/내부 복원 충돌·이름 점유·설정 변경 Redo는 전체 거절하고 스택을 유지한다. 중간 삭제 실패는 파괴된 CDU와 선택/참조/삭제 의도를 원복한다. CDU 열 상태는 공통 결합에 있으므로 실패 원복은 액터 연결만 재구축해 열 상태/시계를 유지하고, 성공한 삭제/Undo/Redo는 기존 전체 재구축으로 상태를 초기화한다. 중간 복원 실패도 먼저 생성한 CDU를 제거해 부분 적용을 막는다. 원복 자체의 연쇄 실패/자원 고갈은 기존 생명주기 한계로 남긴다.
+
+Editor126.06s 성공. CduBatchDeletionUndoRedo/CduDeletionUndoRedo/CduDuplicationUndoRedo/CduAdditionUndoRedo/SpineBatchDeletionUndoRedo **5건 무경고 성공(실패0)**. 새 검사는 종류 혼합/각 입력 차단, 기존·런타임 전체 삭제/Undo/Redo, 총1cm 충돌/이름 점유/설정 변경 거절, 둘째 파괴·생성 실패 주입과 개수/선택/스택/삭제 의도 불변, 이전 그룹 이동/R 참조 연결을 확인했다. 기존 FTransform Equals1e-9(액터cm·스케일 무차원), 배치 시계0s. 비기본 설정/높이/스케일은 합성 검사 조건이며 새 물성/피팅이 아니다.
+
+저장/열 상태 유지·최근접 재배정·대체 냉각/물리 검증은 후속 절을 따른다. 새 다중 삭제 UI는 환경 변화 없는 도구 제약으로 재시도하지 않아 미검증이다. 레벨 에셋/물성/저장 형식 변경 없음. 다중 CDU 복제·쿨러·펌프 손실 열 분배 확장·전체/FPS 제외.
+근거(커밋 제외): Saved/Build_CduBatchDeletion.log·Saved/Logs/CduBatchDeletion_Tests.log·Saved/Automation/CduBatchDeletion/index.json.

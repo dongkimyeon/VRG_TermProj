@@ -4,6 +4,7 @@
 #include "Interaction/VrgRackLifecycle.h"
 #include "Interaction/VrgSpineLifecycle.h"
 #include "Interaction/VrgCduLifecycle.h"
+#include "Interaction/VrgCduLayoutState.h"
 #include "Interaction/VrgSpineLayoutState.h"
 #include "Interaction/LayoutRackPalette.h"
 #include "Simulation/Core/VrgHud.h"
@@ -1003,8 +1004,8 @@ ACoolingDistributionUnitActor* ADataCenterDebugController::ConfirmCduAddition()
  const FName Name = MakeUniqueObjectName(GetWorld()->PersistentLevel, ACoolingDistributionUnitActor::StaticClass(),
   FName(*((bDuplicating ? TEXT("DuplicatedCdu_") : TEXT("AddedCdu_")) + Id)));
  FLayoutTransformCommand Command;
- Command.Cdu = FLayoutCduMember{Id, Name, Proposed, bDuplicating ? CduDuplicationSettings.GetValue()
-  : GetDefault<ACoolingDistributionUnitActor>()->CaptureLayoutSettings()};
+ Command.Cdus.Add({Id, Name, Proposed, bDuplicating ? CduDuplicationSettings.GetValue()
+  : GetDefault<ACoolingDistributionUnitActor>()->CaptureLayoutSettings()});
  if (!RestoreCduPresence(Command, true)) return nullptr;
  PushLayoutCommand(Command); CancelRackAddition();
  auto* Cdu = VrgCduLifecycle::Find(GetWorld(), Id); LayoutSelection.Add(Cdu);
@@ -1067,7 +1068,7 @@ bool ADataCenterDebugController::TryDeleteLayoutRack()
 void ADataCenterDebugController::OnDeleteLayoutEquipment()
 {
 	if (!TryDeleteLayoutRack() && !TryDeleteLayoutSpine() && !TryDeleteLayoutCdu())
-		UE_LOG(LogTemp, Display, TEXT("[VrgLayout] 삭제 거절: 랙 선택 전체 또는 네이티브 스파인 선택 전체 또는 네이티브 CDU 한 대와 배치 대기 상태가 필요합니다."));
+		UE_LOG(LogTemp, Display, TEXT("[VrgLayout] 삭제 거절: 랙 선택 전체 또는 네이티브 스파인 선택 전체 또는 네이티브 CDU 선택 전체와 배치 대기 상태가 필요합니다."));
 }
 
 bool ADataCenterDebugController::TryDeleteLayoutCdu()
@@ -1076,15 +1077,18 @@ bool ADataCenterDebugController::TryDeleteLayoutCdu()
  if (!World || !World->IsGameWorld() || !IsLayoutMode() || !IsCameraInputAvailable()
   || bAddingRack || IsLayoutDragging() || bMarqueeActive || Grabbed.IsValid() || IsInputKeyDown(EKeys::RightMouseButton)) return false;
  const auto Selected = GetSelectedLayoutActors();
- if (Selected.Num() != 1) return false;
- auto* Cdu = Cast<ACoolingDistributionUnitActor>(Selected[0]);
- if (!IsValid(Cdu) || Cdu->GetWorld() != World || Cdu->GetClass() != ACoolingDistributionUnitActor::StaticClass()) return false;
+ if (Selected.IsEmpty()) return false;
  FLayoutTransformCommand Command; Command.bBeforePresent = true;
- Command.Cdu = FLayoutCduMember{VrgCduLifecycle::Identity(Cdu), Cdu->GetFName(), Cdu->GetActorTransform(),
-  Cdu->CaptureLayoutSettings(), Cdu->bRuntimeLayoutCdu};
+ for (auto* Actor : Selected)
+ {
+  auto* Cdu = Cast<ACoolingDistributionUnitActor>(Actor);
+  if (!IsValid(Cdu) || Cdu->GetWorld() != World || Cdu->GetClass() != ACoolingDistributionUnitActor::StaticClass()) return false;
+  Command.Cdus.Add({VrgCduLifecycle::Identity(Cdu), Cdu->GetFName(), Cdu->GetActorTransform(),
+   Cdu->CaptureLayoutSettings(), Cdu->bRuntimeLayoutCdu});
+ }
  if (!RestoreCduPresence(Command, true)) return false;
  PushLayoutCommand(MoveTemp(Command));
- UE_LOG(LogTemp, Display, TEXT("[VrgLayout] CDU 삭제: 1대"));
+ UE_LOG(LogTemp, Display, TEXT("[VrgLayout] CDU 삭제: %d대"), Selected.Num());
  return true;
 }
 
@@ -1178,7 +1182,7 @@ bool ADataCenterDebugController::RestoreLayoutTransform(bool bRedo)
 	TArray<FLayoutTransformCommand>& To = bRedo ? LayoutUndo : LayoutRedo;
 	if (From.IsEmpty()) return false;
 	const FLayoutTransformCommand Command = From.Last();
-	if (Command.Cdu.IsSet())
+	if (!Command.Cdus.IsEmpty())
 	{
 		if (!RestoreCduPresence(Command, bRedo)) return false;
 		From.Pop(); To.Add(Command); return true;
@@ -1317,31 +1321,62 @@ bool ADataCenterDebugController::RestoreRackPresence(const FLayoutTransformComma
 
 bool ADataCenterDebugController::RestoreCduPresence(const FLayoutTransformCommand& Command, bool bRedo)
 {
- if (!GetWorld()->IsGameWorld() || !Command.Cdu.IsSet()) return false;
- const auto& M = Command.Cdu.GetValue();
- if (M.Id.IsEmpty() || !M.Settings.IsValid()) return false;
- auto* Cdu = VrgCduLifecycle::Find(GetWorld(), M.Id);
+ if (!GetWorld()->IsGameWorld() || Command.Cdus.IsEmpty()) return false;
  const bool bTargetPresent = bRedo ? !Command.bBeforePresent : Command.bBeforePresent;
+ TArray<ACoolingDistributionUnitActor*> Present; TArray<FLayoutFootprint> Footprints;
+ TSet<FString> Ids; TSet<FName> Names;
+ for (const auto& M : Command.Cdus)
+ {
+  if (M.Id.IsEmpty() || !M.Settings.IsValid() || Ids.Contains(M.Id) || Names.Contains(M.Name)) return false;
+  Ids.Add(M.Id); Names.Add(M.Name);
+  auto* Cdu = VrgCduLifecycle::Find(GetWorld(), M.Id);
+  if (bTargetPresent)
+  {
+   if (Cdu || FindObjectFast<UObject>(GetWorld()->PersistentLevel, M.Name)
+    || IsLayoutBoxBlocked(GetWorld(), M.Settings.SizeM, M.Transform)) return false;
+   FLayoutFootprint Candidate;
+   if (!MakeLayoutFootprint(M.Settings.SizeM, M.Transform, Candidate)) return false;
+   for (const auto& Other : Footprints) if (FootprintsConflict(Candidate, Other)) return false;
+   Footprints.Add(Candidate);
+  }
+  else
+  {
+   if (!Cdu || Cdu->GetClass() != ACoolingDistributionUnitActor::StaticClass() || Cdu->GetFName() != M.Name
+    || Cdu->bRuntimeLayoutCdu != M.bRuntime || !Cdu->GetActorTransform().Equals(M.Transform)
+    || !(Cdu->CaptureLayoutSettings() == M.Settings)) return false;
+   Present.Add(Cdu);
+  }
+ }
  if (bTargetPresent)
  {
-  if (Cdu || FindObjectFast<UObject>(GetWorld()->PersistentLevel, M.Name)
-   || IsLayoutBoxBlocked(GetWorld(), M.Settings.SizeM, M.Transform)) return false;
-  Cdu = VrgCduLifecycle::Spawn(GetWorld(), M.Name, M.Id, M.Transform, M.Settings, M.bRuntime);
-  if (!Cdu) return false;
-  NotifyLayoutCduRecreated(Cdu);
+  const auto DeletedBefore = GetWorld()->GetSubsystem<UVrgCduLayoutState>()->DeletedPlaced;
+  for (const auto& M : Command.Cdus)
+  {
+   auto* Cdu = VrgCduLifecycle::Spawn(GetWorld(), M.Name, M.Id, M.Transform, M.Settings, M.bRuntime);
+   if (!Cdu)
+   {
+    if (!Present.IsEmpty()) verify(VrgCduLifecycle::RemoveBatch(Present));
+    GetWorld()->GetSubsystem<UVrgCduLayoutState>()->DeletedPlaced = DeletedBefore;
+    return false;
+   }
+   Present.Add(Cdu);
+  }
+  for (auto* Cdu : Present) NotifyLayoutCduRecreated(Cdu);
  }
- else
- {
-  if (!Cdu || Cdu->GetFName() != M.Name || Cdu->bRuntimeLayoutCdu != M.bRuntime || !Cdu->GetActorTransform().Equals(M.Transform)
-   || !(Cdu->CaptureLayoutSettings() == M.Settings) || !VrgCduLifecycle::Remove(Cdu)) return false;
- }
+ else if (!VrgCduLifecycle::RemoveBatch(Present)) return false;
  VrgRackLifecycle::Rebuild(GetWorld()); return true;
 }
 
-void ADataCenterDebugController::NotifyLayoutCduRecreated(ACoolingDistributionUnitActor* Cdu)
+void ADataCenterDebugController::NotifyLayoutCduRecreated(ACoolingDistributionUnitActor* Cdu, ACoolingDistributionUnitActor* Previous)
 {
  for (auto* Stack : {&LayoutUndo, &LayoutRedo}) for (auto& Command : *Stack) for (auto& M : Command.Members)
   if (M.CduId == VrgCduLifecycle::Identity(Cdu)) M.Actor = Cdu;
+ if (Previous)
+ {
+  const TWeakObjectPtr<AActor> Old(Previous);
+  for (auto& Selected : LayoutSelection) if (Selected == Old) Selected = Cdu;
+  if (HoveredPlaceable == Old) HoveredPlaceable = Cdu;
+ }
 }
 
 bool ADataCenterDebugController::RestoreSpinePresence(const FLayoutTransformCommand& Command, bool bRedo)
@@ -2380,7 +2415,7 @@ void ADataCenterDebugController::DrawHelp() const
 
 	GEngine->AddOnScreenDebugMessage(BaseKey, 0.0f, FColor(180, 220, 255),
 		IsLayoutMode()
-		? TEXT("[배치 키] Shift+클릭 추가/제거 | 빈 곳 드래그 사각형 선택·Shift 추가 | 장비 드래그 그룹 이동/빨강 거절/Esc 취소 | 단일 랙 줄 붙이기/Alt 해제 | Ctrl+D 랙/스파인 전체·CDU 한 대 복제 | Ctrl+Z/Y 배치 실행 취소/다시 실행 | 추가/복제: 클릭 확정/R 회전/Esc 취소 | R 선택 90도 회전 | Delete 선택 랙 전체 삭제 | F 선택/없으면 전체 | 우클릭+마우스/WASD/QE 비행·휠 속도 | 휠 전후 | G/T 단일만 C 컨테인먼트 Enter 시뮬레이션 H 도움말")
+		? TEXT("[배치 키] Shift+클릭 추가/제거 | 빈 곳 드래그 사각형 선택·Shift 추가 | 장비 드래그 그룹 이동/빨강 거절/Esc 취소 | 단일 랙 줄 붙이기/Alt 해제 | Ctrl+D 랙/스파인 전체·CDU 한 대 복제 | Ctrl+Z/Y 배치 실행 취소/다시 실행 | 추가/복제: 클릭 확정/R 회전/Esc 취소 | R 선택 90도 회전 | Delete 랙/스파인/CDU 선택 전체 삭제 | F 선택/없으면 전체 | 우클릭+마우스/WASD/QE 비행·휠 속도 | 휠 전후 | G/T 단일만 C 컨테인먼트 Enter 시뮬레이션 H 도움말")
 		: TEXT("[디버그 키] Enter 배치 모드 | 1/2 CPU 발열  3/4 GPU 발열  5/6 펌프 회전수  7/8 라디에이터 UA(랙별 모드)  9/0 부하율  E 바라보는 유닛 뽑기/꽂기  R 리셋  H 도움말"));
 
 	const ARackThermalActor* Rack = TargetRack.Get();
