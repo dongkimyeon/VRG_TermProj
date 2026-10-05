@@ -20,8 +20,8 @@ S3(균일 격자 공기 해석), **S4(도메인 통합 = MVP)** 완료.
 D4(영향 범위를 재계산으로 판정)를 지키기도 쉽다.
 
 남은 순서: S7 시각화·성능의 남은 항목(웹 대시보드 포함, `Tools/웹대시보드_계획.md`) → S2b 냉각수·누수·장애 (마지막).
-최근 스파인 단일 복제 검증(2026-10-05, NullRHI): Editor103.10s/결합45.10s/검사 수정6.99s 성공. 입력4건 성공(기존 랙 축 근사 경고 동반1), 저장/결합4건 중3 성공/1 검사 배치 오류 후 해당1건 무경고 성공으로 관련8종 성공 확인. 기존/런타임·기본/비기본 복제, Undo/Redo, 기존 v2 저장, 케이블/IT/열수지/공기 기준 통과. 사용자 스파인 삭제 직접 절차 모두 정상 보고 반영. 새 복제 UI는 기존 클릭 도구 실패를 반복하지 않아 미검증. 전체 VRG/FPS 반복 없음. 정규화/단위·최초 실패와 한계는 마지막 절. 과거 원격139건은 이번 전체 성공으로 계산하지 않는다.
-S7 볼륨·기류 표시와 기존 패키징 검증은 이미 완료했다. 배치 Shift 다중 선택·F 그룹 보기·그룹 드래그·단일/그룹 R 회전·사각형 선택·이동/회전 겹침 방지·단일/그룹 랙 줄 붙이기·GB200 NVL72 랙 추가·단일/다중 랙 삭제·단일/다중 랙 복제·그룹 생명주기 Undo/Redo·랙 저장 v2·스파인 단일 추가·삭제·복제/Undo/Redo/저장까지 구현했다. 그룹 복제 미리보기의 R은 사용자 요청으로 차단한다. 실제 입력 확인 상태는 마지막 관련 절을 참고한다. 현재 PC 성능 측정은 필요 시 별도로 진행한다.
+최근 다중 스파인 삭제 검증(2026-10-05, NullRHI): Editor77.39s/49.20s 성공, 입력4건+저장/결합5건 모두 무경고 성공(실패0/미실행0/진행0/종료0). 기존/런타임 출처를 함께 한 Delete/Undo/Redo·기존 v2 저장으로 처리하고 케이블/IT/열수지/공기 기준 통과. 중간 삭제/생성 실패 원복과 이전 그룹 이동/R 참조 재연결 확인. 사용자 단일 복제 직접 절차 모두 정상 보고 반영. 새 다중 삭제 UI는 기존 클릭/Shift 유지 도구 실패를 반복하지 않아 미검증. 전체 VRG/FPS 반복 없음. 정규화/단위·한계는 마지막 절. 과거 전체 결과를 이번 전체 성공으로 계산하지 않는다.
+S7 볼륨·기류 표시와 기존 패키징 검증은 이미 완료했다. 배치 Shift 다중 선택·F 그룹 보기·그룹 드래그·단일/그룹 R 회전·사각형 선택·이동/회전 겹침 방지·단일/그룹 랙 줄 붙이기·GB200 NVL72 랙 추가·단일/다중 랙 삭제·단일/다중 랙 복제·그룹 생명주기 Undo/Redo·랙 저장 v2·스파인 단일 추가·복제 및 단일/다중 삭제/Undo/Redo/저장까지 구현했다. 그룹 복제 미리보기의 R은 사용자 요청으로 차단한다. 실제 입력 확인 상태는 마지막 관련 절을 참고한다. 현재 PC 성능 측정은 필요 시 별도로 진행한다.
 RTX 4080 측정값을 다른 PC의 보장값으로 쓰지 않는다. 화면에는 단축키 안내만 유지한다.
 **VR(HMD) 환경은 구현하지 않는다** (2026-09-27 팀 결정). 아래 절들의 "HMD 미검증" 문구는 당시 기록이며 남은 작업이 아니다.
 
@@ -3122,3 +3122,27 @@ Delete는 선택 전체가 네이티브 스파인인 경우 기존/런타임 출
 Editor77.39s 성공. SpineBatchDeletionUndoRedo/SpineDeletionUndoRedo/SpineDuplicationUndoRedo/RackBatchDeletionUndoRedo 4건 무경고 성공, 실패0/미실행0/진행0/종료0. 새 검사는 기존4스위치/런타임2스위치·비기본 높이/스케일(합성 설정, 새 물성 아님), 차단/전체 개수·선택/한 기록·두 번째 목적지 충돌/0.5cm 여유 거절·이름 점유·중간 삭제/생성 실패·열 장부 원복·이전 그룹 이동/R 참조 재연결·오래된 설정 Redo 거절을 확인한다. 전체 FTransform Equals1e-9(액터cm 경계/스케일 무차원)·성공 Undo 장부0J·배치 시계0s는 기존 기준이다. 저장/열·공기 결합의 최종 결과는 후속 절로 남긴다. 전체/FPS 반복 없음.
 
 새 다중 삭제 UI는 기존 geometry unavailable 클릭/Shift 유지 입력 실패에 환경 변화 근거가 없어 재시도하지 않았다. 사용자 단일 복제 정상 보고와 구분한다. 근거(커밋 제외): Saved/Build_SpineBatchDeletion.log·Saved/Logs/SpineBatchDeletion_Tests.log·Saved/Automation/SpineBatchDeletion.
+
+### S7 다중 스파인 삭제 저장·케이블·열/공기 결합 검증 (2026-10-05)
+
+기존4스위치 한 대+런타임2스위치/슬롯5 한 대와 NVL72 한 랙/CDU/공기 fixture를 검사했다. 비기본 설정/배치는 합성 테스트 조건이며 물성 기본값/프리셋·저장 형식·레벨 에셋을 변경하지 않았다. 독립 초기 모델 두 개의 첫 스텝 IT 합을 기준으로 한다. 기존 v2/spineInventory/deletedSpines를 그대로 사용하며 온도·적분·시계는 파일/성공 Undo에 전달하지 않는다.
+
+Delete/Undo/Redo/삭제 파일 Load/삭제 전 파일 Load마다 패치·열/공기/덕트 대상3↔1, 케이블 제거/재배정과 스파인 없는 줄의 미연결 진단을 확인했다. 랙 줄/CDU/수력 배관 수 불변, 스파인 냉각수0kg/s·양의 공기 유량/덕트 거절 없음. 기존 배치의 명시 삭제 의도1개와 런타임 인벤토리 제거를 구분하고, 같은 월드/새 월드의 전체 삭제·원배치 복원·반복 Load0 생성/0 제거·출처/ID/이름/설정/전체 변환·기록 초기화를 확인했다. 구형 호환은 기존 InventorySaveLoad/SaveLoadRoundTrip/SpineDeletionPersistenceCoupling 검사를 함께 실행해 확인했다.
+
+| 검사 | 측정 | 기존 기준·정규화·단위 |
+|---|---|---|
+| Delete/Redo/삭제 파일 Load 첫 스텝 IT 감소 | 3612.326400W, 상대오차 최대1.511e-15 | 동일 초기조건0.02s, abs((삭제 전 전체 IT-현재 전체 IT)-삭제 스파인 기대 IT 합)/삭제 기대 W <1e-9, 무차원 |
+| Undo/삭제 전 파일 Load IT 복원 | 차이0W/상대오차0 | abs(현재 전체 IT-삭제 전 전체 IT)/삭제 스파인 기대 W <1e-9, 무차원 |
+| IT 타당성 | 6×597W 전자부품+팬30.326400W | 기존 QM9700 스위치 수×597W < 총 IT ≤스위치 수×747W 참고 상한. 공개 참고/전자부품·팬 분해 추정은 기존 발열 절·MakeQuantumSpineParams 주석 |
+| 각t0.82s 전역 잔차 절댓값 최대 | 1.713e-13 | <1e-9, (EnergyInJ-EnergyOutJ-StoredJ)/EnergyInJ, 유입+열원 장부J 정규화·무차원 |
+| 덕트 유량 상대오차 최대 | 2.140e-15 | <1e-9, abs(덕트-장비 유량)/장비 유량kg/s, 무차원 |
+| 정규화 발산 최대 | 3.564e-08 | <1e-5 및 압력 수렴, maxAbsDiv(1/s)/(maxAbsVelocity(m/s)/cellSize(m)), 무차원 |
+| 저장/새 월드/반복 Load | 스파인2↔0·0 생성/0 제거·Undo0/Redo0 | 정수/문자열 정확 일치, 기존 FTransform Equals1e-9(액터cm 경계/스케일 무차원) |
+
+새 물성/수치 피팅·오차 기준 추가 없음. 검사 안전망의 기존 참고 출처는 https://networking-docs.nvidia.com/qm97x0hw/specifications 이다. Editor49.20s 성공. SpineBatchDeletionPersistenceCoupling/SpineDeletionPersistenceCoupling/SpineDuplicationPersistenceCoupling/InventorySaveLoad/SaveLoadRoundTrip 5건 무경고 성공(실패0/미실행0/진행0/종료0). 앞 입력4건과 합쳐 영향9종 모두 무경고 성공. 각 검사를 한 번 실행하고 전체/FPS 반복하지 않았다.
+
+앞 입력 검사에서 중간 두 번째 실제 Destroy 거절과 두 번째 Spawn 이름 점유를 주입해 실패 원복을 검증했다. 원복 자체까지 방해하는 연쇄 실패/자원 고갈은 검증하지 않았고 실패 복원 불능은 기존 생명주기처럼 checkf/verify로 표시한다. 축소 NullRHI 결과를 L_Test 전체 열운전/정상상태/FPS 보장으로 쓰지 않는다.
+
+새 다중 삭제 UI는 환경 변화 없는 기존 geometry unavailable 클릭/Shift 유지 도구 실패를 재시도하지 않아 미검증이다. 직접 절차 Tools/배치스파인다중삭제_확인_2026-10-05.md. 사용자 단일 복제 정상 보고는 해당 절차에만 반영했다. 다중 스파인 복제/다른 장비 기능은 후속 요청 범위다.
+
+근거(커밋 제외): Saved/Build_SpineBatchDeletionCoupling.log·Saved/Logs/SpineBatchDeletionCoupling_Tests.log·Saved/Automation/SpineBatchDeletionCoupling. 첫 기능 빌드/입력 로그는 앞 절에 기록했다.
