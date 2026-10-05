@@ -5,6 +5,7 @@
 #include "Interaction/VrgRackLifecycle.h"
 #include "Interaction/VrgSpineLifecycle.h"
 #include "Interaction/VrgCduLifecycle.h"
+#include "Interaction/VrgCduLayoutState.h"
 #include "Interaction/VrgSpineLayoutState.h"
 #include "Actors/DataCenterRoomActor.h"
 #include "JsonObjectConverter.h"
@@ -125,6 +126,24 @@ bool VrgLayoutFile::Save(UWorld* World, const FString& Name, FString& OutSummary
 		O->SetObjectField(TEXT("spineSettings"), Config); Deleted.Add(MakeShared<FJsonValueObject>(O));
 	}
 	Root->SetArrayField(TEXT("deletedSpines"), Deleted); // Presence opts into native placed-spine restoration as well.
+	TArray<TSharedPtr<FJsonValue>> DeletedCdus;
+	if (auto* State = World->GetSubsystem<UVrgCduLayoutState>()) for (const auto& Pair : State->DeletedPlaced)
+	{
+		const auto& R = Pair.Value;
+		TSharedRef<FJsonObject> O = MakeShared<FJsonObject>();
+		O->SetStringField(TEXT("name"), R.Name.ToString()); O->SetStringField(TEXT("class"), ACoolingDistributionUnitActor::StaticClass()->GetName());
+		O->SetStringField(TEXT("cduId"), R.Id); O->SetBoolField(TEXT("runtimeCdu"), false);
+		const FVector M = SimUnits::UnrealToMeters(R.Transform.GetLocation());
+		const FRotator Rotation = R.Transform.Rotator(); const FVector Scale = R.Transform.GetScale3D();
+		O->SetNumberField(TEXT("x_m"), M.X); O->SetNumberField(TEXT("y_m"), M.Y); O->SetNumberField(TEXT("z_m"), M.Z);
+		O->SetNumberField(TEXT("yaw_deg"), Rotation.Yaw); O->SetNumberField(TEXT("pitch_deg"), Rotation.Pitch); O->SetNumberField(TEXT("roll_deg"), Rotation.Roll);
+		O->SetNumberField(TEXT("scale_x"), Scale.X); O->SetNumberField(TEXT("scale_y"), Scale.Y); O->SetNumberField(TEXT("scale_z"), Scale.Z);
+		TSharedRef<FJsonObject> Config = MakeShared<FJsonObject>();
+		if (!FJsonObjectConverter::UStructToJsonObject(FCduLayoutSettings::StaticStruct(), &R.Settings, Config)) return false;
+		O->SetObjectField(TEXT("cduSettings"), Config); DeletedCdus.Add(MakeShared<FJsonValueObject>(O));
+	}
+	Root->SetArrayField(TEXT("deletedCdus"), DeletedCdus); // Explicit placed-CDU intent, independent of Undo history.
+
 	TSharedRef<FJsonObject> Settings = MakeShared<FJsonObject>();
 	if (const ADataCenterSimulationActor* Sim = LayoutFindFirst<ADataCenterSimulationActor>(World))
 	{
@@ -201,6 +220,11 @@ bool VrgLayoutFile::Load(UWorld* World, const FString& Name, FString& OutSummary
 	const TArray<TSharedPtr<FJsonValue>>* DeletedValues = nullptr;
 	if (bSpineDeletions && (!bSpineInventory || !Root->TryGetArrayField(TEXT("deletedSpines"), DeletedValues)))
 		return Fail(TEXT("명시 스파인 삭제 목록 오류"));
+	const bool bCduDeletions = Version == 2 && Root->HasField(TEXT("deletedCdus"));
+	const TArray<TSharedPtr<FJsonValue>>* DeletedCduValues = nullptr;
+	if (bCduDeletions && (!bCduInventory || !Root->TryGetArrayField(TEXT("deletedCdus"), DeletedCduValues)))
+		return Fail(TEXT("명시 CDU 삭제 목록 오류"));
+	auto* CduState = World->GetSubsystem<UVrgCduLayoutState>();
 	auto* SpineState = World->GetSubsystem<UVrgSpineLayoutState>();
 	TMap<FString,ACoolingDistributionUnitActor*> ByCduId;
 	TMap<FString,ASpineCabinetActor*> BySpineId;
@@ -229,15 +253,18 @@ bool VrgLayoutFile::Load(UWorld* World, const FString& Name, FString& OutSummary
 			ById.Add(Id,Rack);
 		}
 	}
-	TArray<FLoadedEquipment> Items, DeletedItems;
+	TArray<FLoadedEquipment> Items, DeletedItems, DeletedCduItems;
 	TSet<FString> SeenNames,SeenIds,SeenSpineIds,SeenCduIds;
 	int32 Missing=0;
 	TArray<TSharedPtr<FJsonValue>> AllValues = *Values;
 	if (DeletedValues) AllValues.Append(*DeletedValues);
+	const int32 DeletedCduStart = AllValues.Num();
+	if (DeletedCduValues) AllValues.Append(*DeletedCduValues);
 	for (int32 ValueIndex = 0; ValueIndex < AllValues.Num(); ++ValueIndex)
 	{
 		const auto& Value = AllValues[ValueIndex];
-		const bool bDeleteSpine = ValueIndex >= Values->Num();
+		const bool bDeleteSpine = ValueIndex >= Values->Num() && ValueIndex < DeletedCduStart;
+		const bool bDeleteCdu = ValueIndex >= DeletedCduStart;
 		if (!FiniteLayoutJson(Value) || Value->Type!=EJson::Object) return Fail(TEXT("장비 데이터 형식/유한값 오류"));
 		const auto O=Value->AsObject(); FLoadedEquipment Item;
 		if (!O->TryGetStringField(TEXT("name"),Item.Name) || Item.Name.IsEmpty()
@@ -299,14 +326,15 @@ bool VrgLayoutFile::Load(UWorld* World, const FString& Name, FString& OutSummary
 					|| !O->TryGetStringField(TEXT("cduId"),Item.Id) || Item.Id.IsEmpty() || SeenIds.Contains(Item.Id)
 					|| !O->TryGetBoolField(TEXT("runtimeCdu"),Item.bRuntimeCdu)
 					|| !O->TryGetObjectField(TEXT("cduSettings"),Config)) return Fail(TEXT("CDU ID/설정 오류 또는 중복"));
-				SeenIds.Add(Item.Id); SeenCduIds.Add(Item.Id); Item.Actor = ByCduId.FindRef(Item.Id);
+				SeenIds.Add(Item.Id); if (!bDeleteCdu) SeenCduIds.Add(Item.Id); Item.Actor = ByCduId.FindRef(Item.Id);
 				FCduLayoutSettings CduSettings;
 				if (!FJsonObjectConverter::JsonObjectToUStruct(Config->ToSharedRef(),&CduSettings,0,0,true)
 					|| !CduSettings.IsValid()) return Fail(TEXT("CDU 설정 구조/범위 오류"));
 				Item.Cdu = CduSettings;
 				const auto* ExistingCdu = Cast<ACoolingDistributionUnitActor>(Item.Actor);
-				// Only native runtime CDUs may be created; placed CDU omissions never mean deletion.
-				if ((!Item.Actor && (!Item.bRuntimeCdu || Item.Class != ACoolingDistributionUnitActor::StaticClass()->GetName()))
+				// Native placed restoration requires deletion capability or known intent; omissions never delete placed CDUs.
+				if ((!Item.Actor && (Item.Class != ACoolingDistributionUnitActor::StaticClass()->GetName()
+					|| (!Item.bRuntimeCdu && !bCduDeletions && !CduState->DeletedPlaced.Contains(Item.Id))))
 					|| (Item.Actor && (!ExistingCdu || ExistingCdu->bRuntimeLayoutCdu != Item.bRuntimeCdu))) return Fail(TEXT("CDU 종류/출처 불일치"));
 			}
 			else if (bCduInventory && (Item.Class == ACoolingDistributionUnitActor::StaticClass()->GetName() || Cast<ACoolingDistributionUnitActor>(Item.Actor)))
@@ -314,9 +342,11 @@ bool VrgLayoutFile::Load(UWorld* World, const FString& Name, FString& OutSummary
 		}
 		if (bDeleteSpine && (!Item.Spine.IsSet() || Item.bRuntimeSpine
 			|| Item.Class != ASpineCabinetActor::StaticClass()->GetName())) return Fail(TEXT("명시 삭제는 기존 네이티브 스파인만 지원"));
+		if (bDeleteCdu && (!Item.Cdu.IsSet() || Item.bRuntimeCdu || Item.Class != ACoolingDistributionUnitActor::StaticClass()->GetName()))
+			return Fail(TEXT("명시 삭제는 기존 네이티브 CDU만 지원"));
 		if (Item.Actor && (Item.Actor->GetClass()->GetName()!=Item.Class || !Item.Actor->GetRootComponent()
 			|| Item.Actor->GetRootComponent()->Mobility!=EComponentMobility::Movable)) return Fail(TEXT("장비 종류 또는 이동 가능 상태 불일치"));
-		if (!bDeleteSpine && !Item.Actor && (Version==1 || (!Item.Rack.IsSet() && !Item.Spine.IsSet() && !Item.Cdu.IsSet())))
+		if (!bDeleteSpine && !bDeleteCdu && !Item.Actor && (Version==1 || (!Item.Rack.IsSet() && !Item.Spine.IsSet() && !Item.Cdu.IsSet())))
 		{
 			++Missing; UE_LOG(LogTemp,Warning,TEXT("[VrgLayout] 레벨에 없는 장비: %s"),*Item.Name);
 		}
@@ -327,7 +357,7 @@ bool VrgLayoutFile::Load(UWorld* World, const FString& Name, FString& OutSummary
 		}
 		Item.Target=FTransform(FRotator(Pitch,Yaw,Roll),SimUnits::MetersToUnreal(FVector(X,Y,Z)),FVector(SX,SY,SZ));
 		if (Item.Target.ContainsNaN()) return Fail(TEXT("좌표 변환 범위 오류"));
-		if (bDeleteSpine) DeletedItems.Add(MoveTemp(Item)); else Items.Add(MoveTemp(Item));
+		if (bDeleteSpine) DeletedItems.Add(MoveTemp(Item)); else if (bDeleteCdu) DeletedCduItems.Add(MoveTemp(Item)); else Items.Add(MoveTemp(Item));
 	}
 	if (Missing) return Fail(FString::Printf(TEXT("레벨에 없는 장비 %d: 적용하지 않음"),Missing));
 	const TSharedPtr<FJsonObject>* SettingsObject=nullptr;
@@ -360,6 +390,11 @@ bool VrgLayoutFile::Load(UWorld* World, const FString& Name, FString& OutSummary
 			RemoveSpines.Add(Pair.Value);
 		}
 	TArray<ACoolingDistributionUnitActor*> RemoveCdus;
+	for (const auto& Item : DeletedCduItems) if (auto* Cdu = Cast<ACoolingDistributionUnitActor>(Item.Actor))
+	{
+		if (Cdu->GetLocalRole()!=ROLE_Authority) return Fail(TEXT("CDU 삭제 권한 없음"));
+		RemoveCdus.Add(Cdu);
+	}
 	if (bCduInventory) for (const auto& Pair : ByCduId) if (Pair.Value->bRuntimeLayoutCdu && !SeenCduIds.Contains(Pair.Key))
 	{
 		if (Pair.Value->GetClass()!=ACoolingDistributionUnitActor::StaticClass() || Pair.Value->GetLocalRole()!=ROLE_Authority)
@@ -392,10 +427,11 @@ bool VrgLayoutFile::Load(UWorld* World, const FString& Name, FString& OutSummary
 	TArray<FSpineRemovalBackup> SpineBackups;
 	for (auto* Spine:RemoveSpines) SpineBackups.Add({Spine->GetFName(),VrgSpineLifecycle::Identity(Spine),Spine->GetActorTransform(),
 		Spine->CaptureLayoutSettings(),Spine->GetMutableModel(),Spine->GetMutableInput(),Spine->bRuntimeLayoutSpine});
-	struct FCduRemovalBackup { FName Name; FString Id; FTransform Transform; FCduLayoutSettings Settings; };
+	struct FCduRemovalBackup { FName Name; FString Id; FTransform Transform; FCduLayoutSettings Settings; bool bRuntime; };
 	TArray<FCduRemovalBackup> CduBackups;
-	for (auto* Cdu : RemoveCdus) CduBackups.Add({Cdu->GetFName(),VrgCduLifecycle::Identity(Cdu),Cdu->GetActorTransform(),Cdu->CaptureLayoutSettings()});
+	for (auto* Cdu : RemoveCdus) CduBackups.Add({Cdu->GetFName(),VrgCduLifecycle::Identity(Cdu),Cdu->GetActorTransform(),Cdu->CaptureLayoutSettings(),Cdu->bRuntimeLayoutCdu});
 	const auto OldDeletedPlaced = SpineState->DeletedPlaced;
+	const auto OldDeletedCdus = CduState->DeletedPlaced;
 	auto Rollback=[&]() {
 		for (auto& Item:Items) if (Item.bSpawned && IsValid(Item.Actor))
 		{
@@ -407,7 +443,7 @@ bool VrgLayoutFile::Load(UWorld* World, const FString& Name, FString& OutSummary
 		{
 			const auto& B=CduBackups[I];
 			if (IsValid(RemoveCdus[I])) RemoveCdus[I]->Rename(*B.Name.ToString(),nullptr,REN_DontCreateRedirectors|REN_NonTransactional);
-			else if (auto* Restored=VrgCduLifecycle::Spawn(World,B.Name,B.Id,B.Transform,B.Settings))
+			else if (auto* Restored=VrgCduLifecycle::Spawn(World,B.Name,B.Id,B.Transform,B.Settings,B.bRuntime))
 				for (TActorIterator<ADataCenterDebugController> It(World);It;++It) It->NotifyLayoutCduRecreated(Restored);
 		}
 		for (int32 I=0;I<RemoveSpines.Num();++I)
@@ -436,12 +472,13 @@ bool VrgLayoutFile::Load(UWorld* World, const FString& Name, FString& OutSummary
 		}
 		for (int32 I=0;I<Current.Num();++I) if (IsValid(Current[I])) Current[I]->SetActorTransform(OldTransforms[I],false);
 		SpineState->DeletedPlaced = OldDeletedPlaced;
+		CduState->DeletedPlaced = OldDeletedCdus;
 	};
 	for (auto& Item:Items) if (!Item.Actor)
 	{
 		UClass* Kind=Item.Cdu.IsSet()?ACoolingDistributionUnitActor::StaticClass():Item.Spine.IsSet()?ASpineCabinetActor::StaticClass():ARackThermalActor::StaticClass();
 		const FName Temp=MakeUniqueObjectName(World->PersistentLevel,Kind,TEXT("PendingLayoutEquipment"));
-		Item.Actor=Item.Cdu.IsSet()?static_cast<AActor*>(VrgCduLifecycle::Spawn(World,Temp,Item.Id,Item.Target,Item.Cdu.GetValue()))
+		Item.Actor=Item.Cdu.IsSet()?static_cast<AActor*>(VrgCduLifecycle::Spawn(World,Temp,Item.Id,Item.Target,Item.Cdu.GetValue(),Item.bRuntimeCdu))
 			:Item.Spine.IsSet()?static_cast<AActor*>(VrgSpineLifecycle::Spawn(World,Temp,Item.Id,Item.Target,Item.Spine.GetValue(),Item.bRuntimeSpine))
 			:VrgRackLifecycle::Spawn(World,Temp,Item.Id,Kind,Item.Target,Item.Rack.GetValue());
 		Item.bSpawned=Item.Actor!=nullptr;
@@ -489,6 +526,12 @@ bool VrgLayoutFile::Load(UWorld* World, const FString& Name, FString& OutSummary
 		for (const auto& Item : DeletedItems) SpineState->DeletedPlaced.Add(Item.Id,
 			{Item.Id, FName(*Item.Name), Item.Target, Item.Spine.GetValue(), false});
 	}
+	if (bCduDeletions)
+	{
+		CduState->DeletedPlaced.Reset();
+		for (const auto& Item : DeletedCduItems) CduState->DeletedPlaced.Add(Item.Id,
+			{Item.Id,FName(*Item.Name),Item.Target,Item.Cdu.GetValue(),false});
+	}
 	ADataCenterSimulationActor* Sim=LayoutFindFirst<ADataCenterSimulationActor>(World);
 	if (Sim && Sim->GetSimMode()==ESimMode::Simulation) Sim->EnterLayoutMode();
 	for (TActorIterator<ADataCenterDebugController> It(World);It;++It) It->ResetLayoutEditsForLoad();
@@ -507,6 +550,7 @@ bool VrgLayoutFile::Load(UWorld* World, const FString& Name, FString& OutSummary
 	for (auto& Item:Items) if (Item.Cdu.IsSet())
 	{
 		auto* Cdu=CastChecked<ACoolingDistributionUnitActor>(Item.Actor); Cdu->LayoutId=Item.Id;
+		CduState->DeletedPlaced.Remove(Item.Id);
 		if (!Item.bSpawned) { Cdu->ApplyLayoutSettings(Item.Cdu.GetValue()); Cdu->RefreshVisuals(); }
 	}
 	double V;

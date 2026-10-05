@@ -123,7 +123,7 @@ bool FLayoutCduPersistenceTest::RunTest(const FString& Parameters)
  TArray<TSharedPtr<FJsonValue>> LegacyItems;
  for(const auto& V:Root->GetArrayField(TEXT("equipment"))) if(V->AsObject()->GetStringField(TEXT("name"))!=Name.ToString()) {
   auto E=V->AsObject(); E->RemoveField(TEXT("cduId")); E->RemoveField(TEXT("cduSettings")); E->RemoveField(TEXT("runtimeCdu")); LegacyItems.Add(V); }
- Root->SetArrayField(TEXT("equipment"),LegacyItems); Root->RemoveField(TEXT("cduInventory")); Write();
+ Root->SetArrayField(TEXT("equipment"),LegacyItems); Root->RemoveField(TEXT("cduInventory")); Root->RemoveField(TEXT("deletedCdus")); Write();
  TestTrue(TEXT("Legacy v2 CDU omission preserves inventory"),VrgLayoutFile::Load(Fresh,File,Summary) && Count(Fresh)==3);
  Root->SetNumberField(TEXT("version"),1); Write(); TestTrue(TEXT("Legacy v1 transform path preserved"),VrgLayoutFile::Load(Fresh,File,Summary) && Count(Fresh)==3);
  AddInfo(FString::Printf(TEXT("CDU maxima: IT %.3e coolant %.3e global %.3e hydraulic %.3e div %.3e; pump %.6f..%.6fW flow %.6f..%.6fkg/s. Confirm/Undo/Redo/Load; fresh/repeat/legacy; power separate from IT; pump loss thermal split remains existing model debt."),
