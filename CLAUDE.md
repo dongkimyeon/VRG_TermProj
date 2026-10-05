@@ -3303,3 +3303,27 @@ Editor126.06s 성공. CduBatchDeletionUndoRedo/CduDeletionUndoRedo/CduDuplicatio
 
 저장/열 상태 유지·최근접 재배정·대체 냉각/물리 검증은 후속 절을 따른다. 새 다중 삭제 UI는 환경 변화 없는 도구 제약으로 재시도하지 않아 미검증이다. 레벨 에셋/물성/저장 형식 변경 없음. 다중 CDU 복제·쿨러·펌프 손실 열 분배 확장·전체/FPS 제외.
 근거(커밋 제외): Saved/Build_CduBatchDeletion.log·Saved/Logs/CduBatchDeletion_Tests.log·Saved/Automation/CduBatchDeletion/index.json.
+
+
+### S7 CDU 다중 삭제 저장·냉각 연결·실패 원복 검증 (2026-10-05)
+
+기존 저장 v2/cduInventory/deletedCdus와 재구축을 재사용하며 형식 변경은 없다. 기존 CDU 두 대와 런타임 한 대의 혼합 출처 fixture에서 선택 두 대 삭제·전체 Undo/Redo(CDU3→1→3→1), 마지막 CDU를 포함한 전체 삭제·복원(3→0→3→0), 삭제 전후 반복/새 월드 Load·중복 없음·ID/이름/설정/전체 변환/출처·기록0을 확인했다. 이전 파일 누락/잘못된 삭제 목록 거절 및 기존 랙·스파인 저장은 기존 회귀 검사를 함께 실행했다. 실행 월드만 바뀌며 레벨 에셋은 바꾸지 않는다.
+
+NVL72 한 랙·공기 fixture를 t1.02s까지 운전하고 정지한 뒤 둘째 CDU 파괴 거절을 주입했다. 실패 원복 뒤 시계1.02s·전역 축적68439.267760J·랙 누적 입력118842.864679J/출력46859.584748J를 포함한 전역/랙 열 장부, CDU 공급/회수 온도·duty, 랙 냉각수/공기 열 배열이 정확히 유지됐다. 재생성된 CDU의 줄 배정·선택/참조도 복구되고 개수/스택/삭제 의도는 불변이었다. 성공한 Undo/Load는 온도/적분/시계를 복사하지 않으며 다음 시뮬레이션은 t0부터 재구성한다. 새 월드 Load 직후 시계/입력 장부0도 확인했다.
+
+| 검사 | 측정 최대/결과 | 기존 판정·정규화 기준/단위 |
+|---|---|---|
+| 재구축 첫 스텝 랙 IT 변화 | 0W/상대오차0, 기준116512.612431W | abs(현재 IT-동일 초기 랙 IT)/기준 IT W <1e-9, 무차원. CDU/펌프를 랙 IT로 계상하지 않음 |
+| 수력 잔차 | 7.348e-14, 실제/가상 루프 수렴 | 질량 잔차/기준 유량m³/s·압력 잔차/기준 압력Pa 중 최대 <기존 목표1e-10. 기본/가상 기준3.399365e-3m³/s·4.000000e5Pa, 남은 비기본 CDU2.719492e-3m³/s·2.560000e5Pa; 무차원 |
+| 냉각수 열 전달 장부 | 5.956e-15 | abs(랙 액체 제거W-외부 방출 합W)/외부 방출 합W <1e-12, 무차원. 실제 CDU duty=방출 합, 마지막 삭제 시 HX 그룹 없음 |
+| t1.02s 전역 열수지 | 1.314e-13 | abs(입력J-유출J-축적J)/누적 IT+CRAH 팬 입력J <1e-9, 무차원 |
+| 공기 압력/발산 | 수렴, 2.726e-08 | maxAbsDiv(1/s)/(maxAbsVelocity(m/s)/cellSize(m)) <1e-5, 무차원 |
+| 펌프/유량 타당성 | 1052.496263~1908.824139W / 2.711334~3.389167kg/s | Δp·Flow/효율 및 평가 PumpW 상대차 <1e-12, 양의 유량·펌프/분기 질량 상대차 <1e-9, 펌프/현재 IT <5%; 공급≥설비수 공급·회수>공급 |
+| 저장/복원·실패 원복 | 개수/ID/설정/출처 정확, 반복0 생성/0 제거·Undo0/Redo0 | 기존 FTransform Equals1e-9(액터cm·스케일 무차원); 정지 중 실패의 J/K/W/kg/s 배열·시계s는 정확 일치 |
+
+남은 CDU로 기존 최근접 규칙에 따라 재배정하며 마지막 CDU 삭제 시 기존 라디에이터·가상 수력 루프/펌프·진단을 유지한다. 기존 8랙 RowOperatingPointPlausible도 성공: 분기2.300~2.356L/s·편차2.4%(<15%), ΔT10.36~10.62K(5~15K), 펌프/IT<5%, 유량 보존3.744e-16. 한 랙 순간 검사를 정상상태/L_Test 전체 운전으로 확대하지 않는다. 비기본 효율0.65/속도0.8·배치는 합성 검사 조건으로 새 하드웨어 값/피팅/허용치가 아니다. 기존 공개 참고값·추정 구분 및 기본 물성 주석을 그대로 사용했다.
+
+새 소스 추가 첫 빌드는1.24s 성공/0 action으로 소스 수집을 놓쳤다. 프로젝트 SourceFileCache만 지워서는 부족해 정확한 Editor 대상 Makefile 캐시를 재생성했고, 새 검사 컴파일 포함 Editor85.31s 성공을 확인했다. CduBatchDeletionPersistenceCoupling/CduDeletionPersistenceCoupling/CduDuplicationPersistenceCoupling/InventorySaveLoad/SaveLoadRoundTrip/RowOperatingPointPlausible **6건 성공(4 무경고+2 경고 동반), 실패0/미실행0/진행0/종료0**. 경고는 새 검사4건/기존 단일 삭제3건의 기존 CDU 없음 가상 루프 안내이며 압력 수렴 실패가 아니다. 앞 입력5종과 합쳐 **영향11종 성공(9 무경고+2 경고 동반)**. 전체 VRG·이미 통과한 입력 검사·FPS는 반복하지 않았다.
+
+펌프 전력은 운전점 전력 평가에서 별도로 유지하고 펌프 손실의 냉각수/공기 열 분배는 기존 부채다. 위 전역 열수지는 IT+CRAH 팬 입력 기준이며 실제 시설 전체 열수지 완성으로 해석하지 않는다. 새 다중 삭제 실제 UI/캡처는 환경 변화 없는 도구 제약으로 미검증이다. 직접 절차: Tools/배치CDU다중삭제_확인_2026-10-05.md. 다중 CDU 복제·쿨러·물리 확장·원복 자체 연쇄 실패/극단 자원 고갈·전체/FPS는 범위 밖이다.
+근거(커밋 제외): Saved/Build_CduBatchDeletionCoupling.log·Saved/Build_CduBatchDeletionCoupling_Gather.log·Saved/Logs/CduBatchDeletionCoupling_Tests.log·Saved/Automation/CduBatchDeletionCoupling/index.json. 입력 근거는 앞 절.
