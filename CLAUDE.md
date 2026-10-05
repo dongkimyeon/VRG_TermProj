@@ -3146,3 +3146,13 @@ Delete/Undo/Redo/삭제 파일 Load/삭제 전 파일 Load마다 패치·열/공
 새 다중 삭제 UI는 환경 변화 없는 기존 geometry unavailable 클릭/Shift 유지 도구 실패를 재시도하지 않아 미검증이다. 직접 절차 Tools/배치스파인다중삭제_확인_2026-10-05.md. 사용자 단일 복제 정상 보고는 해당 절차에만 반영했다. 다중 스파인 복제/다른 장비 기능은 후속 요청 범위다.
 
 근거(커밋 제외): Saved/Build_SpineBatchDeletionCoupling.log·Saved/Logs/SpineBatchDeletionCoupling_Tests.log·Saved/Automation/SpineBatchDeletionCoupling. 첫 기능 빌드/입력 로그는 앞 절에 기록했다.
+
+### S7 사용자 다중 삭제 확인·다중 스파인 복제 입력 (2026-10-05)
+
+사용자가 Tools/배치스파인다중삭제_확인_2026-10-05.md 직접 절차 모두 정상으로 보고했다. 전체 Delete/한 Undo/Redo·충돌/이전 그룹 이동/R·혼합/차단·케이블/미연결·반복/새 실행 Load의 사용자 확인이다. 로그/캡처/FPS 및 이전 도구 오류 원인으로 확대하지 않는다.
+
+Ctrl+D는 네이티브 스파인 선택 전체를 값 기반 배열로 캡처한다. 원본 설정/전체 변환과 상대 위치/높이를 유지하고 앵커 XY에5cm 스냅을 적용한다. 다중 미리보기 R은 차단하고 단일 R과 랙 그룹 복제는 유지한다. 기존 미리보기 전체의 총1cm 외부/내부 충돌 검사·공통 빨강/주황·Esc·편집/패치/모드 차단/취소를 공유한다. 클릭 때만 각 새 ID/이름/runtime 출처로 한꺼번에 생성하고 한 Undo/Redo 기록으로 처리한다. 기존 다중 스파인 생성/제거 원복과 재구축을 재사용한다. 온도/적분/장부/시계/입력 샘플·장비 참조는 복사하지 않는다. 새 물성/저장 형식/레벨 에셋 변경 없음.
+
+Editor141.91s 성공. SpineBatchDuplicationUndoRedo/SpineDuplicationUndoRedo/SpineAdditionUndoRedo/RackGroupDuplication/RackGroupDuplicationCoupling5건 무경고 성공, 실패0/미실행0/진행0/종료0. 새 검사는 실제 Ctrl+D 이벤트·차단/취소·기존/런타임 원본·비기본 설정/높이/스케일(합성 조건)·원본 불변/입력 독립·2개 미리보기·R 차단·두 번째 충돌 전체 거절·두 번째 실제 Spawn 파괴 실패 원복·전체 확정/한 Undo/Redo·충돌 Redo 기록 유지·고유 ID/설정/변환 재복원을 확인했다. 변환은 기존 FTransform Equals1e-9(액터cm 경계/스케일 무차원), 초기 장부0J/배치 시계0s. 저장/스파인 물리 최종 결과는 다음 절로 남긴다.
+
+Windows Computer Use 초기화/창 목록 조회는 이전 질문에서 성공했으나, geometry unavailable 좌표·Shift 유지 입력 제약의 해소 근거가 없어 새 UI는 재시도하지 않았다. 실제 조작 미검증과 자동화 성공을 구분하고 전체/FPS 반복 없음. 근거(커밋 제외): Saved/Build_SpineBatchDuplication.log·Saved/Logs/SpineBatchDuplication_Tests.log·Saved/Automation/SpineBatchDuplication.

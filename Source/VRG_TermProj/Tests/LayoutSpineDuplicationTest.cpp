@@ -27,7 +27,7 @@ bool FLayoutSpineDuplicationTest::RunTest(const FString& Parameters)
 	};
 	Refused(); Select(Rack); Refused(); Select(Source); Select(Rack,true); Refused();
 	auto* Other=W->SpawnActor<ASpineCabinetActor>(FVector(700,0,0),FRotator::ZeroRotator);
-	Select(Source); Select(Other,true); Refused(); Other->Destroy(false,false);
+	Other->Destroy(false,false); // Native group selection is covered by SpineBatchDuplicationUndoRedo.
 	Select(Source); C->BeginLayoutDragAlongRay(Source->GetActorLocation()+FVector(0,0,500),Down); Refused(); C->EndLayoutDrag(false);
 	C->BeginLayoutMarquee(FVector2D(0,0),false); Refused(); C->EndLayoutMarquee(false);
 	C->BeginSpineAddition(); Refused(); C->CancelRackAddition(); Select(Source);
