@@ -3562,3 +3562,16 @@ CrahDuplicationPersistenceCoupling은 NVL72 한 랙·기존 CDU·공기 fixture�
 L_Test 일반 실행 창에서 확인용 인로우 추가→선택된 런타임 CRAH Ctrl+D→원본 중첩 빨강/클릭 거절→R90°→빈 목적지 주황 미리보기→Esc 취소(생성 없음)→Ctrl+D 재시작/클릭 한 대 생성(원본 유지)→Ctrl+Z 제거→Ctrl+Y 복원을 확인했다. 실제 로그의 복제 확정/Undo1·Redo1/Redo 후 Undo2·Redo0와 Alt+Print Screen→클립보드 PNG→이미지 확인을 대조했다. 중간 버튼은 커서 목적지만 이동하는 데 사용했다. 마지막 Undo 두 번(0/2)으로 복제와 확인용 추가/자동 전환을 모두 취소했다. 레벨/배치 파일 저장·기존 캡처 API 재시도·FPS 측정 없음. 조작 가능한 일반 창을 바로 사용했고 차단 드라이버 안내는 나타나지 않았다.
 실제 기존 배치/자동 전환 원본 복제, 패치/모드 취소·다중/혼합 차단·복원 충돌 및 저장/새 실행 Load UI는 미검증이다(Automation 성공과 구분). 절차 Tools/배치CRAH복제_확인_2026-10-06.md. 근거: Saved/Logs/CrahDuplication_UI.log, Saved/CrahDuplication_{Start,Add,Overlap,Preview,Cancel,Confirmed,Undo,Redo}.png(커밋 제외).
 다중 CRAH 삭제/복제·벽면 추가 버튼·새 물리 모델은 후속 범위다.
+
+## 2026-10-06 다중 CRAH 삭제·Undo/Redo
+
+사용자가 단일 CRAH 복제 직접 확인 결과 정상으로 보고했다. 해당 사용자 절차의 확인이며 캡처/로그/FPS 측정으로 확대하지 않는다.
+Delete는 선택 전체가 네이티브 CRAH인 경우 기존 배치/자동 전환/런타임 출처를 함께 삭제한다. 미선택/종류 혼합/비네이티브·편집/패치/시뮬레이션 입력 차단과 다른 종류의 기존 삭제를 유지한다. 실행 월드만 변경하고 공유 presence/RemoveBatch/rebuild/history를 재사용해 전체 삭제를 한 기록으로 처리한다. ID/설정/전체 변환/출처/원래 자동 경계와 이전 이동/R 참조를 복원하며 온도·적분·시계는 복사하지 않는다. 총1cm/이름 점유/설정 변경·중간 제거 또는 생성 실패는 전체 원복하고 상태/기록을 유지한다.
+
+공유 복원에서 전환 장비끼리라는 이유만으로 접촉 예외를 허용하던 조건을 좁혔다. 실제 원래 자동 변환/SizeM을 유지한 두 전환 장비의 접촉만 기존 예외를 유지하며, 이동/크기 변경 장비끼리는 총1cm 판정을 적용한다. 최초 자동→실제 전환 명령은 기존 자동 계획 검증 뒤 원래 접촉을 보존한다. 기존 수치 반올림 허용 -1e-6cm는 접촉과 침범 구분용이며 새 물성/안전 거리 상수가 아니다. 새 물성/물리 모델/레벨 에셋 변경 없음.
+
+Editor64.13s 및 신규 냉각 검사 수집/정확한 0.5cm 간격 보강 뒤35.72s 성공. 최초 입력5종 중4종 성공/신규1종 실패: 검사 마지막 fixture에서 Undo 뒤 재생성된 액터가 아닌 삭제된 옛 포인터를 제거해 이전 두 장비가 남았다. 테스트만 ID로 재조회하도록 수정했다. Editor10.85s 성공 후 실패한 CrahBatchDeletionUndoRedo만 재실행해 무경고 성공(종료0). 최종 **고유 입력 영향5종 무경고 성공**: CrahBatchDeletionUndoRedo/CrahDeletionUndoRedo/CrahAdditionUndoRedo/CrahMultiRowAdditionUndoRedo/CduBatchDeletionUndoRedo. 통과한4종 반복 없음.
+신규 검사는 혼합/입력 차단·한 기록·전체 삭제/Undo/Redo·총1cm(0.5cm 간격 거절)·둘째 이름 점유/생성 실패/제거 실패 시 전체 원복·선택/삭제 의도/기록 유지·이전 그룹 이동/R 참조 재연결·원래 전환 접촉 보존/이동한 전환 쌍 거절을 확인했다. 설정/위치/스케일은 합성 검사 조건이며 하드웨어 실측/새 기본값이 아니다. 전체 변환 Equals1e-9는 기존 액터cm/스케일 무차원 기준이다.
+저장/냉각·마지막 자동 복귀 물리/UI 최종 검증은 후속 커밋에 기록한다. 전체/FPS 반복 없음.
+실행: L_Test 배치에서 CRAH 여러 대 선택→Delete→Ctrl+Z/Y. Automation은 위5종을 RunTests의 +로 묶어 -unattended -NullRHI 실행, 수정 후 해당1종만 실행.
+근거(커밋 제외): Saved/Build_CrahBatchDeletion{,_Final,_Repair}.log, Saved/Logs/CrahBatchDeletion{,Repair}_Tests.log, Saved/Automation/CrahBatchDeletionRepair/index.json.

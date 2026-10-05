@@ -22,7 +22,7 @@ bool FLayoutCrahDeletionTest::RunTest(const FString& Parameters)
  auto Refused=[&]() {const int N=Count(),U=C->GetLayoutUndoCount(),R=C->GetLayoutRedoCount();
   TestFalse(TEXT("Deletion guarded"),C->TryDeleteLayoutCrah());
   TestTrue(TEXT("Refusal leaves counts/history"),Count()==N && U==C->GetLayoutUndoCount() && R==C->GetLayoutRedoCount());};
- Refused(); Select(Rack); Refused(); Select(Placed); Select(Other,true); Refused(); Select(Rack,true); Refused();
+ Refused(); Select(Rack); Refused(); Select(Placed); Select(Other,true); Select(Rack,true); Refused();
  Select(Placed); C->BeginLayoutDragAlongRay(Placed->GetActorLocation()+FVector(0,0,500),Down); Refused(); C->EndLayoutDrag(false);
  C->BeginLayoutMarquee(FVector2D(0,0),false); Refused(); C->EndLayoutMarquee(false);
  C->BeginInRowCrahAddition(); Refused(); C->CancelRackAddition(); Select(Placed);
