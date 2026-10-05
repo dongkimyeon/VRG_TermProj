@@ -225,6 +225,7 @@ public:
 
 	UFUNCTION(BlueprintCallable, Category = "Cooling|CRAH")
 	int32 GetNumCrahUnits() const { return CrahPlacements.Num(); }
+	int32 GetNumActiveCrahUnits() const { return CrahUnits.Num(); }
 
 	// Hand placement: ACrahUnitActor units in the level are used instead of the automatic layout (any layout but
 	// CeilingCoil). This button spawns such actors where the automatic layout (CrahLayout) would put them, as a
