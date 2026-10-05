@@ -3534,3 +3534,31 @@ Ctrl+D는 단일 네이티브 CRAH의 종류/SizeM/VolumeFlowM3s와 전체 변�
 첫 빌드110.38s는 신규 검사에서 ECrahUnitKind를 ECrahKind로 잘못 쓴 컴파일 오류로 실패했다. 검사 이름 수정 뒤 Editor42.92s 성공(실제 E:/UE_5.8; 팀 원 작성자 경로 변경 없음), 신규 두 검사 파일 실제 컴파일/등록 확인. CrahDuplicationUndoRedo/CrahAdditionUndoRedo/CrahDeletionUndoRedo/CduDuplicationUndoRedo **4건 무경고 성공, 실패0/미실행0/진행0/종료0**. 신규 검사는 기존/런타임/전환 원본·Ctrl+D·설정 독립성·높이/스케일·R·취소·입력 차단·충돌/이름 점유/실제 생성 및 Redo 실패·GC 없이 재복원을 확인했다. 전체 변환은 기존 Equals1e-9(액터cm·스케일 무차원). 비기본 풍량/크기/변환은 합성 검사 조건이며 하드웨어 수치/실측/새 추정 물성이 아니다.
 저장/냉각·공기/물리·실제 UI 최종 확인은 후속 검증에 기록한다. 전체/FPS 반복 없음. 근거(커밋 제외): Saved/Build_CrahDuplication.log·Build_CrahDuplication_Final.log, Saved/Logs/CrahDuplication_Tests.log, Saved/Automation/CrahDuplication/index.json.
 실행: Editor 빌드 뒤 UnrealEditor-Cmd에서 위4종 이름을 Automation RunTests의 +로 묶어 -unattended -NullRHI 실행.
+
+## 2026-10-06 단일 CRAH 복제 저장·냉각/공기 연결 검증
+
+기존 저장 v2/crahInventory/deletedCrahs·공유 설정 직렬화와 성공 재구축을 그대로 사용한다. 이번 복제 때문에 저장 형식이나 물리 모델을 추가하지 않았다. 복제본은 새 런타임 장비로 저장되고 자동 전환 경계/접촉 예외를 갖지 않는다. 기존 원본의 설정/전체 변환/출처는 유지한다. 반복/새 월드 Load에서 동일 ID/이름/설정/전체 변환·런타임 출처를 복원하고 중복 생성 없이 기록을 초기화한다. 이전 v1/v2/선택 필드 누락 호환성 및 별개 삭제 의도는 기존 저장 회귀 검사로 확인했다. 온도·적분·시계는 복사하지 않는다.
+
+CrahDuplicationPersistenceCoupling은 NVL72 한 랙·기존 CDU·공기 fixture에서 자동2→전환+런타임 원본3→복제4→Undo3→Redo4→Load4→새 월드 Load4를 검사했다. 원본은 기존 인로우 추가 경로로 만든 후 Perimeter 종류/설계 풍량의10% 지정으로 바꾼 합성 검사 조건이다(주석에 표시; 새 물성·공개 하드웨어 수치·실측·피팅 아님). 실제 생성 실패는 따뜻한 t1.02s 장부/시계/풍량/코일과 개수/기록을 정확히 유지한다. 성공 뒤 초기 시계는 기존 FixedStepS로 시작하며 복제본은 공기 고체와 활성 덕트·코일·팬 평가에 포함된다. 원래 랙 분기/CDU 배정/배관 수는 유지된다.
+풍량0 장비의 기존 설계 총풍량 분담과 지정 풍량 배분을 재사용하므로 복제 대수만으로 총풍량/UA/팬을 비례 증가시키지 않는다. 팬 전기입력은 IT와 분리하고 전역 입력에 한 번 계상한다. 랙 IT는 복제 전후 동일 초기조건에서 불변이다.
+
+| 검사 | 측정 최대/범위 | 기존 기준·정규화/단위 |
+|---|---:|---|
+| 첫 스텝 랙 IT / 복제로 인한 변화 | 116512.612431 / 0 | W; 같은 부하·초기조건. 기준 IT 대비 상대 <1e-9 |
+| 설계 총풍량 / UA / 팬 | 1.204320 / 1753.725107 / 501.800146 | m³/s / W/K / W; 기존 배분 식 기대값 기준 상대 차 <1e-12 |
+| 풍량/UA/팬 배분 상대 차 | 2.266e-16 | 각각 설계 식 기대 풍량m³/s·UA W/K·전력W 기준, 무차원 <1e-12 |
+| 랙+CRAH 덕트 풍량 잔차 | 2.600e-15 | abs(덕트−랙 질량유량/ρ−CRAH 풍량)/전체 덕트 풍량m³/s, 무차원 <1e-9 |
+| 냉각수 전달 / 수력 잔차 | 1.092e-14 / 7.348e-14 | abs(duty−mdot·cp·ΔT)/dutyW <1e-12; 기존 ReferenceFlowM3s·ReferencePressurePa 기준 무차원 목표 |
+| 전역 열수지 | 1.314e-13 | abs(입력J−유출J−축적J)/EnergyInJ(IT+CRAH 팬), 무차원 <1e-9 |
+| 압력 투영 뒤 발산 | 3.868e-08, 수렴 | maxAbsDiv(1/s)/(maxAbsVelocity(m/s)/cellSize(m)), 무차원 <1e-5 |
+| 흡기 / 코일 duty | 295.927988~296.363362 / 6325.638500~6383.165127 | K / W, t1.02s; 기존 288.15~308.15K·양의 코일 냉각·전체 공기 냉각과 일치 |
+| 저장/복원 | 같은/새 월드 반복 Load4대, Undo0/Redo0·새 시계0s | ID/이름/종류/설정/출처 정확 일치, 전체 변환 Equals1e-9(액터cm·스케일 무차원) |
+
+공급≥설비수 공급·회수>공급·양의 유량/duty·펌프/IT<5%와 기존 수력 수렴 목표도 검사했다. 새 오차 허용치 없음. 기존 고정 CRAH 냉수 공급 모델과 펌프 손실 열 분배 부채는 유지한다. NullRHI t1.02s fixture이며 L_Test 전체 운전·장시간 정상상태나 시설 전체 물리 정확도 보장으로 확대하지 않는다.
+
+이미 성공한 입력4종 뒤 후속 CrahDuplicationPersistenceCoupling/CrahPersistenceCoupling/CrahDeletionPersistence/InventorySaveLoad/SaveLoadRoundTrip **5건 무경고 성공, 실패0/미실행0/진행0/종료0**. 합쳐 **고유 영향9종 모두 무경고 성공**. 후속으로 신규 복제 고체 반영 검사를 보강해 Editor23.24s 성공 후 해당 신규1종만 재실행, 무경고 성공(종료0), 측정값 동일. 통과한 다른 검사·전체 VRG·FPS는 반복하지 않았다. 실행: Editor 빌드 후 위5종을 Automation RunTests의 +로 묶어 -unattended -NullRHI; 보강 후 CrahDuplicationPersistenceCoupling만 실행.
+근거(커밋 제외): Saved/Logs/CrahDuplicationCoupling_Tests.log·CrahDuplicationSolid_Tests.log, Saved/Automation/CrahDuplicationCoupling/index.json·CrahDuplicationSolid/index.json, Saved/Build_CrahDuplication_Solid.log.
+
+L_Test 일반 실행 창에서 확인용 인로우 추가→선택된 런타임 CRAH Ctrl+D→원본 중첩 빨강/클릭 거절→R90°→빈 목적지 주황 미리보기→Esc 취소(생성 없음)→Ctrl+D 재시작/클릭 한 대 생성(원본 유지)→Ctrl+Z 제거→Ctrl+Y 복원을 확인했다. 실제 로그의 복제 확정/Undo1·Redo1/Redo 후 Undo2·Redo0와 Alt+Print Screen→클립보드 PNG→이미지 확인을 대조했다. 중간 버튼은 커서 목적지만 이동하는 데 사용했다. 마지막 Undo 두 번(0/2)으로 복제와 확인용 추가/자동 전환을 모두 취소했다. 레벨/배치 파일 저장·기존 캡처 API 재시도·FPS 측정 없음. 조작 가능한 일반 창을 바로 사용했고 차단 드라이버 안내는 나타나지 않았다.
+실제 기존 배치/자동 전환 원본 복제, 패치/모드 취소·다중/혼합 차단·복원 충돌 및 저장/새 실행 Load UI는 미검증이다(Automation 성공과 구분). 절차 Tools/배치CRAH복제_확인_2026-10-06.md. 근거: Saved/Logs/CrahDuplication_UI.log, Saved/CrahDuplication_{Start,Add,Overlap,Preview,Cancel,Confirmed,Undo,Redo}.png(커밋 제외).
+다중 CRAH 삭제/복제·벽면 추가 버튼·새 물리 모델은 후속 범위다.
