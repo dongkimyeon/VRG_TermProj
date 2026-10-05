@@ -96,7 +96,7 @@ bool FLayoutCrahPersistenceCouplingTest::RunTest(const FString& Parameters)
 		for(TActorIterator<ACrahUnitActor> It(F.W);It;++It) Records.Add({VrgCrahLifecycle::Identity(*It),It->GetFName(),It->GetActorTransform(),It->CaptureLayoutSettings(),It->bRuntimeLayoutCrah,It->bConvertedAutomaticCrah,It->AutomaticLayoutTransform,It->AutomaticLayoutSizeM});
 		TestTrue(TEXT("Save placed inventory"),VrgLayoutFile::Save(F.W,Edited,Summary));
 		FString Text; FFileHelper::LoadFileToString(Text,*VrgLayoutFile::PathFor(Base)); TSharedPtr<FJsonObject> Root;
-		FJsonSerializer::Deserialize(TJsonReaderFactory<>::Create(Text),Root); Root->RemoveField(TEXT("crahInventory"));
+		FJsonSerializer::Deserialize(TJsonReaderFactory<>::Create(Text),Root); Root->RemoveField(TEXT("crahInventory")); Root->RemoveField(TEXT("deletedCrahs"));
 		Text.Reset(); FJsonSerializer::Serialize(Root.ToSharedRef(),TJsonWriterFactory<>::Create(&Text)); FFileHelper::SaveStringToFile(Text,*VrgLayoutFile::PathFor(Legacy));
 		TestTrue(TEXT("Old v2 omission preserves placed units"),VrgLayoutFile::Load(F.W,Legacy,Summary)); TestEqual(TEXT("Legacy count"),F.Count(),AutoCount+1);
 		TestTrue(TEXT("Load base restores automatic regime"),VrgLayoutFile::Load(F.W,Base,Summary)); TestEqual(TEXT("All runtime units removed"),F.Count(),0);

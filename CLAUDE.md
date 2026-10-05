@@ -3497,3 +3497,30 @@ Delete는 단일 네이티브 CRAH만 지원한다(기존 배치/자동 전환/�
 Editor165.37s 성공. CrahDeletionUndoRedo/CrahAdditionUndoRedo/CduDeletionUndoRedo 3건 무경고 성공(실패0/미실행0/종료0). 충돌·이름 점유·실제 생성 실패·제거 권한 실패에서 상태/기록 유지, 기존/런타임/전환 출처·변하지 않은 접촉·이웃 변경 거절·이전 이동/R 참조를 검사했다. 변환 Equals1e-9는 기존 cm 경계/스케일 무차원 기준이며 합성 위치/설정은 하드웨어 참고값이 아니다.
 저장 deletedCrahs와 삭제 후 물리 검증은 다음 커밋이다. 새 삭제 UI는 최종 확인 전이며 직접 절차 Tools/배치CRAH삭제_확인_2026-10-06.md. 전체/FPS 반복 없음.
 근거(커밋 제외): Saved/Build_CrahDeletion.log, Saved/Logs/CrahDeletion_Tests.log, Saved/Automation/CrahDeletion/index.json.
+
+
+## 2026-10-06 CRAH 단일 삭제 저장·냉각 연결 검증
+
+v2의 선택 필드 `deletedCrahs`에 기존 네이티브 CRAH 삭제 의도를 저장한다. 기존 `crahInventory`·공유 설정 직렬화/검증·Load 전체 트랜잭션을 재사용한다. ID/종류/출처·전체 변환·설정과 원래 자동 경계 메타데이터를 유지하며 중복 ID/이름·런타임 삭제 항목·잘못된 설정은 변경 전에 거절한다. 삭제 의도는 기록100개/기록 초기화·모드 전환과 별개다. 명시 목록 없는 이전 v1/v2에서 기존 장비 누락을 삭제로 해석하지 않는다. 삭제 전 저장의 기존 장비 복원, 삭제 후 파일의 같은/새 월드 반복 Load·중복 없음·기록 초기화를 확인했다. 생성 실패 Load도 개수/삭제 의도/기록을 유지하고 GC 없이 재복원된다. 온도·적분 상태·시계는 저장하지 않는다.
+
+삭제 물리 검사는 NVL72 한 랙·기존 CDU·공기 fixture의 동일 부하/초기조건에서 실제3→삭제2→Undo3→Redo2→Load2와 마지막 실제0→자동2→Undo실제1→Redo자동2를 검사했다. 성공 재구축을 재사용해 고체/덕트/코일/팬/열 결합을 갱신한다. 실패한 삭제는 시계/입출력·축적 장부/코일 duty/풍량과 기록을 그대로 유지한다. 풍량0 장비는 기존 설계 풍량을 분담하므로 대수 감소만으로 총풍량/UA/팬을 비례 감소시키지 않는다. 마지막 실제 장비 삭제는 기존 자동 냉각으로 돌아가며 냉각 정지 명령이 아니다.
+
+| 검사 | 측정 최대/범위 | 기존 기준·정규화/단위 |
+|---|---:|---|
+| 초기 랙 IT / 삭제에 따른 변화 | 116512.612431 / 0 | W; 같은 초기조건, 기준 IT 대비 상대 <1e-9 |
+| 설계 총풍량 / UA / 팬 | 1.204320 / 1753.725107 / 501.800146 | m³/s / W/K / W, 기존 배분 식 기대값 기준 상대 차 <1e-12 |
+| 풍량/UA/팬 배분 상대 차 | 2.266e-16 | 각 기존 설계 식 기대값 기준 무차원, <1e-12 |
+| 랙+CRAH 덕트 풍량 잔차 | 1.809e-15 | abs(덕트−랙 질량유량/ρ−CRAH 풍량)/전체 덕트 풍량m³/s, 무차원 <1e-9 |
+| 냉각수 열 전달 / 수력 잔차 | 5.956e-15 / 7.348e-14 | abs(duty−mdot·cp·ΔT)/dutyW <1e-12; 기존 ReferenceFlowM3s·ReferencePressurePa 기준 무차원 목표 |
+| 전역 열수지 | 1.314e-13 | abs(입력J−유출J−축적J)/EnergyInJ, 무차원 <1e-9 |
+| 공기 압력 투영 뒤 발산 | 5.464e-08, 수렴 | maxAbsDiv(1/s)/(maxAbsVelocity(m/s)/cellSize(m)), 무차원 <1e-5 |
+| 흡기 / 코일 냉각 duty | 295.927988~296.448999 / 6286.904793~6419.872002 | K / W, t=1.02s; 기존 흡기288.15~308.15K·양의 냉각과 전체 공기 냉각 일치 |
+| 저장/복원 전체 변환 | 일치 | 기존 Equals1e-9, 액터cm/스케일 무차원; SizeM(m)·설정·출처 일치 |
+
+팬 전기입력을 IT와 분리하며 전역 입력에 한 번만 계상한다. 랙 분기/기존 CDU 배정·배관 수는 유지된다. 공급≥설비수 공급·회수>공급·양의 유량/duty·펌프/IT<5% 등 기존 타당성 안전망을 함께 검사했다. 새 물성/하드웨어 수치·피팅·솔버 식·레벨 에셋 변경 없음. 합성 위치/풍량/스케일은 검사 주석에 표시했으며 공개 하드웨어 참고값으로 쓰지 않는다. 기존 고정 CRAH 냉수 공급 모델·펌프 손실 열 분배 부채는 유지한다.
+
+Editor120.45s 성공. 처음 후속7종 실행에서 CDU 삭제 회귀(기존 가상 CDU 경고 동반)와 신규 CRAH 삭제 물리2종 성공 후 신규 저장 검사에서 중복 입력 생성용 TArray 원소 자기 참조 Add로 assert/종료3이 발생했다. 제품 로드가 아니라 테스트59행의 원인이므로 원소를 별도 값으로 복사해 수정했다. Editor21.16s 성공 후 신규 저장/기존 CRAH 저장/랙 InventorySaveLoad/SaveLoadRoundTrip/스파인 삭제 결합의 남은5종만 실행해 모두 무경고 성공(종료0). 앞 입력3종까지 **고유 영향10종 성공(9 무경고+1 기존 가상 CDU 경고 동반)**. 성공한 물리/입력 검사는 반복하지 않았다. 전체 VRG/FPS 측정 없음.
+
+L_Test 실제 입력/화면: 인로우 버튼→값 미리보기→빈 목적지 클릭 생성→선택한 런타임 CRAH Delete→Ctrl+Z 복원→Ctrl+Y 재삭제를 확인했다. 삭제/Undo/Redo 로그와 Alt+Print Screen 클립보드 PNG를 대조했다. 마지막 Undo 두 번으로 확인용 삭제/추가를 모두 취소해 원래 자동 배치로 복귀(Undo0/Redo2 로그). 레벨/배치 파일 저장은 수행하지 않았다. 처음 숨김 실행은 조회 가능한 게임 창이 없어 해당 확인용 프로세스만 종료하고 일반 창으로 실행했다. 일반 창은 조회·입력이 가능했고 기존 캡처 API는 호출하지 않았다. 드라이버 설정을 바꾸지 않았으며 조작 시 차단 모달은 없었다. 실제 기존 레벨 배치/전환 장비 삭제·복원 충돌·입력 차단·삭제 저장/새 실행 Load UI는 미검증이며 자동화 성공으로 화면 확인을 대신하지 않는다. 절차 Tools/배치CRAH삭제_확인_2026-10-06.md.
+
+근거(커밋 제외): Saved/Build_CrahDeletionPersistence.log·Saved/Build_CrahDeletionPersistence_Repair.log, Saved/Logs/CrahDeletionPersistence_Tests.log·CrahDeletionPersistence_Repair_Tests.log, Saved/Automation/CrahDeletionPersistenceRepair/index.json, Saved/Logs/CrahDeletion_UI.log, Saved/CrahDeletion_Before.png·CrahDeletion_Input.png·CrahDeletion_Undo.png·CrahDeletion_Redo.png. NullRHI 순간 fixture이며 전체 시설/장시간 정상상태 보장이 아니다. 다중 CRAH 삭제·복제·벽면 추가는 후속이다.

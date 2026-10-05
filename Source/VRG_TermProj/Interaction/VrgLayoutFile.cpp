@@ -6,6 +6,7 @@
 #include "Interaction/VrgSpineLifecycle.h"
 #include "Interaction/VrgCduLifecycle.h"
 #include "Interaction/VrgCrahLifecycle.h"
+#include "Interaction/VrgCrahLayoutState.h"
 #include "Interaction/VrgCduLayoutState.h"
 #include "Interaction/VrgSpineLayoutState.h"
 #include "Actors/DataCenterRoomActor.h"
@@ -33,6 +34,23 @@
 
 namespace
 {
+ bool WriteCrahRecord(const FCrahLayoutRecord& R,const TSharedRef<FJsonObject>& Item)
+ {
+  Item->SetStringField(TEXT("crahId"),R.Id); Item->SetBoolField(TEXT("runtimeCrah"),R.bRuntime);
+  TSharedRef<FJsonObject> Config=MakeShared<FJsonObject>();
+  if(!FJsonObjectConverter::UStructToJsonObject(FCrahLayoutSettings::StaticStruct(),&R.Settings,Config)) return false;
+  Item->SetObjectField(TEXT("crahSettings"),Config);
+  // Original actor transform is UE cm (scale dimensionless); original size is metres.
+  Item->SetBoolField(TEXT("convertedAutomaticCrah"),R.bConvertedAutomatic);
+  if(R.bConvertedAutomatic) {
+   TSharedRef<FJsonObject> T=MakeShared<FJsonObject>(),Size=MakeShared<FJsonObject>();
+   if(!FJsonObjectConverter::UStructToJsonObject(TBaseStructure<FTransform>::Get(),&R.AutomaticTransform,T)
+    || !FJsonObjectConverter::UStructToJsonObject(TBaseStructure<FVector>::Get(),&R.AutomaticSizeM,Size)) return false;
+   Item->SetObjectField(TEXT("automaticCrahTransformCm"),T); Item->SetObjectField(TEXT("automaticCrahSizeM"),Size);
+  }
+  return true;
+ }
+
 	bool LayoutIsEquipment(const AActor* Actor)
 	{
 		return Cast<ARackThermalActor>(Actor) || Cast<ASpineCabinetActor>(Actor) || Cast<ACoolingDistributionUnitActor>(Actor)
@@ -109,20 +127,8 @@ bool VrgLayoutFile::Save(UWorld* World, const FString& Name, FString& OutSummary
 		}
 		if (const auto* Crah = Cast<ACrahUnitActor>(*It))
 		{
-			Item->SetStringField(TEXT("crahId"), VrgCrahLifecycle::Identity(Crah));
-			Item->SetBoolField(TEXT("runtimeCrah"), Crah->bRuntimeLayoutCrah);
-			TSharedRef<FJsonObject> Config = MakeShared<FJsonObject>();
-			const auto Snapshot = Crah->CaptureLayoutSettings();
-			if (!FJsonObjectConverter::UStructToJsonObject(FCrahLayoutSettings::StaticStruct(), &Snapshot, Config)) return false;
-			Item->SetObjectField(TEXT("crahSettings"), Config);
-   // Additive v2 metadata: original actor transform is UE cm (scale dimensionless); size remains metres.
-   Item->SetBoolField(TEXT("convertedAutomaticCrah"),Crah->bConvertedAutomaticCrah);
-   if(Crah->bConvertedAutomaticCrah) {
-    TSharedRef<FJsonObject> AutoTransform=MakeShared<FJsonObject>(),AutoSize=MakeShared<FJsonObject>();
-    if(!FJsonObjectConverter::UStructToJsonObject(TBaseStructure<FTransform>::Get(),&Crah->AutomaticLayoutTransform,AutoTransform)
-     || !FJsonObjectConverter::UStructToJsonObject(TBaseStructure<FVector>::Get(),&Crah->AutomaticLayoutSizeM,AutoSize)) return false;
-    Item->SetObjectField(TEXT("automaticCrahTransformCm"),AutoTransform); Item->SetObjectField(TEXT("automaticCrahSizeM"),AutoSize);
-   }
+   if(!WriteCrahRecord({VrgCrahLifecycle::Identity(Crah),Crah->GetFName(),Crah->GetActorTransform(),Crah->CaptureLayoutSettings(),
+    Crah->bRuntimeLayoutCrah,Crah->bConvertedAutomaticCrah,Crah->AutomaticLayoutTransform,Crah->AutomaticLayoutSizeM},Item)) return false;
 		}
 		Items.Add(MakeShared<FJsonValueObject>(Item));
 	}
@@ -162,6 +168,18 @@ bool VrgLayoutFile::Save(UWorld* World, const FString& Name, FString& OutSummary
 		O->SetObjectField(TEXT("cduSettings"), Config); DeletedCdus.Add(MakeShared<FJsonValueObject>(O));
 	}
 	Root->SetArrayField(TEXT("deletedCdus"), DeletedCdus); // Explicit placed-CDU intent, independent of Undo history.
+ TArray<TSharedPtr<FJsonValue>> DeletedCrahs;
+ if(auto* State=World->GetSubsystem<UVrgCrahLayoutState>()) for(const auto& Pair:State->DeletedPlaced) {
+  const auto& R=Pair.Value; TSharedRef<FJsonObject> O=MakeShared<FJsonObject>();
+  O->SetStringField(TEXT("name"),R.Name.ToString()); O->SetStringField(TEXT("class"),ACrahUnitActor::StaticClass()->GetName());
+  const FVector M=SimUnits::UnrealToMeters(R.Transform.GetLocation()),Scale=R.Transform.GetScale3D(); const auto Rot=R.Transform.Rotator();
+  O->SetNumberField(TEXT("x_m"),M.X); O->SetNumberField(TEXT("y_m"),M.Y); O->SetNumberField(TEXT("z_m"),M.Z);
+  O->SetNumberField(TEXT("yaw_deg"),Rot.Yaw); O->SetNumberField(TEXT("pitch_deg"),Rot.Pitch); O->SetNumberField(TEXT("roll_deg"),Rot.Roll);
+  O->SetNumberField(TEXT("scale_x"),Scale.X); O->SetNumberField(TEXT("scale_y"),Scale.Y); O->SetNumberField(TEXT("scale_z"),Scale.Z);
+  if(!WriteCrahRecord(R,O)) return false; DeletedCrahs.Add(MakeShared<FJsonValueObject>(O));
+ }
+ Root->SetArrayField(TEXT("deletedCrahs"),DeletedCrahs); // Optional v2 placed deletion capability; omissions never imply deletion.
+
 
 	TSharedRef<FJsonObject> Settings = MakeShared<FJsonObject>();
 	if (const ADataCenterSimulationActor* Sim = LayoutFindFirst<ADataCenterSimulationActor>(World))
@@ -249,6 +267,10 @@ bool VrgLayoutFile::Load(UWorld* World, const FString& Name, FString& OutSummary
 	const TArray<TSharedPtr<FJsonValue>>* DeletedCduValues = nullptr;
 	if (bCduDeletions && (!bCduInventory || !Root->TryGetArrayField(TEXT("deletedCdus"), DeletedCduValues)))
 		return Fail(TEXT("명시 CDU 삭제 목록 오류"));
+ const bool bCrahDeletions=Version==2 && Root->HasField(TEXT("deletedCrahs"));
+ const TArray<TSharedPtr<FJsonValue>>* DeletedCrahValues=nullptr;
+ if(bCrahDeletions && (!bCrahInventory || !Root->TryGetArrayField(TEXT("deletedCrahs"),DeletedCrahValues))) return Fail(TEXT("명시 CRAH 삭제 목록 오류"));
+ auto* CrahState=World->GetSubsystem<UVrgCrahLayoutState>();
 	auto* CduState = World->GetSubsystem<UVrgCduLayoutState>();
 	auto* SpineState = World->GetSubsystem<UVrgSpineLayoutState>();
 	TMap<FString,ACrahUnitActor*> ByCrahId;
@@ -285,18 +307,21 @@ bool VrgLayoutFile::Load(UWorld* World, const FString& Name, FString& OutSummary
 			ById.Add(Id,Rack);
 		}
 	}
-	TArray<FLoadedEquipment> Items, DeletedItems, DeletedCduItems;
+	TArray<FLoadedEquipment> Items, DeletedItems, DeletedCduItems, DeletedCrahItems;
 	TSet<FString> SeenNames,SeenIds,SeenSpineIds,SeenCduIds,SeenCrahIds;
 	int32 Missing=0;
 	TArray<TSharedPtr<FJsonValue>> AllValues = *Values;
 	if (DeletedValues) AllValues.Append(*DeletedValues);
 	const int32 DeletedCduStart = AllValues.Num();
 	if (DeletedCduValues) AllValues.Append(*DeletedCduValues);
+	const int32 DeletedCrahStart=AllValues.Num();
+	if(DeletedCrahValues) AllValues.Append(*DeletedCrahValues);
 	for (int32 ValueIndex = 0; ValueIndex < AllValues.Num(); ++ValueIndex)
 	{
 		const auto& Value = AllValues[ValueIndex];
 		const bool bDeleteSpine = ValueIndex >= Values->Num() && ValueIndex < DeletedCduStart;
-		const bool bDeleteCdu = ValueIndex >= DeletedCduStart;
+		const bool bDeleteCdu = ValueIndex >= DeletedCduStart && ValueIndex < DeletedCrahStart;
+  const bool bDeleteCrah=ValueIndex>=DeletedCrahStart;
 		if (!FiniteLayoutJson(Value) || Value->Type!=EJson::Object) return Fail(TEXT("장비 데이터 형식/유한값 오류"));
 		const auto O=Value->AsObject(); FLoadedEquipment Item;
 		if (!O->TryGetStringField(TEXT("name"),Item.Name) || Item.Name.IsEmpty()
@@ -377,7 +402,7 @@ bool VrgLayoutFile::Load(UWorld* World, const FString& Name, FString& OutSummary
 					|| !O->TryGetStringField(TEXT("crahId"),Item.Id) || Item.Id.IsEmpty() || SeenIds.Contains(Item.Id)
 					|| !O->TryGetBoolField(TEXT("runtimeCrah"),Item.bRuntimeCrah)
 					|| !O->TryGetObjectField(TEXT("crahSettings"),Config)) return Fail(TEXT("CRAH ID/설정 오류 또는 중복"));
-				SeenIds.Add(Item.Id); SeenCrahIds.Add(Item.Id); Item.Actor = ByCrahId.FindRef(Item.Id);
+				SeenIds.Add(Item.Id); if(!bDeleteCrah) SeenCrahIds.Add(Item.Id); Item.Actor = ByCrahId.FindRef(Item.Id);
 				FCrahLayoutSettings CrahSettings;
 				if (!FJsonObjectConverter::JsonObjectToUStruct(Config->ToSharedRef(),&CrahSettings,0,0,true)
 					|| !CrahSettings.IsValid()) return Fail(TEXT("CRAH 설정 구조/범위 오류"));
@@ -393,7 +418,8 @@ bool VrgLayoutFile::Load(UWorld* World, const FString& Name, FString& OutSummary
       return Fail(TEXT("CRAH 자동 전환 원래 경계 오류"));
     }
 				const auto* ExistingCrah = Cast<ACrahUnitActor>(Item.Actor);
-				if ((!Item.Actor && (Item.Class != ACrahUnitActor::StaticClass()->GetName() || !Item.bRuntimeCrah))
+				if ((!Item.Actor && (Item.Class != ACrahUnitActor::StaticClass()->GetName()
+     || (!Item.bRuntimeCrah && !bCrahDeletions && !CrahState->DeletedPlaced.Contains(Item.Id))))
 					|| (Item.Actor && (!ExistingCrah || ExistingCrah->bRuntimeLayoutCrah != Item.bRuntimeCrah))) return Fail(TEXT("CRAH 종류/출처 불일치"));
 			}
 			else if (bCrahInventory && (Item.Class == ACrahUnitActor::StaticClass()->GetName() || Cast<ACrahUnitActor>(Item.Actor)))
@@ -403,9 +429,11 @@ bool VrgLayoutFile::Load(UWorld* World, const FString& Name, FString& OutSummary
 			|| Item.Class != ASpineCabinetActor::StaticClass()->GetName())) return Fail(TEXT("명시 삭제는 기존 네이티브 스파인만 지원"));
 		if (bDeleteCdu && (!Item.Cdu.IsSet() || Item.bRuntimeCdu || Item.Class != ACoolingDistributionUnitActor::StaticClass()->GetName()))
 			return Fail(TEXT("명시 삭제는 기존 네이티브 CDU만 지원"));
+  if(bDeleteCrah && (!Item.Crah.IsSet() || Item.bRuntimeCrah || Item.Class!=ACrahUnitActor::StaticClass()->GetName()))
+   return Fail(TEXT("명시 삭제는 기존 네이티브 CRAH만 지원"));
 		if (Item.Actor && (Item.Actor->GetClass()->GetName()!=Item.Class || !Item.Actor->GetRootComponent()
 			|| Item.Actor->GetRootComponent()->Mobility!=EComponentMobility::Movable)) return Fail(TEXT("장비 종류 또는 이동 가능 상태 불일치"));
-		if (!bDeleteSpine && !bDeleteCdu && !Item.Actor && (Version==1 || (!Item.Rack.IsSet() && !Item.Spine.IsSet() && !Item.Cdu.IsSet() && !Item.Crah.IsSet())))
+		if (!bDeleteSpine && !bDeleteCdu && !bDeleteCrah && !Item.Actor && (Version==1 || (!Item.Rack.IsSet() && !Item.Spine.IsSet() && !Item.Cdu.IsSet() && !Item.Crah.IsSet())))
 		{
 			++Missing; UE_LOG(LogTemp,Warning,TEXT("[VrgLayout] 레벨에 없는 장비: %s"),*Item.Name);
 		}
@@ -416,7 +444,7 @@ bool VrgLayoutFile::Load(UWorld* World, const FString& Name, FString& OutSummary
 		}
 		Item.Target=FTransform(FRotator(Pitch,Yaw,Roll),SimUnits::MetersToUnreal(FVector(X,Y,Z)),FVector(SX,SY,SZ));
 		if (Item.Target.ContainsNaN()) return Fail(TEXT("좌표 변환 범위 오류"));
-		if (bDeleteSpine) DeletedItems.Add(MoveTemp(Item)); else if (bDeleteCdu) DeletedCduItems.Add(MoveTemp(Item)); else Items.Add(MoveTemp(Item));
+		if (bDeleteSpine) DeletedItems.Add(MoveTemp(Item)); else if (bDeleteCdu) DeletedCduItems.Add(MoveTemp(Item)); else if(bDeleteCrah) DeletedCrahItems.Add(MoveTemp(Item)); else Items.Add(MoveTemp(Item));
 	}
 	if (Missing) return Fail(FString::Printf(TEXT("레벨에 없는 장비 %d: 적용하지 않음"),Missing));
 	const TSharedPtr<FJsonObject>* SettingsObject=nullptr;
@@ -461,6 +489,10 @@ bool VrgLayoutFile::Load(UWorld* World, const FString& Name, FString& OutSummary
 		RemoveCdus.Add(Pair.Value);
 	}
 	TArray<ACrahUnitActor*> RemoveCrahs;
+ for(const auto& Item:DeletedCrahItems) if(auto* Crah=Cast<ACrahUnitActor>(Item.Actor)) {
+  if(Crah->GetLocalRole()!=ROLE_Authority) return Fail(TEXT("CRAH 삭제 권한 없음"));
+  RemoveCrahs.Add(Crah);
+ }
 	if (bCrahInventory) for (const auto& Pair : ByCrahId) if (Pair.Value->bRuntimeLayoutCrah && !SeenCrahIds.Contains(Pair.Key))
 	{
 		if (Pair.Value->GetClass()!=ACrahUnitActor::StaticClass() || Pair.Value->GetLocalRole()!=ROLE_Authority)
@@ -500,6 +532,7 @@ bool VrgLayoutFile::Load(UWorld* World, const FString& Name, FString& OutSummary
 	for (auto* Crah : RemoveCrahs) CrahBackups.Add({VrgCrahLifecycle::Identity(Crah),Crah->GetFName(),Crah->GetActorTransform(),Crah->CaptureLayoutSettings(),Crah->bRuntimeLayoutCrah,Crah->bConvertedAutomaticCrah,Crah->AutomaticLayoutTransform,Crah->AutomaticLayoutSizeM});
 	const auto OldDeletedPlaced = SpineState->DeletedPlaced;
 	const auto OldDeletedCdus = CduState->DeletedPlaced;
+ const auto OldDeletedCrahs=CrahState->DeletedPlaced;
 	auto Rollback=[&]() {
 		for (auto& Item:Items) if (Item.bSpawned && IsValid(Item.Actor))
 		{
@@ -549,6 +582,7 @@ bool VrgLayoutFile::Load(UWorld* World, const FString& Name, FString& OutSummary
 		for (int32 I=0;I<Current.Num();++I) if (IsValid(Current[I])) Current[I]->SetActorTransform(OldTransforms[I],false);
 		SpineState->DeletedPlaced = OldDeletedPlaced;
 		CduState->DeletedPlaced = OldDeletedCdus;
+  CrahState->DeletedPlaced=OldDeletedCrahs;
 	};
 	for (auto& Item:Items) if (!Item.Actor)
 	{
@@ -606,6 +640,11 @@ bool VrgLayoutFile::Load(UWorld* World, const FString& Name, FString& OutSummary
 		Rollback(); VrgRackLifecycle::Rebuild(World);
 		return Fail(TEXT("CRAH 제거 실패: 이전 배치 복원"));
 	}
+ if(bCrahDeletions) {
+  CrahState->DeletedPlaced.Reset();
+  for(const auto& I:DeletedCrahItems) CrahState->DeletedPlaced.Add(I.Id,{I.Id,FName(*I.Name),I.Target,I.Crah.GetValue(),false,
+   I.bConvertedAutomaticCrah,I.AutomaticCrahTransform,I.AutomaticCrahSizeM});
+ }
 	// Commit only after structural validation, all spawns/names/transforms and removals have succeeded.
 	if (bSpineDeletions)
 	{
@@ -643,6 +682,7 @@ bool VrgLayoutFile::Load(UWorld* World, const FString& Name, FString& OutSummary
 	for (auto& Item:Items) if (Item.Crah.IsSet())
 	{
 		auto* Crah=CastChecked<ACrahUnitActor>(Item.Actor); Crah->LayoutId=Item.Id;
+  CrahState->DeletedPlaced.Remove(Item.Id);
   Crah->bConvertedAutomaticCrah=Item.bConvertedAutomaticCrah;
   Crah->AutomaticLayoutTransform=Item.AutomaticCrahTransform; Crah->AutomaticLayoutSizeM=Item.AutomaticCrahSizeM;
 		if (!Item.bSpawned) { Crah->ApplyLayoutSettings(Item.Crah.GetValue()); Crah->RefreshVisuals(); }
