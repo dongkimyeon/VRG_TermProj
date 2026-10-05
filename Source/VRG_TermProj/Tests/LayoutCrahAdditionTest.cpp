@@ -75,7 +75,7 @@ bool FLayoutCrahAdditionTest::RunTest(const FString& Parameters)
  const FString Id=Added->LayoutId; const auto Config=Added->CaptureLayoutSettings(); const FTransform Initial=Added->GetActorTransform();
  TArray<FCrahLayoutRecord> Converted;
  for(TActorIterator<ACrahUnitActor> It(W);It;++It) if(It->bConvertedAutomaticCrah)
-  Converted.Add({It->LayoutId,It->GetFName(),It->GetActorTransform(),It->CaptureLayoutSettings(),true});
+  Converted.Add({It->LayoutId,It->GetFName(),It->GetActorTransform(),It->CaptureLayoutSettings(),true,true});
  TestTrue(TEXT("Entire conversion plus one add is one record; original configs retained"),Count()==AutoCount+1 && Converted.Num()==AutoCount && C->GetLayoutUndoCount()==1
   && Config==GetDefault<ACrahUnitActor>()->CaptureLayoutSettings() && !Added->bConvertedAutomaticCrah && C->GetSelectedLayoutActor()==Added);
  for(const auto& R:Automatic) TestTrue(TEXT("Every original automatic box preserved"),Converted.ContainsByPredicate([&](const auto& M) {return M.Transform.Equals(R.Transform,1e-9) && M.Settings==R.Settings;}));

@@ -1823,7 +1823,7 @@ bool ADataCenterSimulationActor::CaptureAutomaticCrahLayout(TArray<FCrahLayoutRe
  for(const auto& P:CrahPlacements) {
   auto Settings=GetDefault<ACrahUnitActor>()->CaptureLayoutSettings();
   Settings.Kind=P.bTopIntake?ECrahUnitKind::Perimeter:ECrahUnitKind::InRow; Settings.SizeM=P.SizeM; Settings.VolumeFlowM3s=P.FlowM3s;
-  Out.Add({FGuid::NewGuid().ToString(),NAME_None,FTransform(P.ForwardM.Rotation(),SimUnits::MetersToUnreal(P.BaseM)),Settings,true});
+  Out.Add({FGuid::NewGuid().ToString(),NAME_None,FTransform(P.ForwardM.Rotation(),SimUnits::MetersToUnreal(P.BaseM)),Settings,true,true});
  }
  return true;
 }

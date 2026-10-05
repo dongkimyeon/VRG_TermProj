@@ -111,5 +111,5 @@ void VrgRackLifecycle::Rebuild(UWorld* World, bool bKeepSelection)
 {
 	for (TActorIterator<ADataCenterDebugController> It(World); It; ++It) It->RefreshLayoutEquipmentReferences(bKeepSelection);
 	for (TActorIterator<ADataCenterRoomActor> It(World); It; ++It) { It->RebuildRoom(); It->RebuildRoomNow(); }
-	for (TActorIterator<ADataCenterSimulationActor> It(World); It; ++It) It->RebuildCoupling();
+	for (TActorIterator<ADataCenterSimulationActor> It(World); It; ++It) { It->RebuildCoupling(); It->RefreshCrahLayoutVisuals(); }
 }

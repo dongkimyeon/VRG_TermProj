@@ -29,6 +29,11 @@ ACrahUnitActor::ACrahUnitActor()
 void ACrahUnitActor::OnConstruction(const FTransform& Transform)
 {
 	Super::OnConstruction(Transform);
+	RefreshVisuals();
+}
+
+void ACrahUnitActor::RefreshVisuals()
+{
 	// Metres -> cm only here, at the actor boundary (rule 1). The engine cube is 100 cm on a side.
 	Body->SetRelativeLocation(FVector(0.0, 0.0, SizeM.Z * 50.0));
 	Body->SetRelativeScale3D(SizeM);
@@ -37,13 +42,11 @@ void ACrahUnitActor::OnConstruction(const FTransform& Transform)
 	SupplyArrow->SetRelativeLocation(FVector(SizeM.X * 50.0, 0.0, ArrowZCm));
 }
 
-
-bool FCrahLayoutSettings::IsValid() const
+FCrahLayoutSettings ACrahUnitActor::CaptureLayoutSettings() const
 {
- return (Kind==ECrahUnitKind::InRow || Kind==ECrahUnitKind::Perimeter) && !SizeM.ContainsNaN()
-  && SizeM.X>0 && SizeM.Y>0 && SizeM.Z>0 && FMath::IsFinite(VolumeFlowM3s) && VolumeFlowM3s>=0;
+	FCrahLayoutSettings S; S.Kind = Kind; S.SizeM = SizeM; S.VolumeFlowM3s = VolumeFlowM3s; return S;
 }
-bool FCrahLayoutSettings::operator==(const FCrahLayoutSettings& O) const
-{ return Kind==O.Kind && SizeM==O.SizeM && VolumeFlowM3s==O.VolumeFlowM3s; }
 void ACrahUnitActor::ApplyLayoutSettings(const FCrahLayoutSettings& S)
-{ Kind=S.Kind; SizeM=S.SizeM; VolumeFlowM3s=S.VolumeFlowM3s; }
+{
+	Kind = S.Kind; SizeM = S.SizeM; VolumeFlowM3s = S.VolumeFlowM3s;
+}

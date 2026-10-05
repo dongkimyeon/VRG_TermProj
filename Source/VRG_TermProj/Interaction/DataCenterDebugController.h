@@ -115,6 +115,7 @@ public:
 	void BeginSpineAddition();
 	void BeginCduAddition();
  void BeginInRowCrahAddition();
+ void BeginCrahAddition() { BeginInRowCrahAddition(); }
  ACrahUnitActor* ConfirmCrahAddition();
 	ACoolingDistributionUnitActor* ConfirmCduAddition();
 	ASpineCabinetActor* ConfirmSpineAddition();

@@ -620,11 +620,10 @@ namespace
 		FVector SizeM;
 		return ADataCenterDebugController::PlaceableBoxM(Actor, SizeM) && MakeLayoutFootprint(SizeM, Transform, Out);
 	}
-	bool FootprintsConflict(const FLayoutFootprint& A, const FLayoutFootprint& B)
+	bool FootprintsConflict(const FLayoutFootprint& A, const FLayoutFootprint& B, double ClearanceCm = 1.0)
 	{
 		const FVector2D Delta = B.Centre - A.Centre;
 		// Team placement plan: 1 cm total clearance, not 1 cm expansion on each box and not a physical constant.
-		constexpr double ClearanceCm = 1.0;
 		for (const FLayoutFootprint* Footprint : { &A, &B })
 			for (const FVector2D& Edge : Footprint->HalfEdges)
 			{
@@ -1047,7 +1046,11 @@ ACrahUnitActor* ADataCenterDebugController::ConfirmCrahAddition()
   for(TActorIterator<AActor> It(GetWorld());It;++It) {
    FVector OtherSize; FLayoutFootprint Other;
    if(PlaceableBoxM(*It,OtherSize) && MakeLayoutFootprint(OtherSize,It->GetActorTransform(),Other)
-    && FootprintsConflict(Candidate,Other)) M.ExistingContacts.Add({It->GetFName(),It->GetClass(),It->GetActorTransform(),OtherSize});
+    && FootprintsConflict(Candidate,Other)) {
+    // Remote conversion guard: touching faces stay, genuine pre-existing penetration is rejected.
+    if(FootprintsConflict(Candidate,Other,-1e-6)) return nullptr;
+    M.ExistingContacts.Add({It->GetFName(),It->GetClass(),It->GetActorTransform(),OtherSize});
+   }
   }
   Command.Crahs.Add(M);
  }
@@ -1440,7 +1443,10 @@ bool ADataCenterDebugController::RestoreCrahPresence(const FLayoutTransformComma
     if(!bPreserved) return false;
    }
    for(int32 I=0;I<Footprints.Num();++I)
-    if(FootprintsConflict(Candidate,Footprints[I]) && !(R.bConvertedAutomatic && Command.Crahs[I].Record.bConvertedAutomatic)) return false;
+    if(FootprintsConflict(Candidate,Footprints[I])) {
+     if(!(R.bConvertedAutomatic && Command.Crahs[I].Record.bConvertedAutomatic)
+      || FootprintsConflict(Candidate,Footprints[I],-1e-6)) return false;
+    }
    Footprints.Add(Candidate);
   } else {
    if(!Crah || Crah->GetClass()!=ACrahUnitActor::StaticClass() || Crah->GetFName()!=R.Name || !Crah->bRuntimeLayoutCrah
@@ -1460,7 +1466,7 @@ bool ADataCenterDebugController::RestoreCrahPresence(const FLayoutTransformComma
   }
   for(auto* Crah:Present) NotifyLayoutCrahRecreated(Crah);
  } else if(!VrgCrahLifecycle::RemoveBatch(Present)) return false;
- VrgRackLifecycle::Rebuild(GetWorld()); Sim->RefreshCrahLayoutDisplay(); return true;
+ VrgRackLifecycle::Rebuild(GetWorld()); return true;
 }
 
 bool ADataCenterDebugController::RestoreCduPresence(const FLayoutTransformCommand& Command, bool bRedo)

@@ -19,12 +19,23 @@ enum class ECrahUnitKind : uint8
 	Perimeter,
 };
 
-// Authored layout input only; zero flow retains the existing design-sharing policy.
+// Authored placement settings only; coil/fan thermal state belongs to the coupling bridge.
+USTRUCT()
 struct VRG_TERMPROJ_API FCrahLayoutSettings
 {
- ECrahUnitKind Kind; FVector SizeM; double VolumeFlowM3s;
- bool IsValid() const;
- bool operator==(const FCrahLayoutSettings& Other) const;
+	GENERATED_BODY()
+	UPROPERTY() ECrahUnitKind Kind = ECrahUnitKind::InRow;
+	UPROPERTY() FVector SizeM = FVector::ZeroVector;
+	UPROPERTY() double VolumeFlowM3s = 0.0;
+	bool IsValid() const { return (Kind == ECrahUnitKind::InRow || Kind == ECrahUnitKind::Perimeter)
+		&& !SizeM.ContainsNaN() && SizeM.GetMin() > 0 && FMath::IsFinite(VolumeFlowM3s) && VolumeFlowM3s >= 0; }
+	bool operator==(const FCrahLayoutSettings& R) const { return Kind == R.Kind && SizeM == R.SizeM && VolumeFlowM3s == R.VolumeFlowM3s; }
+};
+struct FCrahLayoutRecord
+{
+	FString Id; FName Name; FTransform Transform; FCrahLayoutSettings Settings; bool bRuntime = true;
+ bool bConvertedAutomatic = false;
+ FTransform AutomaticTransform = FTransform::Identity; FVector AutomaticSizeM = FVector::ZeroVector;
 };
 
 // A CRAH / in-row cooler placed by hand (2026-09-27). The actor's forward (+X, the arrow) is the supply direction.
@@ -41,7 +52,8 @@ public:
 	ACrahUnitActor();
 
 	virtual void OnConstruction(const FTransform& Transform) override;
- FCrahLayoutSettings CaptureLayoutSettings() const { return {Kind,SizeM,VolumeFlowM3s}; }
+ FCrahLayoutSettings CaptureLayoutSettings() const;
+ void RefreshVisuals();
  void ApplyLayoutSettings(const FCrahLayoutSettings& Settings);
  UPROPERTY(VisibleAnywhere, Category = "CRAH|Layout") FString LayoutId;
  UPROPERTY(VisibleAnywhere, Category = "CRAH|Layout") bool bRuntimeLayoutCrah = false;

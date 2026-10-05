@@ -29,15 +29,17 @@ ACrahUnitActor* VrgCrahLifecycle::Spawn(UWorld* World, const FCrahLayoutRecord& 
     nullptr,REN_DontCreateRedirectors|REN_NonTransactional);
  };
  if (!IsValid(Crah)) { RetireFailedSpawn(); return nullptr; }
- Crah->LayoutId = Id; Crah->bRuntimeLayoutCrah = true; Crah->ApplyLayoutSettings(Settings);
+ Crah->LayoutId = Id; Crah->bRuntimeLayoutCrah = R.bRuntime; Crah->ApplyLayoutSettings(Settings);
  Crah->bConvertedAutomaticCrah = R.bConvertedAutomatic;
- Crah->AutomaticLayoutTransform = Transform; Crah->AutomaticLayoutSizeM = Settings.SizeM;
+ const bool bHasBaseline=R.AutomaticSizeM.GetMin()>0;
+ Crah->AutomaticLayoutTransform = bHasBaseline ? R.AutomaticTransform : Transform;
+ Crah->AutomaticLayoutSizeM = bHasBaseline ? R.AutomaticSizeM : Settings.SizeM;
  Crah->FinishSpawning(Transform);
  // CRAH thermal/time state lives in the shared coupling, rebuilt fresh after a successful transaction.
  if (!IsValid(Crah)) { RetireFailedSpawn(); return nullptr; }
  return Crah;
 }
-static bool RemoveCrah(ACrahUnitActor* Crah)
+bool VrgCrahLifecycle::Remove(ACrahUnitActor* Crah)
 {
  if (!IsValid(Crah) || !Crah->GetWorld()->IsGameWorld()
   || Crah->IsActorBeingDestroyed() || Crah->IsActorBeginningPlay()
@@ -67,9 +69,9 @@ bool VrgCrahLifecycle::RemoveBatch(const TArray<ACrahUnitActor*>& Crahs)
  }
  struct FBackup { ACrahUnitActor* Actor; FCrahLayoutRecord Record; FString PreviousId; ENetRole Role; bool bRuntime; FTransform AutomaticTransform; FVector AutomaticSizeM; };
  TArray<FBackup> Backups;
- for (auto* Crah : Crahs) Backups.Add({Crah,{Identity(Crah),Crah->GetFName(),Crah->GetActorTransform(),Crah->CaptureLayoutSettings(),Crah->bConvertedAutomaticCrah},
+ for (auto* Crah : Crahs) Backups.Add({Crah,{Identity(Crah),Crah->GetFName(),Crah->GetActorTransform(),Crah->CaptureLayoutSettings(),Crah->bRuntimeLayoutCrah,Crah->bConvertedAutomaticCrah},
   Crah->LayoutId,Crah->GetLocalRole(),Crah->bRuntimeLayoutCrah,Crah->AutomaticLayoutTransform,Crah->AutomaticLayoutSizeM});
- for (auto* Crah : Crahs) if (!RemoveCrah(Crah))
+ for (auto* Crah : Crahs) if (!Remove(Crah))
  {
   for (const auto& B : Backups) if (IsValid(B.Actor)) B.Actor->SetRole(B.Role);
   for (const auto& B : Backups) if (!IsValid(B.Actor))
@@ -88,4 +90,10 @@ bool VrgCrahLifecycle::RemoveBatch(const TArray<ACrahUnitActor*>& Crahs)
   return false;
  }
  return true;
+}
+
+ACrahUnitActor* VrgCrahLifecycle::Spawn(UWorld* World,FName Name,const FString& Id,
+ const FTransform& Transform,const FCrahLayoutSettings& Settings,bool bRuntime)
+{
+ return Spawn(World,{Id,Name,Transform,Settings,bRuntime});
 }
