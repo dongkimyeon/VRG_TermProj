@@ -27,7 +27,7 @@ bool FLayoutCduDuplicationTest::RunTest(const FString& Parameters)
   TestFalse(TEXT("CDU duplication blocked"),C->BeginCduDuplication());
   TestTrue(TEXT("Rejected input keeps actors/history"),Count()==N && C->GetLayoutUndoCount()==U && C->GetLayoutRedoCount()==R);
  };
- Refused(); Select(Rack); Refused(); Select(Source); Select(Rack,true); Refused(); Select(Source); Select(Other,true); Refused();
+ Refused(); Select(Rack); Refused(); Select(Source); Select(Rack,true); Refused(); // Multiple CDU selection is covered by CduBatchDuplicationUndoRedo.
  Select(Source); C->BeginLayoutDragAlongRay(Source->GetActorLocation()+FVector(0,0,500),Down); Refused(); C->EndLayoutDrag(false);
  C->BeginLayoutMarquee(FVector2D(0,0),false); Refused(); C->EndLayoutMarquee(false);
  C->BeginCduAddition(); Refused(); C->CancelRackAddition(); Select(Source);

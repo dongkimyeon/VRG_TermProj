@@ -674,7 +674,7 @@ void ADataCenterDebugController::BeginRackAddition()
 	Grabbed.Reset();
 	RackDuplicationMembers.Reset();
 	SpineDuplicationMembers.Reset();
-	CduDuplicationSettings.Reset();
+	CduDuplicationMembers.Reset();
 	bAddingSpine = false;
 	bAddingCdu = false;
 	bAddingRack = true;
@@ -725,7 +725,7 @@ bool ADataCenterDebugController::BeginRackDuplication()
 void ADataCenterDebugController::OnDuplicateLayoutRack()
 {
 	if (!BeginRackDuplication() && !BeginSpineDuplication() && !BeginCduDuplication())
-		UE_LOG(LogTemp, Display, TEXT("[VrgLayout] 복제 거절: 랙 선택 전체 또는 네이티브 스파인 선택 전체 또는 네이티브 CDU 한 대와 배치 대기 상태가 필요합니다."));
+		UE_LOG(LogTemp, Display, TEXT("[VrgLayout] 복제 거절: 랙 선택 전체 또는 네이티브 스파인 선택 전체 또는 네이티브 CDU 선택 전체와 배치 대기 상태가 필요합니다."));
 	LogLayoutInputState(TEXT("Ctrl+D"));
 }
 
@@ -759,14 +759,19 @@ bool ADataCenterDebugController::BeginCduDuplication()
  if (!World || !World->IsGameWorld() || !IsLayoutMode() || !IsCameraInputAvailable()
   || bAddingRack || IsLayoutDragging() || bMarqueeActive || Grabbed.IsValid() || IsInputKeyDown(EKeys::RightMouseButton)) return false;
  const auto Selected = GetSelectedLayoutActors();
- if (Selected.Num() != 1) return false;
- const auto* Cdu = Cast<ACoolingDistributionUnitActor>(Selected[0]);
- if (!IsValid(Cdu) || Cdu->GetWorld() != World || Cdu->GetClass() != ACoolingDistributionUnitActor::StaticClass()) return false;
- const auto Settings = Cdu->CaptureLayoutSettings();
- if (!Settings.IsValid()) return false;
+ if (Selected.IsEmpty()) return false;
+ TArray<FLayoutCduMember> Members;
+ for (auto* Actor : Selected)
+ {
+  const auto* Cdu = Cast<ACoolingDistributionUnitActor>(Actor);
+  if (!IsValid(Cdu) || Cdu->GetWorld() != World || Cdu->GetClass() != ACoolingDistributionUnitActor::StaticClass()) return false;
+  const auto Settings = Cdu->CaptureLayoutSettings();
+  if (!Settings.IsValid()) return false;
+  Members.Add({VrgCduLifecycle::Identity(Cdu), Cdu->GetFName(), Cdu->GetActorTransform(), Settings});
+ }
  RackDuplicationMembers.Reset(); SpineDuplicationMembers.Reset();
- CduDuplicationSettings = Settings; // No source identity, actor reference, thermal state or clock.
- RackAdditionTransform = Cdu->GetActorTransform();
+ RackAdditionTransform = Members[0].Transform;
+ CduDuplicationMembers = MoveTemp(Members); // No actor reference, thermal state or clock.
  bAddingRack = true; bAddingCdu = true; bAddingSpine = false; bRackAdditionHasFloor = false;
  UpdateRackAdditionFromCursor();
  return true;
@@ -813,7 +818,7 @@ void ADataCenterDebugController::CancelRackAddition()
 	bRackAdditionHasFloor = false;
 	RackDuplicationMembers.Reset();
 	SpineDuplicationMembers.Reset();
-	CduDuplicationSettings.Reset();
+	CduDuplicationMembers.Reset();
 }
 
 void ADataCenterDebugController::UpdateRackAdditionAlongRay(const FVector& EyeCm, const FVector& Direction)
@@ -821,7 +826,7 @@ void ADataCenterDebugController::UpdateRackAdditionAlongRay(const FVector& EyeCm
 	if (!bAddingRack) return;
 	FVector FloorCm;
 	bRackAdditionHasFloor = IsLayoutMode() && IsCameraInputAvailable()
-		&& FloorPointSnapped(EyeCm, Direction, (!RackDuplicationMembers.IsEmpty() || !SpineDuplicationMembers.IsEmpty() || CduDuplicationSettings.IsSet()) ? RackAdditionTransform.GetLocation().Z : 0.0, PlaceSnapM, FloorCm);
+		&& FloorPointSnapped(EyeCm, Direction, (!RackDuplicationMembers.IsEmpty() || !SpineDuplicationMembers.IsEmpty() || !CduDuplicationMembers.IsEmpty()) ? RackAdditionTransform.GetLocation().Z : 0.0, PlaceSnapM, FloorCm);
 	if (bRackAdditionHasFloor) RackAdditionTransform.SetLocation(FloorCm);
 }
 
@@ -856,7 +861,7 @@ void ADataCenterDebugController::LogLayoutInputState(const TCHAR* Context) const
 	FVector EyeCm, Direction, FloorCm;
 	const bool bRay = DeprojectMousePositionToWorld(EyeCm, Direction);
 	const bool bFloor = bRay && FloorPointSnapped(EyeCm, Direction,
-		(!RackDuplicationMembers.IsEmpty() || !SpineDuplicationMembers.IsEmpty() || CduDuplicationSettings.IsSet()) ? RackAdditionTransform.GetLocation().Z : 0.0, PlaceSnapM, FloorCm);
+		(!RackDuplicationMembers.IsEmpty() || !SpineDuplicationMembers.IsEmpty() || !CduDuplicationMembers.IsEmpty()) ? RackAdditionTransform.GetLocation().Z : 0.0, PlaceSnapM, FloorCm);
 	FTransform Proposed; FVector SizeM;
 	const bool bPreview = GetRackAdditionPreview(Proposed, SizeM);
 	// Opt-in, event-only diagnostics. Observing a ray does not update placement or weaken any guard.
@@ -880,7 +885,15 @@ bool ADataCenterDebugController::GetRackAdditionPreview(FTransform& Out, FVector
 		|| MemberIndex < 0 || MemberIndex >= GetRackAdditionPreviewCount()) return false;
 	Out = RackAdditionTransform;
 	// Reuse the authored GJ geometry; no new equipment dimensions or physical defaults.
-	if (bAddingCdu) SizeM = CduDuplicationSettings.IsSet() ? CduDuplicationSettings->SizeM : GetDefault<ACoolingDistributionUnitActor>()->SizeM;
+	if (bAddingCdu)
+ {
+  SizeM = !CduDuplicationMembers.IsEmpty() ? CduDuplicationMembers[MemberIndex].Settings.SizeM : GetDefault<ACoolingDistributionUnitActor>()->SizeM;
+  if (CduDuplicationMembers.Num() > 1)
+  {
+   Out = CduDuplicationMembers[MemberIndex].Transform;
+   Out.AddToTranslation(RackAdditionTransform.GetLocation() - CduDuplicationMembers[0].Transform.GetLocation());
+  }
+ }
 	else if (!RackDuplicationMembers.IsEmpty())
 	{
 		SizeM = RackDuplicationMembers[MemberIndex].Settings.RackSizeM;
@@ -999,18 +1012,23 @@ ACoolingDistributionUnitActor* ADataCenterDebugController::ConfirmCduAddition()
  FTransform Proposed; FVector SizeM;
  if (!bAddingCdu || !GetWorld() || !GetWorld()->IsGameWorld()
   || !GetRackAdditionPreview(Proposed, SizeM) || IsRackAdditionBlocked()) return nullptr;
- const bool bDuplicating = CduDuplicationSettings.IsSet();
- const FString Id = FGuid::NewGuid().ToString();
- const FName Name = MakeUniqueObjectName(GetWorld()->PersistentLevel, ACoolingDistributionUnitActor::StaticClass(),
-  FName(*((bDuplicating ? TEXT("DuplicatedCdu_") : TEXT("AddedCdu_")) + Id)));
+ const bool bDuplicating = !CduDuplicationMembers.IsEmpty();
  FLayoutTransformCommand Command;
- Command.Cdus.Add({Id, Name, Proposed, bDuplicating ? CduDuplicationSettings.GetValue()
-  : GetDefault<ACoolingDistributionUnitActor>()->CaptureLayoutSettings()});
+ for (int32 I = 0; I < GetRackAdditionPreviewCount(); ++I)
+ {
+  GetRackAdditionPreview(Proposed, SizeM, I);
+  const FString Id = FGuid::NewGuid().ToString();
+  const FName Name = MakeUniqueObjectName(GetWorld()->PersistentLevel, ACoolingDistributionUnitActor::StaticClass(),
+   FName(*((bDuplicating ? TEXT("DuplicatedCdu_") : TEXT("AddedCdu_")) + Id)));
+  Command.Cdus.Add({Id, Name, Proposed, bDuplicating ? CduDuplicationMembers[I].Settings
+   : GetDefault<ACoolingDistributionUnitActor>()->CaptureLayoutSettings()});
+ }
  if (!RestoreCduPresence(Command, true)) return nullptr;
  PushLayoutCommand(Command); CancelRackAddition();
- auto* Cdu = VrgCduLifecycle::Find(GetWorld(), Id); LayoutSelection.Add(Cdu);
- UE_LOG(LogTemp, Display, TEXT("[VrgLayout] CDU %s: %s %s yaw %.0f deg"), bDuplicating ? TEXT("복제") : TEXT("추가"), *Cdu->GetName(),
-  *Cdu->GetActorLocation().ToCompactString(), Cdu->GetActorRotation().Yaw);
+ for (const auto& Member : Command.Cdus) LayoutSelection.Add(VrgCduLifecycle::Find(GetWorld(), Member.Id));
+ auto* Cdu = VrgCduLifecycle::Find(GetWorld(), Command.Cdus[0].Id);
+ UE_LOG(LogTemp, Display, TEXT("[VrgLayout] CDU %s: %d대 | 앵커 %s %s yaw %.0f deg"), bDuplicating ? TEXT("복제") : TEXT("추가"), Command.Cdus.Num(),
+  *Cdu->GetName(), *Cdu->GetActorLocation().ToCompactString(), Cdu->GetActorRotation().Yaw);
  return Cdu;
 }
 
@@ -2415,7 +2433,7 @@ void ADataCenterDebugController::DrawHelp() const
 
 	GEngine->AddOnScreenDebugMessage(BaseKey, 0.0f, FColor(180, 220, 255),
 		IsLayoutMode()
-		? TEXT("[배치 키] Shift+클릭 추가/제거 | 빈 곳 드래그 사각형 선택·Shift 추가 | 장비 드래그 그룹 이동/빨강 거절/Esc 취소 | 단일 랙 줄 붙이기/Alt 해제 | Ctrl+D 랙/스파인 전체·CDU 한 대 복제 | Ctrl+Z/Y 배치 실행 취소/다시 실행 | 추가/복제: 클릭 확정/R 회전/Esc 취소 | R 선택 90도 회전 | Delete 랙/스파인/CDU 선택 전체 삭제 | F 선택/없으면 전체 | 우클릭+마우스/WASD/QE 비행·휠 속도 | 휠 전후 | G/T 단일만 C 컨테인먼트 Enter 시뮬레이션 H 도움말")
+		? TEXT("[배치 키] Shift+클릭 추가/제거 | 빈 곳 드래그 사각형 선택·Shift 추가 | 장비 드래그 그룹 이동/빨강 거절/Esc 취소 | 단일 랙 줄 붙이기/Alt 해제 | Ctrl+D 랙/스파인/CDU 선택 전체 복제 | Ctrl+Z/Y 배치 실행 취소/다시 실행 | 추가/복제: 클릭 확정/R 회전/Esc 취소 | R 선택 90도 회전 | Delete 랙/스파인/CDU 선택 전체 삭제 | F 선택/없으면 전체 | 우클릭+마우스/WASD/QE 비행·휠 속도 | 휠 전후 | G/T 단일만 C 컨테인먼트 Enter 시뮬레이션 H 도움말")
 		: TEXT("[디버그 키] Enter 배치 모드 | 1/2 CPU 발열  3/4 GPU 발열  5/6 펌프 회전수  7/8 라디에이터 UA(랙별 모드)  9/0 부하율  E 바라보는 유닛 뽑기/꽂기  R 리셋  H 도움말"));
 
 	const ARackThermalActor* Rack = TargetRack.Get();
