@@ -131,6 +131,7 @@ public:
 	bool TryRotateLayoutSelection();
 	// Runtime layout only: all selected equipment must be racks, with no gesture in progress.
 	bool TryDeleteLayoutRack();
+	bool TryDeleteLayoutCdu(); // Native single CDU only; rack/spine multi-delete remains separate.
 	bool TryDeleteLayoutSpine(); // Entire native spine selection; rack deletion remains separate.
 	// Game-thread layout transforms only (UE cm at this actor boundary), not simulation state.
 	bool TryUndoLayout();
@@ -216,6 +217,7 @@ private:
 	struct FLayoutCduMember
 	{
 		FString Id; FName Name; FTransform Transform; FCduLayoutSettings Settings;
+		bool bRuntime = true;
 	};
 	struct FLayoutTransformCommand
 	{

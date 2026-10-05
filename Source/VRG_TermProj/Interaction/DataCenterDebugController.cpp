@@ -723,7 +723,7 @@ bool ADataCenterDebugController::BeginRackDuplication()
 void ADataCenterDebugController::OnDuplicateLayoutRack()
 {
 	if (!BeginRackDuplication() && !BeginSpineDuplication())
-		UE_LOG(LogTemp, Display, TEXT("[VrgLayout] 복제 거절: 랙 선택 전체 또는 네이티브 스파인 선택 전체와 배치 대기 상태가 필요합니다."));
+		UE_LOG(LogTemp, Display, TEXT("[VrgLayout] 복제 거절: 랙 선택 전체 또는 네이티브 스파인 선택 전체 또는 네이티브 CDU 한 대와 배치 대기 상태가 필요합니다."));
 	LogLayoutInputState(TEXT("Ctrl+D"));
 }
 
@@ -1043,8 +1043,26 @@ bool ADataCenterDebugController::TryDeleteLayoutRack()
 
 void ADataCenterDebugController::OnDeleteLayoutEquipment()
 {
-	if (!TryDeleteLayoutRack() && !TryDeleteLayoutSpine())
-		UE_LOG(LogTemp, Display, TEXT("[VrgLayout] 삭제 거절: 랙 선택 전체 또는 네이티브 스파인 선택 전체와 배치 대기 상태가 필요합니다."));
+	if (!TryDeleteLayoutRack() && !TryDeleteLayoutSpine() && !TryDeleteLayoutCdu())
+		UE_LOG(LogTemp, Display, TEXT("[VrgLayout] 삭제 거절: 랙 선택 전체 또는 네이티브 스파인 선택 전체 또는 네이티브 CDU 한 대와 배치 대기 상태가 필요합니다."));
+}
+
+bool ADataCenterDebugController::TryDeleteLayoutCdu()
+{
+ UWorld* World = GetWorld();
+ if (!World || !World->IsGameWorld() || !IsLayoutMode() || !IsCameraInputAvailable()
+  || bAddingRack || IsLayoutDragging() || bMarqueeActive || Grabbed.IsValid() || IsInputKeyDown(EKeys::RightMouseButton)) return false;
+ const auto Selected = GetSelectedLayoutActors();
+ if (Selected.Num() != 1) return false;
+ auto* Cdu = Cast<ACoolingDistributionUnitActor>(Selected[0]);
+ if (!IsValid(Cdu) || Cdu->GetWorld() != World || Cdu->GetClass() != ACoolingDistributionUnitActor::StaticClass()) return false;
+ FLayoutTransformCommand Command; Command.bBeforePresent = true;
+ Command.Cdu = FLayoutCduMember{VrgCduLifecycle::Identity(Cdu), Cdu->GetFName(), Cdu->GetActorTransform(),
+  Cdu->CaptureLayoutSettings(), Cdu->bRuntimeLayoutCdu};
+ if (!RestoreCduPresence(Command, true)) return false;
+ PushLayoutCommand(MoveTemp(Command));
+ UE_LOG(LogTemp, Display, TEXT("[VrgLayout] CDU 삭제: 1대"));
+ return true;
 }
 
 bool ADataCenterDebugController::TryDeleteLayoutSpine()
@@ -1285,13 +1303,13 @@ bool ADataCenterDebugController::RestoreCduPresence(const FLayoutTransformComman
  {
   if (Cdu || FindObjectFast<UObject>(GetWorld()->PersistentLevel, M.Name)
    || IsLayoutBoxBlocked(GetWorld(), M.Settings.SizeM, M.Transform)) return false;
-  Cdu = VrgCduLifecycle::Spawn(GetWorld(), M.Name, M.Id, M.Transform, M.Settings);
+  Cdu = VrgCduLifecycle::Spawn(GetWorld(), M.Name, M.Id, M.Transform, M.Settings, M.bRuntime);
   if (!Cdu) return false;
   NotifyLayoutCduRecreated(Cdu);
  }
  else
  {
-  if (!Cdu || Cdu->GetFName() != M.Name || !Cdu->GetActorTransform().Equals(M.Transform)
+  if (!Cdu || Cdu->GetFName() != M.Name || Cdu->bRuntimeLayoutCdu != M.bRuntime || !Cdu->GetActorTransform().Equals(M.Transform)
    || !(Cdu->CaptureLayoutSettings() == M.Settings) || !VrgCduLifecycle::Remove(Cdu)) return false;
  }
  VrgRackLifecycle::Rebuild(GetWorld()); return true;

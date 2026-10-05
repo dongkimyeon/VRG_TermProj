@@ -7,6 +7,6 @@ namespace VrgCduLifecycle
  FString Identity(const ACoolingDistributionUnitActor* Cdu);
  ACoolingDistributionUnitActor* Find(UWorld* World, const FString& Id);
  ACoolingDistributionUnitActor* Spawn(UWorld* World, FName Name, const FString& Id,
-  const FTransform& Transform, const FCduLayoutSettings& Settings);
+  const FTransform& Transform, const FCduLayoutSettings& Settings, bool bRuntime = true);
  bool Remove(ACoolingDistributionUnitActor* Cdu);
 }

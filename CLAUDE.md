@@ -3216,3 +3216,15 @@ Editor97.26s 성공. 후속 질량 보존 검사에서 물 밀도를 랙 Params�
 
 NullRHI 축소 fixture이며 L_Test 전체 열운전/정상상태/FPS 검증으로 확대하지 않는다. 실제 CDU 추가 UI는 geometry unavailable 도구 실패 해소 근거가 없어 같은 실패를 재시도하지 않았다. 미검증 범위/직접 절차: Tools/배치CDU추가_확인_2026-10-05.md. 기존 CDU 삭제/복제·쿨러 추가 및 자원 고갈/엔진 Destroy·원복 연쇄 실패 주입은 범위 밖이다.
 근거: Saved/Build_CduPersistence.log·Saved/Build_CduPersistence_Checks.log·Saved/Build_CduPersistence_Repair.log·Saved/Logs/CduPersistence_Tests.log·Saved/Automation/CduPersistence/index.json(커밋 제외).
+
+
+### S7 사용자 CDU 추가 확인·단일 CDU 삭제 (2026-10-05)
+
+사용자가 Tools/배치CDU추가_확인_2026-10-05.md 직접 절차 모두 정상으로 보고했다. 추가 버튼/미리보기/R/Esc/충돌·확정/Undo/Redo·패치/모드 취소·배관·반복/새 실행 Load의 사용자 확인으로 기록한다. 로그/캡처/FPS나 과거 도구 오류 원인 확인으로 확대하지 않는다.
+
+Delete는 기존 랙/스파인 선택 전체 또는 네이티브 CDU 한 대로 분기한다. CDU 미선택/다중·혼합/비네이티브와 드래그/사각형/추가·패치·시뮬레이션 등 기존 입력 차단을 유지한다. 실행 월드만 삭제하며 레벨 에셋은 수정하지 않는다. 삭제 한 기록을 Undo/Redo하고 ID/이름/설정/전체 변환/기존·런타임 출처와 이전 이동/R 참조를 복원한다. 현재 온도/적분/시계는 기록에 없다. 총1cm 충돌·이름 점유/실패 시 기록을 유지한다. 월드별 명시 삭제 의도는 기록 상한100개/기록 초기화/모드 전환과 별개로 유지한다.
+
+Editor86.45s 성공. CduDeletionUndoRedo/CduAdditionUndoRedo/RackBatchDeletionUndoRedo/SpineDeletionUndoRedo 4건 무경고 성공(실패0/미실행0/진행0/종료0). 새 검사는 입력 차단·기존/런타임 삭제·개수/선택/한 기록·Undo 충돌/이름 점유 상태 불변·이전 이동/R 참조 재연결·설정 변경 Redo 거절·출처/전체 변환 복원을 확인했다. 변환은 기존 FTransform Equals1e-9(액터cm/스케일 무차원), 배치 시계0s. 비기본 설정/높이/스케일은 합성 검사 조건이며 새 물성/측정/피팅이 아니다.
+
+저장/재배정·라디에이터 대체·수력/냉각수/전역 열수지의 최종 결과는 후속 절을 따른다. 실제 새 삭제 UI는 환경 변화 없는 geometry unavailable 오류를 재시도하지 않았으며 직접 절차를 후속 작성한다. 다중 CDU 삭제/복제·쿨러·펌프 손실 열 분배 확장·전체/FPS는 범위 밖이다.
+근거(커밋 제외): Saved/Build_CduDeletion.log·Saved/Logs/CduDeletion_Tests.log·Saved/Automation/CduDeletion.
