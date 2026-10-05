@@ -3190,3 +3190,29 @@ SpineBatchDuplicationPersistenceCoupling은 NVL72 한 랙/CDU/공기와 기존4�
 
 Editor108.22s 성공. CduAdditionUndoRedo/Gb200RackAddition/SpineAdditionUndoRedo 3건 무경고 성공(실패0). 값 기반 취소/충돌 개수 불변·5cm/총1cm 경계·R·패치/모드 취소·확정 한 대/한 기록·Redo 충돌/이름 점유 상태 불변·이전 이동/R 참조 재연결을 검사했다. 변환은 기존 FTransform Equals1e-9(액터cm/스케일 무차원), 배치 시계0s. 저장/물리 검증은 후속 절을 따른다. 새 UI는 기존 geometry unavailable 실패 해소 근거가 없어 재시도하지 않았으며 직접 확인 절차를 후속 작성한다. 전체/FPS 반복 없음.
 근거: Saved/Build_CduAddition.log·Saved/Logs/CduAddition_Tests.log(커밋 제외).
+
+
+### S7 CDU 저장 v2·재배정·수력/냉각수/열 검증 (2026-10-05)
+
+v2에 선택적 `cduInventory` 기능 표식과 `cduId/runtimeCdu/cduSettings`를 추가했다. 새 파일은 없는 네이티브 런타임 CDU를 같은 ID/이름/설정/전체 변환으로 생성하고 목록에서 빠진 런타임 CDU만 제거한다. 기존 배치 CDU의 누락은 삭제로 해석하지 않는다. 표식 없는 이전 v2와 v1은 기존 CDU 이름별 변환 경로를 유지한다. 기존 랙/spineInventory/deletedSpines와 구조 검사·생성/이름 준비/변환/제거의 트랜잭션을 공유하며 성공 Load만 편집/선택·Undo/Redo를 초기화한다. 잘못된 범위/중복 ID/출처는 적용 전에 거절한다.
+
+CDU 설정 스냅샷은 외형/포트·펌프·설비수/HX 작성 값만 포함한다. 물성 기본값/레벨 에셋 변경 없음. 온도·적분·시계·장비 참조는 파일/Undo에 없다. 기존 방의 줄 첫 랙에서 가장 가까운 CDU 선택 및 미배정/라디에이터 진단, 기존 재구축을 유지한다. **펌프 전기 입력은 기존 전력 평가/PUE 장부, CDU 열교환량은 기존 냉각수·전역 열 장부에 반영된다. 펌프 손실의 냉각수/공기 열 분배는 기존 미상환 부채이며 이번에 구현한 것으로 세지 않는다.** 아래 전역 잔차는 기존 모델의 IT+CRAH 팬 입력 기준으로, 펌프 손실까지 포함한 실제 시설 전체 열수지 보장이 아니다.
+
+CduPersistenceCoupling은 NVL72 한 랙/기존 CDU/공기와 가까운 신규 CDU를 사용한다. 추가/Undo/Redo/Load/추가 전 파일 Load에서 CDU2↔1 및 줄 첫 랙의 담당 CDU 변경·랙/수력 분기/펌프 수 유지·재구축·새 시계0.02s·IT 불변을 검사했다. 동일/별도 월드 반복 Load의 중복 없음/기록0, 목록에 없는 기존 CDU 보존, 비기본 설정/전체 변환·잘못된 설정 Load 시 기존 실제 Undo 기록 사용 가능도 확인했다. 비기본 효율/속도·HX/설비수/치수/스케일은 합성 직렬화 검사 값이며 하드웨어 참고값·새 피팅/물성 기본값이 아니다.
+
+| 검사 | 측정 최대/결과 | 기존 판정·정규화 기준/단위 |
+|---|---|---|
+| 추가/Undo/Redo/Load 첫 스텝 IT 변화 | 0W, 상대오차0; 기준116512.612431W | abs(현재 IT-동일 초기 랙 IT)/기준 IT W <1e-9, 무차원. CDU를 랙 열원으로 추가하지 않음 |
+| 수력 Newton 잔차 | 7.348e-14, 수렴 | 질량 블록/3.399365e-3 m³/s, 펌프 블록/4.000000e5 Pa 중 최대. 기존 목표1e-10, 무차원 |
+| CDU 냉각수 전달량 | 5.956e-15 | abs(CDU duty-mdot·cp·(회수-공급))/CDU duty W <1e-12, 무차원. 라디에이터 방출 합=CDU duty |
+| 전역 열수지 | 1.314e-13 | abs(입력J-유출J-축적J)/기존 누적 IT+CRAH 팬 입력J <1e-9, 무차원 |
+| 공기 압력 정규화 발산 | 2.726e-08, 수렴 | 기존 장비 덕트 through-flow/시간/체적 기반 정규화 <1e-5, 무차원 |
+| 펌프 전력·냉각수 유량 | 1908.824139W·3.389167kg/s | 운전점 Δp·Flow/효율 및 전력 평가 PumpW 상대차 <1e-12, 펌프/현재 IT <5%, 양의 유량·펌프/분기 질량 상대차 <1e-9 |
+| 저장/재로드/새 월드 | 신규 CDU 동일 ID/이름/runtime 설정·전체 변환, 재Load0 생성/0 제거·Undo0/Redo0 | 개수/문자열 정확 일치, 기존 FTransform Equals1e-9(액터cm·스케일 무차원) |
+
+수력 8랙 설계 운전점 타당성은 기존 RowOperatingPointPlausible을 함께 실행해 ΔT5~15K·펌프/부하<5%·분기 편차<15%를 확인했다. 한 랙 fixture를 8랙 정상상태로 해석하지 않는다. CDU 공급≥설비수 공급, 회수>공급, 양의 duty/설비수 온도 상승 및 운전점 전력도 검사했다. 새 오차 허용치를 도입하지 않았다.
+
+Editor97.26s 성공. 후속 질량 보존 검사에서 물 밀도를 랙 Params에 잘못 참조한 검사 빌드2.61s 실패는 기존 통합 액터 CoolantDensityKgM3를 읽도록 검사만 수정했고 Editor7.52s 성공. CduPersistenceCoupling/InventorySaveLoad/SaveLoadRoundTrip/SpineBatchDuplicationPersistenceCoupling/RowOperatingPointPlausible **5건 무경고 성공(실패0/미실행0/진행0/종료0)**. 앞 입력3건과 합쳐 관련8종 성공 확인. 통과한 입력3건/전체 VRG/FPS는 반복하지 않았다.
+
+NullRHI 축소 fixture이며 L_Test 전체 열운전/정상상태/FPS 검증으로 확대하지 않는다. 실제 CDU 추가 UI는 geometry unavailable 도구 실패 해소 근거가 없어 같은 실패를 재시도하지 않았다. 미검증 범위/직접 절차: Tools/배치CDU추가_확인_2026-10-05.md. 기존 CDU 삭제/복제·쿨러 추가 및 자원 고갈/엔진 Destroy·원복 연쇄 실패 주입은 범위 밖이다.
+근거: Saved/Build_CduPersistence.log·Saved/Build_CduPersistence_Checks.log·Saved/Build_CduPersistence_Repair.log·Saved/Logs/CduPersistence_Tests.log·Saved/Automation/CduPersistence/index.json(커밋 제외).

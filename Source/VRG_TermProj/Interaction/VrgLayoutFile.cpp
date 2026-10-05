@@ -4,6 +4,7 @@
 #include "Interaction/DataCenterDebugController.h"
 #include "Interaction/VrgRackLifecycle.h"
 #include "Interaction/VrgSpineLifecycle.h"
+#include "Interaction/VrgCduLifecycle.h"
 #include "Interaction/VrgSpineLayoutState.h"
 #include "Actors/DataCenterRoomActor.h"
 #include "JsonObjectConverter.h"
@@ -61,6 +62,7 @@ bool VrgLayoutFile::Save(UWorld* World, const FString& Name, FString& OutSummary
 	if (World == nullptr || Name.IsEmpty()) { OutSummary = TEXT("월드나 이름이 없다"); return false; }
 	TSharedRef<FJsonObject> Root = MakeShared<FJsonObject>();
 	Root->SetNumberField(TEXT("version"), 2);
+	Root->SetBoolField(TEXT("cduInventory"), true); // Additive v2; absent flag preserves legacy CDU transforms/placed inventory.
 	Root->SetBoolField(TEXT("spineInventory"), true); // Additive v2 capability; old v2 remains transform-only for spines.
 	TArray<TSharedPtr<FJsonValue>> Items;
 	for (TActorIterator<AActor> It(World); It; ++It)
@@ -92,6 +94,15 @@ bool VrgLayoutFile::Save(UWorld* World, const FString& Name, FString& OutSummary
 			const auto Snapshot = Spine->CaptureLayoutSettings();
 			if (!FJsonObjectConverter::UStructToJsonObject(FSpineLayoutSettings::StaticStruct(), &Snapshot, Config)) return false;
 			Item->SetObjectField(TEXT("spineSettings"), Config);
+		}
+		if (const auto* Cdu = Cast<ACoolingDistributionUnitActor>(*It))
+		{
+			Item->SetStringField(TEXT("cduId"), VrgCduLifecycle::Identity(Cdu));
+			Item->SetBoolField(TEXT("runtimeCdu"), Cdu->bRuntimeLayoutCdu);
+			TSharedRef<FJsonObject> Config = MakeShared<FJsonObject>();
+			const auto Snapshot = Cdu->CaptureLayoutSettings();
+			if (!FJsonObjectConverter::UStructToJsonObject(FCduLayoutSettings::StaticStruct(), &Snapshot, Config)) return false;
+			Item->SetObjectField(TEXT("cduSettings"), Config);
 		}
 		Items.Add(MakeShared<FJsonValueObject>(Item));
 	}
@@ -160,6 +171,8 @@ namespace
 		FTransform Target;
 		TOptional<FRackLayoutSettings> Rack;
 		TOptional<FSpineLayoutSettings> Spine;
+		TOptional<FCduLayoutSettings> Cdu;
+		bool bRuntimeCdu = false;
 		bool bRuntimeSpine = false;
 		bool bSpawned=false;
 	};
@@ -178,6 +191,9 @@ bool VrgLayoutFile::Load(UWorld* World, const FString& Name, FString& OutSummary
 	if (Version!=1 && Version!=2) return Fail(TEXT("지원하지 않는 버전"));
 	const TArray<TSharedPtr<FJsonValue>>* Values=nullptr;
 	if (!Root->TryGetArrayField(TEXT("equipment"),Values)) return Fail(TEXT("장비 목록 없음"));
+	bool bCduInventory = false;
+	if (Version == 2 && Root->HasField(TEXT("cduInventory")) && !Root->TryGetBoolField(TEXT("cduInventory"), bCduInventory))
+		return Fail(TEXT("CDU 목록 기능 표식 오류"));
 	bool bSpineInventory = false;
 	if (Version == 2 && Root->HasField(TEXT("spineInventory")) && !Root->TryGetBoolField(TEXT("spineInventory"), bSpineInventory))
 		return Fail(TEXT("스파인 목록 기능 표식 오류"));
@@ -186,6 +202,7 @@ bool VrgLayoutFile::Load(UWorld* World, const FString& Name, FString& OutSummary
 	if (bSpineDeletions && (!bSpineInventory || !Root->TryGetArrayField(TEXT("deletedSpines"), DeletedValues)))
 		return Fail(TEXT("명시 스파인 삭제 목록 오류"));
 	auto* SpineState = World->GetSubsystem<UVrgSpineLayoutState>();
+	TMap<FString,ACoolingDistributionUnitActor*> ByCduId;
 	TMap<FString,ASpineCabinetActor*> BySpineId;
 	TMap<FString,AActor*> ByName;
 	TMap<FString,ARackThermalActor*> ById;
@@ -193,6 +210,12 @@ bool VrgLayoutFile::Load(UWorld* World, const FString& Name, FString& OutSummary
 	for (TActorIterator<AActor> It(World);It;++It) if (LayoutIsEquipment(*It))
 	{
 		ByName.Add(It->GetName(),*It); Current.Add(*It);
+		if (auto* Cdu = Cast<ACoolingDistributionUnitActor>(*It))
+		{
+			const FString Id = VrgCduLifecycle::Identity(Cdu);
+			if (ByCduId.Contains(Id)) return Fail(TEXT("월드 CDU 식별자 중복"));
+			ByCduId.Add(Id, Cdu);
+		}
 		if (auto* Spine = Cast<ASpineCabinetActor>(*It))
 		{
 			const FString Id = VrgSpineLifecycle::Identity(Spine);
@@ -207,7 +230,7 @@ bool VrgLayoutFile::Load(UWorld* World, const FString& Name, FString& OutSummary
 		}
 	}
 	TArray<FLoadedEquipment> Items, DeletedItems;
-	TSet<FString> SeenNames,SeenIds,SeenSpineIds;
+	TSet<FString> SeenNames,SeenIds,SeenSpineIds,SeenCduIds;
 	int32 Missing=0;
 	TArray<TSharedPtr<FJsonValue>> AllValues = *Values;
 	if (DeletedValues) AllValues.Append(*DeletedValues);
@@ -270,12 +293,30 @@ bool VrgLayoutFile::Load(UWorld* World, const FString& Name, FString& OutSummary
 			}
 			else if (bSpineInventory && (Item.Class == ASpineCabinetActor::StaticClass()->GetName() || Cast<ASpineCabinetActor>(Item.Actor)))
 				return Fail(TEXT("스파인 ID/설정 누락"));
+			if (O->HasField(TEXT("cduId")))
+			{
+				if (!bCduInventory || bDeleteSpine || Item.Rack.IsSet() || Item.Spine.IsSet()
+					|| !O->TryGetStringField(TEXT("cduId"),Item.Id) || Item.Id.IsEmpty() || SeenIds.Contains(Item.Id)
+					|| !O->TryGetBoolField(TEXT("runtimeCdu"),Item.bRuntimeCdu)
+					|| !O->TryGetObjectField(TEXT("cduSettings"),Config)) return Fail(TEXT("CDU ID/설정 오류 또는 중복"));
+				SeenIds.Add(Item.Id); SeenCduIds.Add(Item.Id); Item.Actor = ByCduId.FindRef(Item.Id);
+				FCduLayoutSettings CduSettings;
+				if (!FJsonObjectConverter::JsonObjectToUStruct(Config->ToSharedRef(),&CduSettings,0,0,true)
+					|| !CduSettings.IsValid()) return Fail(TEXT("CDU 설정 구조/범위 오류"));
+				Item.Cdu = CduSettings;
+				const auto* ExistingCdu = Cast<ACoolingDistributionUnitActor>(Item.Actor);
+				// Only native runtime CDUs may be created; placed CDU omissions never mean deletion.
+				if ((!Item.Actor && (!Item.bRuntimeCdu || Item.Class != ACoolingDistributionUnitActor::StaticClass()->GetName()))
+					|| (Item.Actor && (!ExistingCdu || ExistingCdu->bRuntimeLayoutCdu != Item.bRuntimeCdu))) return Fail(TEXT("CDU 종류/출처 불일치"));
+			}
+			else if (bCduInventory && (Item.Class == ACoolingDistributionUnitActor::StaticClass()->GetName() || Cast<ACoolingDistributionUnitActor>(Item.Actor)))
+				return Fail(TEXT("CDU ID/설정 누락"));
 		}
 		if (bDeleteSpine && (!Item.Spine.IsSet() || Item.bRuntimeSpine
 			|| Item.Class != ASpineCabinetActor::StaticClass()->GetName())) return Fail(TEXT("명시 삭제는 기존 네이티브 스파인만 지원"));
 		if (Item.Actor && (Item.Actor->GetClass()->GetName()!=Item.Class || !Item.Actor->GetRootComponent()
 			|| Item.Actor->GetRootComponent()->Mobility!=EComponentMobility::Movable)) return Fail(TEXT("장비 종류 또는 이동 가능 상태 불일치"));
-		if (!bDeleteSpine && !Item.Actor && (Version==1 || (!Item.Rack.IsSet() && !Item.Spine.IsSet())))
+		if (!bDeleteSpine && !Item.Actor && (Version==1 || (!Item.Rack.IsSet() && !Item.Spine.IsSet() && !Item.Cdu.IsSet())))
 		{
 			++Missing; UE_LOG(LogTemp,Warning,TEXT("[VrgLayout] 레벨에 없는 장비: %s"),*Item.Name);
 		}
@@ -318,11 +359,18 @@ bool VrgLayoutFile::Load(UWorld* World, const FString& Name, FString& OutSummary
 				return Fail(TEXT("제거할 수 없는 런타임 스파인"));
 			RemoveSpines.Add(Pair.Value);
 		}
+	TArray<ACoolingDistributionUnitActor*> RemoveCdus;
+	if (bCduInventory) for (const auto& Pair : ByCduId) if (Pair.Value->bRuntimeLayoutCdu && !SeenCduIds.Contains(Pair.Key))
+	{
+		if (Pair.Value->GetClass()!=ACoolingDistributionUnitActor::StaticClass() || Pair.Value->GetLocalRole()!=ROLE_Authority)
+			return Fail(TEXT("제거할 수 없는 런타임 CDU"));
+		RemoveCdus.Add(Pair.Value);
+	}
 	// Verify target names before spawning or touching current equipment. Rack names may be released by reconciliation.
-	for (const auto& Item:Items) if (Version==2 && (Item.Rack.IsSet() || Item.Spine.IsSet()))
+	for (const auto& Item:Items) if (Version==2 && (Item.Rack.IsSet() || Item.Spine.IsSet() || Item.Cdu.IsSet()))
 	{
 		UObject* Occupant=FindObjectFast<UObject>(World->PersistentLevel,FName(*Item.Name));
-		if (Occupant && Occupant!=Item.Actor && !Remove.Contains(Cast<ARackThermalActor>(Occupant)) && !RemoveSpines.Contains(Cast<ASpineCabinetActor>(Occupant))) return Fail(TEXT("복원 이름이 다른 객체와 충돌"));
+		if (Occupant && Occupant!=Item.Actor && !Remove.Contains(Cast<ARackThermalActor>(Occupant)) && !RemoveSpines.Contains(Cast<ASpineCabinetActor>(Occupant)) && !RemoveCdus.Contains(Cast<ACoolingDistributionUnitActor>(Occupant))) return Fail(TEXT("복원 이름이 다른 객체와 충돌"));
 	}
 	TArray<FTransform> OldTransforms;
 	for (AActor* Actor:Current) OldTransforms.Add(Actor->GetActorTransform());
@@ -344,12 +392,23 @@ bool VrgLayoutFile::Load(UWorld* World, const FString& Name, FString& OutSummary
 	TArray<FSpineRemovalBackup> SpineBackups;
 	for (auto* Spine:RemoveSpines) SpineBackups.Add({Spine->GetFName(),VrgSpineLifecycle::Identity(Spine),Spine->GetActorTransform(),
 		Spine->CaptureLayoutSettings(),Spine->GetMutableModel(),Spine->GetMutableInput(),Spine->bRuntimeLayoutSpine});
+	struct FCduRemovalBackup { FName Name; FString Id; FTransform Transform; FCduLayoutSettings Settings; };
+	TArray<FCduRemovalBackup> CduBackups;
+	for (auto* Cdu : RemoveCdus) CduBackups.Add({Cdu->GetFName(),VrgCduLifecycle::Identity(Cdu),Cdu->GetActorTransform(),Cdu->CaptureLayoutSettings()});
 	const auto OldDeletedPlaced = SpineState->DeletedPlaced;
 	auto Rollback=[&]() {
 		for (auto& Item:Items) if (Item.bSpawned && IsValid(Item.Actor))
 		{
-			if (Item.Spine.IsSet()) VrgSpineLifecycle::Remove(CastChecked<ASpineCabinetActor>(Item.Actor));
+			if (Item.Cdu.IsSet()) VrgCduLifecycle::Remove(CastChecked<ACoolingDistributionUnitActor>(Item.Actor));
+			else if (Item.Spine.IsSet()) VrgSpineLifecycle::Remove(CastChecked<ASpineCabinetActor>(Item.Actor));
 			else VrgRackLifecycle::Remove(CastChecked<ARackThermalActor>(Item.Actor));
+		}
+		for (int32 I=0;I<RemoveCdus.Num();++I)
+		{
+			const auto& B=CduBackups[I];
+			if (IsValid(RemoveCdus[I])) RemoveCdus[I]->Rename(*B.Name.ToString(),nullptr,REN_DontCreateRedirectors|REN_NonTransactional);
+			else if (auto* Restored=VrgCduLifecycle::Spawn(World,B.Name,B.Id,B.Transform,B.Settings))
+				for (TActorIterator<ADataCenterDebugController> It(World);It;++It) It->NotifyLayoutCduRecreated(Restored);
 		}
 		for (int32 I=0;I<RemoveSpines.Num();++I)
 		{
@@ -380,9 +439,10 @@ bool VrgLayoutFile::Load(UWorld* World, const FString& Name, FString& OutSummary
 	};
 	for (auto& Item:Items) if (!Item.Actor)
 	{
-		UClass* Kind=Item.Spine.IsSet()?ASpineCabinetActor::StaticClass():ARackThermalActor::StaticClass();
+		UClass* Kind=Item.Cdu.IsSet()?ACoolingDistributionUnitActor::StaticClass():Item.Spine.IsSet()?ASpineCabinetActor::StaticClass():ARackThermalActor::StaticClass();
 		const FName Temp=MakeUniqueObjectName(World->PersistentLevel,Kind,TEXT("PendingLayoutEquipment"));
-		Item.Actor=Item.Spine.IsSet()?static_cast<AActor*>(VrgSpineLifecycle::Spawn(World,Temp,Item.Id,Item.Target,Item.Spine.GetValue(),Item.bRuntimeSpine))
+		Item.Actor=Item.Cdu.IsSet()?static_cast<AActor*>(VrgCduLifecycle::Spawn(World,Temp,Item.Id,Item.Target,Item.Cdu.GetValue()))
+			:Item.Spine.IsSet()?static_cast<AActor*>(VrgSpineLifecycle::Spawn(World,Temp,Item.Id,Item.Target,Item.Spine.GetValue(),Item.bRuntimeSpine))
 			:VrgRackLifecycle::Spawn(World,Temp,Item.Id,Kind,Item.Target,Item.Rack.GetValue());
 		Item.bSpawned=Item.Actor!=nullptr;
 		if (!Item.Actor) { Rollback(); return Fail(TEXT("랙 생성 실패: 이전 배치 유지")); }
@@ -396,6 +456,11 @@ bool VrgLayoutFile::Load(UWorld* World, const FString& Name, FString& OutSummary
 	{
 		const FName Temp=MakeUniqueObjectName(Spine->GetOuter(),Spine->GetClass(),TEXT("PendingSpineRemoval"));
 		if (!Spine->Rename(*Temp.ToString(),nullptr,REN_DontCreateRedirectors|REN_NonTransactional)) { Rollback(); return Fail(TEXT("스파인 이름 준비 실패")); }
+	}
+	for (auto* Cdu:RemoveCdus)
+	{
+		const FName Temp=MakeUniqueObjectName(Cdu->GetOuter(),Cdu->GetClass(),TEXT("PendingCduRemoval"));
+		if (!Cdu->Rename(*Temp.ToString(),nullptr,REN_DontCreateRedirectors|REN_NonTransactional)) { Rollback(); return Fail(TEXT("CDU 이름 준비 실패")); }
 	}
 	for (auto& Item:Items)
 	{
@@ -411,6 +476,11 @@ bool VrgLayoutFile::Load(UWorld* World, const FString& Name, FString& OutSummary
 	{
 		Rollback(); VrgRackLifecycle::Rebuild(World);
 		return Fail(TEXT("스파인 제거 실패: 이전 배치 복원"));
+	}
+	for (auto* Cdu:RemoveCdus) if (!Cdu->Destroy())
+	{
+		Rollback(); VrgRackLifecycle::Rebuild(World);
+		return Fail(TEXT("CDU 제거 실패: 이전 배치 복원"));
 	}
 	// Commit only after structural validation, all spawns/names/transforms and removals have succeeded.
 	if (bSpineDeletions)
@@ -434,6 +504,11 @@ bool VrgLayoutFile::Load(UWorld* World, const FString& Name, FString& OutSummary
 		SpineState->DeletedPlaced.Remove(Item.Id);
 		if (!Item.bSpawned) { Spine->ApplyLayoutSettings(Item.Spine.GetValue()); Spine->RefreshVisuals(); }
 	}
+	for (auto& Item:Items) if (Item.Cdu.IsSet())
+	{
+		auto* Cdu=CastChecked<ACoolingDistributionUnitActor>(Item.Actor); Cdu->LayoutId=Item.Id;
+		if (!Item.bSpawned) { Cdu->ApplyLayoutSettings(Item.Cdu.GetValue()); Cdu->RefreshVisuals(); }
+	}
 	double V;
 	if (Sim)
 	{
@@ -446,6 +521,7 @@ bool VrgLayoutFile::Load(UWorld* World, const FString& Name, FString& OutSummary
 	VrgRackLifecycle::Rebuild(World);
 	OutSummary=FString::Printf(TEXT("v%.0f: 장비%d 적용, 랙%d 생성/%d 제거 (상태·기록 저장 없음)"),Version,Items.Num(),Items.FilterByPredicate([](const auto& I){return I.bSpawned && I.Rack.IsSet();}).Num(),Remove.Num());
 	OutSummary += FString::Printf(TEXT(" | 스파인%d 생성/%d 제거"), Items.FilterByPredicate([](const auto& I){return I.bSpawned && I.Spine.IsSet();}).Num(), RemoveSpines.Num());
+	OutSummary += FString::Printf(TEXT(" | CDU%d 생성/%d 제거"), Items.FilterByPredicate([](const auto& I){return I.bSpawned && I.Cdu.IsSet();}).Num(), RemoveCdus.Num());
 	return true;
 }
 
