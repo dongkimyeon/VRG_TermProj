@@ -3524,3 +3524,13 @@ Editor120.45s 성공. 처음 후속7종 실행에서 CDU 삭제 회귀(기존 �
 L_Test 실제 입력/화면: 인로우 버튼→값 미리보기→빈 목적지 클릭 생성→선택한 런타임 CRAH Delete→Ctrl+Z 복원→Ctrl+Y 재삭제를 확인했다. 삭제/Undo/Redo 로그와 Alt+Print Screen 클립보드 PNG를 대조했다. 마지막 Undo 두 번으로 확인용 삭제/추가를 모두 취소해 원래 자동 배치로 복귀(Undo0/Redo2 로그). 레벨/배치 파일 저장은 수행하지 않았다. 처음 숨김 실행은 조회 가능한 게임 창이 없어 해당 확인용 프로세스만 종료하고 일반 창으로 실행했다. 일반 창은 조회·입력이 가능했고 기존 캡처 API는 호출하지 않았다. 드라이버 설정을 바꾸지 않았으며 조작 시 차단 모달은 없었다. 실제 기존 레벨 배치/전환 장비 삭제·복원 충돌·입력 차단·삭제 저장/새 실행 Load UI는 미검증이며 자동화 성공으로 화면 확인을 대신하지 않는다. 절차 Tools/배치CRAH삭제_확인_2026-10-06.md.
 
 근거(커밋 제외): Saved/Build_CrahDeletionPersistence.log·Saved/Build_CrahDeletionPersistence_Repair.log, Saved/Logs/CrahDeletionPersistence_Tests.log·CrahDeletionPersistence_Repair_Tests.log, Saved/Automation/CrahDeletionPersistenceRepair/index.json, Saved/Logs/CrahDeletion_UI.log, Saved/CrahDeletion_Before.png·CrahDeletion_Input.png·CrahDeletion_Undo.png·CrahDeletion_Redo.png. NullRHI 순간 fixture이며 전체 시설/장시간 정상상태 보장이 아니다. 다중 CRAH 삭제·복제·벽면 추가는 후속이다.
+
+## 2026-10-06 단일 CRAH 복제 입력·Undo/Redo
+
+사용자가 단일 CRAH 삭제 직접 확인 결과 정상으로 보고했다. 사용자 확인 범위이며 로그·캡처·FPS 측정으로 확대하지 않는다.
+Ctrl+D는 단일 네이티브 CRAH의 종류/SizeM/VolumeFlowM3s와 전체 변환만 값으로 전달한다. 기존 배치·자동 전환·런타임 원본을 지원하고 미선택/다중/혼합/편집/패치/시뮬레이션 차단은 유지한다. 원본 설정·높이·방향·스케일을 보존한 커서 미리보기는 기존 5cm/총1cm/R/Esc·패치/모드 취소 경로를 사용한다. 클릭 전 생성·자동 전환 없음. 성공 때만 새 ID/이름의 런타임 CRAH를 생성하고 한 기록을 추가한다.
+복제본은 원본의 자동 전환 출처/원래 자동 경계를 계승하지 않으며 자동 경계·접촉 예외도 없다. 온도·적분·시계·장비 참조는 복사하지 않는다. 기존 presence/rebuild/history 경로로 Undo/Redo하고 충돌·이름 점유·실제 생성 실패 시 상태/기록을 유지한다. 기존 추가 기본값·물성·솔버·레벨 에셋 변경 없음.
+
+첫 빌드110.38s는 신규 검사에서 ECrahUnitKind를 ECrahKind로 잘못 쓴 컴파일 오류로 실패했다. 검사 이름 수정 뒤 Editor42.92s 성공(실제 E:/UE_5.8; 팀 원 작성자 경로 변경 없음), 신규 두 검사 파일 실제 컴파일/등록 확인. CrahDuplicationUndoRedo/CrahAdditionUndoRedo/CrahDeletionUndoRedo/CduDuplicationUndoRedo **4건 무경고 성공, 실패0/미실행0/진행0/종료0**. 신규 검사는 기존/런타임/전환 원본·Ctrl+D·설정 독립성·높이/스케일·R·취소·입력 차단·충돌/이름 점유/실제 생성 및 Redo 실패·GC 없이 재복원을 확인했다. 전체 변환은 기존 Equals1e-9(액터cm·스케일 무차원). 비기본 풍량/크기/변환은 합성 검사 조건이며 하드웨어 수치/실측/새 추정 물성이 아니다.
+저장/냉각·공기/물리·실제 UI 최종 확인은 후속 검증에 기록한다. 전체/FPS 반복 없음. 근거(커밋 제외): Saved/Build_CrahDuplication.log·Build_CrahDuplication_Final.log, Saved/Logs/CrahDuplication_Tests.log, Saved/Automation/CrahDuplication/index.json.
+실행: Editor 빌드 뒤 UnrealEditor-Cmd에서 위4종 이름을 Automation RunTests의 +로 묶어 -unattended -NullRHI 실행.

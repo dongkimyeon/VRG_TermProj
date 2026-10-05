@@ -122,6 +122,7 @@ public:
 	bool BeginRackDuplication();
 	bool BeginSpineDuplication();
 	bool BeginCduDuplication(); // Entire native CDU selection; authored values only.
+	bool BeginCrahDuplication(); // Single native cooler; no automatic origin/bounds or live state.
 	void CancelRackAddition();
 	void UpdateRackAdditionAlongRay(const FVector& EyeCm, const FVector& Direction);
 	bool GetRackAdditionPreview(FTransform& Out, FVector& SizeM, int32 MemberIndex = 0) const;
@@ -265,6 +266,7 @@ private:
 	TArray<FLayoutRackMember> RackDuplicationMembers;
 	TArray<FLayoutSpineMember> SpineDuplicationMembers; // Authored values only, no source actor/model references.
 	TArray<FLayoutCduMember> CduDuplicationMembers; // Authored values, no actor/model references.
+	TOptional<FCrahLayoutSettings> CrahDuplicationSettings;
 	// Capture Ctrl at the D press event, before a short chord's release can reach frame-based actions.
 	bool bLayoutLeftControl = false;
 	bool bLayoutRightControl = false;
