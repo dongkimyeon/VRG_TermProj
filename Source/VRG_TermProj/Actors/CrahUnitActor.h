@@ -19,6 +19,14 @@ enum class ECrahUnitKind : uint8
 	Perimeter,
 };
 
+// Authored layout input only; zero flow retains the existing design-sharing policy.
+struct VRG_TERMPROJ_API FCrahLayoutSettings
+{
+ ECrahUnitKind Kind; FVector SizeM; double VolumeFlowM3s;
+ bool IsValid() const;
+ bool operator==(const FCrahLayoutSettings& Other) const;
+};
+
 // A CRAH / in-row cooler placed by hand (2026-09-27). The actor's forward (+X, the arrow) is the supply direction.
 // When the level has any of these, ADataCenterSimulationActor uses them instead of its automatic layout
 // (unless it runs the lumped ceiling coil). Rotate in 90 degree steps: the air grid is axis-aligned and the unit's
@@ -33,6 +41,16 @@ public:
 	ACrahUnitActor();
 
 	virtual void OnConstruction(const FTransform& Transform) override;
+ FCrahLayoutSettings CaptureLayoutSettings() const { return {Kind,SizeM,VolumeFlowM3s}; }
+ void ApplyLayoutSettings(const FCrahLayoutSettings& Settings);
+ UPROPERTY(VisibleAnywhere, Category = "CRAH|Layout") FString LayoutId;
+ UPROPERTY(VisibleAnywhere, Category = "CRAH|Layout") bool bRuntimeLayoutCrah = false;
+ // Preserve the automatic grid extent only while this converted box remains unchanged.
+ UPROPERTY(VisibleAnywhere, Category = "CRAH|Layout") bool bConvertedAutomaticCrah = false;
+ FTransform AutomaticLayoutTransform = FTransform::Identity;
+ FVector AutomaticLayoutSizeM = FVector::ZeroVector;
+ bool PreservesAutomaticAirBounds() const { return bConvertedAutomaticCrah
+  && GetActorTransform().Equals(AutomaticLayoutTransform,1e-9) && SizeM.Equals(AutomaticLayoutSizeM,1e-9); }
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "CRAH")
 	ECrahUnitKind Kind = ECrahUnitKind::InRow;

@@ -8,6 +8,7 @@
 #include "Actors/RackThermalActor.h"
 #include "Actors/SpineCabinetActor.h"
 #include "Actors/CoolingDistributionUnitActor.h"
+#include "Actors/CrahUnitActor.h"
 #include "DataCenterDebugController.generated.h"
 
 class ARackThermalActor;
@@ -141,6 +142,7 @@ public:
 	void ResetLayoutEditsForLoad();
 	void RefreshLayoutEquipmentReferences(bool bKeepSelection = false);
 	void NotifyLayoutRackRecreated(ARackThermalActor* Rack, ARackThermalActor* Previous = nullptr) { RebindLayoutRack(Rack, Previous); }
+ void NotifyLayoutCrahRecreated(ACrahUnitActor* Crah, ACrahUnitActor* Previous = nullptr);
 	void NotifyLayoutCduRecreated(ACoolingDistributionUnitActor* Cdu, ACoolingDistributionUnitActor* Previous = nullptr);
 	void NotifyLayoutSpineRecreated(ASpineCabinetActor* Spine, ASpineCabinetActor* Previous = nullptr);
 	int32 GetLayoutUndoCount() const { return LayoutUndo.Num(); }
@@ -201,6 +203,7 @@ private:
 		FString RackId;
 		FString SpineId;
 		FString CduId;
+		FString CrahId;
 	};
 	struct FLayoutRackMember
 	{

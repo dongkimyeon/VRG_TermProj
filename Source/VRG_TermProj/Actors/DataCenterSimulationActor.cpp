@@ -964,9 +964,14 @@ void ADataCenterSimulationActor::PlanCrahUnits()
 	{
 		PlanAutoCrahUnits();
 	}
+ FilterCrahPlacementsToGrid(AirField);
+}
+
+void ADataCenterSimulationActor::FilterCrahPlacementsToGrid(AAirFieldDebugActor* Field)
+{
 	// Units must sit inside the air grid, otherwise their faces are missing and they would carry no air.
-	const FUniformAirGrid& Grid = AirField->GetMutableSolver().GetGrid();
-	const FVector GridMinM = SimUnits::UnrealToMeters(AirField->GetActorLocation());
+	const FUniformAirGrid& Grid = Field->GetMutableSolver().GetGrid();
+	const FVector GridMinM = SimUnits::UnrealToMeters(Field->GetActorLocation());
 	const FVector GridMaxM = GridMinM + Grid.GetCellSizeM() * FVector(Grid.GetNumCellsX(), Grid.GetNumCellsY(), Grid.GetNumCellsZ());
 	const int32 Planned = CrahPlacements.Num();
 	CrahPlacements.RemoveAll([&](const FCrahPlacement& P)
@@ -1793,3 +1798,32 @@ static FAutoConsoleCommand GVrgEvalCompareCommand(
 		const bool bOk = CompareReports(Args[0], Args[1], Summary);
 		UE_LOG(LogTemp, Display, TEXT("[VrgEval] 비교 %s: %s"), bOk ? TEXT("성공") : TEXT("실패"), *Summary);
 	}));
+
+
+bool ADataCenterSimulationActor::CaptureAutomaticCrahLayout(TArray<FCrahLayoutRecord>& Out)
+{
+ Out.Reset();
+ if(!GetWorld() || CrahLayout==ECrahLayout::CeilingCoil) return false;
+ for(TActorIterator<ACrahUnitActor> It(GetWorld());It;++It) return true; // Already placed: no conversion.
+ AAirFieldDebugActor* Field=nullptr; ADataCenterRoomActor* CurrentRoom=nullptr;
+ for(TActorIterator<AAirFieldDebugActor> It(GetWorld());It;++It) { Field=*It; break; }
+ for(TActorIterator<ADataCenterRoomActor> It(GetWorld());It;++It) { CurrentRoom=*It; break; }
+ if(!Field) return false;
+ // The planner is shared with simulation/editor conversion. Restore every planning cache on return.
+ TGuardValue<TArray<TObjectPtr<ARackThermalActor>>> RackGuard(Racks,{});
+ TGuardValue<TArray<TObjectPtr<ASpineCabinetActor>>> SpineGuard(Spines,{});
+ TGuardValue<TArray<FCabinetRow>> RowGuard(CabinetRows,{});
+ TGuardValue<TArray<FColdAisle>> AisleGuard(ColdAisles,{});
+ TGuardValue<TArray<FCrahPlacement>> PlacementGuard(CrahPlacements,{});
+ TGuardValue<int32> UnpairedGuard(NumUnpairedRows,0), DroppedGuard(CrahUnitsDropped,0);
+ if(CurrentRoom) for(auto* R:CurrentRoom->GetRoutedRacks()) Racks.Add(R);
+ else for(TActorIterator<ARackThermalActor> It(GetWorld());It;++It) Racks.Add(*It);
+ for(TActorIterator<ASpineCabinetActor> It(GetWorld());It;++It) Spines.Add(*It);
+ GroupCabinetRows(); PlanAutoCrahUnits(); FilterCrahPlacementsToGrid(Field);
+ for(const auto& P:CrahPlacements) {
+  auto Settings=GetDefault<ACrahUnitActor>()->CaptureLayoutSettings();
+  Settings.Kind=P.bTopIntake?ECrahUnitKind::Perimeter:ECrahUnitKind::InRow; Settings.SizeM=P.SizeM; Settings.VolumeFlowM3s=P.FlowM3s;
+  Out.Add({FGuid::NewGuid().ToString(),NAME_None,FTransform(P.ForwardM.Rotation(),SimUnits::MetersToUnreal(P.BaseM)),Settings,true});
+ }
+ return true;
+}

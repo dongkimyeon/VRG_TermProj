@@ -537,7 +537,10 @@ void AAirFieldDebugActor::FitToRacks()
 	// Hand-placed CRAH units must be inside too, or their faces are missing and they carry no air.
 	for (TActorIterator<ACrahUnitActor> It(GetWorld()); It; ++It)
 	{
-		const FVector M = SimUnits::UnrealToMeters(It->GetActorLocation());
+		// Converting the virtual boxes alone must not change the physical domain/cell rasterisation.
+  // A new or moved/resized cooler still expands the grid through the existing policy.
+  if (It->PreservesAutomaticAirBounds()) continue;
+  const FVector M = SimUnits::UnrealToMeters(It->GetActorLocation());
 		const double Half = .5 * FMath::Max(It->SizeM.X, It->SizeM.Y);
 		BoundsM += FBox(M - FVector(Half, Half, 0), M + FVector(Half, Half, It->SizeM.Z));
 	}

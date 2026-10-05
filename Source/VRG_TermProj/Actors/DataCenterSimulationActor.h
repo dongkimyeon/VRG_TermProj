@@ -7,6 +7,7 @@
 #include "Simulation/Core/SimClock.h"
 #include "Simulation/Coupling/CouplingBridge.h"
 #include "Simulation/Evaluation/VrgEvaluation.h"
+#include "Interaction/VrgCrahLifecycle.h"
 #include "DataCenterSimulationActor.generated.h"
 
 class AAirFieldDebugActor;
@@ -233,6 +234,12 @@ public:
 
 	// True when the last rebuild used hand-placed ACrahUnitActor units.
 	bool IsUsingPlacedCrahs() const { return bUsingPlacedCrahs; }
+ // Read current automatic geometry without touching solver, mesh, clock or active planning caches.
+ bool CaptureAutomaticCrahLayout(TArray<FCrahLayoutRecord>& Out);
+ int32 GetActiveCrahUnitCount() const { return CrahUnits.Num(); }
+ double GetCrahTotalFlowM3s() const { return CrahUnitFlowM3s*CrahUnits.Num(); }
+ double GetCrahTotalUAWK() const { return CrahUnitUAWK*CrahUnits.Num(); }
+ double GetCrahTotalFanW() const { return CrahUnitFanW*CrahUnits.Num(); }
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Cooling|Coolant")
 	ECoolantRejection CoolantRejection = ECoolantRejection::CduHeatExchanger;
@@ -382,6 +389,7 @@ private:
 	bool bCrahFellBackToCoil = false;
 	// Places units from the rack rows (CrahLayout). Units that leave the air grid are dropped and counted.
 	void PlanCrahUnits();
+ void FilterCrahPlacementsToGrid(AAirFieldDebugActor* Field);
 	// Faces, airflow and coil of every placed unit (after the solid cells are marked and the air load known).
 	void BuildCrahUnits();
 

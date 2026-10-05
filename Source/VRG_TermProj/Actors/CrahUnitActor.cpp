@@ -36,3 +36,14 @@ void ACrahUnitActor::OnConstruction(const FTransform& Transform)
 	const double ArrowZCm = Kind == ECrahUnitKind::Perimeter ? SizeM.Z * 25.0 : SizeM.Z * 50.0;
 	SupplyArrow->SetRelativeLocation(FVector(SizeM.X * 50.0, 0.0, ArrowZCm));
 }
+
+
+bool FCrahLayoutSettings::IsValid() const
+{
+ return (Kind==ECrahUnitKind::InRow || Kind==ECrahUnitKind::Perimeter) && !SizeM.ContainsNaN()
+  && SizeM.X>0 && SizeM.Y>0 && SizeM.Z>0 && FMath::IsFinite(VolumeFlowM3s) && VolumeFlowM3s>=0;
+}
+bool FCrahLayoutSettings::operator==(const FCrahLayoutSettings& O) const
+{ return Kind==O.Kind && SizeM==O.SizeM && VolumeFlowM3s==O.VolumeFlowM3s; }
+void ACrahUnitActor::ApplyLayoutSettings(const FCrahLayoutSettings& S)
+{ Kind=S.Kind; SizeM=S.SizeM; VolumeFlowM3s=S.VolumeFlowM3s; }

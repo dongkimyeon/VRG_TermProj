@@ -2456,3 +2456,15 @@ void ADataCenterDebugController::DrawHelp() const
 			CpuHeatKnob.Value, GpuHeatKnob.Value, UtilizationKnob.Value * 100.0, PumpSpeedKnob.Value, RadiatorUAKnob.Value,
 			*Selection));
 }
+
+
+void ADataCenterDebugController::NotifyLayoutCrahRecreated(ACrahUnitActor* Crah, ACrahUnitActor* Previous)
+{
+ for(auto* Stack:{&LayoutUndo,&LayoutRedo}) for(auto& Command:*Stack) for(auto& M:Command.Members)
+  if(M.CrahId==Crah->LayoutId) M.Actor=Crah;
+ if(Previous) {
+  const TWeakObjectPtr<AActor> Old(Previous);
+  for(auto& A:LayoutSelection) if(A==Old) A=Crah;
+  if(HoveredPlaceable==Old) HoveredPlaceable=Crah;
+ }
+}
