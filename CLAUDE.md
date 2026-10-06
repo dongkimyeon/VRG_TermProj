@@ -3899,3 +3899,22 @@ Editor67.49s 성공, 첫 후속3종 중 기존 RoomSettingsPersistence/RoomSetti
 검증 결과는 빌드/실행 후 기록한다. 신규 높이 실제 픽셀/렌더/OS 포커스는 기존 도구 환경 실패를 반복하지 않고 Tools/방높이_핸들_확인_2026-10-06.md 직접 절차에 남긴다. 천장 판·벽/물리 확장·외부 열 교환/플레넘·전체 테스트·FPS는 제외했다.
 검증: Editor84.88s 성공. RoomHeightHandlePreview/RoomCornerPreview/RoomSettingsUiInput3종 무경고 성공(실패0/미실행0/종료0). 합성3.1m+63cm→3.75m, 43x37x15=23865셀 계획·XY 정확 불변, 실제 설정/격자/장비 변환·배치 시계0s/기록 변경0 확인. 평행/근평행/뒤 시선 거절·안정 시선 회복·비단위/비스듬한 시선 동일 스냅·저높이 포함/높이 축128 초과/비양수 거절과 숫자 창/카메라/XY/장비/패치/Esc 차단 확인. UI 좌표/기존 정확 값 기준이며 새 물리 오차 기준 없음. 확정/Undo/저장·재진입 물리는 다음 작은 커밋.
 근거(커밋 제외): Saved/Build_RoomHeightPreview.log, Saved/Logs/RoomHeightPreview_Tests.log, Saved/Automation/RoomHeightPreview/index.json. 실제 높이 마우스 픽셀/포커스/렌더는 미확인이다.
+## 2026-10-06 수동 방 높이 확정·기록·저장·냉각 통합
+
+기존 RoomCornerHistoryTest의 2 NVL72/1 CDU 합성 월드 fixture를 재사용해 RoomHeightHistoryPersistence를 추가했다. 새 물성·저장 스키마·수치 솔버 변경은 없다. 높이 확정 한 건의 공유 Undo/Redo, 현 장비 포함 재검증 실패 시 기록 유지, 외부 설정/장비 변화 뒤 확정 거절, 취소/거절/no-op의 Redo 유지와 새 확정의 Redo 초기화를 확인했다. 3.12m 숫자 설정에 변경 없는 클릭을 해도 스냅/기록되지 않는다.
+기존 v2 같은/새 월드 반복 Load는 높이/XY를 정확히 복원하고 2랙/1CDU를 유지하며 기록0/0·편집 종료를 확인했다. 편집/취소/거절/Undo는 정지0.02s의 온도·시계·열장부·격자/원점·배관을 유지한다. 성공 Load는 기존 재구축 정책대로 결합 장부를 초기화하고 정지 시계·옛 공기 배열/격자는 다음 진입까지 유지한다. 두 정책을 혼동하지 않는다. 외부 시뮬레이션 진입도 미확정을 취소한다.
+
+Editor Development43.38s 성공. RoomHeightHistoryPersistence/RoomCornerHistoryPersistence/RoomSettingsPersistence3종 무경고 성공(실패0/미실행0/종료0). 앞 입력3종과 합계 고유6종 무경고 성공, 성공한 검사 반복/전체 Automation 없음. 실제 실행: E:\UE_5.8 Editor Development, 위 세 경로를 Automation RunTests의 + 묶음으로 -unattended -NullRHI 실행. 측정값은 기존 기준을 유지했으며 새 허용치를 만들지 않았다.
+
+| 항목 | 측정 | 기준·정규화·단위 |
+|---|---|---|
+| 확정·저장/새 월드 높이 복원 | 차이0m, XY 정확 불변 | abs(복원 높이−4.0m), m; 기존 정확 값 비교 |
+| 다음 진입 격자 | 43×37×16=25456셀 | h0.25m, 요청 min(-5.5,-4.5)m/max(5.1,4.6)m/높이4m; 원점(-5.5,-4.5,0)m, 실제 max(5.25,4.75,4.0)m; 기존 외향ceil |
+| 편집/거절/취소/Undo 상태 | 변경0 | K / UE cm / s / J / 정수; 정지0.02s fixture의 정확 비교 |
+| 재진입 첫 IT 상대 변화 | 0 | abs(첫IT−같은 장비/초기조건 참조IT)/참조W, 무차원 <1e-9 |
+| 재진입 전역 열수지 | abs4.840e-14 | abs(입력J−유출J−축적J)/EnergyInJ(IT+CRAH 팬), 무차원 <1e-9 |
+| 압력 투영 뒤 발산 | 2.825e-08 | maxAbsDiv(1/s)/(maxAbsVelocity(m/s)/cellSize(m)), 무차원 <1e-5; 수렴 플래그 확인 |
+
+재진입t1.02s에서 기존 수력 수렴·덕트 거절 없음·양의 CRAH 코일 냉각·랙 흡기288.15~308.15K 타당성 기준도 확인했다. 짧은 균일 CPU/NullRHI 과도 검증이며 정상상태/시설 전체 정확도/GPU/옥트리/FPS 검증으로 확대하지 않는다. 기존 물리 부채와 방 범위의 벽 제외 정책은 유지한다.
+근거(커밋 제외): Saved/Build_RoomHeightHistory.log, Saved/Logs/RoomHeightHistory_Tests.log, Saved/Automation/RoomHeightHistory/index.json. 첫 입력 근거는 앞 절을 따른다. 빌드 중 소스 변경과 검사 재시도는 없었다.
+화면: XY 직접 정상은 사용자 보고다. 신규 높이 픽셀/렌더/실제 마우스·OS 포커스는 미확인이고, 기존 실패 환경 재시도 없이 Tools/방높이_핸들_확인_2026-10-06.md 절차를 남겼다. 천장 판·벽 확장·외부 열 교환·플레넘·전체/FPS는 제외했다. 미추적 L_Test 에셋은 수정/커밋하지 않았다.

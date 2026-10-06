@@ -118,4 +118,84 @@ bool FRoomCornerHistoryTest::RunTest(const FString& Parameters)
 	}
 	return true;
 }
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FRoomHeightHistoryTest, "VRG.Interaction.Layout.RoomHeightHistoryPersistence",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::CommandletContext | EAutomationTestFlags::EngineFilter)
+bool FRoomHeightHistoryTest::RunTest(const FString& Parameters)
+{
+	// Reuse the existing two NVL72 racks/CDU fixture and synthetic room; no new hardware/physics parameters.
+	FRoomCornerWorld F; auto* C=F.C; auto* Sim=F.Sim; FString Message; const FVector Eye(980,5,300), Side(-1,0,0);
+	F.Room->RebuildRoomNow(); Sim->EnterSimulationMode(); Sim->Tick(.021f);
+	const double ReferenceItW=Sim->GetSnapshot().TotalItHeatW; Sim->EnterLayoutMode();
+	const auto Warm=Sim->GetSnapshot(); const auto Temps=F.Air->GetMutableSolver().GetGrid().TemperatureK;
+	const auto Origin=F.Air->GetActorLocation(); const auto Grid=F.Air->GridParams; const auto Pose=F.Racks[0]->GetActorTransform();
+	const int32 Pipes=F.Room->GetMutableNetwork().GetNumPipes();
+	auto UnchangedLive=[&]() { const auto S=Sim->GetSnapshot(); return Temps==F.Air->GetMutableSolver().GetGrid().TemperatureK
+		&& F.Air->GetActorLocation()==Origin && F.Air->GridParams.NumCellsZ==Grid.NumCellsZ && F.Racks[0]->GetActorTransform().Equals(Pose,0)
+		&& S.SimTimeS==Warm.SimTimeS && S.EnergyInJ==Warm.EnergyInJ && S.EnergyOutJ==Warm.EnergyOutJ && S.EnergyStoredJ==Warm.EnergyStoredJ
+		&& F.Room->GetMutableNetwork().GetNumPipes()==Pipes; };
+	FRoomAirDomainSettings A; A.bManual=true; A.MinXYM=FVector2D(-5.5,-4.5); A.MaxXYM=FVector2D(5.1,4.6); A.CeilingHeightM=3.1;
+	TestTrue(TEXT("Existing manual API activates fixture height editor"),Sim->TrySetRoomAirDomain(A,Message) && C->SetRoomBoundsEditing(true));
+	C->BeginRoomHeightDrag(Eye,Side); C->UpdateRoomCornerDrag(Eye+FVector(0,0,88),Side);
+	FRoomAirDomainSettings B; bool bValid=false; C->GetRoomBoundsPreview(B,bValid);
+	TestTrue(TEXT("Confirmed height4m is one room record, XY/live simulation unchanged"),bValid && C->EndRoomCornerDrag(true)
+		&& B.CeilingHeightM==4 && B.MinXYM==A.MinXYM && B.MaxXYM==A.MaxXYM && Sim->GetRoomAirDomain()==B && C->GetLayoutUndoCount()==1 && UnchangedLive());
+	TestTrue(TEXT("Height Undo/Redo restores exact room via shared record"),C->TryUndoLayout() && Sim->GetRoomAirDomain()==A
+		&& C->TryRedoLayout() && Sim->GetRoomAirDomain()==B && UnchangedLive());
+	F.Racks[0]->SetActorLocation(Pose.GetLocation()+FVector(0,0,140));
+	TestFalse(TEXT("Undo cannot restore ceiling below current elevated equipment"),C->TryUndoLayout());
+	TestTrue(TEXT("Height restore refusal retains setting and record"),Sim->GetRoomAirDomain()==B && C->GetLayoutUndoCount()==1 && C->GetLayoutRedoCount()==0);
+	F.Racks[0]->SetActorTransform(Pose); C->TryUndoLayout();
+	C->BeginRoomHeightDrag(Eye,Side); C->UpdateRoomCornerDrag(Eye+FVector(0,0,88),Side); C->EndRoomCornerDrag(false);
+	C->BeginRoomHeightDrag(Eye,Side); C->UpdateRoomCornerDrag(Eye+FVector(0,0,-200),Side); C->EndRoomCornerDrag(true);
+	C->BeginRoomHeightDrag(Eye,Side); C->UpdateRoomCornerDrag(FVector(-20,5,1000),FVector(0,0,-1)); C->EndRoomCornerDrag(true);
+	C->BeginRoomHeightDrag(Eye,Side); C->EndRoomCornerDrag(true);
+	auto OffGrid=A; OffGrid.CeilingHeightM=3.12; Sim->TrySetRoomAirDomain(OffGrid,Message);
+	C->BeginRoomHeightDrag(Eye,Side); C->EndRoomCornerDrag(true);
+	TestTrue(TEXT("No-movement click preserves unsnapped numeric height and existing Redo"),Sim->GetRoomAirDomain()==OffGrid && C->GetLayoutUndoCount()==0 && C->GetLayoutRedoCount()==1);
+	Sim->TrySetRoomAirDomain(A,Message);
+	TestTrue(TEXT("Canceled/rejected/no-op heights retain original room, Redo and warm states"),C->GetLayoutUndoCount()==0 && C->GetLayoutRedoCount()==1 && UnchangedLive());
+	C->BeginRoomHeightDrag(Eye,Side); C->UpdateRoomCornerDrag(Eye+FVector(0,0,88),Side);
+	auto External=A; External.CeilingHeightM=3.2; Sim->TrySetRoomAirDomain(External,Message);
+	TestFalse(TEXT("External room change refuses stale height confirmation"),C->EndRoomCornerDrag(true));
+	TestTrue(TEXT("External height and both stacks retained"),Sim->GetRoomAirDomain()==External && C->GetLayoutUndoCount()==0 && C->GetLayoutRedoCount()==1);
+	Sim->TrySetRoomAirDomain(A,Message);
+	C->BeginRoomHeightDrag(Eye,Side); C->UpdateRoomCornerDrag(Eye+FVector(0,0,88),Side);
+	F.Racks[0]->SetActorLocation(Pose.GetLocation()+FVector(0,0,400));
+	TestFalse(TEXT("Commit revalidates equipment raised after valid preview"),C->EndRoomCornerDrag(true));
+	TestTrue(TEXT("Late obstruction cannot partially change room/history"),Sim->GetRoomAirDomain()==A && C->GetLayoutUndoCount()==0 && C->GetLayoutRedoCount()==1);
+	F.Racks[0]->SetActorTransform(Pose);
+	C->BeginRoomHeightDrag(Eye,Side); C->UpdateRoomCornerDrag(Eye+FVector(0,0,88),Side);
+	TestTrue(TEXT("New confirmed height alone clears Redo"),C->EndRoomCornerDrag(true) && C->GetLayoutUndoCount()==1 && C->GetLayoutRedoCount()==0 && UnchangedLive());
+	const FString File=TEXT("AutomationRoomHeightHistory"); TestTrue(TEXT("Existing v2 saves confirmed height"),VrgLayoutFile::Save(F.W,File,Message));
+	Sim->TrySetRoomAirDomain(External,Message);
+	TestTrue(TEXT("Repeated Load restores height/XY, clears records and cancels handles"),VrgLayoutFile::Load(F.W,File,Message) && VrgLayoutFile::Load(F.W,File,Message)
+		&& Sim->GetRoomAirDomain()==B && !C->IsRoomBoundsEditing() && C->GetLayoutUndoCount()==0 && C->GetLayoutRedoCount()==0);
+	const auto Loaded=Sim->GetSnapshot();
+	TestTrue(TEXT("Successful Load retains stopped clock/old air; existing rebuild clears coupling ledger"),Loaded.SimTimeS==Warm.SimTimeS && Loaded.EnergyInJ==0 && Loaded.EnergyOutJ==0
+		&& Temps==F.Air->GetMutableSolver().GetGrid().TemperatureK && F.Air->GetActorLocation()==Origin && F.Air->GridParams.NumCellsZ==Grid.NumCellsZ);
+	FRoomCornerWorld Fresh; const auto FreshOrigin=Fresh.Air->GetActorLocation(); const auto FreshGrid=Fresh.Air->GridParams;
+	TestTrue(TEXT("Fresh repeated Load restores exact height/XY without applying grid"),VrgLayoutFile::Load(Fresh.W,File,Message) && VrgLayoutFile::Load(Fresh.W,File,Message)
+		&& Fresh.Sim->GetRoomAirDomain()==B && Fresh.C->GetLayoutUndoCount()==0 && Fresh.C->GetLayoutRedoCount()==0
+		&& Fresh.Air->GetActorLocation()==FreshOrigin && Fresh.Air->GridParams.NumCellsZ==FreshGrid.NumCellsZ);
+	int32 RackCount=0,CduCount=0; for(TActorIterator<ARackThermalActor> It(Fresh.W);It;++It) ++RackCount;
+	for(TActorIterator<ACoolingDistributionUnitActor> It(Fresh.W);It;++It) ++CduCount;
+	TestTrue(TEXT("Fresh repeated height Load keeps two racks/one CDU"),RackCount==2 && CduCount==1);
+	Fresh.Sim->EnterSimulationMode(); Fresh.Sim->Tick(.021f); const auto First=Fresh.Sim->GetSnapshot();
+	TestTrue(TEXT("Next entry applies sameXY and16Z cells for4m height"),Fresh.Air->GetActorLocation()==FVector(-550,-450,0)
+		&& Fresh.Air->GridParams.NumCellsX==43 && Fresh.Air->GridParams.NumCellsY==37 && Fresh.Air->GridParams.NumCellsZ==16);
+	for(int32 I=0;I<25;++I) Fresh.Sim->Tick(.04f);
+	const auto S=Fresh.Sim->GetSnapshot(); const auto AS=Fresh.Air->GetMutableSolver().MakeSnapshot(S.SimTimeS);
+	const double ItRelative=FMath::Abs(First.TotalItHeatW-ReferenceItW)/ReferenceItW;
+	TestTrue(TEXT("Existing height IT/energy/pressure/hydraulic/duct/coil criteria"),First.SimTimeS==Fresh.Sim->FixedStepS && ItRelative<1e-9
+		&& FMath::Abs(S.NormalizedEnergyResidual)<1e-9 && S.bAirPressureConverged && AS.bPressureConverged && AS.NormalizedDivergence<1e-5
+		&& S.bHydraulicsConverged && !AS.bDuctsRejected && S.CrahCoilRemovedW>0);
+	for(auto* R:Fresh.Racks) for(double K:R->Input.SlotAirInletTempK) TestTrue(TEXT("Existing transient15..35C inlet safety"),K>288.15 && K<308.15);
+	AddInfo(FString::Printf(TEXT("Room height: saved height delta %.3e m, XY unchanged, grid43x37x16=25456cells; IT relative %.3e, global %.3e, normalized pressure %.3e at %.2fs; warm0.02s edit/rejection/Undo state unchanged, successful Load clears old bridge ledger."),
+		FMath::Abs(Fresh.Sim->GetRoomAirDomain().CeilingHeightM-B.CeilingHeightM),ItRelative,S.NormalizedEnergyResidual,AS.NormalizedDivergence,S.SimTimeS));
+	Fresh.Sim->EnterLayoutMode(); Fresh.C->SetRoomBoundsEditing(true); Fresh.C->BeginRoomHeightDrag(Eye,Side);
+	Fresh.C->UpdateRoomCornerDrag(Eye+FVector(0,0,50),Side); Fresh.Sim->EnterSimulationMode(); Fresh.C->RefreshInteractionInputMode();
+	TestTrue(TEXT("External simulation entry cancels unconfirmed height without record"),!Fresh.C->IsRoomBoundsEditing() && !Fresh.C->IsLayoutDragging()
+		&& Fresh.Sim->GetRoomAirDomain()==B && Fresh.C->GetLayoutUndoCount()==0);
+	return true;
+}
 #endif
