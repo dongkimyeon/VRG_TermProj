@@ -27,7 +27,7 @@ bool FLayoutCrahDuplicationTest::RunTest(const FString& Parameters)
   TestFalse(TEXT("CRAH duplication blocked"),C->BeginCrahDuplication());
   TestTrue(TEXT("Rejected input keeps actors/history"),Count()==N && C->GetLayoutUndoCount()==U && C->GetLayoutRedoCount()==R);
  };
- Refused(); Select(Rack); Refused(); Select(Source); Select(Other,true); Refused(); Select(Source); Select(Rack,true); Refused();
+ Refused(); Select(Rack); Refused(); Select(Source); Select(Rack,true); Refused();
  Select(Source); C->BeginLayoutDragAlongRay(Source->GetActorLocation()+FVector(0,0,500),Down); Refused(); C->EndLayoutDrag(false);
  C->BeginLayoutMarquee(FVector2D(0,0),false); Refused(); C->EndLayoutMarquee(false);
  C->BeginCrahAddition(); Refused(); C->CancelRackAddition(); Select(Source);

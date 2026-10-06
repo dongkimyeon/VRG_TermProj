@@ -122,11 +122,11 @@ public:
 	bool BeginRackDuplication();
 	bool BeginSpineDuplication();
 	bool BeginCduDuplication(); // Entire native CDU selection; authored values only.
-	bool BeginCrahDuplication(); // Single native cooler; no automatic origin/bounds or live state.
+	bool BeginCrahDuplication(); // Entire native cooler selection; no automatic origin/bounds or live state.
 	void CancelRackAddition();
 	void UpdateRackAdditionAlongRay(const FVector& EyeCm, const FVector& Direction);
 	bool GetRackAdditionPreview(FTransform& Out, FVector& SizeM, int32 MemberIndex = 0) const;
-	int32 GetRackAdditionPreviewCount() const { return bAddingRack ? FMath::Max(1, FMath::Max(CduDuplicationMembers.Num(), FMath::Max(RackDuplicationMembers.Num(), SpineDuplicationMembers.Num()))) : 0; }
+	int32 GetRackAdditionPreviewCount() const { return bAddingRack ? FMath::Max(1, FMath::Max(CrahDuplicationMembers.Num(), FMath::Max(CduDuplicationMembers.Num(), FMath::Max(RackDuplicationMembers.Num(), SpineDuplicationMembers.Num())))) : 0; }
 	bool TryRotateRackAddition();
 	bool IsRackAdditionBlocked() const;
 	ARackThermalActor* ConfirmRackAddition();
@@ -266,7 +266,7 @@ private:
 	TArray<FLayoutRackMember> RackDuplicationMembers;
 	TArray<FLayoutSpineMember> SpineDuplicationMembers; // Authored values only, no source actor/model references.
 	TArray<FLayoutCduMember> CduDuplicationMembers; // Authored values, no actor/model references.
-	TOptional<FCrahLayoutSettings> CrahDuplicationSettings;
+	TArray<FCrahLayoutRecord> CrahDuplicationMembers; // Authored settings/transforms only; fresh runtime provenance.
 	// Capture Ctrl at the D press event, before a short chord's release can reach frame-based actions.
 	bool bLayoutLeftControl = false;
 	bool bLayoutRightControl = false;

@@ -675,7 +675,7 @@ void ADataCenterDebugController::BeginRackAddition()
 	RackDuplicationMembers.Reset();
 	SpineDuplicationMembers.Reset();
 	CduDuplicationMembers.Reset();
-	CrahDuplicationSettings.Reset();
+	CrahDuplicationMembers.Reset();
 	bAddingSpine = false;
 	bAddingCdu = false;
  bAddingCrah = false;
@@ -736,7 +736,7 @@ bool ADataCenterDebugController::BeginRackDuplication()
 void ADataCenterDebugController::OnDuplicateLayoutRack()
 {
 	if (!BeginRackDuplication() && !BeginSpineDuplication() && !BeginCduDuplication() && !BeginCrahDuplication())
-		UE_LOG(LogTemp, Display, TEXT("[VrgLayout] 복제 거절: 랙 선택 전체 또는 네이티브 스파인 선택 전체 또는 네이티브 CDU 선택 전체 또는 단일 네이티브 CRAH와 배치 대기 상태가 필요합니다."));
+		UE_LOG(LogTemp, Display, TEXT("[VrgLayout] 복제 거절: 랙 선택 전체 또는 네이티브 스파인 선택 전체 또는 네이티브 CDU 선택 전체 또는 네이티브 CRAH 선택 전체와 배치 대기 상태가 필요합니다."));
 	LogLayoutInputState(TEXT("Ctrl+D"));
 }
 
@@ -794,14 +794,21 @@ bool ADataCenterDebugController::BeginCrahDuplication()
  if (!World || !World->IsGameWorld() || !IsLayoutMode() || !IsCameraInputAvailable()
   || bAddingRack || IsLayoutDragging() || bMarqueeActive || Grabbed.IsValid() || IsInputKeyDown(EKeys::RightMouseButton)) return false;
  const auto Selected = GetSelectedLayoutActors();
- if (Selected.Num() != 1) return false;
- const auto* Crah = Cast<ACrahUnitActor>(Selected[0]);
- if (!IsValid(Crah) || Crah->GetWorld() != World || Crah->GetClass() != ACrahUnitActor::StaticClass()) return false;
- const auto Settings = Crah->CaptureLayoutSettings();
- if (!Settings.IsValid()) return false;
+ if (Selected.IsEmpty()) return false;
+ TArray<FCrahLayoutRecord> Members;
+ for (auto* Actor : Selected)
+ {
+  const auto* Crah = Cast<ACrahUnitActor>(Actor);
+  if (!IsValid(Crah) || Crah->GetWorld() != World || Crah->GetClass() != ACrahUnitActor::StaticClass()) return false;
+  const auto Settings = Crah->CaptureLayoutSettings();
+  if (!Settings.IsValid()) return false;
+  FCrahLayoutRecord Member;
+  Member.Transform = Crah->GetActorTransform(); Member.Settings = Settings;
+  Members.Add(Member); // No source identity, automatic provenance/bounds, actor reference or live state.
+ }
  RackDuplicationMembers.Reset(); SpineDuplicationMembers.Reset(); CduDuplicationMembers.Reset();
- CrahDuplicationSettings = Settings; // Only authored inputs. A duplicate never inherits automatic contact/boundary exemptions.
- RackAdditionTransform = Crah->GetActorTransform();
+ RackAdditionTransform = Members[0].Transform;
+ CrahDuplicationMembers = MoveTemp(Members);
  bAddingRack = true; bAddingCrah = true; bAddingSpine = false; bAddingCdu = false; bRackAdditionHasFloor = false;
  UpdateRackAdditionFromCursor();
  return true;
@@ -850,7 +857,7 @@ void ADataCenterDebugController::CancelRackAddition()
 	RackDuplicationMembers.Reset();
 	SpineDuplicationMembers.Reset();
 	CduDuplicationMembers.Reset();
- CrahDuplicationSettings.Reset();
+ CrahDuplicationMembers.Reset();
 }
 
 void ADataCenterDebugController::UpdateRackAdditionAlongRay(const FVector& EyeCm, const FVector& Direction)
@@ -858,7 +865,7 @@ void ADataCenterDebugController::UpdateRackAdditionAlongRay(const FVector& EyeCm
 	if (!bAddingRack) return;
 	FVector FloorCm;
 	bRackAdditionHasFloor = IsLayoutMode() && IsCameraInputAvailable()
-		&& FloorPointSnapped(EyeCm, Direction, (!RackDuplicationMembers.IsEmpty() || !SpineDuplicationMembers.IsEmpty() || !CduDuplicationMembers.IsEmpty() || CrahDuplicationSettings.IsSet()) ? RackAdditionTransform.GetLocation().Z : 0.0, PlaceSnapM, FloorCm);
+		&& FloorPointSnapped(EyeCm, Direction, (!RackDuplicationMembers.IsEmpty() || !SpineDuplicationMembers.IsEmpty() || !CduDuplicationMembers.IsEmpty() || !CrahDuplicationMembers.IsEmpty()) ? RackAdditionTransform.GetLocation().Z : 0.0, PlaceSnapM, FloorCm);
 	if (bRackAdditionHasFloor) RackAdditionTransform.SetLocation(FloorCm);
 }
 
@@ -893,7 +900,7 @@ void ADataCenterDebugController::LogLayoutInputState(const TCHAR* Context) const
 	FVector EyeCm, Direction, FloorCm;
 	const bool bRay = DeprojectMousePositionToWorld(EyeCm, Direction);
 	const bool bFloor = bRay && FloorPointSnapped(EyeCm, Direction,
-		(!RackDuplicationMembers.IsEmpty() || !SpineDuplicationMembers.IsEmpty() || !CduDuplicationMembers.IsEmpty() || CrahDuplicationSettings.IsSet()) ? RackAdditionTransform.GetLocation().Z : 0.0, PlaceSnapM, FloorCm);
+		(!RackDuplicationMembers.IsEmpty() || !SpineDuplicationMembers.IsEmpty() || !CduDuplicationMembers.IsEmpty() || !CrahDuplicationMembers.IsEmpty()) ? RackAdditionTransform.GetLocation().Z : 0.0, PlaceSnapM, FloorCm);
 	FTransform Proposed; FVector SizeM;
 	const bool bPreview = GetRackAdditionPreview(Proposed, SizeM);
 	// Opt-in, event-only diagnostics. Observing a ray does not update placement or weaken any guard.
@@ -917,7 +924,15 @@ bool ADataCenterDebugController::GetRackAdditionPreview(FTransform& Out, FVector
 		|| MemberIndex < 0 || MemberIndex >= GetRackAdditionPreviewCount()) return false;
 	Out = RackAdditionTransform;
 	// Reuse the authored GJ geometry; no new equipment dimensions or physical defaults.
-	if (bAddingCrah) SizeM=CrahDuplicationSettings.IsSet() ? CrahDuplicationSettings->SizeM : GetDefault<ACrahUnitActor>()->SizeM;
+ if (bAddingCrah)
+ {
+  SizeM = !CrahDuplicationMembers.IsEmpty() ? CrahDuplicationMembers[MemberIndex].Settings.SizeM : GetDefault<ACrahUnitActor>()->SizeM;
+  if (CrahDuplicationMembers.Num() > 1)
+  {
+   Out = CrahDuplicationMembers[MemberIndex].Transform;
+   Out.AddToTranslation(RackAdditionTransform.GetLocation() - CrahDuplicationMembers[0].Transform.GetLocation());
+  }
+ }
  else if (bAddingCdu)
  {
   SizeM = !CduDuplicationMembers.IsEmpty() ? CduDuplicationMembers[MemberIndex].Settings.SizeM : GetDefault<ACoolingDistributionUnitActor>()->SizeM;
@@ -961,7 +976,7 @@ bool ADataCenterDebugController::IsRackAdditionBlocked() const
 	if (GetRackAdditionPreviewCount() == 0) return true;
 	TArray<FLayoutFootprint> Footprints;
  TArray<FCrahLayoutRecord> Automatic;
- if(bAddingCrah && !CrahDuplicationSettings.IsSet()) {
+ if(bAddingCrah && CrahDuplicationMembers.IsEmpty()) {
   auto* Sim=FindSimActor();
   if(!Sim || !Sim->CaptureAutomaticCrahLayout(Automatic)) return true;
  }
@@ -1055,18 +1070,22 @@ ACrahUnitActor* ADataCenterDebugController::ConfirmCrahAddition()
  FTransform Proposed; FVector SizeM;
  if(!bAddingCrah || !GetWorld() || !GetWorld()->IsGameWorld()
   || !GetRackAdditionPreview(Proposed,SizeM) || IsRackAdditionBlocked()) return nullptr;
- if(CrahDuplicationSettings.IsSet()) {
+ if(!CrahDuplicationMembers.IsEmpty()) {
   FLayoutTransformCommand Duplicate;
-  FCrahLayoutRecord R;
-  R.Id=FGuid::NewGuid().ToString();
-  R.Name=MakeUniqueObjectName(GetWorld()->PersistentLevel,ACrahUnitActor::StaticClass(),FName(*(TEXT("DuplicatedCrah_")+R.Id)));
-  R.Transform=Proposed; R.Settings=CrahDuplicationSettings.GetValue();
-  // Defaults describe a fresh runtime unit, not the source's automatic origin or original grid bounds.
-  Duplicate.Crahs.Add({R,{}});
+  for(int32 I=0; I<GetRackAdditionPreviewCount(); ++I) {
+   GetRackAdditionPreview(Proposed,SizeM,I);
+   FCrahLayoutRecord R;
+   R.Id=FGuid::NewGuid().ToString();
+   R.Name=MakeUniqueObjectName(GetWorld()->PersistentLevel,ACrahUnitActor::StaticClass(),FName(*(TEXT("DuplicatedCrah_")+R.Id)));
+   R.Transform=Proposed; R.Settings=CrahDuplicationMembers[I].Settings;
+   // Defaults describe a fresh runtime unit, not the source's automatic origin or original grid bounds.
+   Duplicate.Crahs.Add({R,{}});
+  }
   if(!RestoreCrahPresence(Duplicate,true)) return nullptr;
   PushLayoutCommand(Duplicate); CancelRackAddition();
-  auto* Crah=VrgCrahLifecycle::Find(GetWorld(),R.Id); LayoutSelection.Add(Crah); HoveredPlaceable=Crah;
-  UE_LOG(LogTemp,Display,TEXT("[VrgLayout] CRAH 복제 확정: %s %s yaw %.0f deg"),*Crah->GetName(),
+  for(const auto& Member:Duplicate.Crahs) LayoutSelection.Add(VrgCrahLifecycle::Find(GetWorld(),Member.Record.Id));
+  auto* Crah=VrgCrahLifecycle::Find(GetWorld(),Duplicate.Crahs[0].Record.Id); HoveredPlaceable=Crah;
+  UE_LOG(LogTemp,Display,TEXT("[VrgLayout] CRAH 복제 확정: %d대 | 앵커 %s %s yaw %.0f deg"),Duplicate.Crahs.Num(),*Crah->GetName(),
    *Crah->GetActorLocation().ToCompactString(),Crah->GetActorRotation().Yaw);
   return Crah;
  }
@@ -2647,7 +2666,7 @@ void ADataCenterDebugController::DrawHelp() const
 
 	GEngine->AddOnScreenDebugMessage(BaseKey, 0.0f, FColor(180, 220, 255),
 		IsLayoutMode()
-		? TEXT("[배치 키] Shift+클릭 추가/제거 | 빈 곳 드래그 사각형 선택·Shift 추가 | 장비 드래그 그룹 이동/빨강 거절/Esc 취소 | 단일 랙 줄 붙이기/Alt 해제 | Ctrl+D 랙/스파인/CDU 선택 전체·CRAH 단일 복제 | Ctrl+Z/Y 배치 실행 취소/다시 실행 | 추가/복제: 클릭 확정/R 회전/Esc 취소 | R 선택 90도 회전 | Delete 랙/스파인/CDU/CRAH 선택 전체 삭제 | F 선택/없으면 전체 | 우클릭+마우스/WASD/QE 비행·휠 속도 | 휠 전후 | G/T 단일만 C 컨테인먼트 Enter 시뮬레이션 H 도움말")
+		? TEXT("[배치 키] Shift+클릭 추가/제거 | 빈 곳 드래그 사각형 선택·Shift 추가 | 장비 드래그 그룹 이동/빨강 거절/Esc 취소 | 단일 랙 줄 붙이기/Alt 해제 | Ctrl+D 랙/스파인/CDU/CRAH 선택 전체 복제 | Ctrl+Z/Y 배치 실행 취소/다시 실행 | 추가/복제: 클릭 확정/R 회전/Esc 취소 | R 선택 90도 회전 | Delete 랙/스파인/CDU/CRAH 선택 전체 삭제 | F 선택/없으면 전체 | 우클릭+마우스/WASD/QE 비행·휠 속도 | 휠 전후 | G/T 단일만 C 컨테인먼트 Enter 시뮬레이션 H 도움말")
 		: TEXT("[디버그 키] Enter 배치 모드 | 1/2 CPU 발열  3/4 GPU 발열  5/6 펌프 회전수  7/8 라디에이터 UA(랙별 모드)  9/0 부하율  E 바라보는 유닛 뽑기/꽂기  R 리셋  H 도움말"));
 
 	const ARackThermalActor* Rack = TargetRack.Get();

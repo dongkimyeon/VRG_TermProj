@@ -3606,3 +3606,13 @@ L_Test 실제 UI: 드라이버 안내의 아니오 버튼 접근성 클릭은 ge
 미검증 UI: 기존/전환/런타임 그룹 삭제·전체 Undo/Redo·이전 이동/R·복원 충돌·차단·마지막 자동 복귀·저장/새 실행 Load. 자동화 성공과 구분하며 직접 절차 Tools/배치CRAH다중삭제_확인_2026-10-06.md.
 근거(커밋 제외): Saved/Logs/CrahBatchDeletion_UI.log, Saved/CrahBatchDeletion_{Driver,Start,Added,Selected}.png. Selected 파일은 선택 실패 관찰용이며 선택 성공 증거가 아니다.
 다중 CRAH 복제·벽면 추가·물리 모델 확장은 후속이다.
+
+## 2026-10-06 다중 CRAH 복제 입력·Undo/Redo
+
+사용자가 다중 CRAH 삭제 직접 확인 정상으로 보고했다. 해당 직접 절차의 확인이며 도구 실패 원인 확인·로그/캡처/FPS 측정으로 확대하지 않는다.
+Ctrl+D를 네이티브 CRAH 선택 전체로 확장했다. 기존 배치/자동 전환/런타임 원본을 지원하고 미선택·종류 혼합·편집/패치/시뮬레이션 차단을 유지한다. 각 종류/SizeM/VolumeFlowM3s·전체 변환만 값으로 미리보기하며 앵커 기준5cm 평행 이동으로 상대 위치/높이/방향/스케일을 유지한다. 그룹 미리보기 R은 차단하고 단일 R90°는 유지한다. 총1cm·빨강 거절·Esc/패치/모드 전체 취소는 공유 경로다.
+클릭 성공 때만 전체 새 ID/이름의 런타임 CRAH를 생성하고 하나의 Undo/Redo로 기록한다. 자동 전환 출처/원래 자동 경계·접촉 예외를 계승하지 않는다. lifecycle의 비전환 장비 기준 변환/크기는 새 장비 자신의 값이며 원본의 자동 경계가 아니다. 온도/적분/시계/장비 참조는 복사하지 않는다. 공유 presence/RemoveBatch/rebuild/history를 재사용해 중간 생성/제거/복원 실패는 전체 원복하고 상태/기록을 유지한다. 새 물성/기본값/솔버/레벨 에셋 변경 없음.
+
+Editor129.56s 성공(E:/UE_5.8; 원 작성자 경로 변경 없음). 신규 두 검사 파일 실제 컴파일/등록 확인. CrahBatchDuplicationUndoRedo/CrahDuplicationUndoRedo/CrahBatchDeletionUndoRedo/CrahAdditionUndoRedo/CduBatchDuplicationUndoRedo **5건 무경고 성공, 실패0/미실행0/진행0/종료0**. 새 검사는 Ctrl+D/차단·두 값 미리보기·비기본 종류/치수/풍량/높이/스케일·원본 불변/설정 독립성/출처 분리·두 번째 충돌·한 기록·중간 생성/제거/복원 실패 전체 원복/선택·삭제 의도·스택 유지·그룹 R/취소를 확인했다. 단일 검사에서 오래된 다중 선택 거절 기대만 제거했으며 새 검사에서 혼합 거절과 그룹 지원을 검사한다. 합성 입력/변환은 코드 주석에 명시했고 하드웨어 실측/새 추정 물성으로 쓰지 않는다. 전체 변환 Equals1e-9는 기존 액터cm/스케일 무차원 기준이다.
+실행: L_Test 배치에서 CRAH 여러 대 선택→Ctrl+D→빈 목적지 클릭→Ctrl+Z/Y. Automation은 위5종을 RunTests의 +로 묶어 -unattended -NullRHI 실행. 저장/냉각·물리 최종 검증은 후속 절에 기록한다. 전체 테스트/FPS 반복 없음.
+근거(커밋 제외): Saved/Build_CrahBatchDuplication.log, Saved/Logs/CrahBatchDuplication_Tests.log, Saved/Automation/CrahBatchDuplication/index.json.
