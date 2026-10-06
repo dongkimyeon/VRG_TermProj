@@ -3740,3 +3740,21 @@ Undo21/Redo1가 남은 최종 편집 월드에서 중간 파일을 두 번 Load�
 실행: E:\UE_5.8 Editor Win64 Development, Automation RunTests VRG.Interaction.Layout.RoomAirDomainFoundation -unattended -NullRHI. 로컬 로그/리포트(커밋 제외): Saved/Build_RoomDomain*.log, Saved/Logs/RoomDomain_FoundationFinal_Tests.log, Saved/Automation/RoomDomain_FoundationFinal/index.json. 냉각 통합 검증의 정량 결과는 후속 절/커밋에 기록한다.
 
 현재 배치 저장 v1/v2는 방 설정을 기록하지 않는다. Load는 현 월드 방 설정을 유지하며 새 실행에서 별도 설정이 없으면 자동 맞춤이다. 방 Undo/저장·UI/핸들·벽/천장 판·외부 열 교환/플레넘은 후속. 전체 테스트/화면/FPS는 수행하지 않았다. 기존 장비 고체/덕트가 수평 방향·원래 치수를 쓰는 물리 모델 제한은 유지하며 전체 변환의 포함 검사를 새 기울기/스케일 유동 모델 구현으로 확대하지 않는다.
+## 2026-10-06 수동 방·공기/냉각 통합 검증
+
+RoomAirDomainCoupling은 GB200 NVL72 두 마주 보는 줄·CDU 하나의 같은 설정/초기조건을 사용한다. 자동 인로우4대/벽면2대 각각에 대해 기존 자동 방 → 수동 방의 자동 CRAH → 수동 방의 실제 CRAH를 t1.02s까지 검사했다. 도메인 편집은 체적/초기 격자 샘플을 바꾸므로 과도 코일 duty/온도를 자동 방과 강제로 같게 하지 않는다. 기존 IT·자동 용량/풍량·덕트·수력·냉각수/전역 열수지·타당성 기준을 만족하는지 검사한다.
+
+| 검사 | 측정 최대/범위 | 기존 기준·정규화/단위 |
+|---|---:|---|
+| 초기 IT 상대 변화 | 0 | abs(수동/실제 CRAH 실행 첫IT−같은 초기조건의 자동 방 첫IT)/자동 첫IT W; 무차원 <1e-9 |
+| 풍량/UA/팬 배분 상대 차 | 0 | 기존 설계 풍량m³/s·UA W/K·팬 전기W 각각 기대값 기준; 무차원 최대 <1e-12 |
+| 장비·CRAH 덕트 풍량 잔차 | 2.487e-15 | 개별 abs(공기−덕트 질량유량)/공기kg/s, 전체 abs(덕트−랙 유량/ρ−CRAH 풍량)/기대 덕트m³/s 최대; 무차원 <1e-9 |
+| 냉각수 전달 | 1.072e-14 | abs(랙 냉각수 제거W−외부 방출W)/방출W, 각 줄 abs(dutyW−Σmdot·cp·ΔT)/dutyW 최대; 무차원 <1e-12 |
+| 전역 열수지 | 5.389e-14 | abs(입력J−유출J−축적J)/EnergyInJ(IT+CRAH 팬); 무차원 <1e-9 |
+| 수력 Newton / 투영 뒤 발산 | 7.348e-14 / 4.411e-08 | 기존 ReferenceFlowM3s·ReferencePressurePa 정규화 목표1e-10 / maxAbsDiv(1/s)/(maxAbsVelocity(m/s)/cellSize(m)); 무차원 발산 <1e-5, 수렴 플래그 확인 |
+| 흡기 / 코일 duty | 295.288579480~297.147759413 / 12137.554870~12736.516604 | K / W; 기존 288.15~308.15K, 양의 코일 냉각·공기 냉각 장부 일치 |
+
+자동 방6720셀, 수동 방20683셀에서 두 랙의 고체 셀/실제 덕트 유량·CRAH4 또는2대 모두 활성·팬/코일 연결·양의 랙 공기/냉각수 유량·회수>공급≥설비수 공급·펌프/IT<5%도 확인했다. 새로운 물성/시설 치수/허용치를 정의하지 않았다. 합성 방 좌표 외 모든 설정은 기존 액터/계획/물리 테스트 정책을 재사용했다. 기존 고정 CRAH 냉수 공급·수평/원래 치수 고체 모델·CDU 체적 지연/펌프 손실 열 분배 부채는 유지한다.
+
+검증: 신규 RoomAirDomainCoupling과 기존 CrahAdditionCoupling/CrahPersistenceCoupling/PerimeterCrahAdditionPersistenceCoupling4종 무경고 성공. 같은 최초 실행의 Foundation1종은 앞 절의 테스트 준비 실패였고 수정 후 해당1종만 재실행 무경고 성공(종료0). **신규2+기존3=고유 영향5종 최종 성공**, 성공한4종/전체 테스트 반복 없음. 시작 순서와 자원 경계/따뜻한 거절은 최종 Foundation에서 보강했다. 수동 방 UI 입력·L_Test 화면·GPU/옥트리 운전·장시간 정상상태·FPS·시설 전체 정확도는 이번 검증에 포함하지 않는다.
+실행: E:\UE_5.8 Editor Win64 Development 성공 뒤 RunTests에 위5종을 +로 묶어 -unattended -NullRHI; 마지막은 Foundation만. 로컬 근거(커밋 제외): Saved/Build_RoomDomain{_Final,_Boundary,_Fixture}.log, Saved/Logs/RoomDomain_Tests.log, Saved/Automation/RoomDomain/index.json(최초4성공/1실패), Saved/Logs/RoomDomain_FoundationFinal_Tests.log, Saved/Automation/RoomDomain_FoundationFinal/index.json(최종1성공/0실패).
