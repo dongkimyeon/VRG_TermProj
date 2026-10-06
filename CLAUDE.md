@@ -4096,3 +4096,22 @@ t1.02s 균일 CPU/NullRHI의 짧은 과도·기하 검증이며 정상상태/시
 기존 전체 목록 후보 검증·주황/빨강 요청/계산 표시·공유 Undo/Redo·v2·입력/취소/stale 보호를 재사용한다. 미리보기 동안 실제 목록/장비/공기 배열/시계는 유지하고 유효 release 때 인덱스 하나만 교체한다. 교점 불능은 마지막 미리보기를 유지하되 stale 확정을 막는다. 새 실제 화면은 Tools/부분천장_전체이동_확인_2026-10-06.md 직접 절차로 남긴다. 빌드/검사 결과는 실행 뒤 기록한다. 다중 편집/판 회전/구멍·물리 확장/전체/FPS 없음.
 입력 검증: Editor Development99.93s 성공(기존 FloorCm/저장 Name shadow 컴파일 경고 유지). RoomCeilingMovePreview + RoomCeilingCornerPreview + RoomCeilingHeightPreview3종 무경고 성공, 실패0/미실행0/종료0. 몸체 press/클릭/no-op/빈 곳 해제와 핸들 우선(실패 ray도 fallback 금지), 최소XY5cm·잡기 오프셋·요청 크기/높이 보존·요청/계산 표시·교점/방 밖 거절·입력/취소/외부 목록 보호·미리보기 실제 상태 불변을 확인했다. 신규 실제 픽셀 우선순위/마우스/OS 포커스는 직접 절차 미확인이다. 확정/저장/냉각 통합은 다음 작은 커밋이다.
 근거(커밋 제외): Saved/Build_CeilingMovePreview.log, Saved/Logs/CeilingMovePreview_Tests.log, Saved/Automation/CeilingMovePreview/index.json. E:\UE_5.8 Editor Development 뒤 위3종 + 묶음 Automation RunTests -unattended -NullRHI. 빌드 중 소스 변경·성공 검사 반복·전체/FPS·기존 도구 재시도 없음.
+
+## 2026-10-06 부분 천장 전체 이동·기록·저장·냉각 통합
+
+기존 두 NVL72/한 CDU 합성 월드·저장 fixture를 재사용한 RoomCeilingMoveHistoryPersistence를 추가했다. 중복 두 판 중 선택 인덱스만 이동하며 요청 크기/높이와 다른 판은 유지한다. 확정 한 기록·전체 목록 Undo/Redo, no-op/취소/거절/교점 실패의 Redo 유지·유효 확정 Redo 초기화, 확정 직전 목적지 장비 충돌/외부 방 변화·복원 충돌 재검증을 확인했다. 예열1.02s 편집/실패는 실제 온도/시계/열장부/마스크/원점/배관과 기록을 유지한다. 실패 Load는 pending 이동도 유지하고 성공 Load는 기존 경로대로 미확정/선택/기록을 초기화한다. 성공 Load의 기존 결합 장부 초기화는 실패 상태 불변과 구분한다.
+
+Editor Development61.28s 성공(기존 저장 Name shadow 경고 유지). 신규 RoomCeilingMoveHistoryPersistence + RoomCeilingCornerHistoryPersistence + RoomCeilingHeightHistoryPersistence3종 무경고 성공, 실패0/미실행0/종료0. 앞 입력3종 포함 이번 고유 영향6종 모두 무경고 성공이다. 제품 추가 수정/성공 검사 반복·전체 테스트 없이 직접 영향 경로만 실행했다.
+
+| 항목 | 측정 | 기존 기준·정규화·단위 |
+|---|---|---|
+| 요청 이동/크기·높이 복원 | 선택 최소(-5.13,3.13)→(-4.25,2.9)m, 크기(0.52,0.49)m·높이2.63m 유지 | 최소XY5cm 스냅/초기 오프셋; 기존 합성 좌표1e-12m 비교, Undo/Redo/같은·새 월드 반복 Load 전체 목록 정확 비교 |
+| 다음 진입 고체 | 중복 합집합9→18셀,43×37×13=20683셀 | h0.25m. 이동 요청XY[-4.25,-3.73]×[2.9,3.39]m → 실제XY[-4.25,-3.5]×[2.75,3.5]m·Z[2.5,2.75]m의9셀(X5..7/Y29..31/Z10). 다른 판은 원래X1..3/Y30..32/Z10의9셀 유지. 요청 크기 같아도 정렬에 따라 계산 셀 수는 달라질 수 있음 |
+| 편집·취소·거절 상태 | 변경0 | 예열1.02s의 K/s/J/원점UE cm·배관/기록 정수 정확 비교 |
+| 첫 IT 상대 변화 | 같은·새 월드 최대0 | abs(복원 첫IT−동일 장비/초기조건 참조IT)/참조W, 무차원 <1e-9 |
+| 전역 열수지 | 같은·새 월드 최대abs8.364e-14 | abs(입력J−유출J−축적J)/EnergyInJ(IT+CRAH 팬), 무차원 <1e-9 |
+| 압력 투영 뒤 발산 | 같은·새 월드 최대3.463e-08 | maxAbsDiv(1/s)/(maxAbsVelocity(m/s)/h(m)), 무차원 <1e-5; 수렴 플래그 확인 |
+| 냉각·타당성 | 수력 수렴·덕트 거절 없음·양의 CRAH 코일 제거W·흡기288.15~308.15K 내부 | 기존 수력 목표·15~35°C 과도 기준; 새 물성/물리 허용치 없음 |
+
+t1.02s 균일 CPU/NullRHI의 짧은 과도·기하 검증이며 정상상태/시설 정확도/GPU/옥트리/FPS로 확대하지 않는다. 저장 스키마/물성/솔버/단열·기존 부채/레벨 에셋 변경 없음. 높이 직접 정상 사용자 보고와 신규 몸체 이동의 실제 픽셀·마우스/OS 포커스 미확인을 구분한다. 기존 실패 화면 도구는 재시도하지 않고 Tools/부분천장_전체이동_확인_2026-10-06.md에 상세 절차를 남겼다. 다중 편집·판 회전·배기 구멍 및 별도 유출 경계/물리 확장은 후속이다.
+근거(커밋 제외): Saved/Build_CeilingMoveCoupling.log, Saved/Logs/CeilingMoveCoupling_Tests.log, Saved/Automation/CeilingMoveCoupling/index.json. E:\UE_5.8 Editor Development 뒤 위3종 + 묶음 Automation RunTests -unattended -NullRHI. 빌드 중 소스 변경 없음.
