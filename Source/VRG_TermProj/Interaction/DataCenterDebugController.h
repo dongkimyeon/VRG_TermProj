@@ -85,7 +85,9 @@ public:
 	bool SetRoomBoundsEditing(bool bEnable);
 	void ToggleRoomBoundsEditing() { SetRoomBoundsEditing(!bRoomBoundsEditing); }
 	bool IsRoomBoundsEditing() const { return bRoomBoundsEditing; }
+	static constexpr int32 RoomHeightHandle = 4; // Corners0..3, ceiling-centre handle4; shared gesture/command.
 	bool BeginRoomCornerDrag(int32 Corner, const FVector& EyeCm, const FVector& Direction);
+	bool BeginRoomHeightDrag(const FVector& EyeCm, const FVector& Direction) { return BeginRoomCornerDrag(RoomHeightHandle, EyeCm, Direction); }
 	void UpdateRoomCornerDrag(const FVector& EyeCm, const FVector& Direction);
 	bool EndRoomCornerDrag(bool bCommit);
 	bool GetRoomBoundsPreview(FRoomAirDomainSettings& Out, bool& bValid) const;
@@ -325,9 +327,10 @@ private:
 	int32 RoomDragCorner = INDEX_NONE;
 	FRoomAirDomainSettings RoomDragBefore, RoomDragPreview;
 	FVector RoomDragStartFloorCm = FVector::ZeroVector;
+	double RoomDragStartHeightCm = 0;
 	FVector2D RoomDragStartMouse = FVector2D::ZeroVector;
 	bool bRoomMouseThresholdPassed = false;
-	bool bRoomFloorValid = true;
+	bool bRoomRayValid = true;
 	TWeakObjectPtr<ADataCenterSimulationActor> RoomDragTarget;
 	bool bRoomPreviewValid = false;
 	FString RoomBoundsMessage;

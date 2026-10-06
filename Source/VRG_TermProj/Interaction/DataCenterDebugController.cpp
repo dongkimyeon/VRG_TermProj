@@ -3039,7 +3039,7 @@ void ADataCenterDebugController::GetHelpLines(TArray<FString>& Out) const
 	const bool bLayout = IsLayoutMode();
 	if (bRoomBoundsEditing)
 	{
-		Out.Add(TEXT("방 범위 편집 | 모서리 드래그·5 cm 스냅 | Esc 드래그 취소 / 편집 종료 | Ctrl+Z/Y | Enter 시뮬레이션"));
+		Out.Add(TEXT("방 범위 편집 | 바닥 모서리: XY · 천장 중앙점: 높이 (5 cm 스냅) | Esc 취소/종료 | Ctrl+Z/Y | Enter 시뮬레이션"));
 		return;
 	}
 
