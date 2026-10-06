@@ -25,4 +25,5 @@ private:
 	UFUNCTION() void OnAddSpine();
 	UFUNCTION() void OnAddCdu();
  UFUNCTION() void OnAddCrah();
+ UFUNCTION() void OnAddPerimeterCrah();
 };

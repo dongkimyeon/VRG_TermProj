@@ -115,6 +115,7 @@ public:
 	void BeginSpineAddition();
 	void BeginCduAddition();
  void BeginInRowCrahAddition();
+ void BeginPerimeterCrahAddition();
  void BeginCrahAddition() { BeginInRowCrahAddition(); }
  ACrahUnitActor* ConfirmCrahAddition();
 	ACoolingDistributionUnitActor* ConfirmCduAddition();
@@ -261,6 +262,8 @@ private:
 	bool bAddingSpine = false;
 	bool bAddingCdu = false;
  bool bAddingCrah = false;
+ ECrahUnitKind CrahAdditionKind = ECrahUnitKind::InRow;
+ void BeginCrahAdditionOfKind(ECrahUnitKind Kind);
 	bool bRackAdditionHasFloor = false;
 	FTransform RackAdditionTransform = FTransform::Identity;
 	TArray<FLayoutRackMember> RackDuplicationMembers;

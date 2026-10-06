@@ -47,6 +47,14 @@ void ULayoutRackPalette::NativeOnInitialized()
  auto* CrahSlot=Canvas->AddChildToCanvas(CrahButton);
  CrahSlot->SetAnchors(FAnchors(0,1)); CrahSlot->SetAlignment(FVector2D(0,1));
  CrahSlot->SetPosition(FVector2D(710,-20)); CrahSlot->SetSize(FVector2D(200,44));
+ auto* PerimeterButton=WidgetTree->ConstructWidget<ULayoutRackButton>();
+ PerimeterButton->OnClicked.AddDynamic(this,&ULayoutRackPalette::OnAddPerimeterCrah);
+ auto* PerimeterLabel=WidgetTree->ConstructWidget<UTextBlock>();
+ PerimeterLabel->SetText(FText::FromString(TEXT("벽면 CRAH 추가")));
+ PerimeterLabel->SetFont(Font); PerimeterButton->AddChild(PerimeterLabel);
+ auto* PerimeterSlot=Canvas->AddChildToCanvas(PerimeterButton);
+ PerimeterSlot->SetAnchors(FAnchors(0,1)); PerimeterSlot->SetAlignment(FVector2D(0,1));
+ PerimeterSlot->SetPosition(FVector2D(920,-20)); PerimeterSlot->SetSize(FVector2D(200,44));
 }
 
 void ULayoutRackPalette::OnAddRack()
@@ -67,4 +75,9 @@ void ULayoutRackPalette::OnAddCdu()
 void ULayoutRackPalette::OnAddCrah()
 {
  if(auto* Controller=Cast<ADataCenterDebugController>(GetOwningPlayer())) Controller->BeginInRowCrahAddition();
+}
+
+void ULayoutRackPalette::OnAddPerimeterCrah()
+{
+ if(auto* Controller=Cast<ADataCenterDebugController>(GetOwningPlayer())) Controller->BeginPerimeterCrahAddition();
 }

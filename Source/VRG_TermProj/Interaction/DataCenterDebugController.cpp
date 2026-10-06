@@ -679,6 +679,7 @@ void ADataCenterDebugController::BeginRackAddition()
 	bAddingSpine = false;
 	bAddingCdu = false;
  bAddingCrah = false;
+ CrahAdditionKind = ECrahUnitKind::InRow;
 	bAddingRack = true;
 	bRackAdditionHasFloor = false;
 	RackAdditionTransform = FTransform::Identity;
@@ -702,11 +703,21 @@ void ADataCenterDebugController::BeginCduAddition()
 
 void ADataCenterDebugController::BeginInRowCrahAddition()
 {
+ BeginCrahAdditionOfKind(ECrahUnitKind::InRow);
+}
+
+void ADataCenterDebugController::BeginPerimeterCrahAddition()
+{
+ BeginCrahAdditionOfKind(ECrahUnitKind::Perimeter);
+}
+
+void ADataCenterDebugController::BeginCrahAdditionOfKind(ECrahUnitKind Kind)
+{
  if (!GetWorld() || !GetWorld()->IsGameWorld() || !IsLayoutMode() || !IsCameraInputAvailable()
   || IsLayoutDragging() || bMarqueeActive || bAddingRack || Grabbed.IsValid() || IsInputKeyDown(EKeys::RightMouseButton)) return;
  auto* Sim=FindSimActor(); TArray<FCrahLayoutRecord> Automatic;
  if (!Sim || !Sim->CaptureAutomaticCrahLayout(Automatic)) return; // Never implicitly change the ceiling-coil model.
- BeginRackAddition(); if (bAddingRack) bAddingCrah=true;
+ BeginRackAddition(); if (bAddingRack) { bAddingCrah=true; CrahAdditionKind=Kind; }
 }
 
 bool ADataCenterDebugController::BeginRackDuplication()
@@ -1112,7 +1123,7 @@ ACrahUnitActor* ADataCenterDebugController::ConfirmCrahAddition()
  }
  FCrahLayoutRecord Added;
  Added.Id=FGuid::NewGuid().ToString(); Added.Name=FName(*(TEXT("AddedCrah_")+Added.Id));
- Added.Transform=Proposed; Added.Settings=GetDefault<ACrahUnitActor>()->CaptureLayoutSettings(); Added.Settings.Kind=ECrahUnitKind::InRow;
+ Added.Transform=Proposed; Added.Settings=GetDefault<ACrahUnitActor>()->CaptureLayoutSettings(); Added.Settings.Kind=CrahAdditionKind;
  Command.Crahs.Add({Added,{}});
  if(!RestoreCrahPresence(Command,true)) return nullptr;
  PushLayoutCommand(Command); CancelRackAddition();

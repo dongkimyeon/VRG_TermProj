@@ -3643,3 +3643,13 @@ CrahBatchDuplicationPersistenceCoupling: NVL72 한 랙·기존 CDU·공기에서
 근거(커밋 제외): Saved/Build_CrahBatchDuplication_Repair.log, Saved/Logs/CrahBatchDuplicationCoupling_Tests.log·CrahBatchDuplicationRepair_Tests.log, Saved/Automation/CrahBatchDuplicationCoupling/index.json·CrahBatchDuplicationRepair/index.json.
 
 실제 UI: 환경 변화 없는 다중 선택 도구 실패는 사용자 요청대로 재시도하지 않았다. 이번에는 일반 게임 창/드라이버 모달을 새로 실행하지 않았고 Alt+Print Screen·기존 캡처 API도 호출하지 않았다. 그룹 Ctrl+D·색상·실제 클릭/키·전체 Undo/Redo·저장/새 실행 Load의 화면 확인은 미검증이다. Automation 성공 및 이전 다중 삭제 사용자 정상 보고와 구분한다. 짧은 직접 절차 Tools/배치CRAH다중복제_확인_2026-10-06.md. 벽면 추가·새 물리 모델·전체 테스트·FPS는 범위 밖이다.
+
+## 2026-10-06 벽면 CRAH 추가 입력·Undo/Redo
+
+사용자가 다중 CRAH 복제 직접 확인 정상으로 보고했다. 해당 직접 절차 범위이며 도구 실패 원인/로그/캡처/FPS 확인으로 확대하지 않는다.
+배치 전용 비포커스 팔레트에 벽면 CRAH 추가 버튼을 연결했다. 인로우/벽면은 같은 추가 함수의 종류 인자로 처리하며 수동 신규 장비 설정은 ACrahUnitActor 기본값을 재사용하고 Kind만 Perimeter로 지정한다. 자동 벽면 배치의 별도 치수(CrahPerimeterSizeM)는 기존 자동 계획 소유 값으로, 전환 때 그대로 보존한다. 새 치수/풍량/물성 상수·벽 부착 기능 없음.
+공유 5cm/총1cm/빨강 거절/R90°/Esc·패치/모드 취소/기존 차단과 값 미리보기를 유지한다. 클릭 성공 때만 자동 전환+새 한 대 또는 기존 실제 월드에 새 한 대를 만들고 공유 생명주기·재구축·한 Undo/Redo로 처리한다. 자동 상태의 Undo는 전환과 추가를 함께 되돌린다. ID/설정/전체 변환/출처만 복원하며 온도/적분/시계/장비 참조는 복사하지 않는다. 레벨 에셋·물리 모델·기본값 변경 없음.
+
+Editor84.40s 성공(E:/UE_5.8; 원 작성자 경로 유지), 신규 입력/물리 검사 실제 컴파일 확인. PerimeterCrahAdditionUndoRedo/CrahAdditionUndoRedo/CrahMultiRowAdditionUndoRedo/CrahBatchDuplicationUndoRedo **입력 영향4종 무경고 성공, 실패0/미실행0/종료0**. 신규 검사는 자동 가상 상자 총1cm·취소·R·각 차단·종류/기존 설정·전환/신규 생성 실패·중간 Undo/Redo 실패 전체 원복/기록 유지·안정 ID·원래 자동 경계·이전 이동/R 참조 재연결·실제 월드 한 대 추가를 확인했다. 기존 Equals1e-9 액터cm/스케일 무차원과 합성 거리 조건을 재사용했다. 새 물성/허용치 없음.
+실행: L_Test 배치 벽면 CRAH 추가→빈 곳 클릭→Ctrl+Z/Y. Automation은 위4종을 RunTests의 +로 묶어 -unattended -NullRHI 실행. 저장·정량 물리·실제 UI 검증은 후속 절. 전체/FPS 반복 없음.
+근거(커밋 제외): Saved/Build_PerimeterCrahAddition.log, Saved/Logs/PerimeterCrahAddition_Tests.log, Saved/Automation/PerimeterCrahAddition/index.json.
