@@ -3616,3 +3616,30 @@ Ctrl+D를 네이티브 CRAH 선택 전체로 확장했다. 기존 배치/자동 
 Editor129.56s 성공(E:/UE_5.8; 원 작성자 경로 변경 없음). 신규 두 검사 파일 실제 컴파일/등록 확인. CrahBatchDuplicationUndoRedo/CrahDuplicationUndoRedo/CrahBatchDeletionUndoRedo/CrahAdditionUndoRedo/CduBatchDuplicationUndoRedo **5건 무경고 성공, 실패0/미실행0/진행0/종료0**. 새 검사는 Ctrl+D/차단·두 값 미리보기·비기본 종류/치수/풍량/높이/스케일·원본 불변/설정 독립성/출처 분리·두 번째 충돌·한 기록·중간 생성/제거/복원 실패 전체 원복/선택·삭제 의도·스택 유지·그룹 R/취소를 확인했다. 단일 검사에서 오래된 다중 선택 거절 기대만 제거했으며 새 검사에서 혼합 거절과 그룹 지원을 검사한다. 합성 입력/변환은 코드 주석에 명시했고 하드웨어 실측/새 추정 물성으로 쓰지 않는다. 전체 변환 Equals1e-9는 기존 액터cm/스케일 무차원 기준이다.
 실행: L_Test 배치에서 CRAH 여러 대 선택→Ctrl+D→빈 목적지 클릭→Ctrl+Z/Y. Automation은 위5종을 RunTests의 +로 묶어 -unattended -NullRHI 실행. 저장/냉각·물리 최종 검증은 후속 절에 기록한다. 전체 테스트/FPS 반복 없음.
 근거(커밋 제외): Saved/Build_CrahBatchDuplication.log, Saved/Logs/CrahBatchDuplication_Tests.log, Saved/Automation/CrahBatchDuplication/index.json.
+
+## 2026-10-06 다중 CRAH 복제 저장·공기/냉각 검증
+
+기존 v2/crahInventory/deletedCrahs·Load 트랜잭션·성공 재구축을 재사용하며 저장 형식 확장 없음. 기존 배치와 런타임 원본 두 대의 복제본을 새 런타임 ID/출처로 저장한다. 같은/새 월드 반복 Load에서 원본 불변·각 설정/전체 변환·독립 ID/이름·비전환 출처를 복원하고 중복 생성 없음·기록 초기화·새 월드 시계0s를 확인했다. 기존 파일/삭제 의도 호환은 CRAH 삭제 저장·InventorySaveLoad/SaveLoadRoundTrip 회귀로 확인했다. 자동 전환 원본은 입력 검사에서 경계 예외 계승 없음을 확인하며, 물리 fixture의 원래 전환2대는 유지한다.
+
+CrahBatchDuplicationPersistenceCoupling: NVL72 한 랙·기존 CDU·공기에서 자동2→전환2+런타임1+기존 배치1=실제4→그룹 복제6→Undo4→Redo6→같은/새 월드 반복 Load6. Perimeter/설계 풍량10%·스케일/높이/위치는 합성 검사 조건으로 주석에 명시했다(새 하드웨어 값·실측·추정 물성·피팅 아님). 따뜻한 t1.02s의 둘째 생성 실패는 첫 복제본을 제거해 개수·원본 선택·미리보기·기록/삭제 의도·시계·입출력/축적 장부·코일/풍량·랙 공기/냉각수·CDU duty 배열을 정확히 유지한다. 성공 후 복제본 둘의 중심 고체 셀·활성 CRAH/덕트/코일/팬을 검사하며 랙 줄/CDU 배정·배관 수는 유지한다.
+풍량0 분담/지정 풍량·기존 설계 총풍량/UA 정책을 유지한다. 복제 대수만으로 총풍량·용량·팬을 비례 증가시키지 않는다. CRAH 팬 전기입력은 IT와 분리하고 전역 입력에 한 번 계상한다.
+
+| 검사 | 측정 최대/범위 | 기존 기준·정규화/단위 |
+|---|---:|---|
+| 첫 스텝 랙 IT / 복제에 따른 변화 | 116512.612431 / 0 | W; 같은 부하·초기조건, 기준 IT 대비 상대 <1e-9 |
+| 설계 총풍량 / UA / 팬 | 1.204320 / 1753.725107 / 501.800146 | m³/s / W/K / W; 기존 배분 식 기대값 상대 차 <1e-12 |
+| 풍량/UA/팬 배분 상대 차 | 2.266e-16 | 각각 설계 풍량m³/s·UA W/K·팬 전력W 기대값 기준, 무차원 <1e-12 |
+| 랙+CRAH 덕트 풍량 잔차 | 3.053e-15 | abs(덕트−랙 질량유량/ρ−CRAH 풍량)/전체 덕트 풍량m³/s, 무차원 <1e-9 |
+| 냉각수 전달 / 수력 잔차 | 5.956e-15 / 7.348e-14 | abs(duty−mdot·cp·ΔT)/dutyW <1e-12; 기존 ReferenceFlowM3s·ReferencePressurePa 정규화 목표 |
+| 전역 열수지 | 1.314e-13 | abs(입력J−유출J−축적J)/EnergyInJ(IT+CRAH 팬), 무차원 <1e-9 |
+| 압력 투영 뒤 발산 | 3.978e-08, 수렴 | maxAbsDiv(1/s)/(maxAbsVelocity(m/s)/cellSize(m)), 무차원 <1e-5 |
+| 흡기 / 코일 duty | 295.927988~296.706438 / 6205.797425~6383.165127 | K / W, t1.02s; 기존 288.15~308.15K·양의 코일 냉각·전체 공기 냉각 일치 |
+| 저장/복원 / 시계 | 실제6 같은/새 월드 반복, 기록0·새 월드0s | ID/이름/종류/설정/출처 정확 일치, 전체 변환 Equals1e-9(액터cm·스케일 무차원) |
+
+공급≥설비수 공급·회수>공급·양의 냉각수 유량/duty·펌프/IT<5%와 기존 압력/수력 수렴 목표도 검사했다. 새 물리 값/허용치/솔버 식/레벨 에셋 변경 없음. 기존 고정 CRAH 냉수 공급·펌프 손실 열 분배 부채는 유지한다. NullRHI t1.02s fixture이며 장시간 정상상태·L_Test 전체 운전·시설 전체 물리 정확도/FPS 보장으로 확대하지 않는다.
+
+후속6종 중 기존5종 무경고 성공/신규1종 실패: 새 월드의 기록 생성 준비에서 단일 선택에 그룹 전용 TryRotateLayoutSelection을 호출해 거절됐다. 제품/저장 문제가 아닌 테스트 준비 오류로 확인해 기존 단일 R인 OnResetSim으로 고쳤다. Editor6.94s 성공 후 실패한 신규 CrahBatchDuplicationPersistenceCoupling만 재실행, 무경고 성공(종료0). 최종 후속 **6종 무경고 성공**: 신규 그룹/기존 단일 CrahDuplicationPersistenceCoupling/CrahPersistenceCoupling/CrahDeletionPersistence/InventorySaveLoad/SaveLoadRoundTrip. 앞 입력5종 포함 **고유 영향11종 최종 무경고 성공**. 성공한 검사·전체 테스트/FPS 반복 없음.
+실행: Editor 빌드 후 위6종을 RunTests의 +로 묶어 -unattended -NullRHI; 준비 수정 후 신규1종만 실행.
+근거(커밋 제외): Saved/Build_CrahBatchDuplication_Repair.log, Saved/Logs/CrahBatchDuplicationCoupling_Tests.log·CrahBatchDuplicationRepair_Tests.log, Saved/Automation/CrahBatchDuplicationCoupling/index.json·CrahBatchDuplicationRepair/index.json.
+
+실제 UI: 환경 변화 없는 다중 선택 도구 실패는 사용자 요청대로 재시도하지 않았다. 이번에는 일반 게임 창/드라이버 모달을 새로 실행하지 않았고 Alt+Print Screen·기존 캡처 API도 호출하지 않았다. 그룹 Ctrl+D·색상·실제 클릭/키·전체 Undo/Redo·저장/새 실행 Load의 화면 확인은 미검증이다. Automation 성공 및 이전 다중 삭제 사용자 정상 보고와 구분한다. 짧은 직접 절차 Tools/배치CRAH다중복제_확인_2026-10-06.md. 벽면 추가·새 물리 모델·전체 테스트·FPS는 범위 밖이다.
