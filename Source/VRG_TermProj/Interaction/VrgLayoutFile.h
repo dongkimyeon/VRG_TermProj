@@ -11,6 +11,8 @@ class UWorld;
 // and the cooling settings (containment, CRAH layout, coolant heat rejection, air cell size).
 // Version 2 reconciles the complete rack inventory by stable identity, with configuration and full transforms.
 // Additive v2 spine capabilities retain native spine provenance/configuration and explicit placed deletions.
+// Optional v2 "barriers" (with "barrierInventory": true) is the complete wall/curtain list (kind, full transform,
+// size = scale in m); files without it leave barriers untouched.
 // Other equipment remains name-matched. Version 1 remains move-only. No solver state or Undo history is saved.
 // Files live in Saved/Layouts/<name>.json. Loading switches the simulation to layout mode first (the next simulation
 // entry rebuilds everything from the loaded layout).

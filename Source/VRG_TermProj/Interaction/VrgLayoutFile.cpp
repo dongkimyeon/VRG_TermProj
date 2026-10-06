@@ -16,6 +16,7 @@
 #include "Actors/AirFieldDebugActor.h"
 #include "Actors/CoolingDistributionUnitActor.h"
 #include "Actors/CrahUnitActor.h"
+#include "Actors/LayoutBarrierActor.h"
 #include "Actors/DataCenterSimulationActor.h"
 #include "Actors/RackThermalActor.h"
 #include "Actors/SpineCabinetActor.h"
@@ -179,6 +180,22 @@ bool VrgLayoutFile::Save(UWorld* World, const FString& Name, FString& OutSummary
   if(!WriteCrahRecord(R,O)) return false; DeletedCrahs.Add(MakeShared<FJsonValueObject>(O));
  }
  Root->SetArrayField(TEXT("deletedCrahs"),DeletedCrahs); // Optional v2 placed deletion capability; omissions never imply deletion.
+	// Walls / curtains (optional v2): the list is the complete barrier inventory of the file. Size = scale [m].
+	Root->SetBoolField(TEXT("barrierInventory"), true);
+	TArray<TSharedPtr<FJsonValue>> Barriers;
+	for (TActorIterator<ALayoutBarrierActor> It(World); It; ++It)
+	{
+		TSharedRef<FJsonObject> O = MakeShared<FJsonObject>();
+		const FVector M = SimUnits::UnrealToMeters(It->GetActorLocation());
+		const FRotator Rotation = It->GetActorRotation(); const FVector Scale = It->GetActorScale3D();
+		O->SetStringField(TEXT("name"), It->GetName()); O->SetStringField(TEXT("barrierId"), VrgBarrierLifecycle::Identity(*It));
+		O->SetNumberField(TEXT("kind"), int32(It->Kind));
+		O->SetNumberField(TEXT("x_m"), M.X); O->SetNumberField(TEXT("y_m"), M.Y); O->SetNumberField(TEXT("z_m"), M.Z);
+		O->SetNumberField(TEXT("yaw_deg"), Rotation.Yaw); O->SetNumberField(TEXT("pitch_deg"), Rotation.Pitch); O->SetNumberField(TEXT("roll_deg"), Rotation.Roll);
+		O->SetNumberField(TEXT("size_x_m"), Scale.X); O->SetNumberField(TEXT("size_y_m"), Scale.Y); O->SetNumberField(TEXT("size_z_m"), Scale.Z);
+		Barriers.Add(MakeShared<FJsonValueObject>(O));
+	}
+	Root->SetArrayField(TEXT("barriers"), Barriers);
 
 
 	TSharedRef<FJsonObject> Settings = MakeShared<FJsonObject>();
@@ -202,7 +219,7 @@ bool VrgLayoutFile::Save(UWorld* World, const FString& Name, FString& OutSummary
 		OutSummary = FString::Printf(TEXT("쓰기 실패: %s"), *Path);
 		return false;
 	}
-	OutSummary = FString::Printf(TEXT("장비 %d대 저장: %s"), Items.Num(), *Path);
+	OutSummary = FString::Printf(TEXT("장비 %d대, 벽/차단막 %d개 저장: %s"), Items.Num(), Barriers.Num(), *Path);
 	return true;
 }
 
@@ -457,6 +474,36 @@ bool VrgLayoutFile::Load(UWorld* World, const FString& Name, FString& OutSummary
 		if (Version==2 && (FString(Key)==TEXT("cellSizeM") ? V<0.01 : (V!=FMath::FloorToDouble(V) || V<0 || V>(FString(Key)==TEXT("coolantRejection")?1:2))))
 			return Fail(TEXT("냉각 설정 범위 오류")); // Existing enum and air-cell admissibility bounds, not fitted physics values.
 	}
+	// Walls / curtains: validate the whole list before anything changes. Absent flag = barriers stay as they are.
+	bool bBarrierInventory = false;
+	if (Version == 2 && Root->HasField(TEXT("barrierInventory")) && !Root->TryGetBoolField(TEXT("barrierInventory"), bBarrierInventory))
+		return Fail(TEXT("벽/차단막 목록 기능 표식 오류"));
+	TArray<FLayoutBarrierRecord> LoadedBarriers;
+	if (bBarrierInventory)
+	{
+		const TArray<TSharedPtr<FJsonValue>>* BarrierValues = nullptr;
+		if (!Root->TryGetArrayField(TEXT("barriers"), BarrierValues)) return Fail(TEXT("벽/차단막 목록 없음"));
+		TSet<FString> BarrierIds;
+		for (const auto& Value : *BarrierValues)
+		{
+			if (!FiniteLayoutJson(Value) || Value->Type != EJson::Object) return Fail(TEXT("벽/차단막 형식/유한값 오류"));
+			const auto O = Value->AsObject();
+			FLayoutBarrierRecord R; FString Name; double Kind, X, Y, Z, Yaw, Pitch, Roll, SX, SY, SZ;
+			if (!O->TryGetStringField(TEXT("name"), Name) || Name.IsEmpty() || SeenNames.Contains(Name)
+				|| Name.Contains(TEXT("/")) || Name.Contains(TEXT(".")) || Name.Contains(TEXT(":"))
+				|| !O->TryGetStringField(TEXT("barrierId"), R.Id) || R.Id.IsEmpty() || BarrierIds.Contains(R.Id)
+				|| !ReadLayoutNumber(O, TEXT("kind"), Kind) || (Kind != 0 && Kind != 1)
+				|| !ReadLayoutNumber(O, TEXT("x_m"), X) || !ReadLayoutNumber(O, TEXT("y_m"), Y) || !ReadLayoutNumber(O, TEXT("z_m"), Z)
+				|| !ReadLayoutNumber(O, TEXT("yaw_deg"), Yaw) || !ReadLayoutNumber(O, TEXT("pitch_deg"), Pitch) || !ReadLayoutNumber(O, TEXT("roll_deg"), Roll)
+				|| !ReadLayoutNumber(O, TEXT("size_x_m"), SX) || !ReadLayoutNumber(O, TEXT("size_y_m"), SY) || !ReadLayoutNumber(O, TEXT("size_z_m"), SZ))
+				return Fail(TEXT("벽/차단막 이름/ID/종류/변환 오류 또는 중복"));
+			SeenNames.Add(Name); BarrierIds.Add(R.Id);
+			R.Name = FName(*Name); R.Kind = static_cast<EBarrierKind>(int32(Kind));
+			R.Transform = FTransform(FRotator(Pitch, Yaw, Roll), SimUnits::MetersToUnreal(FVector(X, Y, Z)), FVector(SX, SY, SZ));
+			if (!VrgBarrierLifecycle::IsValidTransform(R.Transform)) return Fail(TEXT("벽/차단막 크기는 양수여야 합니다"));
+			LoadedBarriers.Add(R);
+		}
+	}
 	TArray<ARackThermalActor*> Remove;
 	if (Version==2) for (const auto& Pair:ById) if (!SeenIds.Contains(Pair.Key))
 	{
@@ -533,7 +580,23 @@ bool VrgLayoutFile::Load(UWorld* World, const FString& Name, FString& OutSummary
 	const auto OldDeletedPlaced = SpineState->DeletedPlaced;
 	const auto OldDeletedCdus = CduState->DeletedPlaced;
  const auto OldDeletedCrahs=CrahState->DeletedPlaced;
+	// Barrier replacement happens first (below); the rollback puts the old barriers back.
+	TArray<FLayoutBarrierRecord> OldBarriers;
+	TArray<ALayoutBarrierActor*> OldBarrierActors, NewBarriers;
+	bool bBarriersReplaced = false;
+	if (bBarrierInventory) for (TActorIterator<ALayoutBarrierActor> It(World); It; ++It)
+	{
+		OldBarrierActors.Add(*It);
+		OldBarriers.Add({VrgBarrierLifecycle::Identity(*It), It->GetFName(), It->GetActorTransform(), It->Kind});
+	}
+	auto RollbackBarriers=[&]() {
+		if (!bBarriersReplaced) return;
+		for (auto* B : NewBarriers) if (IsValid(B)) { B->Rename(*MakeUniqueObjectName(B->GetOuter(),B->GetClass(),TEXT("RetiredLayoutBarrier")).ToString(),nullptr,REN_DontCreateRedirectors|REN_NonTransactional); B->Destroy(false,false); }
+		for (const auto& R : OldBarriers) verify(VrgBarrierLifecycle::Spawn(World, R));
+		bBarriersReplaced = false;
+	};
 	auto Rollback=[&]() {
+		RollbackBarriers();
 		for (auto& Item:Items) if (Item.bSpawned && IsValid(Item.Actor))
 		{
 			if (Item.Crah.IsSet()) VrgCrahLifecycle::Remove(CastChecked<ACrahUnitActor>(Item.Actor));
@@ -584,6 +647,17 @@ bool VrgLayoutFile::Load(UWorld* World, const FString& Name, FString& OutSummary
 		CduState->DeletedPlaced = OldDeletedCdus;
   CrahState->DeletedPlaced=OldDeletedCrahs;
 	};
+	if (bBarrierInventory)
+	{
+		if (!OldBarrierActors.IsEmpty() && !VrgBarrierLifecycle::RemoveBatch(OldBarrierActors)) return Fail(TEXT("기존 벽/차단막 제거 실패: 이전 배치 유지"));
+		bBarriersReplaced = true;
+		for (const auto& R : LoadedBarriers)
+		{
+			auto* B = VrgBarrierLifecycle::Spawn(World, R);
+			if (!B) { Rollback(); return Fail(TEXT("벽/차단막 생성 실패: 이전 배치 유지")); }
+			NewBarriers.Add(B);
+		}
+	}
 	for (auto& Item:Items) if (!Item.Actor)
 	{
 		UClass* Kind=Item.Crah.IsSet()?ACrahUnitActor::StaticClass():Item.Cdu.IsSet()?ACoolingDistributionUnitActor::StaticClass():Item.Spine.IsSet()?ASpineCabinetActor::StaticClass():ARackThermalActor::StaticClass();
@@ -701,6 +775,7 @@ bool VrgLayoutFile::Load(UWorld* World, const FString& Name, FString& OutSummary
 	OutSummary += FString::Printf(TEXT(" | 스파인%d 생성/%d 제거"), Items.FilterByPredicate([](const auto& I){return I.bSpawned && I.Spine.IsSet();}).Num(), RemoveSpines.Num());
 	OutSummary += FString::Printf(TEXT(" | CDU%d 생성/%d 제거"), Items.FilterByPredicate([](const auto& I){return I.bSpawned && I.Cdu.IsSet();}).Num(), RemoveCdus.Num());
 	OutSummary += FString::Printf(TEXT(" | CRAH%d 생성/%d 제거"), Items.FilterByPredicate([](const auto& I){return I.bSpawned && I.Crah.IsSet();}).Num(), RemoveCrahs.Num());
+	if (bBarrierInventory) OutSummary += FString::Printf(TEXT(" | 벽/차단막 %d개 (이전 %d개 교체)"), NewBarriers.Num(), OldBarriers.Num());
 	return true;
 }
 

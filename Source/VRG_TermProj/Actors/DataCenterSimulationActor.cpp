@@ -14,11 +14,13 @@
 #include "Actors/CoolingDistributionUnitActor.h"
 #include "Actors/CrahUnitActor.h"
 #include "Actors/DataCenterRoomActor.h"
+#include "Actors/LayoutBarrierActor.h"
 #include "Actors/RackThermalActor.h"
 #include "Actors/SpineCabinetActor.h"
 #include "Interaction/DataCenterDebugController.h"
 #include "Visualization/GjRackLayout.h"
 #include "Simulation/Air/AirSolver.h"
+#include "Simulation/Air/AirConnectivity.h"
 #include "Simulation/Core/SimUnits.h"
 #include "Simulation/Thermal/RackThermalModel.h"
 
@@ -267,6 +269,9 @@ bool ADataCenterSimulationActor::ValidateRoomAirDomain(const FRoomAirDomainSetti
 	{
 		FVector SizeM;
 		if (!ADataCenterDebugController::PlaceableBoxM(*It, SizeM)) continue;
+		// Walls/curtains are clipped to the room (cells outside the grid are simply not solid); a wall on the
+		// room boundary is common and must not refuse the room.
+		if (It->IsA<ALayoutBarrierActor>()) continue;
 		const ACrahUnitActor* Crah = Cast<ACrahUnitActor>(*It);
 		bPlacedCrahs |= Crah != nullptr;
 		if (!CheckBox(SizeM, It->GetActorTransform(), It->GetName(),
@@ -527,7 +532,77 @@ void ADataCenterSimulationActor::MarkRackSolidCells()
 				}
 	}
 
+	MarkBarrierSolidCells(Grid, GridOriginM);
 	Solver.OnSolidCellsChanged();
+}
+
+void ADataCenterSimulationActor::MarkBarrierSolidCells(FUniformAirGrid& Grid, const FVector& GridOriginM)
+{
+	BarrierSolidCells = 0;
+	BarrierCellsKeptOpen = 0;
+	const double H = Grid.GetCellSizeM();
+	if (!GetWorld() || H <= 0.0) return;
+
+	// Air paths of the ducted equipment: its box widened by one cell along its airflow axis (front and rear) and,
+	// for a perimeter unit, one cell above its top intake. Duct faces sit between the equipment cells and these
+	// fluid cells; a barrier cell there would make the duct reject its faces. Those cells stay open and are
+	// counted (a wall flush against a rack front therefore keeps a one-cell gap in front of the rack).
+	struct FReserved { FTransform Frame; FVector HalfM; double ZMaxM; };
+	TArray<FReserved> Reserved;
+	auto Reserve = [&](const FVector& BaseM, const FQuat& Rotation, const FVector& SizeM, bool bTopIntake)
+	{
+		Reserved.Add({FTransform(Rotation, BaseM), FVector(.5 * SizeM.X + H, .5 * SizeM.Y, 0.0), SizeM.Z + (bTopIntake ? H : 0.0)});
+	};
+	auto ReserveActor = [&](const AActor* Actor, const FVector& SizeM, bool bTopIntake)
+	{
+		const FTransform T = Actor->GetActorTransform();
+		Reserve(SimUnits::UnrealToMeters(T.GetLocation()), T.GetRotation(), SizeM * T.GetScale3D().GetAbs(), bTopIntake);
+	};
+	for (const ARackThermalActor* Rack : Racks) if (Rack) ReserveActor(Rack, Rack->RackSizeM, false);
+	for (const ASpineCabinetActor* Spine : Spines)
+		if (Spine) ReserveActor(Spine, FVector(GjRackLayout::FrameDepthM, GjRackLayout::FrameWidthM, GjRackLayout::FrameHeightM), false);
+	for (const FCrahPlacement& P : CrahPlacements)
+		Reserve(P.BaseM, P.ForwardM.Rotation().Quaternion(), P.SizeM, P.bTopIntake);
+
+	// Each half extent is at least 0.51 cell: a face step moves a cell centre by at most one cell along any unit
+	// normal, so a slab at least one cell thick catches every face path (watertight). Grid-resolution limit:
+	// a 2 cm curtain is calculated one cell thick. Display thickness is the authored one.
+	const double MinHalfM = .51 * H;
+	for (TActorIterator<ALayoutBarrierActor> It(GetWorld()); It; ++It)
+	{
+		const FTransform T = It->GetActorTransform();
+		if (!VrgBarrierLifecycle::IsValidTransform(T)) continue;
+		const FVector SizeM = It->GetSizeM();
+		const FQuat Rotation = T.GetRotation();
+		const FVector CentreM = SimUnits::UnrealToMeters(T.TransformPosition(FVector(0, 0, 50.0)));  // local unit-cube centre
+		const FVector HalfM(FMath::Max(.5 * SizeM.X, MinHalfM), FMath::Max(.5 * SizeM.Y, MinHalfM), FMath::Max(.5 * SizeM.Z, MinHalfM));
+		// World AABB of the box -> grid index range.
+		const FVector Extent = Rotation.GetAxisX().GetAbs() * HalfM.X + Rotation.GetAxisY().GetAbs() * HalfM.Y + Rotation.GetAxisZ().GetAbs() * HalfM.Z;
+		const FVector LoM = CentreM - Extent - GridOriginM, HiM = CentreM + Extent - GridOriginM;
+		const int32 X0 = FMath::Max(0, FMath::FloorToInt32(LoM.X / H)), X1 = FMath::Min(Grid.GetNumCellsX() - 1, FMath::FloorToInt32(HiM.X / H));
+		const int32 Y0 = FMath::Max(0, FMath::FloorToInt32(LoM.Y / H)), Y1 = FMath::Min(Grid.GetNumCellsY() - 1, FMath::FloorToInt32(HiM.Y / H));
+		const int32 Z0 = FMath::Max(0, FMath::FloorToInt32(LoM.Z / H)), Z1 = FMath::Min(Grid.GetNumCellsZ() - 1, FMath::FloorToInt32(HiM.Z / H));
+		for (int32 Z = Z0; Z <= Z1; ++Z)
+			for (int32 Y = Y0; Y <= Y1; ++Y)
+				for (int32 X = X0; X <= X1; ++X)
+				{
+					const int32 Index = Grid.CellIndex(X, Y, Z);
+					if (SolidOwner[Index] != INDEX_NONE) continue;  // equipment, containment or another barrier
+					const FVector CellM = GridOriginM + Grid.CellCenterM(X, Y, Z);
+					const FVector Local = Rotation.UnrotateVector(CellM - CentreM);
+					if (FMath::Abs(Local.X) > HalfM.X || FMath::Abs(Local.Y) > HalfM.Y || FMath::Abs(Local.Z) > HalfM.Z) continue;
+					bool bReserved = false;
+					for (const FReserved& R : Reserved)
+					{
+						const FVector L = R.Frame.InverseTransformPositionNoScale(CellM);
+						if (FMath::Abs(L.X) <= R.HalfM.X && FMath::Abs(L.Y) <= R.HalfM.Y && L.Z >= 0.0 && L.Z <= R.ZMaxM) { bReserved = true; break; }
+					}
+					if (bReserved) { ++BarrierCellsKeptOpen; continue; }
+					Grid.bSolidCell[Index] = true;
+					SolidOwner[Index] = BarrierSolidOwner;
+					++BarrierSolidCells;
+				}
+	}
 }
 
 void ADataCenterSimulationActor::BuildCoolingCoil()
@@ -771,6 +846,22 @@ void ADataCenterSimulationActor::BuildCoupling()
 	Bridge.SetAirSolver(bHasAir ? &AirField->GetMutableSolver() : nullptr);
 	Bridge.SetCoolantDensityKgM3(CoolantDensityKgM3);
 
+	// A barrier (or containment) that separates a duct's intake from its exhaust leaves both air regions with a
+	// net source: the pressure problem has no solution. Report it at setup instead of only as a solver failure.
+	SplitDucts = bHasAir ? VrgAirConnectivity::CountSplitDucts(*Grid, Bridge.AirSolverInput) : 0;
+	if (BarrierSolidCells > 0 || BarrierCellsKeptOpen > 0 || SplitDucts > 0)
+	{
+		UE_LOG(LogTemp, Display, TEXT("[VrgSim] 벽/차단막 고체 셀 %d개 | 장비 공기 통로라 비운 셀 %d개 | 흡기·배기가 갈린 덕트 %d개"),
+			BarrierSolidCells, BarrierCellsKeptOpen, SplitDucts);
+	}
+	if (SplitDucts > 0)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[VrgSim] 벽/차단막이 덕트 %d개의 흡기와 배기를 다른 공기 영역으로 나눴습니다. 압력 해가 없어 수렴 실패가 납니다."), SplitDucts);
+		// An error, not a debug readout: shown even with vrg.Hud.Debug 0.
+		if (GEngine) GEngine->AddOnScreenDebugMessage(static_cast<uint64>(GetUniqueID()) + 40, 8.0f, FColor::Red,
+			FString::Printf(TEXT("벽/차단막이 장비 %d개 덕트의 흡기와 배기를 막아 갈라 놓았습니다 - 벽에 통로를 두세요"), SplitDucts));
+	}
+
 	Clock.Reset(FixedStepS);
 
 	// 어디가 안 붙었는지 화면에 적는다. 조용히 예비값으로 도는 것보다 낫다.
@@ -798,6 +889,10 @@ void ADataCenterSimulationActor::BuildCoupling()
 	else if (CrahUnitsDropped > 0)
 	{
 		Missing.Add(FString::Printf(TEXT("CRAH 유닛 %d대가 공기 격자 밖이거나 다른 장비·CRAH와 겹쳐 빠짐"), CrahUnitsDropped));
+	}
+	if (SplitDucts > 0)
+	{
+		Missing.Add(FString::Printf(TEXT("벽/차단막이 덕트 %d개의 흡기와 배기를 갈라 놓음 (압력 해 없음)"), SplitDucts));
 	}
 
 	LastSetupMessage = Missing.Num() > 0
@@ -1295,7 +1390,8 @@ void ADataCenterSimulationActor::Tick(float DeltaTime)
 	{
 		// Racks placed or spawned while in layout must not start integrating on their own.
 		HoldModelsForLayout();
-		if (bShowSummary && GEngine != nullptr)
+		// The controller's one-line key hint covers layout mode; this banner is a debug readout now.
+		if (bShowSummary && GEngine != nullptr && VrgHud::ShowDebugText())
 		{
 			GEngine->AddOnScreenDebugMessage(static_cast<uint64>(GetUniqueID()), 0.0f, FColor(120, 220, 255),
 				FString::Printf(TEXT("[배치 모드] 물리 정지 | Enter: 시뮬레이션 시작 | G: 바라보는 장비 잡기/놓기 | T: 90도 회전 | C: 컨테인먼트 %s"),

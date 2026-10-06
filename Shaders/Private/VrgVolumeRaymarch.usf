@@ -128,7 +128,14 @@ void MainPS(
 
 	// 장면 깊이까지만 행진한다. 그래야 랙 뒤의 공기가 랙을 뚫고 보이지 않는다.
 	// CalcSceneDepth는 뷰 Z 방향 거리이므로 광선 길이로 바꾼다.
-	const float SceneDepth = CalcSceneDepth(UV);
+	//
+	// 깊이 버퍼는 내부 렌더 해상도(화면 비율/TSR 업스케일 전)이고, 이 패스는 톤매핑 뒤라 출력 해상도에서 돈다.
+	// 출력 UV로 깊이를 읽으면 렌더 해상도가 출력보다 작을 때 화면 왼쪽 위 일부 사각형에만 깊이가 맞게 들어가고
+	// 나머지는 엉뚱한 깊이를 읽는다 (2026-10-06 화면에서 확인). 해상도와 무관한 NDC(ScreenPos)를
+	// 뷰의 ScreenPositionScaleBias로 깊이 버퍼 UV로 바꾸고, 뷰 사각형 밖으로 나가지 않게 자른다.
+	const float2 DepthUV = clamp(ScreenPos * View.ScreenPositionScaleBias.xy + View.ScreenPositionScaleBias.wz,
+		View.BufferBilinearUVMinMax.xy, View.BufferBilinearUVMinMax.zw);
+	const float SceneDepth = CalcSceneDepth(DepthUV);
 	const float MaxDistance = SceneDepth / max(dot(RayDir, View.ViewForward), 1e-4f);
 
 	// 축 정렬 상자와의 교차. RayDir 성분이 0이면 1/0 = inf가 되지만

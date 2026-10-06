@@ -8,6 +8,7 @@
 #include "Actors/RackThermalActor.h"
 #include "Actors/SpineCabinetActor.h"
 #include "Actors/CoolingDistributionUnitActor.h"
+#include "Actors/LayoutBarrierActor.h"
 #include "Interaction/VrgCrahLifecycle.h"
 #include "Simulation/Air/RoomAirDomain.h"
 #include "DataCenterDebugController.generated.h"
@@ -19,6 +20,11 @@ class UInputMappingContext;
 class ULayoutRackPalette;
 class URoomSettingsWidget;
 class ADataCenterSimulationActor;
+
+// Gizmo for a single selected wall / curtain (2026-10-06), Unreal-style: W move, E rotate, R scale, Space cycles.
+// Move and rotate act along / about the world axes, scale along the barrier's own axes (always local, as in Unreal).
+UENUM()
+enum class ELayoutGizmoMode : uint8 { Translate, Rotate, Scale };
 
 // 런타임에 시뮬레이션 파라미터를 돌려 보기 위한 디버그 입력.
 //
@@ -70,6 +76,8 @@ public:
 	bool OpenRoomSettings();
 	void CloseRoomSettings(URoomSettingsWidget* ExpectedWidget = nullptr);
 	bool IsRoomSettingsOpen() const { return bRoomSettingsOpen; }
+	// Key hint lines for the HUD: one short line, or the grouped list after H.
+	void GetHelpLines(TArray<FString>& Out) const;
 	FRoomAirDomainSettings GetRoomSettingsDraft() const;
 	FString DescribeRoomSettingsPlan(const FRoomAirDomainSettings& Settings);
 	bool ApplyRoomSettings(const FRoomAirDomainSettings& Settings, FString& Message);
@@ -95,7 +103,7 @@ public:
 	FDebugKnob UtilizationKnob;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Debug")
-	bool bShowHelp = true;
+	bool bShowHelp = false;  // collapsed: one short line; H shows the full key list
 
 	// How far the view ray looks for a rack to select [m].
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Debug", meta = (ClampMin = "0.5"))
@@ -117,8 +125,10 @@ public:
 	// Where the ray meets the horizontal plane at PlaneZCm, snapped in X and Y to SnapM; false if it never does.
 	static bool FloorPointSnapped(const FVector& EyeCm, const FVector& Dir, double PlaneZCm, double SnapM, FVector& OutCm);
 	// Projected equipment boxes, with 1 cm clearance on a separating axis (UI placement rule).
+	// Barriers may overlap each other (wall corners) but not equipment footprints.
 	static bool IsLayoutPlacementBlocked(const AActor* Actor, const FTransform& Proposed, const TArray<AActor*>* Ignored = nullptr);
-	static bool IsLayoutBoxBlocked(UWorld* World, const FVector& SizeM, const FTransform& Proposed, const TArray<AActor*>* Ignored = nullptr);
+	static bool IsLayoutBoxBlocked(UWorld* World, const FVector& SizeM, const FTransform& Proposed, const TArray<AActor*>* Ignored = nullptr,
+		bool bCandidateIsBarrier = false);
 	// Addition is a value-only preview; no actors or pipes until confirmation.
 	void BeginRackAddition();
 	void BeginSpineAddition();
@@ -133,10 +143,17 @@ public:
 	bool BeginSpineDuplication();
 	bool BeginCduDuplication(); // Entire native CDU selection; authored values only.
 	bool BeginCrahDuplication(); // Entire native cooler selection; no automatic origin/bounds or live state.
+	// Walls / curtains (ALayoutBarrierActor): same value preview, 5 cm snap, R/Esc as equipment addition.
+	void BeginBarrierAddition(EBarrierKind Kind);
+	void BeginWallAddition() { BeginBarrierAddition(EBarrierKind::Wall); }
+	void BeginCurtainAddition() { BeginBarrierAddition(EBarrierKind::Curtain); }
+	bool BeginBarrierDuplication(); // Entire barrier selection; kind and full transform (size) only.
+	ALayoutBarrierActor* ConfirmBarrierAddition();
+	bool TryDeleteLayoutBarrier(); // Entire barrier selection, one Undo command.
 	void CancelRackAddition();
 	void UpdateRackAdditionAlongRay(const FVector& EyeCm, const FVector& Direction);
 	bool GetRackAdditionPreview(FTransform& Out, FVector& SizeM, int32 MemberIndex = 0) const;
-	int32 GetRackAdditionPreviewCount() const { return bAddingRack ? FMath::Max(1, FMath::Max(CrahDuplicationMembers.Num(), FMath::Max(CduDuplicationMembers.Num(), FMath::Max(RackDuplicationMembers.Num(), SpineDuplicationMembers.Num())))) : 0; }
+	int32 GetRackAdditionPreviewCount() const { return bAddingRack ? FMath::Max(1, FMath::Max(CrahDuplicationMembers.Num(), FMath::Max(CduDuplicationMembers.Num(), FMath::Max(RackDuplicationMembers.Num(), FMath::Max(SpineDuplicationMembers.Num(), BarrierDuplicationMembers.Num()))))) : 0; }
 	bool TryRotateRackAddition();
 	bool IsRackAdditionBlocked() const;
 	ARackThermalActor* ConfirmRackAddition();
@@ -187,7 +204,25 @@ public:
 	void BeginLayoutDragAlongRay(const FVector& EyeCm, const FVector& Direction);
 	void UpdateLayoutDragAlongRay(const FVector& EyeCm, const FVector& Direction, bool bDisableRowSnap = false);
 	void EndLayoutDrag(bool bCommit);
-	bool IsLayoutDragging() const { return !DragMembers.IsEmpty(); }
+	bool IsLayoutDragging() const { return !DragMembers.IsEmpty() || GizmoDrag.bActive; }
+	// ---- Barrier gizmo (layout mode, one selected barrier). UE cm at this view boundary. ----
+	ALayoutBarrierActor* GetLayoutGizmoTarget() const;
+	ELayoutGizmoMode GetLayoutGizmoMode() const { return GizmoMode; }
+	bool SetLayoutGizmoMode(ELayoutGizmoMode Mode);
+	// Gizmo centre (box centre) and handle length for the current view [cm].
+	bool GetLayoutGizmoFrame(FVector& PivotCm, double& LengthCm) const;
+	// World direction of handle Axis (0 X, 1 Y, 2 Z) in the current mode.
+	FVector GetLayoutGizmoAxis(int32 Axis) const;
+	// Handle under a screen point (pixels), INDEX_NONE if none within 10 px.
+	int32 PickLayoutGizmoAxis(const FVector2D& Screen) const;
+	// Live drag of one handle: the barrier follows; release commits (Undo) unless blocked, cancel restores.
+	bool BeginLayoutGizmoDrag(int32 Axis, const FVector& EyeCm, const FVector& Direction, const FVector2D& Screen = FVector2D::ZeroVector);
+	void UpdateLayoutGizmoDrag(const FVector& EyeCm, const FVector& Direction, const FVector2D& Screen = FVector2D::ZeroVector, bool bNoSnap = false);
+	void EndLayoutGizmoDrag(bool bCommit);
+	bool IsLayoutGizmoDragging() const { return GizmoDrag.bActive; }
+	bool IsLayoutGizmoBlocked() const;
+	// UI snaps (not physical): 15 degree rotation steps; moves and size changes use PlaceSnapM. Alt disables.
+	double GizmoRotateSnapDeg = 15.0;
 	FVector GetLayoutDragPreviewCm() const { return DragPreviewCm; }
 	bool IsLayoutDragPreviewBlocked() const;
 	bool GetLayoutDragPreviewTransform(const AActor* Actor, FTransform& Out) const;
@@ -219,6 +254,7 @@ private:
 		FString SpineId;
 		FString CduId;
 		FString CrahId;
+		FString BarrierId;
 	};
 	struct FLayoutRackMember
 	{
@@ -254,6 +290,7 @@ private:
 		TArray<FLayoutSpineMember> Spines;
 		TArray<FLayoutCduMember> Cdus;
   TArray<FLayoutCrahMember> Crahs;
+  TArray<FLayoutBarrierRecord> Barriers;
   bool bCrahAutomaticBefore = false;
   uint8 CrahLayoutBefore = 0;
 	};
@@ -277,6 +314,27 @@ private:
 	bool bAddingSpine = false;
 	bool bAddingCdu = false;
  bool bAddingCrah = false;
+	bool bAddingBarrier = false;
+	EBarrierKind BarrierAdditionKind = EBarrierKind::Wall;
+	TArray<FLayoutBarrierRecord> BarrierDuplicationMembers; // Kind and full transform only.
+	bool RestoreBarrierPresence(const FLayoutTransformCommand& Command, bool bRedo);
+	ELayoutGizmoMode GizmoMode = ELayoutGizmoMode::Translate;
+	int32 GizmoHoverAxis = INDEX_NONE;
+	struct FGizmoDrag
+	{
+		bool bActive = false;
+		int32 Axis = INDEX_NONE;
+		TWeakObjectPtr<ALayoutBarrierActor> Target;
+		FTransform Start;
+		FVector PivotCm = FVector::ZeroVector, AxisDir = FVector::ZeroVector, StartVector = FVector::ZeroVector;
+		double StartParamCm = 0.0;
+		bool bScreenRotate = false;  // ray almost in the ring plane: use horizontal mouse motion instead
+		FVector2D StartScreen = FVector2D::ZeroVector;
+	} GizmoDrag;
+	void OnGizmoTranslateKey();
+	void OnGizmoCycleKey();
+	void DrawLayoutGizmo() const;
+	bool MouseRay(FVector& EyeCm, FVector& Direction, FVector2D& Screen) const;
  ECrahUnitKind CrahAdditionKind = ECrahUnitKind::InRow;
  void BeginCrahAdditionOfKind(ECrahUnitKind Kind);
 	bool bRackAdditionHasFloor = false;

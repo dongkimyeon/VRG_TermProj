@@ -18,6 +18,7 @@
 #include "Actors/DataCenterSimulationActor.h"
 #include "Actors/AirFieldDebugActor.h"
 #include "Actors/SpineCabinetActor.h"
+#include "Actors/LayoutBarrierActor.h"
 #include "Visualization/GjRackLayout.h"
 #include "Simulation/Core/SimUnits.h"
 #include "Simulation/Thermal/RackThermalModel.h"
@@ -285,6 +286,9 @@ void ADataCenterDebugController::SetupInputComponent()
 		{ TEXT("SelectLayoutEquipment"), EKeys::LeftMouseButton, &ADataCenterDebugController::OnSelectLayoutEquipment },
 		{ TEXT("CancelLayoutDrag"), EKeys::Escape, &ADataCenterDebugController::OnCancelLayoutDrag },
 		{ TEXT("DeleteLayoutEquipment"), EKeys::Delete, &ADataCenterDebugController::OnDeleteLayoutEquipment },
+		// Barrier gizmo (layout, without RMB): W move; E rotate and R scale are dispatched in their existing handlers.
+		{ TEXT("GizmoTranslate"), EKeys::W, &ADataCenterDebugController::OnGizmoTranslateKey },
+		{ TEXT("GizmoCycle"), EKeys::SpaceBar, &ADataCenterDebugController::OnGizmoCycleKey },
 	};
 
 	for (const FBinding& Binding : Bindings)
@@ -490,6 +494,8 @@ bool ADataCenterDebugController::PlaceableBoxM(const AActor* Actor, FVector& Out
 	if (const ACrahUnitActor* Crah = Cast<ACrahUnitActor>(Actor)) { OutSizeM = Crah->SizeM; return true; }
 	if (const ACoolingDistributionUnitActor* Cdu = Cast<ACoolingDistributionUnitActor>(Actor)) { OutSizeM = Cdu->SizeM; return true; }
 	if (Cast<ASpineCabinetActor>(Actor)) { OutSizeM = FVector(GjRackLayout::FrameDepthM, GjRackLayout::FrameWidthM, GjRackLayout::FrameHeightM); return true; }
+	// Barrier: unit box; the actor scale carries its size in metres (footprints/projections use the full transform).
+	if (Cast<ALayoutBarrierActor>(Actor)) { OutSizeM = ALayoutBarrierActor::UnitBoxM(); return true; }
 	return false;
 }
 
@@ -502,9 +508,9 @@ AActor* ADataCenterDebugController::PickPlaceableAlongRay(UWorld* World, const F
 	{
 		FVector SizeM;
 		if (!PlaceableBoxM(*It, SizeM)) continue;
-		// Same slab test as the rack pick, in the actor's own (unscaled) frame.
+		// Same slab test as the rack pick, in the actor's own (unscaled) frame. A barrier's size is its scale.
 		const FVector Axes[3] = { It->GetActorForwardVector(), It->GetActorRightVector(), It->GetActorUpVector() };
-		const FVector SizeCm = SizeM * 100.0;
+		const FVector SizeCm = SizeM * 100.0 * (It->IsA<ALayoutBarrierActor>() ? It->GetActorScale3D().GetAbs() : FVector::OneVector);
 		const double Lo[3] = { -.5 * SizeCm.X, -.5 * SizeCm.Y, 0.0 }, Hi[3] = { .5 * SizeCm.X, .5 * SizeCm.Y, SizeCm.Z };
 		const FVector Rel = EyeCm - It->GetActorLocation();
 		double TMin = 0.0, TMax = BestT;
@@ -613,6 +619,7 @@ namespace
 	{
 		FVector2D Centre;
 		FVector2D HalfEdges[3];
+		bool bBarrier = false;  // walls/curtains may overlap each other (corners), never equipment
 	};
 	bool MakeLayoutFootprint(const FVector& SizeM, const FTransform& Transform, FLayoutFootprint& Out)
 	{
@@ -632,10 +639,13 @@ namespace
 	bool MakeLayoutFootprint(const AActor* Actor, const FTransform& Transform, FLayoutFootprint& Out)
 	{
 		FVector SizeM;
-		return ADataCenterDebugController::PlaceableBoxM(Actor, SizeM) && MakeLayoutFootprint(SizeM, Transform, Out);
+		if (!ADataCenterDebugController::PlaceableBoxM(Actor, SizeM) || !MakeLayoutFootprint(SizeM, Transform, Out)) return false;
+		Out.bBarrier = Actor->IsA<ALayoutBarrierActor>();
+		return true;
 	}
 	bool FootprintsConflict(const FLayoutFootprint& A, const FLayoutFootprint& B, double ClearanceCm = 1.0)
 	{
+		if (A.bBarrier && B.bBarrier) return false;
 		const FVector2D Delta = B.Centre - A.Centre;
 		// Team placement plan: 1 cm total clearance, not 1 cm expansion on each box and not a physical constant.
 		for (const FLayoutFootprint* Footprint : { &A, &B })
@@ -660,21 +670,25 @@ bool ADataCenterDebugController::IsLayoutPlacementBlocked(const AActor* Actor, c
 	TArray<AActor*> Excluded;
 	if (Ignored) Excluded = *Ignored;
 	Excluded.Add(const_cast<AActor*>(Actor));
-	return IsLayoutBoxBlocked(Actor->GetWorld(), SizeM, Proposed, &Excluded);
+	return IsLayoutBoxBlocked(Actor->GetWorld(), SizeM, Proposed, &Excluded, Actor->IsA<ALayoutBarrierActor>());
 }
 
-bool ADataCenterDebugController::IsLayoutBoxBlocked(UWorld* World, const FVector& SizeM, const FTransform& Proposed, const TArray<AActor*>* Ignored)
+bool ADataCenterDebugController::IsLayoutBoxBlocked(UWorld* World, const FVector& SizeM, const FTransform& Proposed, const TArray<AActor*>* Ignored,
+	bool bCandidateIsBarrier)
 {
 	if (!World) return true;
 	FLayoutFootprint Candidate;
 	if (!MakeLayoutFootprint(SizeM, Proposed, Candidate)) return true;
+	Candidate.bBarrier = bCandidateIsBarrier;
 	for (TActorIterator<AActor> It(World); It; ++It)
 	{
 		if (!IsValid(*It) || (Ignored && Ignored->Contains(*It))) continue;
 		FVector OtherSizeM;
 		if (!PlaceableBoxM(*It, OtherSizeM)) continue;
 		FLayoutFootprint Other;
-		if (!MakeLayoutFootprint(OtherSizeM, It->GetActorTransform(), Other) || FootprintsConflict(Candidate, Other)) return true;
+		if (!MakeLayoutFootprint(OtherSizeM, It->GetActorTransform(), Other)) return true;
+		Other.bBarrier = It->IsA<ALayoutBarrierActor>();
+		if (FootprintsConflict(Candidate, Other)) return true;
 	}
 	return false;
 }
@@ -689,8 +703,10 @@ void ADataCenterDebugController::BeginRackAddition()
 	SpineDuplicationMembers.Reset();
 	CduDuplicationMembers.Reset();
 	CrahDuplicationMembers.Reset();
+	BarrierDuplicationMembers.Reset();
 	bAddingSpine = false;
 	bAddingCdu = false;
+	bAddingBarrier = false;
  bAddingCrah = false;
  CrahAdditionKind = ECrahUnitKind::InRow;
 	bAddingRack = true;
@@ -733,6 +749,41 @@ void ADataCenterDebugController::BeginCrahAdditionOfKind(ECrahUnitKind Kind)
  BeginRackAddition(); if (bAddingRack) { bAddingCrah=true; CrahAdditionKind=Kind; }
 }
 
+void ADataCenterDebugController::BeginBarrierAddition(EBarrierKind Kind)
+{
+	if (!GetWorld() || !GetWorld()->IsGameWorld() || !IsLayoutMode() || !IsCameraInputAvailable()
+		|| IsLayoutDragging() || bMarqueeActive || bAddingRack || Grabbed.IsValid() || IsInputKeyDown(EKeys::RightMouseButton)) return;
+	BeginRackAddition();
+	if (!bAddingRack) return;
+	bAddingBarrier = true;
+	BarrierAdditionKind = Kind;
+	RackAdditionTransform.SetScale3D(ALayoutBarrierActor::DefaultSizeM(Kind));
+	UpdateRackAdditionFromCursor();
+}
+
+bool ADataCenterDebugController::BeginBarrierDuplication()
+{
+	UWorld* World = GetWorld();
+	if (!World || !World->IsGameWorld() || !IsLayoutMode() || !IsCameraInputAvailable()
+		|| bAddingRack || IsLayoutDragging() || bMarqueeActive || Grabbed.IsValid() || IsInputKeyDown(EKeys::RightMouseButton)) return false;
+	const auto Selected = GetSelectedLayoutActors();
+	if (Selected.IsEmpty()) return false;
+	TArray<FLayoutBarrierRecord> Members;
+	for (auto* Actor : Selected)
+	{
+		const auto* Barrier = Cast<ALayoutBarrierActor>(Actor);
+		if (!IsValid(Barrier) || Barrier->GetWorld() != World || !VrgBarrierLifecycle::IsValidTransform(Barrier->GetActorTransform())) return false;
+		Members.Add({FString(), NAME_None, Barrier->GetActorTransform(), Barrier->Kind});  // no identity or actor reference
+	}
+	RackDuplicationMembers.Reset(); SpineDuplicationMembers.Reset(); CduDuplicationMembers.Reset(); CrahDuplicationMembers.Reset();
+	RackAdditionTransform = Members[0].Transform;
+	BarrierAdditionKind = Members[0].Kind;
+	BarrierDuplicationMembers = MoveTemp(Members);
+	bAddingRack = true; bAddingBarrier = true; bAddingSpine = bAddingCdu = bAddingCrah = false; bRackAdditionHasFloor = false;
+	UpdateRackAdditionFromCursor();
+	return true;
+}
+
 bool ADataCenterDebugController::BeginRackDuplication()
 {
 	UWorld* CurrentWorld = GetWorld();
@@ -759,7 +810,7 @@ bool ADataCenterDebugController::BeginRackDuplication()
 
 void ADataCenterDebugController::OnDuplicateLayoutRack()
 {
-	if (!BeginRackDuplication() && !BeginSpineDuplication() && !BeginCduDuplication() && !BeginCrahDuplication())
+	if (!BeginRackDuplication() && !BeginSpineDuplication() && !BeginCduDuplication() && !BeginCrahDuplication() && !BeginBarrierDuplication())
 		UE_LOG(LogTemp, Display, TEXT("[VrgLayout] 복제 거절: 랙 선택 전체 또는 네이티브 스파인 선택 전체 또는 네이티브 CDU 선택 전체 또는 네이티브 CRAH 선택 전체와 배치 대기 상태가 필요합니다."));
 	LogLayoutInputState(TEXT("Ctrl+D"));
 }
@@ -879,6 +930,8 @@ bool ADataCenterDebugController::InputKey(const FInputKeyEventArgs& Params)
 void ADataCenterDebugController::CancelRackAddition()
 {
 	bAddingRack = false;
+	bAddingBarrier = false;
+	BarrierDuplicationMembers.Reset();
 	bAddingSpine = false;
 	bAddingCdu = false;
  bAddingCrah = false;
@@ -894,7 +947,7 @@ void ADataCenterDebugController::UpdateRackAdditionAlongRay(const FVector& EyeCm
 	if (!bAddingRack) return;
 	FVector FloorCm;
 	bRackAdditionHasFloor = IsLayoutMode() && IsCameraInputAvailable()
-		&& FloorPointSnapped(EyeCm, Direction, (!RackDuplicationMembers.IsEmpty() || !SpineDuplicationMembers.IsEmpty() || !CduDuplicationMembers.IsEmpty() || !CrahDuplicationMembers.IsEmpty()) ? RackAdditionTransform.GetLocation().Z : 0.0, PlaceSnapM, FloorCm);
+		&& FloorPointSnapped(EyeCm, Direction, (!RackDuplicationMembers.IsEmpty() || !SpineDuplicationMembers.IsEmpty() || !CduDuplicationMembers.IsEmpty() || !CrahDuplicationMembers.IsEmpty() || !BarrierDuplicationMembers.IsEmpty()) ? RackAdditionTransform.GetLocation().Z : 0.0, PlaceSnapM, FloorCm);
 	if (bRackAdditionHasFloor) RackAdditionTransform.SetLocation(FloorCm);
 }
 
@@ -929,7 +982,7 @@ void ADataCenterDebugController::LogLayoutInputState(const TCHAR* Context) const
 	FVector EyeCm, Direction, FloorCm;
 	const bool bRay = DeprojectMousePositionToWorld(EyeCm, Direction);
 	const bool bFloor = bRay && FloorPointSnapped(EyeCm, Direction,
-		(!RackDuplicationMembers.IsEmpty() || !SpineDuplicationMembers.IsEmpty() || !CduDuplicationMembers.IsEmpty() || !CrahDuplicationMembers.IsEmpty()) ? RackAdditionTransform.GetLocation().Z : 0.0, PlaceSnapM, FloorCm);
+		(!RackDuplicationMembers.IsEmpty() || !SpineDuplicationMembers.IsEmpty() || !CduDuplicationMembers.IsEmpty() || !CrahDuplicationMembers.IsEmpty() || !BarrierDuplicationMembers.IsEmpty()) ? RackAdditionTransform.GetLocation().Z : 0.0, PlaceSnapM, FloorCm);
 	FTransform Proposed; FVector SizeM;
 	const bool bPreview = GetRackAdditionPreview(Proposed, SizeM);
 	// Opt-in, event-only diagnostics. Observing a ray does not update placement or weaken any guard.
@@ -952,6 +1005,17 @@ bool ADataCenterDebugController::GetRackAdditionPreview(FTransform& Out, FVector
 	if (!bAddingRack || !bRackAdditionHasFloor || !IsLayoutMode() || !IsCameraInputAvailable()
 		|| MemberIndex < 0 || MemberIndex >= GetRackAdditionPreviewCount()) return false;
 	Out = RackAdditionTransform;
+	if (bAddingBarrier)
+	{
+		// Unit box: the preview transform's scale is the barrier size in metres.
+		SizeM = ALayoutBarrierActor::UnitBoxM();
+		if (BarrierDuplicationMembers.Num() > 1)
+		{
+			Out = BarrierDuplicationMembers[MemberIndex].Transform;
+			Out.AddToTranslation(RackAdditionTransform.GetLocation() - BarrierDuplicationMembers[0].Transform.GetLocation());
+		}
+		return true;
+	}
 	// Reuse the authored GJ geometry; no new equipment dimensions or physical defaults.
  if (bAddingCrah)
  {
@@ -1012,8 +1076,9 @@ bool ADataCenterDebugController::IsRackAdditionBlocked() const
 	for (int32 I = 0; I < GetRackAdditionPreviewCount(); ++I)
 	{
 		FTransform Proposed; FVector SizeM; FLayoutFootprint Candidate;
-		if (!GetRackAdditionPreview(Proposed, SizeM, I) || IsLayoutBoxBlocked(GetWorld(), SizeM, Proposed)
+		if (!GetRackAdditionPreview(Proposed, SizeM, I) || IsLayoutBoxBlocked(GetWorld(), SizeM, Proposed, nullptr, bAddingBarrier)
 			|| !MakeLayoutFootprint(SizeM, Proposed, Candidate)) return true;
+		Candidate.bBarrier = bAddingBarrier;
 		for (const auto& Other : Footprints) if (FootprintsConflict(Candidate, Other)) return true;
 		for(const auto& R:Automatic) {
    FLayoutFootprint Other;
@@ -1026,6 +1091,7 @@ bool ADataCenterDebugController::IsRackAdditionBlocked() const
 
 ARackThermalActor* ADataCenterDebugController::ConfirmRackAddition()
 {
+	if (bAddingBarrier) { ConfirmBarrierAddition(); return nullptr; }
 	if (bAddingCrah) { ConfirmCrahAddition(); return nullptr; }
  if (bAddingCdu) { ConfirmCduAddition(); return nullptr; }
 	if (bAddingSpine) { ConfirmSpineAddition(); return nullptr; }
@@ -1227,7 +1293,7 @@ bool ADataCenterDebugController::TryDeleteLayoutRack()
 
 void ADataCenterDebugController::OnDeleteLayoutEquipment()
 {
-	if (!TryDeleteLayoutRack() && !TryDeleteLayoutSpine() && !TryDeleteLayoutCdu() && !TryDeleteLayoutCrah())
+	if (!TryDeleteLayoutRack() && !TryDeleteLayoutSpine() && !TryDeleteLayoutCdu() && !TryDeleteLayoutCrah() && !TryDeleteLayoutBarrier())
 		UE_LOG(LogTemp, Display, TEXT("[VrgLayout] 삭제 거절: 랙 선택 전체 또는 네이티브 스파인 선택 전체 또는 네이티브 CDU 선택 전체 또는 네이티브 CRAH 선택 전체와 배치 대기 상태가 필요합니다."));
 }
 
@@ -1308,6 +1374,109 @@ bool ADataCenterDebugController::TryDeleteLayoutSpine()
 	return true;
 }
 
+ALayoutBarrierActor* ADataCenterDebugController::ConfirmBarrierAddition()
+{
+	FTransform Proposed; FVector SizeM;
+	if (!bAddingBarrier || !GetWorld() || !GetWorld()->IsGameWorld()
+		|| !GetRackAdditionPreview(Proposed, SizeM) || IsRackAdditionBlocked())
+	{
+		UE_LOG(LogTemp, Display, TEXT("[VrgLayout] 벽/차단막 추가 거절: 목적지 없음 또는 장비와 겹침"));
+		return nullptr;
+	}
+	const bool bDuplicating = !BarrierDuplicationMembers.IsEmpty();
+	FLayoutTransformCommand Command;  // bBeforePresent=false: Undo removes the whole creation
+	for (int32 I = 0; I < GetRackAdditionPreviewCount(); ++I)
+	{
+		GetRackAdditionPreview(Proposed, SizeM, I);
+		FLayoutBarrierRecord R;
+		R.Id = FGuid::NewGuid().ToString();
+		R.Kind = bDuplicating ? BarrierDuplicationMembers[I].Kind : BarrierAdditionKind;
+		R.Name = MakeUniqueObjectName(GetWorld()->PersistentLevel, ALayoutBarrierActor::StaticClass(),
+			FName(*((R.Kind == EBarrierKind::Wall ? TEXT("Wall_") : TEXT("Curtain_")) + R.Id)));
+		R.Transform = Proposed;
+		Command.Barriers.Add(R);
+	}
+	if (!RestoreBarrierPresence(Command, true)) return nullptr;
+	PushLayoutCommand(Command);
+	CancelRackAddition();
+	LayoutSelection.Reset();
+	for (const auto& R : Command.Barriers) LayoutSelection.Add(VrgBarrierLifecycle::Find(GetWorld(), R.Id));
+	auto* First = VrgBarrierLifecycle::Find(GetWorld(), Command.Barriers[0].Id);
+	UE_LOG(LogTemp, Display, TEXT("[VrgLayout] %s %s: %d개 | 크기 %s m"), Command.Barriers[0].Kind == EBarrierKind::Wall ? TEXT("벽") : TEXT("차단막"),
+		bDuplicating ? TEXT("복제") : TEXT("추가"), Command.Barriers.Num(), First ? *First->GetSizeM().ToCompactString() : TEXT("-"));
+	return First;
+}
+
+bool ADataCenterDebugController::TryDeleteLayoutBarrier()
+{
+	UWorld* World = GetWorld();
+	if (!World || !World->IsGameWorld() || !IsLayoutMode() || !IsCameraInputAvailable()
+		|| bAddingRack || IsLayoutDragging() || bMarqueeActive || Grabbed.IsValid() || IsInputKeyDown(EKeys::RightMouseButton)) return false;
+	const auto Selected = GetSelectedLayoutActors();
+	if (Selected.IsEmpty()) return false;
+	FLayoutTransformCommand Command; Command.bBeforePresent = true;
+	for (auto* Actor : Selected)
+	{
+		auto* Barrier = Cast<ALayoutBarrierActor>(Actor);
+		if (!IsValid(Barrier) || Barrier->GetWorld() != World) return false;
+		Command.Barriers.Add({VrgBarrierLifecycle::Identity(Barrier), Barrier->GetFName(), Barrier->GetActorTransform(), Barrier->Kind});
+	}
+	if (!RestoreBarrierPresence(Command, true)) return false;
+	PushLayoutCommand(MoveTemp(Command));
+	UE_LOG(LogTemp, Display, TEXT("[VrgLayout] 벽/차단막 삭제: %d개"), Selected.Num());
+	return true;
+}
+
+bool ADataCenterDebugController::RestoreBarrierPresence(const FLayoutTransformCommand& Command, bool bRedo)
+{
+	UWorld* World = GetWorld();
+	if (!World || !World->IsGameWorld() || Command.Barriers.IsEmpty()) return false;
+	const bool bTargetPresent = bRedo ? !Command.bBeforePresent : Command.bBeforePresent;
+	TSet<FString> Ids; TSet<FName> Names;
+	TArray<ALayoutBarrierActor*> Present;
+	// Validate everything before touching the world (same 1 cm equipment clearance as drags; barriers may overlap).
+	for (const FLayoutBarrierRecord& R : Command.Barriers)
+	{
+		if (R.Id.IsEmpty() || Ids.Contains(R.Id) || Names.Contains(R.Name)) return false;
+		Ids.Add(R.Id); Names.Add(R.Name);
+		auto* Barrier = VrgBarrierLifecycle::Find(World, R.Id);
+		if (bTargetPresent)
+		{
+			if (Barrier || FindObjectFast<UObject>(World->PersistentLevel, R.Name) || !VrgBarrierLifecycle::IsValidTransform(R.Transform)
+				|| IsLayoutBoxBlocked(World, ALayoutBarrierActor::UnitBoxM(), R.Transform, nullptr, true)) return false;
+		}
+		else
+		{
+			if (!Barrier || Barrier->GetFName() != R.Name || Barrier->Kind != R.Kind || !Barrier->GetActorTransform().Equals(R.Transform)) return false;
+			Present.Add(Barrier);
+		}
+	}
+	if (bTargetPresent)
+	{
+		for (const FLayoutBarrierRecord& R : Command.Barriers)
+		{
+			auto* Barrier = VrgBarrierLifecycle::Spawn(World, R);
+			if (!Barrier)
+			{
+				if (!Present.IsEmpty()) verify(VrgBarrierLifecycle::RemoveBatch(Present));
+				return false;
+			}
+			Present.Add(Barrier);
+		}
+		// Earlier move/scale/rotate commands of the same barrier follow the recreated actor.
+		for (auto* Stack : {&LayoutUndo, &LayoutRedo})
+			for (FLayoutTransformCommand& C : *Stack)
+				for (FLayoutTransformMember& M : C.Members)
+					for (auto* Barrier : Present)
+						if (!M.BarrierId.IsEmpty() && M.BarrierId == VrgBarrierLifecycle::Identity(Barrier)) M.Actor = Barrier;
+	}
+	else if (!VrgBarrierLifecycle::RemoveBatch(Present)) return false;
+	// Barriers are not in the room's routing; only selections and the air coupling need refreshing.
+	RefreshLayoutEquipmentReferences(false);
+	if (ADataCenterSimulationActor* Sim = FindSimActor()) Sim->RebuildCoupling();
+	return true;
+}
+
 bool ADataCenterDebugController::TryLayoutMove(AActor* Actor, const FVector& TargetCm)
 {
 	if (bAddingRack || bMarqueeActive) return false;
@@ -1356,7 +1525,8 @@ void ADataCenterDebugController::RecordLayoutTransforms(const TArray<AActor*>& A
   Command.Members.Add({Actors[I], Before[I], After, Rack ? Rack->LayoutId : FString(),
    Spine ? VrgSpineLifecycle::Identity(Spine) : FString(),
    Cast<ACoolingDistributionUnitActor>(Actors[I]) ? VrgCduLifecycle::Identity(CastChecked<ACoolingDistributionUnitActor>(Actors[I])) : FString(),
-   Cast<ACrahUnitActor>(Actors[I]) ? VrgCrahLifecycle::Identity(CastChecked<ACrahUnitActor>(Actors[I])) : FString()});
+   Cast<ACrahUnitActor>(Actors[I]) ? VrgCrahLifecycle::Identity(CastChecked<ACrahUnitActor>(Actors[I])) : FString(),
+   Cast<ALayoutBarrierActor>(Actors[I]) ? VrgBarrierLifecycle::Identity(CastChecked<ALayoutBarrierActor>(Actors[I])) : FString()});
 	}
 	if (!bChanged) return;
 	PushLayoutCommand(MoveTemp(Command));
@@ -1392,6 +1562,11 @@ bool ADataCenterDebugController::RestoreLayoutTransform(bool bRedo)
 		UE_LOG(LogTemp, Display, TEXT("[VrgLayout] 방 %s 거절: %s"), bRedo ? TEXT("Redo") : TEXT("Undo"), *Reason);
 		if (GEngine) GEngine->AddOnScreenDebugMessage(static_cast<uint64>(GetUniqueID()) + 23, 6.0f, FColor::Red, Reason);
 		return false; // Neither stack nor world state changes on invalid restoration.
+	}
+	if (!Command.Barriers.IsEmpty())
+	{
+		if (!RestoreBarrierPresence(Command, bRedo)) return false;
+		From.Pop(); To.Add(Command); return true;
 	}
 	if (!Command.Crahs.IsEmpty())
  {
@@ -1892,6 +2067,13 @@ void ADataCenterDebugController::OnSelectLayoutEquipment()
 			ConfirmRackAddition();
 			return;
 		}
+		// A gizmo handle of the selected barrier takes the click before any box underneath it.
+		float GizmoX = 0.0f, GizmoY = 0.0f;
+		if (GetLayoutGizmoTarget() && GetMousePosition(GizmoX, GizmoY))
+		{
+			const int32 Axis = PickLayoutGizmoAxis(FVector2D(GizmoX, GizmoY));
+			if (Axis != INDEX_NONE && BeginLayoutGizmoDrag(Axis, EyeCm, Direction, FVector2D(GizmoX, GizmoY))) return;
+		}
 		const bool bShift = IsInputKeyDown(EKeys::LeftShift) || IsInputKeyDown(EKeys::RightShift);
 		if (!PickPlaceableAlongRay(GetWorld(), EyeCm, Direction, TNumericLimits<double>::Max()))
 		{
@@ -2071,6 +2253,8 @@ bool ADataCenterDebugController::GetLayoutRowSnapGuide(FVector& StartCm, FVector
 
 void ADataCenterDebugController::EndLayoutDrag(bool bCommit)
 {
+	// Every cancel path (Esc, focus, patch, mode change) ends the gizmo the same way: release commits, cancel restores.
+	if (GizmoDrag.bActive) { EndLayoutGizmoDrag(bCommit); return; }
 	const bool bHadDrag = IsLayoutDragging();
 	if (bHadDrag) LogLayoutInputState(bCommit ? TEXT("DragEndCommitBegin") : TEXT("DragEndCancelBegin"));
 	if (bCommit && bDragMoved && IsLayoutDragging() && IsLayoutMode() && IsCameraInputAvailable()
@@ -2144,6 +2328,13 @@ void ADataCenterDebugController::OnCancelLayoutDrag()
 void ADataCenterDebugController::UpdateLayoutDragFromCursor()
 {
 	if (!IsLayoutDragging()) return;
+	if (GizmoDrag.bActive)
+	{
+		FVector EyeCm, Direction; FVector2D Screen;
+		if (!MouseRay(EyeCm, Direction, Screen)) { EndLayoutGizmoDrag(false); return; }  // focus lost / left the viewport
+		UpdateLayoutGizmoDrag(EyeCm, Direction, Screen, IsInputKeyDown(EKeys::LeftAlt) || IsInputKeyDown(EKeys::RightAlt));
+		return;
+	}
 	const UGameViewportClient* Client = GetWorld() ? GetWorld()->GetGameViewport() : nullptr;
 	float X = 0.0f, Y = 0.0f;
 	int32 Width = 0, Height = 0;
@@ -2401,7 +2592,13 @@ void ADataCenterDebugController::DrawTargetHighlight() const
 void ADataCenterDebugController::OnToggleSelectedSled()
 {
 	if (bRoomSettingsOpen) return;
-	if (IsLayoutMode() || OpenPatchMaps > 0) return; // E flies up in layout; it must not undock hardware.
+	if (IsLayoutMode())
+	{
+		// E flies up with RMB held; without it, E is the barrier gizmo's rotate mode (Unreal W/E/R).
+		if (OpenPatchMaps == 0 && IsCameraInputAvailable() && !IsInputKeyDown(EKeys::RightMouseButton)) SetLayoutGizmoMode(ELayoutGizmoMode::Rotate);
+		return; // never undocks hardware in layout
+	}
+	if (OpenPatchMaps > 0) return;
 	// Only the unit being looked at. Nothing happens when the view ray hits no rack or no unit (blank, frame).
 	ARackThermalActor* Rack = TargetRack.Get();
 	if (Rack == nullptr || SelectedSledIndex == INDEX_NONE)
@@ -2428,6 +2625,8 @@ void ADataCenterDebugController::OnResetSim()
 			return;
 		}
 		if (!IsCameraInputAvailable() || IsLayoutDragging() || bMarqueeActive || IsInputKeyDown(EKeys::RightMouseButton) || Grabbed.IsValid()) return;
+		// One selected wall/curtain: R is the gizmo's scale mode, as in Unreal (rotation is the E ring, 15 degree snap).
+		if (SetLayoutGizmoMode(ELayoutGizmoMode::Scale)) return;
 		if (GetSelectedLayoutActors().Num() > 1)
 		{
 			if (!TryRotateLayoutSelection()) { UE_LOG(LogTemp, Display, TEXT("[VrgLayout] 그룹 회전 거절")); }
@@ -2514,8 +2713,18 @@ void ADataCenterDebugController::Tick(float DeltaTime)
 		if (const AActor* H = HoveredPlaceable.Get(); H != nullptr && PlaceableBoxM(H, SizeM))
 		{
 			const FVector HalfCm = SizeM * 50.0;
-			DrawDebugBox(GetWorld(), H->GetActorLocation() + H->GetActorUpVector() * HalfCm.Z, HalfCm, H->GetActorQuat(),
-				Grabbed.IsValid() ? FColor::Orange : FColor::Cyan, false, 0.0f, 0, 2.0f);
+			DrawDebugBox(GetWorld(), H->GetActorTransform().TransformPosition(FVector(0, 0, HalfCm.Z)), HalfCm * H->GetActorScale3D().GetAbs(),
+				H->GetActorQuat(), Grabbed.IsValid() ? FColor::Orange : FColor::Cyan, false, 0.0f, 0, 2.0f);
+		}
+		// Barrier gizmo: hover highlight from the cursor, then the handles. A blocked live edit shows the box red.
+		{
+			FVector GizmoEye, GizmoDir; FVector2D GizmoScreen;
+			GizmoHoverAxis = !GizmoDrag.bActive && GetLayoutGizmoTarget() && MouseRay(GizmoEye, GizmoDir, GizmoScreen)
+				? PickLayoutGizmoAxis(GizmoScreen) : INDEX_NONE;
+			if (const ALayoutBarrierActor* Edited = GizmoDrag.bActive ? GizmoDrag.Target.Get() : nullptr; Edited && IsLayoutGizmoBlocked())
+				DrawDebugBox(GetWorld(), Edited->GetActorTransform().TransformPosition(FVector(0, 0, 50.0)), FVector(50.0) * Edited->GetActorScale3D().GetAbs(),
+					Edited->GetActorQuat(), FColor::Red, false, 0.0f, 0, 4.0f);
+			DrawLayoutGizmo();
 		}
 		const bool bPreviewBlocked = IsLayoutDragPreviewBlocked();
 		FVector GuideStart, GuideEnd;
@@ -2567,10 +2776,7 @@ void ADataCenterDebugController::Tick(float DeltaTime)
 	SelectedSledIndex = Looked != nullptr ? SlotAtHeight(*Looked, HitZM) : INDEX_NONE;
 	DrawTargetHighlight();
 
-	if (bShowHelp)
-	{
-		DrawHelp();
-	}
+	DrawHelp();  // debug readout only (vrg.Hud.Debug 1); the key hint is drawn by ADataCenterLayoutHud
 }
 
 void ADataCenterDebugController::SetPatchMapOpen(bool bOpen)
@@ -2793,6 +2999,42 @@ bool ADataCenterDebugController::ApplyRoomSettings(const FRoomAirDomainSettings&
 	return true;
 }
 
+void ADataCenterDebugController::GetHelpLines(TArray<FString>& Out) const
+{
+	// Drawn by ADataCenterLayoutHud on the canvas (not as on-screen debug messages, which also print the engine's
+	// "DisableAllScreenMessages" hint).
+	Out.Reset();
+	const bool bLayout = IsLayoutMode();
+
+	// One short line by default; H opens the grouped list. Readouts stay in the log (vrg.Hud.Debug 1 shows them).
+	if (!bShowHelp)
+	{
+		FString Line = bLayout ? TEXT("H 단축키 보기 | Enter 시뮬레이션") : TEXT("H 단축키 보기 | Enter 배치 모드");
+		if (bLayout && GetLayoutGizmoTarget())
+		{
+			Line += FString::Printf(TEXT(" | 벽 기즈모: %s (W 이동 · E 회전 · R 크기 · Space 전환 · Alt 스냅 끔)"),
+				GizmoMode == ELayoutGizmoMode::Translate ? TEXT("이동") : GizmoMode == ELayoutGizmoMode::Rotate ? TEXT("회전") : TEXT("크기"));
+		}
+		Out.Add(Line);
+		return;
+	}
+	const TCHAR* LayoutLines[] = {
+		TEXT("[선택] 클릭 · Shift+클릭 추가/제거 · 빈 곳 드래그 사각형 · F 선택 보기"),
+		TEXT("[이동] 장비 드래그(5 cm 스냅, 랙 줄 붙이기 / Alt 해제) · R 90도 회전 · Esc 취소"),
+		TEXT("[편집] 아래 버튼으로 추가(클릭 확정 / R 회전 / Esc) · Ctrl+D 복제 · Delete 삭제 · Ctrl+Z / Ctrl+Y"),
+		TEXT("[벽·차단막] 하나 선택 시 기즈모: W 이동 · E 회전(15도) · R 크기 · Space 전환 · Alt 스냅 끔"),
+		TEXT("[카메라] 우클릭+마우스 회전 · 우클릭+WASD/QE 비행 · 휠 전후 · 우클릭+휠 속도"),
+		TEXT("[기타] C 컨테인먼트 · Enter 시뮬레이션 · H 닫기"),
+	};
+	const TCHAR* SimLines[] = {
+		TEXT("[시뮬레이션] Enter 배치 모드 · R 처음부터 다시 · H 닫기"),
+		TEXT("[조절] 1/2 CPU 발열 · 3/4 GPU 발열 · 5/6 펌프 회전수 · 7/8 라디에이터 UA · 9/0 부하율"),
+		TEXT("[장비] E 바라보는 유닛 뽑기/꽂기"),
+	};
+	if (bLayout) for (const TCHAR* Text : LayoutLines) Out.Add(Text);
+	else for (const TCHAR* Text : SimLines) Out.Add(Text);
+}
+
 void ADataCenterDebugController::DrawHelp() const
 {
 	if (GEngine == nullptr)
@@ -2801,11 +3043,6 @@ void ADataCenterDebugController::DrawHelp() const
 	}
 
 	const uint64 BaseKey = static_cast<uint64>(GetUniqueID());
-
-	GEngine->AddOnScreenDebugMessage(BaseKey, 0.0f, FColor(180, 220, 255),
-		IsLayoutMode()
-		? TEXT("[배치 키] Shift+클릭 추가/제거 | 빈 곳 드래그 사각형 선택·Shift 추가 | 장비 드래그 그룹 이동/빨강 거절/Esc 취소 | 단일 랙 줄 붙이기/Alt 해제 | Ctrl+D 랙/스파인/CDU/CRAH 선택 전체 복제 | Ctrl+Z/Y 배치 실행 취소/다시 실행 | 추가/복제: 클릭 확정/R 회전/Esc 취소 | R 선택 90도 회전 | Delete 랙/스파인/CDU/CRAH 선택 전체 삭제 | F 선택/없으면 전체 | 우클릭+마우스/WASD/QE 비행·휠 속도 | 휠 전후 | G/T 단일만 C 컨테인먼트 Enter 시뮬레이션 H 도움말")
-		: TEXT("[디버그 키] Enter 배치 모드 | 1/2 CPU 발열  3/4 GPU 발열  5/6 펌프 회전수  7/8 라디에이터 UA(랙별 모드)  9/0 부하율  E 바라보는 유닛 뽑기/꽂기  R 리셋  H 도움말"));
 
 	const ARackThermalActor* Rack = TargetRack.Get();
 	FString Selection = TEXT("바라보는 유닛 없음 - 유닛을 조준하고 E");

@@ -62,6 +62,19 @@ void ULayoutRackPalette::NativeOnInitialized()
 	auto* RoomSlot = Canvas->AddChildToCanvas(RoomButton);
 	RoomSlot->SetAnchors(FAnchors(0, 1)); RoomSlot->SetAlignment(FVector2D(0, 1));
 	RoomSlot->SetPosition(FVector2D(20, -74)); RoomSlot->SetSize(FVector2D(240, 44));
+	// Walls / air curtains: impermeable, adiabatic solids in the air grid (second row, next to the room settings).
+	auto AddBarrierButton = [&](const TCHAR* Text, float X)
+	{
+		auto* BarrierButton = WidgetTree->ConstructWidget<ULayoutRackButton>();
+		auto* BarrierLabel = WidgetTree->ConstructWidget<UTextBlock>();
+		BarrierLabel->SetText(FText::FromString(Text)); BarrierLabel->SetFont(Font); BarrierButton->AddChild(BarrierLabel);
+		auto* BarrierSlot = Canvas->AddChildToCanvas(BarrierButton);
+		BarrierSlot->SetAnchors(FAnchors(0, 1)); BarrierSlot->SetAlignment(FVector2D(0, 1));
+		BarrierSlot->SetPosition(FVector2D(X, -74)); BarrierSlot->SetSize(FVector2D(180, 44));
+		return BarrierButton;
+	};
+	AddBarrierButton(TEXT("벽 추가"), 270)->OnClicked.AddDynamic(this, &ULayoutRackPalette::OnAddWall);
+	AddBarrierButton(TEXT("차단막 추가"), 460)->OnClicked.AddDynamic(this, &ULayoutRackPalette::OnAddCurtain);
 }
 
 void ULayoutRackPalette::OnAddRack()
@@ -92,4 +105,14 @@ void ULayoutRackPalette::OnAddPerimeterCrah()
 void ULayoutRackPalette::OnRoomSettings()
 {
 	if (auto* Controller = Cast<ADataCenterDebugController>(GetOwningPlayer())) Controller->OpenRoomSettings();
+}
+
+void ULayoutRackPalette::OnAddWall()
+{
+	if (auto* Controller = Cast<ADataCenterDebugController>(GetOwningPlayer())) Controller->BeginWallAddition();
+}
+
+void ULayoutRackPalette::OnAddCurtain()
+{
+	if (auto* Controller = Cast<ADataCenterDebugController>(GetOwningPlayer())) Controller->BeginCurtainAddition();
 }

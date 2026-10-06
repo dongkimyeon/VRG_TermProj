@@ -263,6 +263,13 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Cooling|Containment")
 	int32 GetNumContainmentCells() const { return PassiveSolidCells; }
 
+	// ---- Layout walls / curtains (ALayoutBarrierActor), 2026-10-06 ----
+	// Air cells turned solid by barriers, barrier cells left open next to equipment (duct faces / intake layers),
+	// and fan ducts whose intake and exhaust ended up in separate air regions at the last rebuild.
+	int32 GetNumBarrierCells() const { return BarrierSolidCells; }
+	int32 GetNumBarrierCellsKeptOpen() const { return BarrierCellsKeptOpen; }
+	int32 GetNumSplitDucts() const { return SplitDucts; }
+
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Visualization")
 	bool bShowSummary = true;
 
@@ -381,6 +388,12 @@ private:
 	void GroupCabinetRows();
 	static constexpr int32 PassiveSolidOwner = -2;
 	int32 PassiveSolidCells = 0;
+	static constexpr int32 BarrierSolidOwner = -3;
+	int32 BarrierSolidCells = 0;
+	int32 BarrierCellsKeptOpen = 0;
+	int32 SplitDucts = 0;
+	// Walls / curtains as solids. Runs after the cabinets, CRAH units and containment have their cells.
+	void MarkBarrierSolidCells(FUniformAirGrid& Grid, const FVector& GridOriginM);
 
 	// ---- CRAH units ----
 	struct FCrahPlacement
