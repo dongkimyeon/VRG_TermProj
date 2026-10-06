@@ -9,6 +9,7 @@
 #include "Actors/SpineCabinetActor.h"
 #include "Actors/CoolingDistributionUnitActor.h"
 #include "Interaction/VrgCrahLifecycle.h"
+#include "Simulation/Air/RoomAirDomain.h"
 #include "DataCenterDebugController.generated.h"
 
 class ARackThermalActor;
@@ -16,6 +17,7 @@ class ADataCenterRoomActor;
 class UInputAction;
 class UInputMappingContext;
 class ULayoutRackPalette;
+class URoomSettingsWidget;
 
 // 런타임에 시뮬레이션 파라미터를 돌려 보기 위한 디버그 입력.
 //
@@ -64,6 +66,12 @@ public:
 	// The patch window temporarily owns mouse focus; restore the current mode when it closes.
 	void SetPatchMapOpen(bool bOpen);
 	void RefreshInteractionInputMode();
+	bool OpenRoomSettings();
+	void CloseRoomSettings(URoomSettingsWidget* ExpectedWidget = nullptr);
+	bool IsRoomSettingsOpen() const { return bRoomSettingsOpen; }
+	FRoomAirDomainSettings GetRoomSettingsDraft() const;
+	FString DescribeRoomSettingsPlan(const FRoomAirDomainSettings& Settings);
+	bool ApplyRoomSettings(const FRoomAirDomainSettings& Settings, FString& Message);
 
 	// CPU 칩 하나의 전부하 발열 [W].
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Debug")
@@ -258,6 +266,8 @@ private:
 	void RebindLayoutRack(ARackThermalActor* Rack, ARackThermalActor* Previous = nullptr);
 	UPROPERTY(Transient)
 	TObjectPtr<ULayoutRackPalette> RackPalette;
+	UPROPERTY(Transient) TObjectPtr<URoomSettingsWidget> RoomSettingsWidget;
+	bool bRoomSettingsOpen = false;
 	bool bAddingRack = false; // Shared equipment preview activity; existing input guards use this flag.
 	bool bAddingSpine = false;
 	bool bAddingCdu = false;

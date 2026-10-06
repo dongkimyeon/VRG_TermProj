@@ -3758,3 +3758,13 @@ RoomAirDomainCoupling은 GB200 NVL72 두 마주 보는 줄·CDU 하나의 같은
 
 검증: 신규 RoomAirDomainCoupling과 기존 CrahAdditionCoupling/CrahPersistenceCoupling/PerimeterCrahAdditionPersistenceCoupling4종 무경고 성공. 같은 최초 실행의 Foundation1종은 앞 절의 테스트 준비 실패였고 수정 후 해당1종만 재실행 무경고 성공(종료0). **신규2+기존3=고유 영향5종 최종 성공**, 성공한4종/전체 테스트 반복 없음. 시작 순서와 자원 경계/따뜻한 거절은 최종 Foundation에서 보강했다. 수동 방 UI 입력·L_Test 화면·GPU/옥트리 운전·장시간 정상상태·FPS·시설 전체 정확도는 이번 검증에 포함하지 않는다.
 실행: E:\UE_5.8 Editor Win64 Development 성공 뒤 RunTests에 위5종을 +로 묶어 -unattended -NullRHI; 마지막은 Foundation만. 로컬 근거(커밋 제외): Saved/Build_RoomDomain{_Final,_Boundary,_Fixture}.log, Saved/Logs/RoomDomain_Tests.log, Saved/Automation/RoomDomain/index.json(최초4성공/1실패), Saved/Logs/RoomDomain_FoundationFinal_Tests.log, Saved/Automation/RoomDomain_FoundationFinal/index.json(최종1성공/0실패).
+## 2026-10-06 방 설정 UI·입력 소유
+
+기존 비포커스 배치 팔레트의 방 설정 버튼이 모달 창을 연다. 자동 맞춤/수동 체크와 XY 최소/최대·천장 높이를 m로 입력한다. 입력은 초안이고 적용 버튼만 기존 TrySetRoomAirDomain으로 확정한다. 숫자는 FDefaultValueHelper로 전체 문자열을 파싱하고 유한값을 요구한다. 잘못된 숫자/포함·자원 오류는 빨간 이유로 표시하며 필드/적용 설정/실제 격자는 유지한다. 수동 적용 후 계획 원점·최대·축별/총 셀 수/h를 표시한다. 자동 모드는 기존 진입 시 맞춤으로 결정됨을 명시하며 자동 범위를 미리 확정했다고 표시하지 않는다.
+
+처음 비어 있는 자동 입력은 현재 AirField 경계에서 초안을 채우며 Fit/Reset을 하지 않는다. 자동 적용의 비활성 숫자는 이전 적용값을 유지한다. m 값은 %.17g로 읽어 편집하지 않은 값이 표시 반올림 때문에 새 변경이 되지 않게 했다. 긴 오류/계획은 스크롤 영역이다. 별도 물성/방 치수 기본값 없음.
+
+창이 열린 동안 UIOnly와 명시 입력 게이트를 사용한다. 장비 선택/추가/삭제/복제/이동/R·G/T·컨테인먼트·모드/열 손잡이·카메라/F·세계 Undo/Redo를 차단한다. 숫자 칸의 텍스트 편집 기능과 전역 배치 기록은 구분한다. 열기/닫기 때 남은 키를 비우고 Ctrl 상태를 초기화한다. 편집/우클릭 비행/패치/시뮬레이션 중 창 진입을 거절한다. Esc/닫기는 미확정 초안을 버리고 적용된 설정은 유지한다. 패치 진입·외부 모드 전환도 닫으며 기존 뷰포트 포커스/팔레트/커서를 복구한다. 오래된 위젯 Destruct는 새 창을 닫지 못하도록 자기 참조를 확인한다.
+
+검증: 첫 Editor124.74s 실패는 TObjectPtr 배열에 auto*를 사용한 위젯 컴파일 오류였다. const auto&로 수정, 키 정리/스크롤/위젯 수명 보강 후 Editor86.94s 성공. 신규 RoomSettingsUiInput과 기존 CameraInputAndMode/RoomAirDomainFoundation/RoomAirDomainCoupling 4종 무경고 성공(실패0/미실행0/종료0). 숫자/초안/적용·20683셀 표시·거절·지연 격자·장비/카메라 입력 차단·닫은 뒤 합성 카메라 입력 복귀·패치/외부 모드 종료를 검사했다. 입력 중 장비 변환/시계/기존 격자 변경0(cm/°/s/셀); 비교는 정확 불변 및 기존 변환 Equals 기준. 기존 물리/오차 기준 유지. OS/Slate 실제 포커스·렌더는 이 합성 검사로 완료하지 않는다. 실제 화면과 방 Undo/Redo는 후속 커밋에서 정리한다.
+실행: E:\UE_5.8 Editor Development 후 위4종 + 묶음 -unattended -NullRHI. 근거(커밋 제외): Saved/Build_RoomSettingsUi{,_Repair}.log, Saved/Logs/RoomSettingsUi_Tests.log, Saved/Automation/RoomSettingsUi/index.json.

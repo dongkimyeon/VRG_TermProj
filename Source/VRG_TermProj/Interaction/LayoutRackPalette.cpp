@@ -55,6 +55,13 @@ void ULayoutRackPalette::NativeOnInitialized()
  auto* PerimeterSlot=Canvas->AddChildToCanvas(PerimeterButton);
  PerimeterSlot->SetAnchors(FAnchors(0,1)); PerimeterSlot->SetAlignment(FVector2D(0,1));
  PerimeterSlot->SetPosition(FVector2D(920,-20)); PerimeterSlot->SetSize(FVector2D(200,44));
+	auto* RoomButton = WidgetTree->ConstructWidget<ULayoutRackButton>();
+	RoomButton->OnClicked.AddDynamic(this, &ULayoutRackPalette::OnRoomSettings);
+	auto* RoomLabel = WidgetTree->ConstructWidget<UTextBlock>();
+	RoomLabel->SetText(FText::FromString(TEXT("방 설정 (m)"))); RoomLabel->SetFont(Font); RoomButton->AddChild(RoomLabel);
+	auto* RoomSlot = Canvas->AddChildToCanvas(RoomButton);
+	RoomSlot->SetAnchors(FAnchors(0, 1)); RoomSlot->SetAlignment(FVector2D(0, 1));
+	RoomSlot->SetPosition(FVector2D(20, -74)); RoomSlot->SetSize(FVector2D(240, 44));
 }
 
 void ULayoutRackPalette::OnAddRack()
@@ -80,4 +87,9 @@ void ULayoutRackPalette::OnAddCrah()
 void ULayoutRackPalette::OnAddPerimeterCrah()
 {
  if(auto* Controller=Cast<ADataCenterDebugController>(GetOwningPlayer())) Controller->BeginPerimeterCrahAddition();
+}
+
+void ULayoutRackPalette::OnRoomSettings()
+{
+	if (auto* Controller = Cast<ADataCenterDebugController>(GetOwningPlayer())) Controller->OpenRoomSettings();
 }

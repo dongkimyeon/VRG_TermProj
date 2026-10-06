@@ -8,6 +8,7 @@
 #include "Interaction/VrgCrahLayoutState.h"
 #include "Interaction/VrgSpineLayoutState.h"
 #include "Interaction/LayoutRackPalette.h"
+#include "Interaction/RoomSettingsWidget.h"
 #include "Simulation/Core/VrgHud.h"
 
 #include "Actors/DataCenterRoomActor.h"
@@ -15,6 +16,7 @@
 #include "Actors/CoolingDistributionUnitActor.h"
 #include "Actors/CrahUnitActor.h"
 #include "Actors/DataCenterSimulationActor.h"
+#include "Actors/AirFieldDebugActor.h"
 #include "Actors/SpineCabinetActor.h"
 #include "Visualization/GjRackLayout.h"
 #include "Simulation/Core/SimUnits.h"
@@ -30,6 +32,7 @@
 #include "InputKeyEventArgs.h"
 #include "UnrealClient.h"
 #include "GameFramework/PawnMovementComponent.h"
+#include "GameFramework/PlayerInput.h"
 #include "EnhancedInputComponent.h"
 #include "EnhancedInputSubsystems.h"
 #include "Engine/Engine.h"
@@ -343,48 +346,56 @@ void ADataCenterDebugController::ApplyRadiatorKnob()
 
 void ADataCenterDebugController::OnCpuHeatDown()
 {
+	if (bRoomSettingsOpen) return;
 	CpuHeatKnob.Nudge(-1);
 	ApplyHeatKnobs();
 }
 
 void ADataCenterDebugController::OnCpuHeatUp()
 {
+	if (bRoomSettingsOpen) return;
 	CpuHeatKnob.Nudge(1);
 	ApplyHeatKnobs();
 }
 
 void ADataCenterDebugController::OnGpuHeatDown()
 {
+	if (bRoomSettingsOpen) return;
 	GpuHeatKnob.Nudge(-1);
 	ApplyHeatKnobs();
 }
 
 void ADataCenterDebugController::OnGpuHeatUp()
 {
+	if (bRoomSettingsOpen) return;
 	GpuHeatKnob.Nudge(1);
 	ApplyHeatKnobs();
 }
 
 void ADataCenterDebugController::OnPumpSpeedDown()
 {
+	if (bRoomSettingsOpen) return;
 	PumpSpeedKnob.Nudge(-1);
 	ApplyPumpSpeedKnob();
 }
 
 void ADataCenterDebugController::OnPumpSpeedUp()
 {
+	if (bRoomSettingsOpen) return;
 	PumpSpeedKnob.Nudge(1);
 	ApplyPumpSpeedKnob();
 }
 
 void ADataCenterDebugController::OnRadiatorDown()
 {
+	if (bRoomSettingsOpen) return;
 	RadiatorUAKnob.Nudge(-1);
 	ApplyRadiatorKnob();
 }
 
 void ADataCenterDebugController::OnRadiatorUp()
 {
+	if (bRoomSettingsOpen) return;
 	RadiatorUAKnob.Nudge(1);
 	ApplyRadiatorKnob();
 }
@@ -403,12 +414,14 @@ void ADataCenterDebugController::ApplyUtilizationKnob()
 
 void ADataCenterDebugController::OnUtilizationDown()
 {
+	if (bRoomSettingsOpen) return;
 	UtilizationKnob.Nudge(-1);
 	ApplyUtilizationKnob();
 }
 
 void ADataCenterDebugController::OnUtilizationUp()
 {
+	if (bRoomSettingsOpen) return;
 	UtilizationKnob.Nudge(+1);
 	ApplyUtilizationKnob();
 }
@@ -827,6 +840,11 @@ bool ADataCenterDebugController::BeginCrahDuplication()
 
 bool ADataCenterDebugController::InputKey(const FInputKeyEventArgs& Params)
 {
+	if (bRoomSettingsOpen)
+	{
+		if (Params.Key == EKeys::Escape && Params.Event == IE_Pressed) CloseRoomSettings();
+		return true; // UIOnly routes typing to the text box; never forward world shortcuts.
+	}
 	if (Params.Key == EKeys::LeftMouseButton)
 	{
 		if (Params.Event == IE_Pressed) LogLayoutInputState(TEXT("RawLmbPressBefore"));
@@ -2288,6 +2306,7 @@ bool ADataCenterDebugController::IsLayoutMode() const
 
 void ADataCenterDebugController::OnToggleSimMode()
 {
+	if (bRoomSettingsOpen) return;
 	CancelRackAddition();
 	EndLayoutMarquee(false);
 	EndLayoutDrag(false);
@@ -2306,6 +2325,7 @@ void ADataCenterDebugController::OnToggleSimMode()
 
 void ADataCenterDebugController::OnGrabOrDrop()
 {
+	if (bRoomSettingsOpen) return;
 	if (bAddingRack || bMarqueeActive) return;
 	if (GetSelectedLayoutActors().Num() > 1) { Grabbed.Reset(); return; }
 	if (IsLayoutDragging()) return;
@@ -2323,6 +2343,7 @@ void ADataCenterDebugController::OnGrabOrDrop()
 
 void ADataCenterDebugController::OnCycleContainment()
 {
+	if (bRoomSettingsOpen) return;
 	// S6: containment is part of the layout (none -> blanking -> blanking + cold-aisle roof); the next simulation entry builds it.
 	ADataCenterSimulationActor* Sim = FindSimActor();
 	if (Sim == nullptr || Sim->GetSimMode() != ESimMode::Layout) return;
@@ -2332,6 +2353,7 @@ void ADataCenterDebugController::OnCycleContainment()
 
 void ADataCenterDebugController::OnRotatePlaceable()
 {
+	if (bRoomSettingsOpen) return;
 	if (bAddingRack || bMarqueeActive) return;
 	if (GetSelectedLayoutActors().Num() > 1) return;
 	if (IsLayoutDragging()) return;
@@ -2362,6 +2384,7 @@ void ADataCenterDebugController::DrawTargetHighlight() const
 
 void ADataCenterDebugController::OnToggleSelectedSled()
 {
+	if (bRoomSettingsOpen) return;
 	if (IsLayoutMode() || OpenPatchMaps > 0) return; // E flies up in layout; it must not undock hardware.
 	// Only the unit being looked at. Nothing happens when the view ray hits no rack or no unit (blank, frame).
 	ARackThermalActor* Rack = TargetRack.Get();
@@ -2380,6 +2403,7 @@ void ADataCenterDebugController::OnToggleSelectedSled()
 
 void ADataCenterDebugController::OnResetSim()
 {
+	if (bRoomSettingsOpen) return;
 	if (IsLayoutMode())
 	{
 		if (bAddingRack)
@@ -2424,6 +2448,7 @@ void ADataCenterDebugController::OnResetSim()
 
 void ADataCenterDebugController::OnToggleHelp()
 {
+	if (bRoomSettingsOpen) return;
 	bShowHelp = !bShowHelp;
 }
 
@@ -2435,7 +2460,7 @@ void ADataCenterDebugController::Tick(float DeltaTime)
 	RefreshTargetsIfStale(DeltaTime);
 
 	// Start view: retried for a few frames (the pawn is possessed after BeginPlay), then given up.
-	if (bFrameEquipmentOnStart && StartFrameAttempts >= 0 && StartFrameAttempts < 30)
+	if (!bRoomSettingsOpen && bFrameEquipmentOnStart && StartFrameAttempts >= 0 && StartFrameAttempts < 30)
 	{
 		StartFrameAttempts = TryFrameEquipment() ? -1 : StartFrameAttempts + 1;
 	}
@@ -2534,6 +2559,7 @@ void ADataCenterDebugController::Tick(float DeltaTime)
 
 void ADataCenterDebugController::SetPatchMapOpen(bool bOpen)
 {
+	if (bOpen) CloseRoomSettings();
 	if (bOpen) CancelRackAddition();
 	if (bOpen && RackPalette) RackPalette->SetVisibility(ESlateVisibility::Collapsed);
 	if (bOpen) EndLayoutMarquee(false);
@@ -2561,7 +2587,7 @@ bool ADataCenterDebugController::IsMoveInputIgnored() const
 
 bool ADataCenterDebugController::IsCameraInputAvailable() const
 {
-	if (OpenPatchMaps > 0 || !InputEnabled() || IsPaused()) return false;
+	if (bRoomSettingsOpen || OpenPatchMaps > 0 || !InputEnabled() || IsPaused()) return false;
 	const UGameViewportClient* Viewport = GetWorld() ? GetWorld()->GetGameViewport() : nullptr;
 	return !Viewport || !Viewport->ViewportConsole || Viewport->ViewportConsole->ConsoleState == NAME_None;
 }
@@ -2638,6 +2664,11 @@ void ADataCenterDebugController::OnCameraWheelDown()
 
 void ADataCenterDebugController::RefreshInteractionInputMode()
 {
+	if (bRoomSettingsOpen)
+	{
+		if (!IsLayoutMode()) CloseRoomSettings();
+		return; // UIOnly must survive normal per-frame input-mode refresh.
+	}
 	if (!IsLayoutMode()) { CancelRackAddition(); EndLayoutMarquee(false); EndLayoutDrag(false); LayoutSelection.Reset(); }
 	if (OpenPatchMaps > 0) return;
 	const bool bLayout = IsLayoutMode();
@@ -2664,6 +2695,79 @@ void ADataCenterDebugController::RefreshInteractionInputMode()
 		SetInputMode(Mode);
 	}
 	else SetInputMode(FInputModeGameOnly());
+}
+
+bool ADataCenterDebugController::OpenRoomSettings()
+{
+	if (!GetWorld() || !GetWorld()->IsGameWorld() || !FindSimActor() || !IsLayoutMode() || !IsCameraInputAvailable()
+		|| bAddingRack || bMarqueeActive || IsLayoutDragging() || Grabbed.IsValid() || IsInputKeyDown(EKeys::RightMouseButton)) return false;
+	if (GetLocalPlayer())
+	{
+		RoomSettingsWidget = CreateWidget<URoomSettingsWidget>(this);
+		if (!RoomSettingsWidget) return false;
+	}
+	bRoomSettingsOpen = true; bInputModeInitialized = false;
+	if (PlayerInput) PlayerInput->FlushPressedKeys();
+	bLayoutLeftControl = bLayoutRightControl = false; RotationInput = FRotator::ZeroRotator;
+	bShowMouseCursor = true;
+	if (RackPalette) RackPalette->SetVisibility(ESlateVisibility::Collapsed);
+	if (RoomSettingsWidget)
+	{
+		RoomSettingsWidget->AddToViewport(110);
+		RoomSettingsWidget->InitializeDraft(GetRoomSettingsDraft());
+		FInputModeUIOnly Input; Input.SetWidgetToFocus(RoomSettingsWidget->TakeWidget());
+		Input.SetLockMouseToViewportBehavior(EMouseLockMode::DoNotLock); SetInputMode(Input);
+	}
+	return true;
+}
+
+void ADataCenterDebugController::CloseRoomSettings(URoomSettingsWidget* ExpectedWidget)
+{
+	if (!bRoomSettingsOpen) return;
+	if (ExpectedWidget && ExpectedWidget != RoomSettingsWidget) return;
+	bRoomSettingsOpen = false;
+	if (PlayerInput) PlayerInput->FlushPressedKeys();
+	bLayoutLeftControl = bLayoutRightControl = false;
+	if (RoomSettingsWidget) { RoomSettingsWidget->RemoveFromParent(); RoomSettingsWidget = nullptr; }
+	bInputModeInitialized = false; RefreshInteractionInputMode();
+}
+
+FRoomAirDomainSettings ADataCenterDebugController::GetRoomSettingsDraft() const
+{
+	auto* Sim = FindSimActor(); FRoomAirDomainSettings Settings = Sim ? Sim->GetRoomAirDomain() : FRoomAirDomainSettings{};
+	if (!Settings.bManual && Settings.CeilingHeightM <= 0 && GetWorld())
+		for (TActorIterator<AAirFieldDebugActor> It(GetWorld()); It; ++It)
+		{
+			// Seed empty input from the CURRENT grid, without refitting/mutating the world or inventing room dimensions.
+			const FVector MinM = SimUnits::UnrealToMeters(It->GetActorLocation()); const auto& P = It->GridParams;
+			Settings.MinXYM = FVector2D(MinM.X, MinM.Y);
+			Settings.MaxXYM = Settings.MinXYM + FVector2D(P.NumCellsX, P.NumCellsY) * P.CellSizeM;
+			Settings.CeilingHeightM = MinM.Z + P.NumCellsZ * P.CellSizeM; break;
+		}
+	return Settings;
+}
+
+FString ADataCenterDebugController::DescribeRoomSettingsPlan(const FRoomAirDomainSettings& Settings)
+{
+	if (!Settings.bManual) return TEXT("자동 맞춤: 시뮬레이션 진입 때 장비 배치로 범위·셀 수를 결정합니다.");
+	auto* Sim = FindSimActor(); if (!Sim) return TEXT("통합 시뮬레이션 액터가 없습니다.");
+	FAirGridParams Grid; FBox Bounds(ForceInit); FString Reason;
+	if (!Sim->ValidateRoomAirDomain(Settings, Grid, Bounds, Reason)) return Reason;
+	return FString::Printf(TEXT("원점 %s m\n최대 %s m\n셀 %dx%dx%d = %d개 (셀 크기 %.6g m)"),
+		*Bounds.Min.ToString(), *Bounds.Max.ToString(), Grid.NumCellsX, Grid.NumCellsY, Grid.NumCellsZ,
+		Grid.NumCellsX * Grid.NumCellsY * Grid.NumCellsZ, Grid.CellSizeM);
+}
+
+bool ADataCenterDebugController::ApplyRoomSettings(const FRoomAirDomainSettings& Settings, FString& Message)
+{
+	auto* Sim = FindSimActor();
+	if (!bRoomSettingsOpen || OpenPatchMaps > 0 || !IsLayoutMode() || !Sim)
+	{ Message = TEXT("배치 모드의 방 설정 창에서 적용하세요."); return false; }
+	auto Candidate = Settings.bManual ? Settings : Sim->GetRoomAirDomain();
+	Candidate.bManual = Settings.bManual; // Disabled draft numbers cannot edit inactive automatic settings.
+	if (!Sim->TrySetRoomAirDomain(Candidate, Message)) return false;
+	Message = DescribeRoomSettingsPlan(Candidate);
+	return true;
 }
 
 void ADataCenterDebugController::DrawHelp() const

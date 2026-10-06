@@ -26,4 +26,5 @@ private:
 	UFUNCTION() void OnAddCdu();
  UFUNCTION() void OnAddCrah();
  UFUNCTION() void OnAddPerimeterCrah();
+	UFUNCTION() void OnRoomSettings();
 };

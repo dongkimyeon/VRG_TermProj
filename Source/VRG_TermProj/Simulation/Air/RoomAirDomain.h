@@ -13,6 +13,8 @@ struct VRG_TERMPROJ_API FRoomAirDomainSettings
 	UPROPERTY() FVector2D MinXYM = FVector2D::ZeroVector;
 	UPROPERTY() FVector2D MaxXYM = FVector2D::ZeroVector;
 	UPROPERTY() double CeilingHeightM = 0.0;
+	bool operator==(const FRoomAirDomainSettings& Other) const
+	{ return bManual == Other.bManual && MinXYM == Other.MinXYM && MaxXYM == Other.MaxXYM && CeilingHeightM == Other.CeilingHeightM; }
 };
 
 namespace VrgRoomAirDomain
