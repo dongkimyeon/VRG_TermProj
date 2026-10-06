@@ -2100,8 +2100,7 @@ void ADataCenterDebugController::OnSelectLayoutEquipment()
 		if(MouseRay(Eye,Dir,Screen))
 		{
 			const int32 Corner=PickRoomCeilingCorner(Screen);
-			if(Corner!=INDEX_NONE) BeginRoomCeilingCornerDrag(Corner,Eye,Dir);
-			else SelectRoomCeilingAlongRay(Eye,Dir);
+			BeginRoomCeilingPointerDrag(Corner,Eye,Dir);
 		}
 		return; // Ceiling mode owns misses too: no equipment drag or marquee underneath.
 	}
@@ -3087,7 +3086,7 @@ void ADataCenterDebugController::GetHelpLines(TArray<FString>& Out) const
 	const bool bLayout = IsLayoutMode();
 	if(bRoomCeilingEditing)
 	{
-		Out.Add(FString::Printf(TEXT("천장 편집 | 클릭 선택 · 모서리 XY / 중앙점 높이 드래그(5 cm) / Delete 한 장 / Ctrl+Z/Y / Esc 취소·종료 | 선택 %d / 판 %d"),
+		Out.Add(FString::Printf(TEXT("천장 편집 | 클릭 선택 · 판 내부 이동 / 모서리 XY / 중앙점 높이(5 cm) / Delete 한 장 / Ctrl+Z/Y / Esc 취소·종료 | 선택 %d / 판 %d"),
 			GetSelectedRoomCeilingIndex()+1,FindSimActor()?FindSimActor()->GetRoomCeilingPlates().Num():0));
 		return;
 	}

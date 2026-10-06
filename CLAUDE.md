@@ -4088,3 +4088,11 @@ Editor Development54.29s 성공(기존 저장 Name shadow 경고 유지). 신규
 
 t1.02s 균일 CPU/NullRHI의 짧은 과도·기하 검증이며 정상상태/시설 정확도/GPU/옥트리/FPS로 확대하지 않는다. 저장 스키마/물성/솔버/단열·기존 부채/레벨 에셋 변경 없음. XY 직접 정상 사용자 보고와 신규 높이 실제 픽셀·마우스/OS 포커스 미확인을 구분한다. 기존 화면 실패 도구는 재시도하지 않고 Tools/부분천장_높이핸들_확인_2026-10-06.md에 상세 절차를 남겼다. 판 전체 이동·다중 편집·배기 구멍 및 별도 유출 경계/물리 확장은 후속이다.
 근거(커밋 제외): Saved/Build_CeilingHeightCoupling.log, Saved/Logs/CeilingHeightCoupling_Tests.log, Saved/Automation/CeilingHeightCoupling/index.json. E:\UE_5.8 Editor Development 뒤 위3종 + 묶음 Automation RunTests -unattended -NullRHI. 빌드 중 소스 변경 없음.
+
+## 2026-10-06 부분 천장 높이 직접 확인과 전체 XY 이동
+
+사용자가 높이 핸들 직접 절차를 정상으로 보고했다. 해당 범위이며 AI 캡처/로그/FPS 측정으로 확대하지 않는다.
+판 내부 눌림을 기존 천장 선택 후 공유 제스처의 전체 이동으로 연결했다. 픽한 모서리/높이 핸들은 실패 ray도 클릭을 독점해 몸체 이동으로 fallthrough하지 않는다. 일반 내부 클릭/놓기는 선택만 유지하고 빈 곳은 해제한다. 기존4px UI 임계값을 넘을 때 판 높이 평면의 초기 교점 오프셋과 최소 XY 기준점의 기존5cm 스냅으로 양쪽 경계에 동일 변위를 적용한다. 요청 가로/세로·높이는 유지하며 새 물성/기하 기본값을 정의하지 않는다. 셀 정렬에 따라 실제 계산 셀 수는 달라질 수 있다.
+기존 전체 목록 후보 검증·주황/빨강 요청/계산 표시·공유 Undo/Redo·v2·입력/취소/stale 보호를 재사용한다. 미리보기 동안 실제 목록/장비/공기 배열/시계는 유지하고 유효 release 때 인덱스 하나만 교체한다. 교점 불능은 마지막 미리보기를 유지하되 stale 확정을 막는다. 새 실제 화면은 Tools/부분천장_전체이동_확인_2026-10-06.md 직접 절차로 남긴다. 빌드/검사 결과는 실행 뒤 기록한다. 다중 편집/판 회전/구멍·물리 확장/전체/FPS 없음.
+입력 검증: Editor Development99.93s 성공(기존 FloorCm/저장 Name shadow 컴파일 경고 유지). RoomCeilingMovePreview + RoomCeilingCornerPreview + RoomCeilingHeightPreview3종 무경고 성공, 실패0/미실행0/종료0. 몸체 press/클릭/no-op/빈 곳 해제와 핸들 우선(실패 ray도 fallback 금지), 최소XY5cm·잡기 오프셋·요청 크기/높이 보존·요청/계산 표시·교점/방 밖 거절·입력/취소/외부 목록 보호·미리보기 실제 상태 불변을 확인했다. 신규 실제 픽셀 우선순위/마우스/OS 포커스는 직접 절차 미확인이다. 확정/저장/냉각 통합은 다음 작은 커밋이다.
+근거(커밋 제외): Saved/Build_CeilingMovePreview.log, Saved/Logs/CeilingMovePreview_Tests.log, Saved/Automation/CeilingMovePreview/index.json. E:\UE_5.8 Editor Development 뒤 위3종 + 묶음 Automation RunTests -unattended -NullRHI. 빌드 중 소스 변경·성공 검사 반복·전체/FPS·기존 도구 재시도 없음.

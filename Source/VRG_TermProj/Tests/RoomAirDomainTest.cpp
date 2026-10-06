@@ -487,7 +487,7 @@ bool FRoomCeilingCornerPreviewTest::RunTest(const FString& Parameters)
 		&& F.Racks[0]->GetActorTransform().Equals(Pose,0) && C->GetLayoutUndoCount()==0; };
 	TestFalse(TEXT("No ceiling mode/selection cannot start handle"),C->BeginRoomCeilingCornerDrag(0,Eye,Down));
 	C->SetRoomCeilingEditing(true); C->SelectRoomCeilingAlongRay(Eye,Down);
-	TestFalse(TEXT("Invalid corner/parallel start do not start gesture"),C->BeginRoomCeilingCornerDrag(5,Eye,Down) || C->BeginRoomCeilingCornerDrag(0,Eye,FVector(1,0,0)));
+	TestFalse(TEXT("Invalid corner/parallel start do not start gesture"),C->BeginRoomCeilingCornerDrag(6,Eye,Down) || C->BeginRoomCeilingCornerDrag(0,Eye,FVector(1,0,0)));
 	for(int32 Corner=0;Corner<4;++Corner)
 	{
 		TestTrue(TEXT("Selected plate corner begins"),C->BeginRoomCeilingCornerDrag(Corner,Eye,Down));
@@ -577,5 +577,53 @@ bool FRoomCeilingHeightPreviewTest::RunTest(const FString& Parameters)
 	C->BeginRoomCeilingHeightDrag(Eye,Side); F.Sim->EnterSimulationMode(); C->RefreshInteractionInputMode();
 	TestTrue(TEXT("Mode cancels and applies original9cell union"),!C->IsRoomCeilingEditing() && !C->IsLayoutDragging() && F.Sim->GetNumCeilingCells()==9);
 	AddInfo(TEXT("Ceiling height: shared axis conditioning1e-4 and5cm snap2.63->2.85m; XY exact, last-height stale commit blocked/recovered; cancel/no-op/reject/input/list gates. Actual height pixel/OS input pending direct check.")); return true;
+}
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FRoomCeilingMovePreviewTest,"VRG.Interaction.Layout.RoomCeilingMovePreview",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::CommandletContext | EAutomationTestFlags::EngineFilter)
+bool FRoomCeilingMovePreviewTest::RunTest(const FString& Parameters)
+{
+	FRoomFixture F; FString Reason; auto* C=F.World->SpawnActor<ADataCenterDebugController>(); C->bFrameEquipmentOnStart=false;
+	auto* Pawn=F.World->SpawnActor<ADefaultPawn>(); C->Possess(Pawn); C->PlayerInput=NewObject<UPlayerInput>(C); C->RefreshInteractionInputMode();
+	FRoomCeilingPlate P; P.MinXYM=FVector2D(-5.13,3.13); P.MaxXYM=FVector2D(-4.61,3.62); P.HeightM=2.63; // Existing synthetic fixture metres.
+	F.Sim->TrySetRoomAirDomain(ManualRoom(),Reason); F.Sim->TrySetRoomCeilingPlates({P,P},Reason);
+	const auto Mask=F.Air->GetMutableSolver().GetGrid().bSolidCell; const auto Temps=F.Air->GetMutableSolver().GetGrid().TemperatureK;
+	const auto Pose=F.Racks[0]->GetActorTransform(),Camera=Pawn->GetActorTransform(); const FVector Eye(-490,340,400),Down(0,0,-1);
+	auto Frozen=[&]() { return F.Sim->GetRoomCeilingPlates()==TArray<FRoomCeilingPlate>{P,P} && F.Sim->GetRoomAirDomain()==ManualRoom()
+		&& F.Air->GetMutableSolver().GetGrid().bSolidCell==Mask && F.Air->GetMutableSolver().GetGrid().TemperatureK==Temps
+		&& F.Racks[0]->GetActorTransform().Equals(Pose,0) && C->GetLayoutUndoCount()==0; };
+	TestFalse(TEXT("Normal mode cannot start plate body press"),C->BeginRoomCeilingPointerDrag(INDEX_NONE,Eye,Down)); C->SetRoomCeilingEditing(true);
+	TestTrue(TEXT("Body press picks first duplicate and arms shared gesture"),C->BeginRoomCeilingPointerDrag(INDEX_NONE,Eye,Down) && C->GetSelectedRoomCeilingIndex()==0);
+	TestTrue(TEXT("Unmoved click retains exact unsnapped geometry and selection"),!C->EndRoomCeilingCornerDrag(true) && C->GetSelectedRoomCeilingIndex()==0 && Frozen());
+	TestFalse(TEXT("Picked invalid height ray owns press, no fallback body drag"),C->BeginRoomCeilingPointerDrag(C->RoomHeightHandle,Eye,Down)); TestTrue(TEXT("No gesture on rejected handle"),!C->IsLayoutDragging() && Frozen());
+	TestTrue(TEXT("XY handle owns press before body"),C->BeginRoomCeilingPointerDrag(0,Eye,Down)); C->UpdateRoomCeilingCornerDrag(Eye+FVector(12,8,0),Down);
+	FRoomCeilingPlate Preview; bool Valid=false; C->GetRoomCeilingPreview(Preview,Valid);
+	TestTrue(TEXT("Handle gesture fixes opposite corner instead of translating"),Valid && Preview.MaxXYM==P.MaxXYM && Preview.MinXYM!=P.MinXYM && Frozen()); C->EndRoomCeilingCornerDrag(false);
+	TestTrue(TEXT("Valid height handle priority"),C->BeginRoomCeilingPointerDrag(C->RoomHeightHandle,FVector(-390,337.5,270),FVector(-1,0,0)));
+	C->UpdateRoomCeilingCornerDrag(FVector(-390,337.5,292),FVector(-1,0,0)); C->GetRoomCeilingPreview(Preview,Valid);
+	TestTrue(TEXT("Height handler fixes XY rather than translating"),Valid && Preview.MinXYM==P.MinXYM && Preview.MaxXYM==P.MaxXYM && FMath::IsNearlyEqual(Preview.HeightM,2.85,1e-12)); C->EndRoomCeilingCornerDrag(false);
+	C->BeginRoomCeilingPointerDrag(INDEX_NONE,Eye,Down); C->UpdateRoomCeilingCornerDrag(Eye+FVector(87,-23,0),Down); C->GetRoomCeilingPreview(Preview,Valid);
+	TestTrue(TEXT("Minimum anchor snaps5cm, grab offset/size/height retained without mutation"),Valid && FMath::IsNearlyEqual(Preview.MinXYM.X,-4.25,1e-12)
+		&& FMath::IsNearlyEqual(Preview.MinXYM.Y,2.9,1e-12) && (Preview.MaxXYM-Preview.MinXYM).Equals(P.MaxXYM-P.MinXYM,1e-12) && Preview.HeightM==P.HeightM && Frozen());
+	TestTrue(TEXT("Requested/calculated geometry and cells shown"),C->GetRoomCeilingEditMessage().Contains(TEXT("계산 최소")) && C->GetRoomCeilingEditMessage().Contains(TEXT("3x3x1 = 9")));
+	C->ApplyLayoutCameraInput(1,FVector(1,1,1),1,true); C->BeginRackAddition();
+	TestTrue(TEXT("Movement blocks camera/equipment/Delete/Undo/Redo"),Pawn->GetActorTransform().Equals(Camera,0) && !C->IsAddingRack() && !C->TryDeleteRoomCeiling()
+		&& !C->TryUndoLayout() && !C->TryRedoLayout() && Frozen());
+	C->UpdateRoomCeilingCornerDrag(Eye,FVector(1,0,0)); C->GetRoomCeilingPreview(Preview,Valid);
+	TestTrue(TEXT("Missing plane ray holds last point but rejects stale commit"),!Valid && FMath::IsNearlyEqual(Preview.MinXYM.X,-4.25,1e-12) && !C->EndRoomCeilingCornerDrag(true) && Frozen());
+	C->BeginRoomCeilingMoveDrag(Eye,Down); C->UpdateRoomCeilingCornerDrag(Eye+FVector(-300,0,0),Down); C->GetRoomCeilingPreview(Preview,Valid);
+	TestTrue(TEXT("Outside room translation refused whole"),!Valid && !C->EndRoomCeilingCornerDrag(true) && Frozen());
+	C->BeginRoomCeilingMoveDrag(Eye,Down); C->UpdateRoomCeilingCornerDrag(Eye+FVector(87,-23,0),Down);
+	FInputKeyEventArgs Esc; Esc.Key=EKeys::Escape; Esc.Event=IE_Pressed; C->InputKey(Esc); TestTrue(TEXT("Esc cancels move keeping edit mode"),!C->IsLayoutDragging() && C->IsRoomCeilingEditing() && Frozen());
+	C->BeginRoomCeilingMoveDrag(Eye,Down); C->OpenRoomSettings(); TestTrue(TEXT("Numeric modal cancels move"),!C->IsRoomCeilingEditing() && !C->IsLayoutDragging() && Frozen()); C->CloseRoomSettings();
+	C->SetRoomCeilingEditing(true); C->BeginRoomCeilingPointerDrag(INDEX_NONE,Eye,Down); C->SetPatchMapOpen(true);
+	TestTrue(TEXT("Patch cancels move"),!C->IsRoomCeilingEditing() && !C->IsLayoutDragging() && Frozen()); C->SetPatchMapOpen(false);
+	C->SetRoomCeilingEditing(true); C->BeginRoomCeilingPointerDrag(INDEX_NONE,Eye,Down); auto Other=P; Other.HeightM=1.83; F.Sim->TrySetRoomCeilingPlates({Other},Reason);
+	C->RefreshInteractionInputMode(); TestTrue(TEXT("External list cannot move another index"),!C->IsLayoutDragging() && C->GetSelectedRoomCeilingIndex()==INDEX_NONE && !C->EndRoomCeilingCornerDrag(true) && F.Sim->GetRoomCeilingPlates()==TArray<FRoomCeilingPlate>{Other});
+	F.Sim->TrySetRoomCeilingPlates({P,P},Reason); C->BeginRoomCeilingPointerDrag(INDEX_NONE,Eye,Down); C->EndLayoutDrag(false);
+	TestTrue(TEXT("Shared focus cancel keeps state/records"),!C->IsLayoutDragging() && Frozen());
+	TestFalse(TEXT("Empty body press clears selection with no gesture"),C->BeginRoomCeilingPointerDrag(INDEX_NONE,FVector(5000,5000,400),Down)); TestEqual(TEXT("Empty selection"),C->GetSelectedRoomCeilingIndex(),INDEX_NONE);
+	C->BeginRoomCeilingPointerDrag(INDEX_NONE,Eye,Down); F.Sim->EnterSimulationMode(); C->RefreshInteractionInputMode();
+	TestTrue(TEXT("Mode cancels move and applies original union"),!C->IsRoomCeilingEditing() && !C->IsLayoutDragging() && F.Sim->GetNumCeilingCells()==9);
+	AddInfo(TEXT("Ceiling body movement: minimum XY anchor5cm, initial offset, size/height unchanged; handle priority including failed ray; live state frozen and no-op/miss/ray/refusal/cancel/input/list gates. Actual UI pixel press/drag pending direct check.")); return true;
 }
 #endif

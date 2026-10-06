@@ -346,7 +346,7 @@ int32 ADataCenterDebugController::PickRoomCeilingCorner(const FVector2D& Screen)
 bool ADataCenterDebugController::BeginRoomCeilingCornerDrag(int32 Corner, const FVector& EyeCm, const FVector& Direction)
 {
 	const int32 Index=GetSelectedRoomCeilingIndex(); FVector Point=FVector::ZeroVector;
-	if(Index==INDEX_NONE || Corner<0 || Corner>RoomHeightHandle || !IsCameraInputAvailable() || IsLayoutDragging()
+	if(Index==INDEX_NONE || Corner<0 || Corner>CeilingMoveHandle || !IsCameraInputAvailable() || IsLayoutDragging()
 		|| EyeCm.ContainsNaN() || Direction.ContainsNaN() || Direction.IsNearlyZero()
 		|| bAddingRack || bMarqueeActive || Grabbed.IsValid() || IsInputKeyDown(EKeys::RightMouseButton)) return false;
 	if(Corner==RoomHeightHandle)
@@ -359,6 +359,13 @@ bool ADataCenterDebugController::BeginRoomCeilingCornerDrag(int32 Corner, const 
 	CeilingDragCorner=Corner; if(Corner!=RoomHeightHandle) CeilingDragStartCm=Point; bCeilingMouseThresholdPassed=false;
 	float X=0,Y=0; GetMousePosition(X,Y); CeilingDragStartMouse=FVector2D(X,Y);
 	ValidateRoomCeilingPreview(); return true;
+}
+
+bool ADataCenterDebugController::BeginRoomCeilingPointerDrag(int32 PickedHandle, const FVector& EyeCm, const FVector& Direction)
+{
+	// A picked handle owns the press even if its ray is invalid. Never fall through to body movement.
+	if(PickedHandle!=INDEX_NONE) return BeginRoomCeilingCornerDrag(PickedHandle,EyeCm,Direction);
+	return SelectRoomCeilingAlongRay(EyeCm,Direction) && BeginRoomCeilingMoveDrag(EyeCm,Direction);
 }
 
 void ADataCenterDebugController::ValidateRoomCeilingPreview()
@@ -391,10 +398,20 @@ void ADataCenterDebugController::UpdateRoomCeilingCornerDrag(const FVector& EyeC
 	if(EyeCm.ContainsNaN() || Direction.ContainsNaN() || Direction.IsNearlyZero()
 		|| !FloorPointSnapped(EyeCm,Direction.GetSafeNormal(),SimUnits::MetersToCentimeters(CeilingDragPreview.HeightM),0,Point))
 	{ bCeilingPreviewValid=false; CeilingEditMessage=TEXT("커서가 판 높이 평면과 만나지 않아 확정할 수 없습니다."); return; }
-	const auto Target=CornerTargetM(CeilingCornerCm(SelectedCeilingList[Index],CeilingDragCorner),Point,CeilingDragStartCm,PlaceSnapM);
+	const bool bMove=CeilingDragCorner==CeilingMoveHandle;
+	const auto Target=CornerTargetM(CeilingCornerCm(SelectedCeilingList[Index],bMove?0:CeilingDragCorner),Point,CeilingDragStartCm,PlaceSnapM);
 	auto Candidate=SelectedCeilingList[Index];
-	(CeilingDragCorner&1 ? Candidate.MaxXYM.X : Candidate.MinXYM.X)=Target.X;
-	(CeilingDragCorner&2 ? Candidate.MaxXYM.Y : Candidate.MinXYM.Y)=Target.Y;
+	if(bMove)
+	{
+		// Snap the minimum XY anchor with the original grab offset; both edges share one displacement.
+		const FVector2D Delta=FVector2D(Target.X,Target.Y)-Candidate.MinXYM;
+		Candidate.MinXYM+=Delta; Candidate.MaxXYM+=Delta;
+	}
+	else
+	{
+		(CeilingDragCorner&1 ? Candidate.MaxXYM.X : Candidate.MinXYM.X)=Target.X;
+		(CeilingDragCorner&2 ? Candidate.MaxXYM.Y : Candidate.MinXYM.Y)=Target.Y;
+	}
 	// Validate again while stationary: equipment may have moved externally without changing the list.
 	CeilingDragPreview=Candidate; ValidateRoomCeilingPreview();
 }

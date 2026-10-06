@@ -86,6 +86,9 @@ public:
 	int32 PickRoomCeilingCorner(const FVector2D& Screen) const;
 	bool BeginRoomCeilingCornerDrag(int32 Corner, const FVector& EyeCm, const FVector& Direction);
 	bool BeginRoomCeilingHeightDrag(const FVector& EyeCm, const FVector& Direction) { return BeginRoomCeilingCornerDrag(RoomHeightHandle,EyeCm,Direction); }
+	static constexpr int32 CeilingMoveHandle = 5; // Whole-plate XY translation; shares the handle gesture lifecycle.
+	bool BeginRoomCeilingMoveDrag(const FVector& EyeCm, const FVector& Direction) { return BeginRoomCeilingCornerDrag(CeilingMoveHandle,EyeCm,Direction); }
+	bool BeginRoomCeilingPointerDrag(int32 PickedHandle, const FVector& EyeCm, const FVector& Direction);
 	void UpdateRoomCeilingCornerDrag(const FVector& EyeCm, const FVector& Direction);
 	bool EndRoomCeilingCornerDrag(bool bCommit);
 	bool GetRoomCeilingPreview(FRoomCeilingPlate& Out, bool& bValid) const;
