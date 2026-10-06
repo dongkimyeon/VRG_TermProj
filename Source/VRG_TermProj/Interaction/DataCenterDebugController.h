@@ -85,6 +85,7 @@ public:
 	bool TryDeleteRoomCeiling();
 	int32 PickRoomCeilingCorner(const FVector2D& Screen) const;
 	bool BeginRoomCeilingCornerDrag(int32 Corner, const FVector& EyeCm, const FVector& Direction);
+	bool BeginRoomCeilingHeightDrag(const FVector& EyeCm, const FVector& Direction) { return BeginRoomCeilingCornerDrag(RoomHeightHandle,EyeCm,Direction); }
 	void UpdateRoomCeilingCornerDrag(const FVector& EyeCm, const FVector& Direction);
 	bool EndRoomCeilingCornerDrag(bool bCommit);
 	bool GetRoomCeilingPreview(FRoomCeilingPlate& Out, bool& bValid) const;
@@ -350,6 +351,7 @@ private:
 	FRoomCeilingPlate CeilingDragPreview;
 	FRoomAirDomainSettings CeilingDragRoom;
 	FVector CeilingDragStartCm = FVector::ZeroVector;
+	double CeilingDragStartHeightCm = 0;
 	FVector2D CeilingDragStartMouse = FVector2D::ZeroVector;
 	bool bCeilingMouseThresholdPassed = false;
 	bool bCeilingPreviewValid = false;

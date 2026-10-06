@@ -4061,3 +4061,11 @@ Editor Development51.95s 성공(기존 저장 Name shadow 경고 유지). 신규
 
 t1.02s 균일 CPU/NullRHI의 짧은 과도·기하 검증이며 시설 정확도/정상상태/GPU/옥트리/FPS로 확대하지 않는다. 물성/솔버/단열·기존 부채/저장 스키마/레벨 에셋 변경 없음. 신규 핸들 픽셀·실제 마우스/OS 포커스는 미확인이고 기존 실패 도구를 반복하지 않았다. Tools/부분천장_XY핸들_확인_2026-10-06.md에 상세 직접 절차를 남겼다. 기존 선택·삭제 직접 정상 사용자 보고와 구분한다.
 근거(커밋 제외): Saved/Build_CeilingCornerCoupling.log, Saved/Logs/CeilingCornerCoupling_Tests.log, Saved/Automation/CeilingCornerCoupling/index.json. 실행 E:\UE_5.8 Editor Development 뒤 위3종 + 묶음 Automation RunTests -unattended -NullRHI. 빌드 중 소스 변경 없음. 후속은 판 높이 핸들/전체 이동/다중 편집·배기 구멍 및 별도 유출 경계/물리 확장이다.
+
+## 2026-10-06 부분 천장 XY 직접 확인과 선택 판 높이 핸들
+
+사용자가 부분 천장 XY 핸들 직접 절차를 정상으로 보고했다. 해당 절차 범위이며 AI의 별도 캡처/로그/FPS 확인으로 확대하지 않는다.
+선택한 판 중앙에 높이 점/수직 화살표를 추가하고 기존 방의 RoomHeightAxisParam·절대5cm 높이 스냅을 공유한다. 최초 잡기 높이 오프셋과 XY를 유지하고, 단위 시선의1-(방향Z)^2<1e-4 또는 뒤 교점/잘못된 ray는 계산/확정을 거절한다. 이는 기존 방/벽 UI 조건 기준이며 물리 오차 허용치가 아니다. 점16px/픽10px/드래그4px/화살촉20cm도 기존 UI 표현값이다. 높이를 정할 수 없으면 마지막 미리보기 값은 보존하되 stale 확정을 막고, 안정 시선으로 복구하면 전체 후보를 재검증한다.
+기존 XY 제스처/선택 목록 스냅샷/전체 목록 검증·공유 기록·저장v2·입력/취소 경로를 그대로 사용한다. 요청 높이만 미리보기하고 실제 판/장비/격자/온도/시계는 변경하지 않는다. 유효 release 때 해당 인덱스만 교체하며 중복 판은 유지한다. 실제 셀은 다음 진입에 기존 한 Z층 정책으로 반영한다. 새 물성/저장 스키마/솔버/레벨 변경 없음. 실제 신규 화면은 Tools/부분천장_높이핸들_확인_2026-10-06.md 절차에 남긴다. 높이 입력/최종 통합 결과는 실행 뒤 기록한다.
+입력 검증: Editor Development86.40s 성공(기존 FloorCm/저장 Name shadow 컴파일 경고 유지). RoomCeilingHeightPreview + RoomHeightHandlePreview + RoomCeilingCornerPreview3종 무경고 성공, 실패0/미실행0/종료0. 합성2.63m+22cm→2.85m 스냅·XY 정확 불변, 평행/근평행/뒤 시선 거절·stale 마지막 값 확정 차단/안정 ray 복구, 저높이/방 밖 거절·no-op 비스냅 원본 유지·입력/취소/외부 목록/모드 게이트와 미리보기 실제 상태 불변을 확인했다. 기록/저장/다음 진입 통합은 다음 작은 커밋이며 새 물리 기준은 없다.
+근거(커밋 제외): Saved/Build_CeilingHeightPreview.log, Saved/Logs/CeilingHeightPreview_Tests.log, Saved/Automation/CeilingHeightPreview/index.json. E:\UE_5.8 Editor Development 뒤 위3종 + 묶음 Automation RunTests -unattended -NullRHI. 신규 실제 높이 화면/OS 포커스는 직접 미확인이다. 빌드 중 소스 변경·성공 검사 반복·전체/FPS·기존 도구 재시도 없음.

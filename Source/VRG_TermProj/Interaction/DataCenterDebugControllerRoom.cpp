@@ -34,10 +34,20 @@ namespace
 			*Bounds.Min.ToString(), *Bounds.Max.ToString(), Grid.NumCellsX, Grid.NumCellsY, Grid.NumCellsZ,
 			Grid.NumCellsX * Grid.NumCellsY * Grid.NumCellsZ, Grid.CellSizeM);
 	}
+	FRoomAirDomainSettings CeilingHandleSettings(const FRoomCeilingPlate& P)
+	{
+		FRoomAirDomainSettings S; S.MinXYM=P.MinXYM; S.MaxXYM=P.MaxXYM; S.CeilingHeightM=P.HeightM; return S;
+	}
 	FVector CeilingCornerCm(const FRoomCeilingPlate& P, int32 Corner)
 	{
-		FRoomAirDomainSettings S; S.MinXYM=P.MinXYM; S.MaxXYM=P.MaxXYM;
+		const auto S=CeilingHandleSettings(P);
 		auto Point=RoomCornerCm(S,Corner); Point.Z=SimUnits::MetersToCentimeters(P.HeightM); return Point;
+	}
+	double HeightTargetM(double BeforeM, double HeightCm, double StartHeightCm, double SnapM)
+	{
+		double TargetCm=SimUnits::MetersToCentimeters(BeforeM)+HeightCm-StartHeightCm;
+		if(SnapM>0) { const double SnapCm=SimUnits::MetersToCentimeters(SnapM); TargetCm=FMath::RoundToDouble(TargetCm/SnapCm)*SnapCm; }
+		return SimUnits::CentimetersToMeters(TargetCm);
 	}
 	// Shared room/plate corner delta and absolute XY snap; fixed opposite corner is never sorted/swapped.
 	FVector CornerTargetM(const FVector& CornerCm, const FVector& PointCm, const FVector& StartCm, double SnapM)
@@ -144,9 +154,7 @@ void ADataCenterDebugController::UpdateRoomCornerDrag(const FVector& EyeCm, cons
 		if (!RoomHeightAxisParam(RoomDragBefore,EyeCm,Direction,HeightCm))
 		{ bRoomRayValid=bRoomPreviewValid=false; RoomBoundsMessage=TEXT("시선으로 높이를 정할 수 없어 확정할 수 없습니다. 카메라 각도를 바꾸세요."); return; }
 		const bool bRecoveredRay=!bRoomRayValid; bRoomRayValid=true;
-		double TargetCm=SimUnits::MetersToCentimeters(RoomDragBefore.CeilingHeightM)+HeightCm-RoomDragStartHeightCm;
-		if (PlaceSnapM>0) { const double SnapCm=SimUnits::MetersToCentimeters(PlaceSnapM); TargetCm=FMath::RoundToDouble(TargetCm/SnapCm)*SnapCm; }
-		auto Candidate=RoomDragBefore; Candidate.CeilingHeightM=SimUnits::CentimetersToMeters(TargetCm);
+		auto Candidate=RoomDragBefore; Candidate.CeilingHeightM=HeightTargetM(RoomDragBefore.CeilingHeightM,HeightCm,RoomDragStartHeightCm,PlaceSnapM);
 		if (!(Candidate==RoomDragPreview) || bRecoveredRay) { RoomDragPreview=Candidate; ValidateRoomBoundsPreview(); }
 		return; // XY unchanged; same validation, commit/history and cursor cancellation as corner drags.
 	}
@@ -326,7 +334,7 @@ int32 ADataCenterDebugController::PickRoomCeilingCorner(const FVector2D& Screen)
 	FRoomCeilingPlate P; bool bValid;
 	if(!GetRoomCeilingPreview(P,bValid) || !IsCameraInputAvailable() || Screen.ContainsNaN()) return INDEX_NONE;
 	int32 Best=INDEX_NONE; double RadiusPx=10; // Existing room/barrier UI pick radius, not physical tolerance.
-	for(int32 I=0;I<4;++I)
+	for(int32 I=0;I<=RoomHeightHandle;++I)
 	{
 		FVector2D XY; if(!ProjectWorldLocationToScreen(CeilingCornerCm(P,I),XY)) continue;
 		const double Distance=FVector2D::Distance(Screen,XY);
@@ -337,13 +345,18 @@ int32 ADataCenterDebugController::PickRoomCeilingCorner(const FVector2D& Screen)
 
 bool ADataCenterDebugController::BeginRoomCeilingCornerDrag(int32 Corner, const FVector& EyeCm, const FVector& Direction)
 {
-	const int32 Index=GetSelectedRoomCeilingIndex(); FVector Point;
-	if(Index==INDEX_NONE || Corner<0 || Corner>3 || !IsCameraInputAvailable() || IsLayoutDragging()
+	const int32 Index=GetSelectedRoomCeilingIndex(); FVector Point=FVector::ZeroVector;
+	if(Index==INDEX_NONE || Corner<0 || Corner>RoomHeightHandle || !IsCameraInputAvailable() || IsLayoutDragging()
 		|| EyeCm.ContainsNaN() || Direction.ContainsNaN() || Direction.IsNearlyZero()
-		|| bAddingRack || bMarqueeActive || Grabbed.IsValid() || IsInputKeyDown(EKeys::RightMouseButton)
-		|| !FloorPointSnapped(EyeCm,Direction.GetSafeNormal(),SimUnits::MetersToCentimeters(SelectedCeilingList[Index].HeightM),0,Point)) return false;
+		|| bAddingRack || bMarqueeActive || Grabbed.IsValid() || IsInputKeyDown(EKeys::RightMouseButton)) return false;
+	if(Corner==RoomHeightHandle)
+	{
+		if(!RoomHeightAxisParam(CeilingHandleSettings(SelectedCeilingList[Index]),EyeCm,Direction,CeilingDragStartHeightCm))
+		{ CeilingEditMessage=TEXT("높이 축과 시선이 거의 평행하거나 교점이 시선 뒤에 있어 높이를 정할 수 없습니다. 카메라 각도를 바꾸세요."); return false; }
+	}
+	else if(!FloorPointSnapped(EyeCm,Direction.GetSafeNormal(),SimUnits::MetersToCentimeters(SelectedCeilingList[Index].HeightM),0,Point)) return false;
 	CeilingDragPreview=SelectedCeilingList[Index]; CeilingDragRoom=FindSimActor()->GetRoomAirDomain();
-	CeilingDragCorner=Corner; CeilingDragStartCm=Point; bCeilingMouseThresholdPassed=false;
+	CeilingDragCorner=Corner; if(Corner!=RoomHeightHandle) CeilingDragStartCm=Point; bCeilingMouseThresholdPassed=false;
 	float X=0,Y=0; GetMousePosition(X,Y); CeilingDragStartMouse=FVector2D(X,Y);
 	ValidateRoomCeilingPreview(); return true;
 }
@@ -365,6 +378,15 @@ void ADataCenterDebugController::UpdateRoomCeilingCornerDrag(const FVector& EyeC
 	auto* Sim=FindSimActor(); const int32 Index=GetSelectedRoomCeilingIndex();
 	if(Index==INDEX_NONE || !IsCameraInputAvailable() || IsInputKeyDown(EKeys::RightMouseButton)
 		|| !Sim || !(Sim->GetRoomAirDomain()==CeilingDragRoom)) { EndRoomCeilingCornerDrag(false); return; }
+	if(CeilingDragCorner==RoomHeightHandle)
+	{
+		double HeightCm;
+		if(!RoomHeightAxisParam(CeilingHandleSettings(SelectedCeilingList[Index]),EyeCm,Direction,HeightCm))
+		{ bCeilingPreviewValid=false; CeilingEditMessage=TEXT("시선으로 높이를 정할 수 없어 확정할 수 없습니다. 카메라 각도를 바꾸세요."); return; }
+		auto Candidate=SelectedCeilingList[Index];
+		Candidate.HeightM=HeightTargetM(Candidate.HeightM,HeightCm,CeilingDragStartHeightCm,PlaceSnapM);
+		CeilingDragPreview=Candidate; ValidateRoomCeilingPreview(); return; // XY exact; reuse all list/commit/cancel gates.
+	}
 	FVector Point;
 	if(EyeCm.ContainsNaN() || Direction.ContainsNaN() || Direction.IsNearlyZero()
 		|| !FloorPointSnapped(EyeCm,Direction.GetSafeNormal(),SimUnits::MetersToCentimeters(CeilingDragPreview.HeightM),0,Point))
@@ -437,6 +459,9 @@ void ADataCenterDebugController::DrawRoomCeilings() const
 			DrawDebugLine(GetWorld(),CeilingCornerCm(P,Order[I]),CeilingCornerCm(P,Order[I+1]),Color,false,0,1,3);
 			DrawDebugPoint(GetWorld(),CeilingCornerCm(P,I),16,Color,false,0,1); // Existing room handle UI pixels.
 		}
+		const FVector Top=CeilingCornerCm(P,RoomHeightHandle), Bottom(Top.X,Top.Y,0);
+		DrawDebugDirectionalArrow(GetWorld(),Bottom,Top,20.f,Color,false,0,1,2.f); // Existing room UI arrow20cm, not geometry.
+		DrawDebugPoint(GetWorld(),Top,16,Color,false,0,1);
 		TArray<FRoomCeilingPlan> PreviewPlans;
 		if(CeilingDragCorner!=INDEX_NONE && VrgRoomAirDomain::BuildCeilingPlans(Sim->GetRoomAirDomain(),{P},GP,Bounds,PreviewPlans,Reason))
 		{
