@@ -3653,3 +3653,33 @@ CrahBatchDuplicationPersistenceCoupling: NVL72 한 랙·기존 CDU·공기에서
 Editor84.40s 성공(E:/UE_5.8; 원 작성자 경로 유지), 신규 입력/물리 검사 실제 컴파일 확인. PerimeterCrahAdditionUndoRedo/CrahAdditionUndoRedo/CrahMultiRowAdditionUndoRedo/CrahBatchDuplicationUndoRedo **입력 영향4종 무경고 성공, 실패0/미실행0/종료0**. 신규 검사는 자동 가상 상자 총1cm·취소·R·각 차단·종류/기존 설정·전환/신규 생성 실패·중간 Undo/Redo 실패 전체 원복/기록 유지·안정 ID·원래 자동 경계·이전 이동/R 참조 재연결·실제 월드 한 대 추가를 확인했다. 기존 Equals1e-9 액터cm/스케일 무차원과 합성 거리 조건을 재사용했다. 새 물성/허용치 없음.
 실행: L_Test 배치 벽면 CRAH 추가→빈 곳 클릭→Ctrl+Z/Y. Automation은 위4종을 RunTests의 +로 묶어 -unattended -NullRHI 실행. 저장·정량 물리·실제 UI 검증은 후속 절. 전체/FPS 반복 없음.
 근거(커밋 제외): Saved/Build_PerimeterCrahAddition.log, Saved/Logs/PerimeterCrahAddition_Tests.log, Saved/Automation/PerimeterCrahAddition/index.json.
+
+## 2026-10-06 벽면 CRAH 추가 저장·공기/냉각 검증
+
+기존 v2/crahInventory/deletedCrahs·Load 트랜잭션·성공 재구축을 재사용했으며 저장 형식/물리 모델 변경 없음. 같은/새 월드 반복 Load에서 추가 전 자동 상태와 추가 후 실제 목록·각 ID/이름/종류/설정/전체 변환/출처·원래 자동 경계를 복원하고 중복 없음·기록 초기화·새 월드 시계0s를 검사했다. 이전 파일 호환은 CrahPersistenceCoupling/CrahDeletionPersistence/InventorySaveLoad/SaveLoadRoundTrip 회귀로 확인했다.
+PerimeterCrahAdditionPersistenceCoupling은 마주 보는 NVL72 두 줄(각 한 랙)·기존 CDU·공기 fixture에서 자동 인로우4→전환+벽면형5↔Undo자동4↔Redo실제5 및 실제 상태 추가6↔Undo5↔Redo6·반복/새 월드 Load6, 자동 벽면2→실제3 및 추가4↔3·반복/새 월드 Load4를 검사했다. 원래 자동 인로우/벽면 종류·치수·배치·경계는 유지한다. 새 벽면형 크기/풍량은 액터 기본값, 기존 자동 벽면 치수는 자동 계획 값이다. 배치 좌표·90°·기존 한 장비의 설계풍량25% 지정은 합성 검사 입력이며 주석에 명시했다(새 하드웨어 물성·실측·피팅 아님).
+따뜻한 t1.02s 중간 Undo 제거 실패는 전환/추가를 전체 원복해 개수·선택·스택과 장부/시계·코일/풍량·랙 공기/냉각수·CDU duty 배열을 정확히 유지한다. 성공 후 중심 고체 셀·활성 CRAH/덕트/코일/팬을 확인하고, 실제 격자 속도를 적분해 상부 -Z 흡기·하부 전면 급기 및 상부 전면 폐쇄를 검사한다. 풍량0/지정 풍량 배분과 기존 설계 총풍량/UA/팬 정책을 유지하므로 대수만으로 비례 증가시키지 않는다. 팬 전기입력은 IT와 분리해 전역 장부에 한 번 계상한다.
+
+| 검사 | 측정 최대/범위 | 기존 기준·정규화/단위 |
+|---|---:|---|
+| 첫 스텝 랙 IT / 추가에 따른 변화 | 233025.224862 / 0 | W; 같은 부하·초기조건, 기준 IT 대비 상대 <1e-9 |
+| 설계 총풍량 / UA / 팬 | 2.408641 / 3507.450213 / 1003.600292 | m³/s / W/K / W; 기존 배분 식 기대값 상대 차 <1e-12 |
+| 풍량/UA/팬 배분 상대 차 | 2.266e-16 | 각각 설계 풍량m³/s·UA W/K·팬 전력W 기대값 기준, 무차원 <1e-12 |
+| 랙+CRAH 덕트 풍량 잔차 | 4.183e-15 | abs(덕트−전체 랙 질량유량/ρ−CRAH 풍량)/전체 덕트 풍량m³/s, 무차원 <1e-9 |
+| 개별 벽면 흡기/급기·상부 전면 | 상대 차2.305e-16 / 상부 전면0 | m³/s / m/s; 격자 면 속도×면적 합을 개별 기존 배분 풍량으로 정규화 <1e-9, 상부 전면 속도0 |
+| 냉각수 전달 / 수력 잔차 | 1.072e-14 / 7.348e-14 | 각 줄 abs(duty−mdot·cp·ΔT)/dutyW <1e-12; 기존 ReferenceFlowM3s·ReferencePressurePa 정규화 목표 |
+| 전역 열수지 | 8.413e-14 | abs(입력J−유출J−축적J)/EnergyInJ(IT+CRAH 팬), 무차원 <1e-9 |
+| 압력 투영 뒤 발산 | 6.090e-08, 수렴 | maxAbsDiv(1/s)/(maxAbsVelocity(m/s)/cellSize(m)), 무차원 <1e-5 |
+| 흡기 / 코일 duty | 295.928225~297.150021 / 12137.179050~12765.826957 | K / W, t1.02s; 기존 288.15~308.15K·양의 코일 냉각·전체 공기 냉각 일치 |
+| 저장/복원 / 시계 | 실제6/4 같은/새 월드 반복, 기록0·새 월드0s | ID/이름/설정/종류/출처 정확 일치, 전체 변환 Equals1e-9(액터cm·스케일 무차원) |
+
+공급≥설비수 공급·회수>공급·양의 냉각수 유량/duty·펌프/IT<5%도 별도 검사했다. 기존 CDU 열교환기 장부는 액터별이 아닌 줄별 그룹이며 fixture 두 줄을 각각 검사했다. 기존 고정 CRAH 냉수 공급·CDU 체적 지연/펌프 손실 열 분배 부채는 유지한다. 새 물리 값/허용치/솔버/레벨 에셋 변경 없음. NullRHI t1.02s이며 장시간 정상상태/시설 전체 정확도/L_Test 전체 운전/FPS 보장이 아니다.
+
+첫 후속7종 중 기존5종 성공 뒤 신규 준비 오류로 assert/종료3: 자동 벽면은 마주 보는 줄이 필요하지만 한 랙 fixture를 써 전환 목록0을 실패 주입에서 참조했다. 두 마주 보는 줄·목록 사전 확인으로 수정, Editor7.93s 성공 후 중단된 신규/미실행 SaveLoadRoundTrip2종만 실행했다. 기존 저장1종 성공/신규 실패: 한 CDU 액터를 한 열교환기 장부로 가정한 기대와 서로 다른 자동 계획 조회의 새 GUID를 비교한 기대가 잘못됐다. 기존 줄별 CDU 그룹·가상 계획 설정/변환 비교로 테스트만 수정했다. Editor7.81s 성공 후 실패한 신규1종만 재실행 무경고 성공(종료0).
+최종 후속7종·입력4종 포함 **고유 영향11종 최종 무경고 성공**. 신규/기존 CrahAdditionCoupling/CrahPerimeterConversion/CrahPersistenceCoupling/CrahDeletionPersistence/InventorySaveLoad/SaveLoadRoundTrip. 성공한 검사·전체/FPS 반복 없음. 제품 입력/충돌/물리 기준을 완화하지 않았다.
+실행: Editor 빌드 후 위7종을 RunTests의 +로 묶어 -unattended -NullRHI; 수정 후 미완료2종/실패1종만 순서대로 실행.
+근거(커밋 제외): Saved/Build_PerimeterCrahAddition{,_Repair,_Final}.log, Saved/Logs/PerimeterCrahAddition{Coupling,Repair,Final}_Tests.log, Saved/Automation/PerimeterCrahAdditionFinal/index.json. 실제 UI는 아래 후속 확인 기록을 따른다.
+
+실제 UI(2026-10-06): 일반 L_Test 게임 창에서 드라이버 안내 아니오를 선택했다. 컴퓨터 사용 도구 입력과 Alt+Print Screen → 클립보드 PNG 저장 → 이미지 확인으로 배치 전용 벽면 버튼/기존 인로우 유지, 주황 커서 미리보기·R90°·Esc 제거, 빈 바닥 클릭 실제 한 대 생성·Ctrl+Z 제거·Ctrl+Y 복원을 확인했다. 같은 목적지 재추가에서 빨간 중첩 표시·클릭 후 거절/미리보기 유지를 확인했고 Enter 시뮬레이션 전환에서 미확정 취소/팔레트 숨김, 배치 복귀도 확인했다. 마지막 Ctrl+Z로 확인용 전환+추가를 되돌려 원래 배치로 정리했다. 레벨 저장 없음. 실제 액터/ID·자동 경계·개수/상태 불변의 정량 근거는 위 Automation이며 이미지 자체로 수치 보존을 판정하지 않는다.
+미검증 UI: 패치 창 진입 취소, 이미 실제 CRAH인 상태의 두 번째 벽면 추가/Undo, 저장 버튼/반복 및 새 실행 Load. 이 항목들은 자동화에서는 통과했으나 화면 입력으로 확인하지 않았다. 실패한 도구 입력/기존 캡처 API 반복 없음. 짧은 직접 절차 Tools/배치벽면CRAH추가_확인_2026-10-06.md. FPS·장시간 L_Test 운전/전체 테스트는 수행하지 않았다.
+근거(커밋 제외): Saved/PerimeterCrahAddition_{Start,Preview,Rotate,Cancel,Destination,Confirm,Undo,Redo,Overlap,Reject,Mode,Cleanup}.png 및 Saved/Logs/PerimeterCrahAddition_UI.log. UI 로그에 별도 CRAH 생성 계측은 없으며 생성/제거 화면과 정량 자동화 결과를 구분한다.
