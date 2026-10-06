@@ -78,6 +78,8 @@ void ULayoutRackPalette::NativeOnInitialized()
 	AddBarrierButton(TEXT("방 범위 편집"), 650)->OnClicked.AddDynamic(this, &ULayoutRackPalette::OnRoomBounds);
 	CeilingButton=AddBarrierButton(TEXT("부분 천장 추가"),840);
 	CeilingButton->SetIsEnabled(false); CeilingButton->OnClicked.AddDynamic(this,&ULayoutRackPalette::OnRoomCeiling);
+	CeilingEditButton=AddBarrierButton(TEXT("천장 선택·삭제"),1030);
+	CeilingEditButton->SetIsEnabled(false); CeilingEditButton->OnClicked.AddDynamic(this,&ULayoutRackPalette::OnRoomCeilingEdit);
 }
 
 void ULayoutRackPalette::OnAddRack()
@@ -109,6 +111,16 @@ void ULayoutRackPalette::NativeTick(const FGeometry& Geometry, float DeltaTime)
 {
 	Super::NativeTick(Geometry,DeltaTime);
 	if (CeilingButton) { auto* C=Cast<ADataCenterDebugController>(GetOwningPlayer()); CeilingButton->SetIsEnabled(C && C->GetRoomSettingsDraft().bManual); }
+	if(CeilingEditButton)
+	{
+		auto* C=Cast<ADataCenterDebugController>(GetOwningPlayer()); CeilingEditButton->SetIsEnabled(C && C->GetRoomSettingsDraft().bManual);
+		if(auto* Label=Cast<UTextBlock>(CeilingEditButton->GetChildAt(0))) Label->SetText(FText::FromString(C && C->IsRoomCeilingEditing()?TEXT("천장 편집 끄기"):TEXT("천장 선택·삭제")));
+	}
+}
+
+void ULayoutRackPalette::OnRoomCeilingEdit()
+{
+	if(auto* C=Cast<ADataCenterDebugController>(GetOwningPlayer())) C->ToggleRoomCeilingEditing();
 }
 
 void ULayoutRackPalette::OnRoomCeiling()

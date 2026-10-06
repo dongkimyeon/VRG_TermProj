@@ -4005,3 +4005,13 @@ Editor49.09s 성공. 신규 RoomCeilingPersistenceRollbackCoupling+직접 영향
 
 성공 Load의 기존 결합 장부 초기화는 실패/취소 상태 불변과 구분한다. 이번 Load는 온도·적분·시계 재생 기능이 아니며 성공 직후 정지 시계/기존 공기 마스크·온도를 유지하다 다음 진입에 새 초기조건으로 재구축한다. 측정은 t1.02s 균일 CPU/NullRHI의 짧은 과도이며 시설 전체/정상상태/GPU/옥트리/FPS 검증으로 확대하지 않는다. 판 선택/삭제·핸들·배기 구멍/유출 경계·외부 열 교환·플레넘은 후속이다.
 근거(커밋 제외): Saved/Build_CeilingPersistenceCoupling.log, Saved/Logs/CeilingPersistenceCoupling_Tests.log, Saved/Automation/CeilingPersistenceCoupling/index.json. 실행 E:\UE_5.8 Editor Development 뒤 위4종 + 묶음 Automation RunTests -unattended -NullRHI. 첫 저장 단계 근거/컴파일 이름 충돌 수정은 앞 절을 따른다.
+## 2026-10-06 부분 천장 저장 사용자 직접 확인
+
+사용자가 부분 천장 저장 직접 확인 결과 정상으로 보고했다. 기존 직접 절차의 Save·같은 월드/반복 Load·기록 초기화·시뮬레이션 전환·새 실행 Load 범위이며 AI의 새 캡처/로그/FPS 측정으로 확대하지 않는다. Tools/부분천장_저장_확인_2026-10-06.md에 반영했다. 기존 도구 실패는 재시도하지 않았다. 이후 새 천장 선택/삭제 UI의 실제 확인은 별도다.
+## 2026-10-06 부분 천장 단일 선택·삭제
+
+배치 수동 방의 별도 ‘천장 선택·삭제’ 버튼으로만 판 선택을 활성화한다. 실제 계산 셀 상자에 기존 장비 픽과 같은 전방 slab 테스트를 적용하고 가까운 판을 선택한다. 정확히 같은 거리/기하이면 목록 첫 항목을 선택한다(순환/다중 선택 없음). 선택 판 계산 상자는 기존 청록 요청/주황 일반 선 뒤 초록 굵은 선으로 표시한다. 새 액터/충돌·물성/판 기하·마스크 정책은 없다. 일반 모드에서 판은 장비 픽에 참여하지 않고 천장 모드에서는 왼쪽 클릭/빈 곳을 독점해 장비 드래그/사각형 선택을 시작하지 않는다. 우클릭 카메라 경로는 유지한다.
+Delete는 선택 인덱스를 RemoveAt으로 한 장만 제거하고 기존 전체 목록 검증·공유 Before/After 기록에 연결한다. raw 키 누름 한 번만 처리해 repeat/Enhanced 중복 삭제를 막는다. 실패는 목록/기록을 유지하고 실제 공기 셀은 다음 진입에만 반영한다. 선택은 대상 Sim와 전체 목록 스냅샷을 확인하며 목록 변경/추가/Undo·Redo/성공 Load 뒤 해제한다. 숫자 창/패치/시뮬레이션은 편집을 종료하고, 다른 편집/미확정 추가 중 활성화를 막는다. Esc/버튼 종료 뒤 기존 장비 입력을 복구한다. HUD는 선택 번호와 목록 수를 표시한다.
+
+Editor120.80s 성공(기존 컴파일 경고 유지). 신규 RoomCeilingSelectionDelete+기존 RoomCeilingUiInput/RoomSettingsUiInput3종 무경고 성공, 실패0/미실행0/종료0. 자동 방 거절·일반 장비 선택 유지·실제 확장된 상자/앞·뒤 ray/가장 가까운 판/동일 판 tie·잘못된 ray 선택 유지·중복3개 중 한 장 삭제/기록 한 건/Undo·Redo·오래된 인덱스 거절·숫자/방 핸들/패치/Esc/모드 게이트·카메라/장비 복귀 경로를 확인했다. 새 값은 UI 선 두께/색상이고 tolerance는 기존 픽 정책을 재사용한다. 목록/변환은 정확 비교이며 새 물리 오차 허용치는 없다. 복원 충돌·따뜻한 상태·저장/다음 진입 물리 통합은 다음 작은 검증 커밋이다.
+근거(커밋 제외): Saved/Build_CeilingSelection.log, Saved/Logs/CeilingSelection_Tests.log, Saved/Automation/CeilingSelection/index.json. 실행 E:\UE_5.8 Editor Development 뒤 위3종 + 묶음 Automation RunTests -unattended -NullRHI. 실제 신규 버튼/선 렌더/OS 입력은 미확인이며 Tools/부분천장_선택삭제_확인_2026-10-06.md에 직접 절차를 남겼다. 기존 저장 직접 정상 사용자 보고와 구분한다. 빌드 중 소스 변경·성공 검사 반복·전체/FPS/화면 도구 재시도 없음.

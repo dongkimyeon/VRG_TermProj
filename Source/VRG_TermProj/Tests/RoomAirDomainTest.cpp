@@ -426,4 +426,49 @@ bool FRoomCeilingHistoryTest::RunTest(const FString& Parameters)
 	AddInfo(FString::Printf(TEXT("Ceiling history: one record/list exact restoration; cancel/refusal/stale state preserved at0.02s; shared cap100 and Load clears history but restores saved list; next-entry9cells IT%.3e energy%.3e pressure%.3e at%.2fs."),It,S.NormalizedEnergyResidual,AS.NormalizedDivergence,S.SimTimeS));
 	return true;
 }
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FRoomCeilingSelectionTest,"VRG.Interaction.Layout.RoomCeilingSelectionDelete",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::CommandletContext | EAutomationTestFlags::EngineFilter)
+bool FRoomCeilingSelectionTest::RunTest(const FString& Parameters)
+{
+	FRoomFixture F; FString Reason; auto* C=F.World->SpawnActor<ADataCenterDebugController>(); C->bFrameEquipmentOnStart=false;
+	auto* Pawn=F.World->SpawnActor<ADefaultPawn>(); C->Possess(Pawn); C->PlayerInput=NewObject<UPlayerInput>(C); C->RefreshInteractionInputMode();
+	TestFalse(TEXT("Automatic room cannot enable ceiling editing"),C->SetRoomCeilingEditing(true));
+	TestTrue(TEXT("Manual room"),F.Sim->TrySetRoomAirDomain(ManualRoom(),Reason));
+	// Existing synthetic corner geometry. First two identical plates must remain separate list entries.
+	FRoomCeilingPlate P; P.MinXYM=FVector2D(-5.13,3.13); P.MaxXYM=FVector2D(-4.61,3.62); P.HeightM=2.63;
+	auto Low=P; Low.HeightM=1.83; TestTrue(TEXT("Plate fixture"),F.Sim->TrySetRoomCeilingPlates({P,P,Low},Reason));
+	const FVector Eye(-520,340,400),Down(0,0,-1); const auto Pose=F.Racks[0]->GetActorTransform();
+	TestFalse(TEXT("Normal equipment mode cannot pick/delete a ceiling"),C->SelectRoomCeilingAlongRay(Eye,Down) || C->TryDeleteRoomCeiling());
+	C->SelectLayoutAlongRay(FVector(-150,0,1000),Down); TestEqual(TEXT("Normal equipment selection retained"),C->GetSelectedLayoutActor(),static_cast<AActor*>(F.Racks[0]));
+	TestTrue(TEXT("Enable exclusive ceiling mode clears old equipment selection"),C->SetRoomCeilingEditing(true) && !C->GetSelectedLayoutActor());
+	TestTrue(TEXT("Pick actual expanded box, nearest plate and stable first duplicate"),C->SelectRoomCeilingAlongRay(Eye,Down) && C->GetSelectedRoomCeilingIndex()==0);
+	TestFalse(TEXT("Malformed ray does not clear valid selection"),C->SelectRoomCeilingAlongRay(Eye,FVector::ZeroVector)); TestEqual(TEXT("Selection retained"),C->GetSelectedRoomCeilingIndex(),0);
+	C->SelectLayoutAlongRay(FVector(-150,0,1000),Down); C->BeginRackAddition();
+	TestTrue(TEXT("Ceiling click owns mode; equipment/addition disabled"),!C->GetSelectedLayoutActor() && !C->IsAddingRack() && !C->IsLayoutDragging());
+	const auto Camera=Pawn->GetActorLocation(); C->ApplyLayoutCameraInput(1,FVector(1,0,0),0,true); TestTrue(TEXT("RMB camera path available during ceiling edit"),Pawn->GetActorLocation()!=Camera);
+	FInputKeyEventArgs Key; Key.Key=EKeys::R; Key.Event=IE_Pressed; C->InputKey(Key);
+	TestTrue(TEXT("Equipment R does not rotate hidden selection"),F.Racks[0]->GetActorTransform().Equals(Pose,0));
+	Key.Key=EKeys::Delete; TestTrue(TEXT("Raw Delete handled once"),C->InputKey(Key));
+	Key.Event=IE_Repeat; C->InputKey(Key); Key.Event=IE_Released; C->InputKey(Key);
+	TestTrue(TEXT("Only selected duplicate removed, one shared command, selection cleared"),F.Sim->GetRoomCeilingPlates()==TArray<FRoomCeilingPlate>{P,Low}
+		&& C->GetLayoutUndoCount()==1 && C->GetSelectedRoomCeilingIndex()==INDEX_NONE && F.Racks[0]->GetActorTransform().Equals(Pose,0));
+	TestFalse(TEXT("No selection cannot delete again"),C->TryDeleteRoomCeiling());
+	TestTrue(TEXT("Shared Undo/Redo restores exact ordered list"),C->TryUndoLayout() && F.Sim->GetRoomCeilingPlates()==TArray<FRoomCeilingPlate>{P,P,Low}
+		&& C->TryRedoLayout() && F.Sim->GetRoomCeilingPlates()==TArray<FRoomCeilingPlate>{P,Low});
+	C->SelectRoomCeilingAlongRay(Eye,Down); TestFalse(TEXT("Empty/behind ray clears selection"),C->SelectRoomCeilingAlongRay(FVector(-520,340,0),Down));
+	TestEqual(TEXT("Empty click selection"),C->GetSelectedRoomCeilingIndex(),INDEX_NONE);
+	C->SelectRoomCeilingAlongRay(Eye,Down); F.Sim->TrySetRoomCeilingPlates({Low},Reason);
+	TestTrue(TEXT("External list change cannot delete shifted index"),C->GetSelectedRoomCeilingIndex()==INDEX_NONE && !C->TryDeleteRoomCeiling() && F.Sim->GetRoomCeilingPlates()==TArray<FRoomCeilingPlate>{Low});
+	C->SetRoomCeilingEditing(false); C->SetRoomBoundsEditing(true); TestFalse(TEXT("Room handles block ceiling mode"),C->SetRoomCeilingEditing(true)); C->SetRoomBoundsEditing(false);
+	C->SetRoomCeilingEditing(true); C->OpenRoomCeilingSettings(); TestTrue(TEXT("Numeric modal ends ceiling edit and blocks picking/deletion"),!C->IsRoomCeilingEditing()
+		&& !C->SelectRoomCeilingAlongRay(Eye,Down) && !C->TryDeleteRoomCeiling() && !C->SetRoomCeilingEditing(true)); C->CloseRoomSettings();
+	C->SetRoomCeilingEditing(true); C->SetPatchMapOpen(true); TestFalse(TEXT("Patch blocks reentry/deletion"),C->IsRoomCeilingEditing() || C->SetRoomCeilingEditing(true) || C->TryDeleteRoomCeiling()); C->SetPatchMapOpen(false);
+	C->SetRoomCeilingEditing(true); Key.Key=EKeys::Escape; Key.Event=IE_Pressed; C->InputKey(Key);
+	TestTrue(TEXT("Esc exits mode, preserving list and enabling equipment"),!C->IsRoomCeilingEditing() && F.Sim->GetRoomCeilingPlates()==TArray<FRoomCeilingPlate>{Low});
+	C->SelectLayoutAlongRay(FVector(-150,0,1000),Down); TestEqual(TEXT("Equipment picking resumes after Esc"),C->GetSelectedLayoutActor(),static_cast<AActor*>(F.Racks[0]));
+	C->SetRoomCeilingEditing(true); F.Sim->EnterSimulationMode(); C->RefreshInteractionInputMode();
+	TestFalse(TEXT("Simulation disables ceiling mode/selection/deletion"),C->IsRoomCeilingEditing() || C->SetRoomCeilingEditing(true) || C->TryDeleteRoomCeiling());
+	AddInfo(TEXT("Ceiling selection: exclusive mode/actual expanded box; nearest ray and exact ties first index; one of duplicate entries deleted; one shared command; stale/miss/modal/patch/Esc/mode guards; camera/equipment resumed. Render/real button input remains direct-check scope."));
+	return true;
+}
 #endif

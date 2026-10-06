@@ -77,6 +77,12 @@ public:
 	bool OpenRoomCeilingSettings() { return OpenRoomSettings(true); }
 	bool AddRoomCeiling(const FRoomCeilingPlate& Plate, FString& Message);
 	FString DescribeRoomCeilingPlan(const FRoomCeilingPlate& Plate);
+	bool SetRoomCeilingEditing(bool bEnable);
+	void ToggleRoomCeilingEditing() { SetRoomCeilingEditing(!bRoomCeilingEditing); }
+	bool IsRoomCeilingEditing() const { return bRoomCeilingEditing; }
+	bool SelectRoomCeilingAlongRay(const FVector& EyeCm, const FVector& Direction);
+	int32 GetSelectedRoomCeilingIndex() const;
+	bool TryDeleteRoomCeiling();
 	void CloseRoomSettings(URoomSettingsWidget* ExpectedWidget = nullptr);
 	bool IsRoomSettingsOpen() const { return bRoomSettingsOpen; }
 	// Key hint lines for the HUD: one short line, or the grouped list after H.
@@ -329,6 +335,11 @@ private:
 	UPROPERTY(Transient) TObjectPtr<URoomSettingsWidget> RoomSettingsWidget;
 	bool bRoomSettingsOpen = false;
 	bool bRoomCeilingOpen = false;
+	bool bRoomCeilingEditing = false;
+	int32 SelectedRoomCeiling = INDEX_NONE;
+	TArray<FRoomCeilingPlate> SelectedCeilingList;
+	TWeakObjectPtr<ADataCenterSimulationActor> SelectedCeilingTarget;
+	void ClearRoomCeilingSelection();
 	bool bRoomBoundsEditing = false;
 	int32 RoomDragCorner = INDEX_NONE;
 	FRoomAirDomainSettings RoomDragBefore, RoomDragPreview;
@@ -389,7 +400,7 @@ private:
 	// UI tuning, not equipment/physical parameters: 3 m/s, wheel x1.25, limits 0.25..24 m/s.
 	double LayoutCameraSpeedMs = 3.0;
 	bool IsCameraInputAvailable() const;
-	bool IsEquipmentInputAvailable() const { return !bRoomBoundsEditing && IsCameraInputAvailable(); }
+	bool IsEquipmentInputAvailable() const { return !bRoomBoundsEditing && !bRoomCeilingEditing && IsCameraInputAvailable(); }
 	void OnCameraWheelUp();
 	void OnCameraWheelDown();
 	UPROPERTY(Transient)

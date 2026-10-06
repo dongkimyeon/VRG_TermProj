@@ -22,6 +22,7 @@ protected:
 	virtual void NativeTick(const FGeometry& Geometry, float DeltaTime) override;
 private:
 	UPROPERTY() TObjectPtr<ULayoutRackButton> CeilingButton;
+	UPROPERTY() TObjectPtr<ULayoutRackButton> CeilingEditButton;
 	UFUNCTION()
 	void OnAddRack();
 	UFUNCTION() void OnAddSpine();
@@ -30,6 +31,7 @@ private:
  UFUNCTION() void OnAddPerimeterCrah();
 	UFUNCTION() void OnRoomSettings();
 	UFUNCTION() void OnRoomCeiling();
+	UFUNCTION() void OnRoomCeilingEdit();
 	UFUNCTION() void OnRoomBounds();
 	UFUNCTION() void OnAddWall();
 	UFUNCTION() void OnAddCurtain();

@@ -891,7 +891,7 @@ bool ADataCenterDebugController::BeginCrahDuplication()
 
 bool ADataCenterDebugController::InputKey(const FInputKeyEventArgs& Params)
 {
-	if (bRoomBoundsEditing && Params.Key == EKeys::Escape)
+	if ((bRoomBoundsEditing || bRoomCeilingEditing) && Params.Key == EKeys::Escape)
 	{
 		if (Params.Event == IE_Pressed) OnCancelLayoutDrag();
 		return true; // One cancel per press, even if Enhanced Input would route the same key later.
@@ -900,6 +900,11 @@ bool ADataCenterDebugController::InputKey(const FInputKeyEventArgs& Params)
 	{
 		if (Params.Key == EKeys::Escape && Params.Event == IE_Pressed) CloseRoomSettings();
 		return true; // UIOnly routes typing to the text box; never forward world shortcuts.
+	}
+	if (bRoomCeilingEditing && Params.Key==EKeys::Delete)
+	{
+		if(Params.Event==IE_Pressed) TryDeleteRoomCeiling();
+		return true; // One deletion per physical press; never route the same key to equipment/Enhanced Input.
 	}
 	if (Params.Key == EKeys::LeftMouseButton)
 	{
@@ -1298,6 +1303,7 @@ bool ADataCenterDebugController::TryDeleteLayoutRack()
 
 void ADataCenterDebugController::OnDeleteLayoutEquipment()
 {
+	if(bRoomCeilingEditing) { TryDeleteRoomCeiling(); return; }
 	if (!TryDeleteLayoutRack() && !TryDeleteLayoutSpine() && !TryDeleteLayoutCdu() && !TryDeleteLayoutCrah() && !TryDeleteLayoutBarrier())
 		UE_LOG(LogTemp, Display, TEXT("[VrgLayout] 삭제 거절: 랙 선택 전체 또는 네이티브 스파인 선택 전체 또는 네이티브 CDU 선택 전체 또는 네이티브 CRAH 선택 전체와 배치 대기 상태가 필요합니다."));
 }
@@ -1500,6 +1506,7 @@ void ADataCenterDebugController::ClearLayoutHistory()
 
 void ADataCenterDebugController::ResetLayoutEditsForLoad()
 {
+	SetRoomCeilingEditing(false);
 	SetRoomBoundsEditing(false);
 	CancelRackAddition();
 	EndLayoutDrag(false);
@@ -1557,7 +1564,7 @@ bool ADataCenterDebugController::RestoreLayoutTransform(bool bRedo)
 		if (!Sim || Sim!=FindSimActor() || Sim->GetRoomCeilingPlates()!=Expected)
 			Reason=TEXT("천장 기록의 대상이나 현재 목록이 바뀌었습니다.");
 		else if (Sim->TrySetRoomCeilingPlates(Target,Reason))
-		{ From.Pop(); To.Add(Command); return true; }
+		{ ClearRoomCeilingSelection(); From.Pop(); To.Add(Command); return true; }
 		UE_LOG(LogTemp,Display,TEXT("[VrgLayout] 천장 %s 거절: %s"),bRedo?TEXT("Redo"):TEXT("Undo"),*Reason);
 		if(GEngine) GEngine->AddOnScreenDebugMessage(static_cast<uint64>(GetUniqueID())+23,6.0f,FColor::Red,Reason);
 		return false;
@@ -2086,6 +2093,11 @@ void ADataCenterDebugController::OnSelectLayoutEquipment()
 {
 	LogLayoutInputState(TEXT("EnhancedSelectBegin"));
 	if (!IsLayoutMode() || !IsCameraInputAvailable() || IsInputKeyDown(EKeys::RightMouseButton)) return;
+	if(bRoomCeilingEditing)
+	{
+		FVector Eye,Dir; if(DeprojectMousePositionToWorld(Eye,Dir)) SelectRoomCeilingAlongRay(Eye,Dir);
+		return; // Ceiling mode owns misses too: no equipment drag or marquee underneath.
+	}
 	if (bRoomBoundsEditing)
 	{
 		FVector Eye, Dir; FVector2D Screen;
@@ -2341,6 +2353,7 @@ void ADataCenterDebugController::EndLayoutDrag(bool bCommit)
 
 void ADataCenterDebugController::OnReleaseLayoutEquipment()
 {
+	if(bRoomCeilingEditing) return;
 	if (RoomDragCorner != INDEX_NONE)
 	{
 		UpdateRoomCornerFromCursor(); EndRoomCornerDrag(true); return;
@@ -2359,6 +2372,7 @@ void ADataCenterDebugController::OnReleaseLayoutEquipment()
 
 void ADataCenterDebugController::OnCancelLayoutDrag()
 {
+	if(bRoomCeilingEditing) { SetRoomCeilingEditing(false); return; }
 	if (bRoomBoundsEditing)
 	{
 		if (RoomDragCorner != INDEX_NONE) EndRoomCornerDrag(false);
@@ -2579,7 +2593,7 @@ void ADataCenterDebugController::OnToggleSimMode()
 
 void ADataCenterDebugController::OnGrabOrDrop()
 {
-	if (bRoomSettingsOpen || bRoomBoundsEditing) return;
+	if (bRoomSettingsOpen || bRoomBoundsEditing || bRoomCeilingEditing) return;
 	if (bAddingRack || bMarqueeActive) return;
 	if (GetSelectedLayoutActors().Num() > 1) { Grabbed.Reset(); return; }
 	if (IsLayoutDragging()) return;
@@ -2597,7 +2611,7 @@ void ADataCenterDebugController::OnGrabOrDrop()
 
 void ADataCenterDebugController::OnCycleContainment()
 {
-	if (bRoomSettingsOpen || bRoomBoundsEditing) return;
+	if (bRoomSettingsOpen || bRoomBoundsEditing || bRoomCeilingEditing) return;
 	// S6: containment is part of the layout (none -> blanking -> blanking + cold-aisle roof); the next simulation entry builds it.
 	ADataCenterSimulationActor* Sim = FindSimActor();
 	if (Sim == nullptr || Sim->GetSimMode() != ESimMode::Layout) return;
@@ -2607,7 +2621,7 @@ void ADataCenterDebugController::OnCycleContainment()
 
 void ADataCenterDebugController::OnRotatePlaceable()
 {
-	if (bRoomSettingsOpen || bRoomBoundsEditing) return;
+	if (bRoomSettingsOpen || bRoomBoundsEditing || bRoomCeilingEditing) return;
 	if (bAddingRack || bMarqueeActive) return;
 	if (GetSelectedLayoutActors().Num() > 1) return;
 	if (IsLayoutDragging()) return;
@@ -2830,6 +2844,7 @@ void ADataCenterDebugController::Tick(float DeltaTime)
 
 void ADataCenterDebugController::SetPatchMapOpen(bool bOpen)
 {
+	if(bOpen) SetRoomCeilingEditing(false);
 	if (bOpen) SetRoomBoundsEditing(false);
 	if (bOpen) CloseRoomSettings();
 	if (bOpen) CancelRackAddition();
@@ -2936,6 +2951,8 @@ void ADataCenterDebugController::OnCameraWheelDown()
 
 void ADataCenterDebugController::RefreshInteractionInputMode()
 {
+	if(bRoomCeilingEditing && (!IsLayoutMode() || !FindSimActor() || !FindSimActor()->GetRoomAirDomain().bManual)) SetRoomCeilingEditing(false);
+	if(SelectedRoomCeiling!=INDEX_NONE && GetSelectedRoomCeilingIndex()==INDEX_NONE) ClearRoomCeilingSelection();
 	if (bRoomBoundsEditing && (!IsLayoutMode() || !FindSimActor() || !FindSimActor()->GetRoomAirDomain().bManual)) SetRoomBoundsEditing(false);
 	if (bRoomBoundsEditing && RoomDragCorner == INDEX_NONE && !(RoomDragPreview == FindSimActor()->GetRoomAirDomain()))
 	{ RoomDragPreview = FindSimActor()->GetRoomAirDomain(); ValidateRoomBoundsPreview(); }
@@ -2977,7 +2994,7 @@ bool ADataCenterDebugController::OpenRoomSettings(bool bCeiling)
 	if (bCeiling && (!FindSimActor() || !FindSimActor()->GetRoomAirDomain().bManual)) return false;
 	if (!GetWorld() || !GetWorld()->IsGameWorld() || !FindSimActor() || !IsLayoutMode() || !IsCameraInputAvailable()
 		|| bAddingRack || bMarqueeActive || IsLayoutDragging() || Grabbed.IsValid() || IsInputKeyDown(EKeys::RightMouseButton)) return false;
-	SetRoomBoundsEditing(false);
+	SetRoomBoundsEditing(false); SetRoomCeilingEditing(false);
 	if (GetLocalPlayer())
 	{
 		RoomSettingsWidget = CreateWidget<URoomSettingsWidget>(this);
@@ -3054,6 +3071,11 @@ void ADataCenterDebugController::GetHelpLines(TArray<FString>& Out) const
 	// "DisableAllScreenMessages" hint).
 	Out.Reset();
 	const bool bLayout = IsLayoutMode();
+	if(bRoomCeilingEditing)
+	{
+		Out.Add(FString::Printf(TEXT("천장 선택·삭제 | 클릭 선택 / 빈 곳 해제 / Delete 한 장 삭제 / Ctrl+Z/Y / Esc 종료 | 선택 %d / 판 %d"),
+			GetSelectedRoomCeilingIndex()+1,FindSimActor()?FindSimActor()->GetRoomCeilingPlates().Num():0)); return;
+	}
 	if (bRoomBoundsEditing)
 	{
 		Out.Add(TEXT("방 범위 편집 | 바닥 모서리: XY · 천장 중앙점: 높이 (5 cm 스냅) | Esc 취소/종료 | Ctrl+Z/Y | Enter 시뮬레이션"));
