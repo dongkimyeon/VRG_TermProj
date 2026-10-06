@@ -241,7 +241,7 @@ FString ADataCenterDebugController::DescribeRoomCeilingCandidate(const FRoomCeil
 		{
 			const FVector Min=Bounds.Min+FVector(Open.Min.X,Open.Min.Y,Plan.MinCell.Z)*GP.CellSizeM;
 			const FVector Max=Bounds.Min+FVector(Open.Max.X,Open.Max.Y,Plan.MaxCellExclusive.Z)*GP.CellSizeM;
-			Message+=FString::Printf(TEXT("개방 계산 %s ~ %s m\n"),*Min.ToString(),*Max.ToString());
+			Message+=FString::Printf(TEXT("개방 계산 %s ~ %s m · %d셀\n"),*Min.ToString(),*Max.ToString(),(Open.Max.X-Open.Min.X)*(Open.Max.Y-Open.Min.Y));
 		}
 	}
 	if (!Sim->ValidateRoomAirDomain(Sim->GetRoomAirDomain(),GP,Bounds,Reason,&Plates)) Message+=TEXT("거절: ")+Reason;
@@ -259,6 +259,27 @@ bool ADataCenterDebugController::AddRoomCeiling(const FRoomCeilingPlate& P, FStr
 	FLayoutTransformCommand Command; Command.bRoomCeilings=true; Command.RoomSettingsTarget=Sim;
 	Command.CeilingsBefore=Before; Command.CeilingsAfter=Plates; PushLayoutCommand(MoveTemp(Command));
 	ClearRoomCeilingSelection();
+	return true;
+}
+
+bool ADataCenterDebugController::AddRoomCeilingHole(const FRoomCeilingHole& Hole, FString& Message)
+{
+	const int32 Index=GetSelectedRoomCeilingIndex(); auto* Sim=FindSimActor();
+	if (!bRoomSettingsOpen || !bRoomCeilingHoleOpen || !bRoomCeilingEditing || OpenPatchMaps>0 || !IsLayoutMode() || !Sim || IsLayoutDragging())
+	{ Message=TEXT("천장 편집의 선택 판 구멍 추가 창에서만 추가할 수 있습니다."); return false; }
+	if (Index==INDEX_NONE)
+	{ Message=TEXT("선택 판 또는 목록이 변경되었습니다. 창을 닫고 판을 다시 선택하세요."); return false; }
+	const auto Before=SelectedCeilingList; auto After=Before; auto& P=After[Index]; P.Holes.Add(Hole);
+	const FVector2D WorldMin=P.MinXYM+Hole.LocalMinXYM,WorldMax=P.MinXYM+Hole.LocalMaxXYM;
+	Message=FString::Printf(TEXT("구멍 로컬 XY %s ~ %s m\n요청 월드 XY %s ~ %s m · 판 높이 %.6g m\n"),
+		*Hole.LocalMinXYM.ToString(),*Hole.LocalMaxXYM.ToString(),*WorldMin.ToString(),*WorldMax.ToString(),P.HeightM);
+	Message+=DescribeRoomCeilingCandidate(P,After);
+	FString Reason;
+	if (!Sim->TrySetRoomCeilingPlates(After,Reason)) { Message+=TEXT("\n거절: ")+Reason; return false; }
+	FLayoutTransformCommand Command; Command.bRoomCeilings=true; Command.RoomSettingsTarget=Sim;
+	Command.CeilingsBefore=Before; Command.CeilingsAfter=After; PushLayoutCommand(MoveTemp(Command));
+	SelectedCeilingList=MoveTemp(After); // Same plate can receive another confirmed hole; stale external lists cannot.
+	Message+=TEXT("\n개방은 해당 판에서만 제외하는 계획입니다. 다른 판·벽·장비·콜드아일 지붕이 겹치면 통로는 막힐 수 있습니다.");
 	return true;
 }
 
@@ -467,6 +488,20 @@ void ADataCenterDebugController::DrawRoomCeilings() const
 	FAirGridParams GP; FBox Bounds(ForceInit); FString Reason; TArray<FRoomCeilingPlan> Plans;
 	if (!VrgRoomAirDomain::BuildGrid(Sim->GetRoomAirDomain(),Air->GridParams,GP,Bounds,Reason)
 		|| !VrgRoomAirDomain::BuildCeilingPlans(Sim->GetRoomAirDomain(),Sim->GetRoomCeilingPlates(),GP,Bounds,Plans,Reason)) return;
+	auto DrawHoles=[&](const FRoomCeilingPlate& P,const FRoomCeilingPlan& Plan)
+	{
+		for(int32 J=0;J<P.Holes.Num();++J)
+		{
+			const auto Lo=P.MinXYM+P.Holes[J].LocalMinXYM,Hi=P.MinXYM+P.Holes[J].LocalMaxXYM;
+			const FVector V[]={FVector(Lo.X,Lo.Y,P.HeightM),FVector(Hi.X,Lo.Y,P.HeightM),FVector(Hi.X,Hi.Y,P.HeightM),FVector(Lo.X,Hi.Y,P.HeightM)};
+			for(int32 K=0;K<4;++K) DrawDebugLine(GetWorld(),SimUnits::MetersToUnreal(V[K]),SimUnits::MetersToUnreal(V[(K+1)%4]),FColor::Cyan,false,0,1,2);
+			const auto& Open=Plan.OpenCells[J];
+			const FBox B(Bounds.Min+FVector(Open.Min.X,Open.Min.Y,Plan.MinCell.Z)*GP.CellSizeM,
+				Bounds.Min+FVector(Open.Max.X,Open.Max.Y,Plan.MaxCellExclusive.Z)*GP.CellSizeM);
+			// Front-depth lines only: no collision/selection primitive, no clearing another solid owner.
+			DrawDebugBox(GetWorld(),SimUnits::MetersToUnreal(B.GetCenter()),SimUnits::MetersToUnreal(B.GetExtent()),FColor(220,100,255),false,0,1,3);
+		}
+	};
 	for(int32 I=0;I<Plans.Num();++I)
 	{
 		const auto& P=Sim->GetRoomCeilingPlates()[I]; const auto& B=Plans[I].ActualBoundsM;
@@ -474,6 +509,7 @@ void ADataCenterDebugController::DrawRoomCeilings() const
 		const FVector V[]={FVector(P.MinXYM.X,P.MinXYM.Y,P.HeightM),FVector(P.MaxXYM.X,P.MinXYM.Y,P.HeightM),
 			FVector(P.MaxXYM.X,P.MaxXYM.Y,P.HeightM),FVector(P.MinXYM.X,P.MaxXYM.Y,P.HeightM)};
 		for(int32 J=0;J<4;++J) DrawDebugLine(GetWorld(),SimUnits::MetersToUnreal(V[J]),SimUnits::MetersToUnreal(V[(J+1)%4]),FColor::Cyan,false,-1,0,1);
+		DrawHoles(P,Plans[I]);
 	}
 	const int32 Selected=GetSelectedRoomCeilingIndex();
 	if(Plans.IsValidIndex(Selected))
@@ -497,6 +533,7 @@ void ADataCenterDebugController::DrawRoomCeilings() const
 		{
 			const auto& Actual=PreviewPlans[0].ActualBoundsM;
 			DrawDebugBox(GetWorld(),SimUnits::MetersToUnreal(Actual.GetCenter()),SimUnits::MetersToUnreal(Actual.GetExtent()),Color,false,0,1,3);
+			DrawHoles(P,PreviewPlans[0]);
 		}
 	}
 }

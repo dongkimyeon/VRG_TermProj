@@ -73,8 +73,10 @@ public:
 	// The patch window temporarily owns mouse focus; restore the current mode when it closes.
 	void SetPatchMapOpen(bool bOpen);
 	void RefreshInteractionInputMode();
-	bool OpenRoomSettings(bool bCeiling = false);
+	bool OpenRoomSettings(bool bCeiling = false, bool bHole = false);
 	bool OpenRoomCeilingSettings() { return OpenRoomSettings(true); }
+	bool OpenRoomCeilingHoleSettings() { return OpenRoomSettings(false,true); }
+	bool AddRoomCeilingHole(const FRoomCeilingHole& Hole, FString& Message);
 	bool AddRoomCeiling(const FRoomCeilingPlate& Plate, FString& Message);
 	FString DescribeRoomCeilingPlan(const FRoomCeilingPlate& Plate);
 	bool SetRoomCeilingEditing(bool bEnable);
@@ -345,6 +347,7 @@ private:
 	UPROPERTY(Transient) TObjectPtr<URoomSettingsWidget> RoomSettingsWidget;
 	bool bRoomSettingsOpen = false;
 	bool bRoomCeilingOpen = false;
+	bool bRoomCeilingHoleOpen = false;
 	bool bRoomCeilingEditing = false;
 	int32 SelectedRoomCeiling = INDEX_NONE;
 	TArray<FRoomCeilingPlate> SelectedCeilingList;

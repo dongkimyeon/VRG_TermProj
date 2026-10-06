@@ -4150,3 +4150,14 @@ Editor Development75.99s 성공. 5종 영향 검사 중 RoomCeilingCoupling, Roo
 
 최종 결과: 신규 검사 하한만 수정한 Editor Development23.87s 성공, CeilingHoleFlow1종 무경고 성공(실패0/미실행0/종료0). 측정은 위 표와 동일하다. 통합 첫 실행의 나머지4종은 수정 영향이 없어 반복하지 않았다. 데이터4종+통합5종의 고유 영향9종 모두 최종 무경고 성공이다. 신규 테스트의 최소 온도 허용치만 실측 뒤 정했으며 기존 솔버/보존/압력/물성은 변경하지 않았다. 전체 Automation 건수·FPS/시설 정확도 검증으로 확대하지 않는다.
 최종 재검증 근거(커밋 제외): Saved/Build_CeilingHoleFlowBound.log, Saved/Logs/CeilingHoleFlowBound_Tests.log, Saved/Automation/CeilingHoleFlowBound/index.json. E:\UE_5.8 Editor Development 후 Automation RunTests VRG.Air.Solid.CeilingHoleFlow -unattended -NullRHI. 빌드 중 소스 변경/기존 성공 검사 반복/화면 실패 도구 재시도 없음.
+
+## 2026-10-06 선택 판 구멍 추가 숫자 UI·표시
+
+천장 편집의 유효 선택 판이 있고 드래그 중이 아닐 때 ‘선택 판 구멍 추가’ 버튼을 켠다. 기존 숫자 창/UIOnly·초안 파서를 공유해 로컬 최소/최대 XY 네 m 입력만 표시한다. 판 원점/크기/높이를 안내하고 추가 때 기존 전체 목록 검증을 사용한다. 한 번 성공은 선택 항목에 구멍 하나·전체 목록 명령 하나이며 다른 중복 판을 변경하지 않는다. 미확정 입력·파싱/범위/0셀 실패는 목록/장비/격자/기록을 유지한다. 이미 저장된 구멍 필드와 단위·완전 포함 셀 정책은 변경하지 않았다.
+
+구멍 창은 선택 목록 스냅샷을 유지한다. 외부 목록/대상 변경은 재선택 안내와 거절이며 다른 판으로 인덱스를 옮겨 적용하지 않는다. 숫자 창의 Esc가 천장 편집 종료보다 먼저 처리되도록 순서를 수정했다. 닫기는 숫자 창만 종료하고 유효한 천장 선택/편집과 기존 커서/뷰포트 입력을 복구한다. 패치/모드 전환은 창을 닫고 성공 Load도 이 선택 판 초안을 취소한다. 요청 월드 윤곽은 청록, 해당 판에서 제외할 개방 계획 범위는 보라 전경 선이다. 기존 판 이동/높이 미리보기에도 같은 계획을 표시한다. 표시에는 액터/충돌/픽을 추가하지 않는다. 다른 판·벽·장비·지붕이 겹치면 실제 통로가 막힐 수 있다는 안내를 유지한다.
+
+Editor Development211.03s 성공(기존 FloorCm/Name shadow 경고 유지). RoomCeilingHoleUiInput + RoomCeilingUiInput + RoomSettingsUiInput3종 무경고 성공, 실패0/미실행0/종료0. 선택/드래그·파싱4필드·동일 기하 첫 항목만 추가·계획4셀/로컬/요청 월드 안내·장비/카메라/패치/모드/기록 입력 차단·숫자 Esc와 종료 뒤 카메라 경로·외부 목록 변경 거절을 확인했다. 합성 기하는 기존 h0.25m·1m 판과 로컬[0.125,0.875]^2m다. 새 물성/솔버/보존 허용치 없음; 실제 구멍 마스크/물리 검증은 앞 절의 기준을 재사용하며 새 UI 확정의 기록/저장 통합은 다음 커밋에서 확인한다.
+
+신규 실제 버튼/입력/선 픽셀·OS 포커스는 미확인이다. 기존 도구 실패를 재시도하지 않았고 Tools/부분천장_구멍UI_확인_2026-10-06.md에 구체적 좌표·거절/취소·Undo/저장 절차를 남겼다. 구멍 선택/삭제·드래그 핸들·외부 배기/물리 확장·전체 Automation/FPS는 제외했다.
+근거(커밋 제외): Saved/Build_CeilingHoleUi.log, Saved/Logs/CeilingHoleUi_Tests.log, Saved/Automation/CeilingHoleUi/index.json. E:\UE_5.8 Editor Development 후 위3종 Automation RunTests -unattended -NullRHI; 빌드 중 소스 변경 없음.

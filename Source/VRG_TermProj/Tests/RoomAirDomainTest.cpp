@@ -727,4 +727,55 @@ bool FRoomCeilingHoleFlowTest::RunTest(const FString& Parameters)
 	AddInfo(FString::Printf(TEXT("Ceiling hole mask144->108 cells; full inclusion36cells; other solids/plate preserved; maxEnergyAbs%.3e maxNormalizedDiv%.3e; no external mass/heat removal."),MaxEnergy,MaxDiv));
 	return true;
 }
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FRoomCeilingHoleUiTest,"VRG.Interaction.Layout.RoomCeilingHoleUiInput",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::CommandletContext | EAutomationTestFlags::EngineFilter)
+bool FRoomCeilingHoleUiTest::RunTest(const FString& Parameters)
+{
+	FRoomFixture F; auto* C=F.World->SpawnActor<ADataCenterDebugController>(); C->bFrameEquipmentOnStart=false;
+	auto* Pawn=F.World->SpawnActor<ADefaultPawn>(); C->Possess(Pawn); C->PlayerInput=NewObject<UPlayerInput>(C); C->RefreshInteractionInputMode();
+	FString Message; TestFalse(TEXT("No manual room/plate cannot open hole modal"),C->OpenRoomCeilingHoleSettings());
+	F.Sim->TrySetRoomAirDomain(ManualRoom(),Message);
+	FRoomCeilingPlate P; P.MinXYM=FVector2D(-5.25,3); P.MaxXYM=FVector2D(-4.25,4); P.HeightM=2.625; // Existing synthetic metre fixture.
+	const TArray<FRoomCeilingPlate> Before{P,P}; F.Sim->TrySetRoomCeilingPlates(Before,Message);
+	F.Sim->EnterSimulationMode(); F.Sim->Tick(.021f); F.Sim->EnterLayoutMode();
+	const auto Mask=F.Air->GetMutableSolver().GetGrid().bSolidCell;
+	const auto Temps=F.Air->GetMutableSolver().GetGrid().TemperatureK;
+	const auto Clock=F.Sim->GetSnapshot().SimTimeS; const auto Pose=F.Racks[0]->GetActorTransform(); const auto Camera=Pawn->GetActorLocation();
+	const FVector Eye(-475,350,400),Down(0,0,-1);
+	TestFalse(TEXT("Editing without selected plate cannot open"),C->SetRoomCeilingEditing(true) && C->OpenRoomCeilingHoleSettings());
+	TestTrue(TEXT("Selected snapshot opens hole modal"),C->SelectRoomCeilingAlongRay(Eye,Down) && C->OpenRoomCeilingHoleSettings());
+	TestFalse(TEXT("No second modal/room Apply"),C->OpenRoomSettings() || C->ApplyRoomSettings(ManualRoom(),Message));
+	FRoomCeilingHole H;
+	TestTrue(TEXT("Four strict local metre fields"),URoomSettingsWidget::ParseHoleDraft({TEXT("0.125"),TEXT("0.875"),TEXT("0.125"),TEXT("0.875")},H,Message));
+	const auto Parsed=H;
+	for(const auto& Bad:TArray<TArray<FString>>{{TEXT("nan"),TEXT("1"),TEXT("0"),TEXT("1")},{TEXT("0"),TEXT("1"),TEXT("0")},{TEXT("0"),TEXT("1"),TEXT("inf"),TEXT("1")}})
+		TestTrue(TEXT("Invalid parsing leaves draft output"),!URoomSettingsWidget::ParseHoleDraft(Bad,H,Message) && H==Parsed && !Message.IsEmpty());
+	TestTrue(TEXT("Typing/parsing is metadata-free"),F.Sim->GetRoomCeilingPlates()==Before && C->GetLayoutUndoCount()==0);
+	C->ApplyLayoutCameraInput(1,FVector(1,1,1),1,true); C->BeginRackAddition();
+	for(auto Key:{EKeys::R,EKeys::Delete,EKeys::D,EKeys::Z,EKeys::Y,EKeys::Enter}) { FInputKeyEventArgs A; A.Key=Key; A.Event=IE_Pressed; C->InputKey(A); }
+	TestTrue(TEXT("Modal blocks world gestures/history/camera/equipment"),Pawn->GetActorLocation()==Camera && F.Racks[0]->GetActorTransform().Equals(Pose,0)
+		&& !C->IsAddingRack() && !C->BeginRoomCeilingMoveDrag(Eye,Down) && !C->TryDeleteRoomCeiling() && !C->TryUndoLayout() && F.Sim->GetRoomCeilingPlates()==Before);
+	auto Reject=[&](FRoomCeilingHole Bad)
+	{ TestFalse(TEXT("Rejected hole Add"),C->AddRoomCeilingHole(Bad,Message)); TestTrue(TEXT("Reason/list/history/grid/clock retained"),!Message.IsEmpty() && F.Sim->GetRoomCeilingPlates()==Before && C->GetLayoutUndoCount()==0
+		&& F.Air->GetMutableSolver().GetGrid().bSolidCell==Mask && F.Air->GetMutableSolver().GetGrid().TemperatureK==Temps && F.Sim->GetSnapshot().SimTimeS==Clock); };
+	auto Bad=H; Bad.LocalMaxXYM.X=1.01; Reject(Bad); Bad=H; Bad.LocalMaxXYM=FVector2D(.2); Reject(Bad); Bad=H; Bad.LocalMaxXYM.X=Bad.LocalMinXYM.X; Reject(Bad);
+	TestTrue(TEXT("Add one hole to selected duplicate only"),C->AddRoomCeilingHole(H,Message) && F.Sim->GetRoomCeilingPlates()[0].Holes==TArray<FRoomCeilingHole>{H}
+		&& F.Sim->GetRoomCeilingPlates()[1]==P && C->GetLayoutUndoCount()==1 && C->GetSelectedRoomCeilingIndex()==0);
+	TestTrue(TEXT("Readout distinguishes local/world/calculation/count/other obstruction"),Message.Contains(TEXT("구멍 로컬")) && Message.Contains(TEXT("요청 월드")) && Message.Contains(TEXT("개방 계산"))
+		&& Message.Contains(TEXT("4셀")) && Message.Contains(TEXT("막힐 수")) && F.Air->GetMutableSolver().GetGrid().bSolidCell==Mask);
+	FInputKeyEventArgs Esc; Esc.Key=EKeys::Escape; Esc.Event=IE_Pressed; C->InputKey(Esc);
+	TestTrue(TEXT("Esc closes numeric modal first and retains edit/selection"),!C->IsRoomSettingsOpen() && C->IsRoomCeilingEditing() && C->GetSelectedRoomCeilingIndex()==0 && C->bShowMouseCursor);
+	TestFalse(TEXT("Closed modal cannot Add"),C->AddRoomCeilingHole(H,Message));
+	C->ApplyLayoutCameraInput(1,FVector(1,0,0),0,true); TestTrue(TEXT("Close restores camera path"),Pawn->GetActorLocation()!=Camera);
+	TestTrue(TEXT("Reopen current selection"),C->OpenRoomCeilingHoleSettings()); auto External=F.Sim->GetRoomCeilingPlates(); External.RemoveAt(0); F.Sim->TrySetRoomCeilingPlates(External,Message); C->RefreshInteractionInputMode();
+	TestTrue(TEXT("External list cannot repoint open dialog"),!C->AddRoomCeilingHole(H,Message) && Message.Contains(TEXT("다시 선택")) && F.Sim->GetRoomCeilingPlates()==External && C->GetLayoutUndoCount()==1); C->CloseRoomSettings();
+	C->SelectRoomCeilingAlongRay(Eye,Down); C->OpenRoomCeilingHoleSettings(); C->SetPatchMapOpen(true);
+	TestTrue(TEXT("Patch closes hole modal and blocks reopening"),!C->IsRoomSettingsOpen() && !C->OpenRoomCeilingHoleSettings()); C->SetPatchMapOpen(false);
+	C->SetRoomCeilingEditing(true); C->SelectRoomCeilingAlongRay(Eye,Down);
+	TestTrue(TEXT("Active drag blocks hole modal"),C->BeginRoomCeilingMoveDrag(Eye,Down) && !C->OpenRoomCeilingHoleSettings()); C->EndRoomCeilingCornerDrag(false);
+	C->OpenRoomCeilingHoleSettings(); F.Sim->EnterSimulationMode(); C->RefreshInteractionInputMode();
+	TestTrue(TEXT("Mode closes hole draft and refuses reopening"),!C->IsRoomSettingsOpen() && !C->OpenRoomCeilingHoleSettings());
+	AddInfo(TEXT("Hole modal: four local m fields, selected duplicate only, full-list refusal/0cells, actual4cell plan h0.25m, world input gates/stale protection and modal-first Esc; no actual widget pixels/OS focus measured."));
+	return true;
+}
 #endif

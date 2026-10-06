@@ -891,15 +891,15 @@ bool ADataCenterDebugController::BeginCrahDuplication()
 
 bool ADataCenterDebugController::InputKey(const FInputKeyEventArgs& Params)
 {
-	if ((bRoomBoundsEditing || bRoomCeilingEditing) && Params.Key == EKeys::Escape)
-	{
-		if (Params.Event == IE_Pressed) OnCancelLayoutDrag();
-		return true; // One cancel per press, even if Enhanced Input would route the same key later.
-	}
 	if (bRoomSettingsOpen)
 	{
 		if (Params.Key == EKeys::Escape && Params.Event == IE_Pressed) CloseRoomSettings();
 		return true; // UIOnly routes typing to the text box; never forward world shortcuts.
+	}
+	if ((bRoomBoundsEditing || bRoomCeilingEditing) && Params.Key == EKeys::Escape)
+	{
+		if (Params.Event == IE_Pressed) OnCancelLayoutDrag();
+		return true; // The numeric modal owns Esc first, including when ceiling selection stays active.
 	}
 	if (bRoomCeilingEditing && Params.Key==EKeys::Delete)
 	{
@@ -1506,6 +1506,7 @@ void ADataCenterDebugController::ClearLayoutHistory()
 
 void ADataCenterDebugController::ResetLayoutEditsForLoad()
 {
+	if(bRoomCeilingHoleOpen) CloseRoomSettings(); // A successful Load ends this selected-plate draft only.
 	SetRoomCeilingEditing(false);
 	SetRoomBoundsEditing(false);
 	CancelRackAddition();
@@ -2379,6 +2380,7 @@ void ADataCenterDebugController::OnReleaseLayoutEquipment()
 
 void ADataCenterDebugController::OnCancelLayoutDrag()
 {
+	if(bRoomSettingsOpen) { CloseRoomSettings(); return; }
 	if(bRoomCeilingEditing)
 	{
 		if(CeilingDragCorner!=INDEX_NONE) EndRoomCeilingCornerDrag(false);
@@ -3002,12 +3004,15 @@ void ADataCenterDebugController::RefreshInteractionInputMode()
 	else SetInputMode(FInputModeGameOnly());
 }
 
-bool ADataCenterDebugController::OpenRoomSettings(bool bCeiling)
+bool ADataCenterDebugController::OpenRoomSettings(bool bCeiling, bool bHole)
 {
+	const int32 HoleIndex=GetSelectedRoomCeilingIndex();
+	if (bHole && (bCeiling || HoleIndex==INDEX_NONE || !bRoomCeilingEditing || IsLayoutDragging())) return false;
 	if (bCeiling && (!FindSimActor() || !FindSimActor()->GetRoomAirDomain().bManual)) return false;
 	if (!GetWorld() || !GetWorld()->IsGameWorld() || !FindSimActor() || !IsLayoutMode() || !IsCameraInputAvailable()
 		|| bAddingRack || bMarqueeActive || (IsLayoutDragging() && CeilingDragCorner==INDEX_NONE) || Grabbed.IsValid() || IsInputKeyDown(EKeys::RightMouseButton)) return false;
-	SetRoomBoundsEditing(false); SetRoomCeilingEditing(false);
+	SetRoomBoundsEditing(false);
+	if (!bHole) SetRoomCeilingEditing(false); // Hole modal retains the selected value-list snapshot; no re-picking.
 	if (GetLocalPlayer())
 	{
 		RoomSettingsWidget = CreateWidget<URoomSettingsWidget>(this);
@@ -3015,6 +3020,7 @@ bool ADataCenterDebugController::OpenRoomSettings(bool bCeiling)
 	}
 	bRoomSettingsOpen = true; bInputModeInitialized = false;
 	bRoomCeilingOpen = bCeiling;
+	bRoomCeilingHoleOpen = bHole;
 	if (PlayerInput) PlayerInput->FlushPressedKeys();
 	bLayoutLeftControl = bLayoutRightControl = false; RotationInput = FRotator::ZeroRotator;
 	bShowMouseCursor = true;
@@ -3022,7 +3028,8 @@ bool ADataCenterDebugController::OpenRoomSettings(bool bCeiling)
 	if (RoomSettingsWidget)
 	{
 		RoomSettingsWidget->AddToViewport(110);
-		RoomSettingsWidget->InitializeDraft(GetRoomSettingsDraft(), bCeiling);
+		if (bHole) RoomSettingsWidget->InitializeHoleDraft(SelectedCeilingList[HoleIndex]);
+		else RoomSettingsWidget->InitializeDraft(GetRoomSettingsDraft(), bCeiling);
 		FInputModeUIOnly Input; Input.SetWidgetToFocus(RoomSettingsWidget->TakeWidget());
 		Input.SetLockMouseToViewportBehavior(EMouseLockMode::DoNotLock); SetInputMode(Input);
 	}
@@ -3035,6 +3042,7 @@ void ADataCenterDebugController::CloseRoomSettings(URoomSettingsWidget* Expected
 	if (ExpectedWidget && ExpectedWidget != RoomSettingsWidget) return;
 	bRoomSettingsOpen = false;
 	bRoomCeilingOpen = false;
+	bRoomCeilingHoleOpen = false;
 	if (PlayerInput) PlayerInput->FlushPressedKeys();
 	bLayoutLeftControl = bLayoutRightControl = false;
 	if (RoomSettingsWidget) { RoomSettingsWidget->RemoveFromParent(); RoomSettingsWidget = nullptr; }
@@ -3070,7 +3078,7 @@ FString ADataCenterDebugController::DescribeRoomSettingsPlan(const FRoomAirDomai
 bool ADataCenterDebugController::ApplyRoomSettings(const FRoomAirDomainSettings& Settings, FString& Message)
 {
 	auto* Sim = FindSimActor();
-	if (!bRoomSettingsOpen || bRoomCeilingOpen || OpenPatchMaps > 0 || !IsLayoutMode() || !Sim)
+	if (!bRoomSettingsOpen || bRoomCeilingOpen || bRoomCeilingHoleOpen || OpenPatchMaps > 0 || !IsLayoutMode() || !Sim)
 	{ Message = TEXT("배치 모드의 방 설정 창에서 적용하세요."); return false; }
 	const auto Before = Sim->GetRoomAirDomain();
 	auto Candidate = Settings.bManual ? Settings : Before;

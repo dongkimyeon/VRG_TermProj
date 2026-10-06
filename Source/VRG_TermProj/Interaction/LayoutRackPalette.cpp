@@ -80,6 +80,12 @@ void ULayoutRackPalette::NativeOnInitialized()
 	CeilingButton->SetIsEnabled(false); CeilingButton->OnClicked.AddDynamic(this,&ULayoutRackPalette::OnRoomCeiling);
 	CeilingEditButton=AddBarrierButton(TEXT("천장 선택·삭제"),1030);
 	CeilingEditButton->SetIsEnabled(false); CeilingEditButton->OnClicked.AddDynamic(this,&ULayoutRackPalette::OnRoomCeilingEdit);
+	// Third row uses existing UI pixel sizes, not a new physical dimension or a focusable world input.
+	CeilingHoleButton=WidgetTree->ConstructWidget<ULayoutRackButton>();
+	auto* HoleLabel=WidgetTree->ConstructWidget<UTextBlock>(); HoleLabel->SetText(FText::FromString(TEXT("선택 판 구멍 추가"))); HoleLabel->SetFont(Font); CeilingHoleButton->AddChild(HoleLabel);
+	auto* HoleSlot=Canvas->AddChildToCanvas(CeilingHoleButton); HoleSlot->SetAnchors(FAnchors(0,1)); HoleSlot->SetAlignment(FVector2D(0,1));
+	HoleSlot->SetPosition(FVector2D(20,-128)); HoleSlot->SetSize(FVector2D(240,44));
+	CeilingHoleButton->SetIsEnabled(false); CeilingHoleButton->OnClicked.AddDynamic(this,&ULayoutRackPalette::OnRoomCeilingHole);
 }
 
 void ULayoutRackPalette::OnAddRack()
@@ -110,12 +116,22 @@ void ULayoutRackPalette::OnAddPerimeterCrah()
 void ULayoutRackPalette::NativeTick(const FGeometry& Geometry, float DeltaTime)
 {
 	Super::NativeTick(Geometry,DeltaTime);
+	if(CeilingHoleButton)
+	{
+		auto* C=Cast<ADataCenterDebugController>(GetOwningPlayer());
+		CeilingHoleButton->SetIsEnabled(C && C->IsRoomCeilingEditing() && C->GetSelectedRoomCeilingIndex()!=INDEX_NONE && !C->IsLayoutDragging());
+	}
 	if (CeilingButton) { auto* C=Cast<ADataCenterDebugController>(GetOwningPlayer()); CeilingButton->SetIsEnabled(C && C->GetRoomSettingsDraft().bManual); }
 	if(CeilingEditButton)
 	{
 		auto* C=Cast<ADataCenterDebugController>(GetOwningPlayer()); CeilingEditButton->SetIsEnabled(C && C->GetRoomSettingsDraft().bManual);
 		if(auto* Label=Cast<UTextBlock>(CeilingEditButton->GetChildAt(0))) Label->SetText(FText::FromString(C && C->IsRoomCeilingEditing()?TEXT("천장 편집 끄기"):TEXT("천장 선택·삭제")));
 	}
+}
+
+void ULayoutRackPalette::OnRoomCeilingHole()
+{
+	if(auto* C=Cast<ADataCenterDebugController>(GetOwningPlayer())) C->OpenRoomCeilingHoleSettings();
 }
 
 void ULayoutRackPalette::OnRoomCeilingEdit()
