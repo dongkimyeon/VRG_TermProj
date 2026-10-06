@@ -4069,3 +4069,22 @@ t1.02s 균일 CPU/NullRHI의 짧은 과도·기하 검증이며 시설 정확도
 기존 XY 제스처/선택 목록 스냅샷/전체 목록 검증·공유 기록·저장v2·입력/취소 경로를 그대로 사용한다. 요청 높이만 미리보기하고 실제 판/장비/격자/온도/시계는 변경하지 않는다. 유효 release 때 해당 인덱스만 교체하며 중복 판은 유지한다. 실제 셀은 다음 진입에 기존 한 Z층 정책으로 반영한다. 새 물성/저장 스키마/솔버/레벨 변경 없음. 실제 신규 화면은 Tools/부분천장_높이핸들_확인_2026-10-06.md 절차에 남긴다. 높이 입력/최종 통합 결과는 실행 뒤 기록한다.
 입력 검증: Editor Development86.40s 성공(기존 FloorCm/저장 Name shadow 컴파일 경고 유지). RoomCeilingHeightPreview + RoomHeightHandlePreview + RoomCeilingCornerPreview3종 무경고 성공, 실패0/미실행0/종료0. 합성2.63m+22cm→2.85m 스냅·XY 정확 불변, 평행/근평행/뒤 시선 거절·stale 마지막 값 확정 차단/안정 ray 복구, 저높이/방 밖 거절·no-op 비스냅 원본 유지·입력/취소/외부 목록/모드 게이트와 미리보기 실제 상태 불변을 확인했다. 기록/저장/다음 진입 통합은 다음 작은 커밋이며 새 물리 기준은 없다.
 근거(커밋 제외): Saved/Build_CeilingHeightPreview.log, Saved/Logs/CeilingHeightPreview_Tests.log, Saved/Automation/CeilingHeightPreview/index.json. E:\UE_5.8 Editor Development 뒤 위3종 + 묶음 Automation RunTests -unattended -NullRHI. 신규 실제 높이 화면/OS 포커스는 직접 미확인이다. 빌드 중 소스 변경·성공 검사 반복·전체/FPS·기존 도구 재시도 없음.
+
+## 2026-10-06 부분 천장 높이 확정·기록·저장·냉각 통합
+
+기존 두 NVL72/한 CDU 합성 월드·저장 fixture를 재사용한 RoomCeilingHeightHistoryPersistence를 추가했다. 중복 두 판 중 선택 인덱스만2.63→2.85m로 변경하고 XY/다른 판은 정확 유지한다. 확정 한 기록·전체 목록 Undo/Redo, no-op/취소/거절/평행 ray의 Redo 유지·유효 확정 Redo 초기화, 확정 직전 장비 충돌/외부 방 변화·복원 충돌 재검증을 확인했다. 예열1.02s의 편집/실패는 실제 온도/시계/열장부/공기 마스크/원점/배관과 기록을 유지한다. 실패 Load는 pending 높이도 유지하고 성공 Load는 기존 경로대로 미확정/선택/기록을 초기화한다. 성공 Load의 기존 결합 장부 초기화는 실패 상태 불변과 구분한다.
+
+Editor Development54.29s 성공(기존 저장 Name shadow 경고 유지). 신규 RoomCeilingHeightHistoryPersistence + RoomCeilingCornerHistoryPersistence + RoomHeightHistoryPersistence3종 무경고 성공, 실패0/미실행0/종료0. 앞 입력3종 포함 이번 고유 영향6종 모두 무경고 성공이다. 성공 검사 반복/전체 테스트 없이 직접 영향 경로만 실행했고 제품 추가 수정은 없었다.
+
+| 항목 | 측정 | 기존 기준·정규화·단위 |
+|---|---|---|
+| 높이·XY·목록 복원 | 선택 높이2.63→2.85m, XY/다른 중복 판 정확 불변 | 기존5cm 스냅, Undo/Redo/같은·새 월드 반복 Load 전체 목록 정확 비교, m |
+| 다음 진입 고체 | 중복 합집합9→18셀,43×37×13=20683셀 | h0.25m. 동일 요청XY[-5.13,-4.61]×[3.13,3.62]m → 실제XY[-5.25,-4.5]×[3,3.75]m; 원래 Z10[2.5,2.75]m와 변경 Z11[2.75,3]m에 각각9셀. 요청 높이 위 전체 고체가 아닌 각 한 층의 합집합 |
+| 편집·취소·거절 상태 | 변경0 | 예열1.02s의 K/s/J/원점UE cm·배관/기록 정수 정확 비교 |
+| 첫 IT 상대 변화 | 같은·새 월드 최대0 | abs(복원 첫IT−동일 장비/초기조건 참조IT)/참조W, 무차원 <1e-9 |
+| 전역 열수지 | 같은·새 월드 최대abs6.206e-14 | abs(입력J−유출J−축적J)/EnergyInJ(IT+CRAH 팬), 무차원 <1e-9 |
+| 압력 투영 뒤 발산 | 같은·새 월드 최대3.461e-08 | maxAbsDiv(1/s)/(maxAbsVelocity(m/s)/h(m)), 무차원 <1e-5; 수렴 플래그 확인 |
+| 냉각·타당성 | 수력 수렴·덕트 거절 없음·양의 CRAH 코일 제거W·흡기288.15~308.15K 내부 | 기존 수력 목표·15~35°C 과도 기준; 새 물성/허용치 없음 |
+
+t1.02s 균일 CPU/NullRHI의 짧은 과도·기하 검증이며 정상상태/시설 정확도/GPU/옥트리/FPS로 확대하지 않는다. 저장 스키마/물성/솔버/단열·기존 부채/레벨 에셋 변경 없음. XY 직접 정상 사용자 보고와 신규 높이 실제 픽셀·마우스/OS 포커스 미확인을 구분한다. 기존 화면 실패 도구는 재시도하지 않고 Tools/부분천장_높이핸들_확인_2026-10-06.md에 상세 절차를 남겼다. 판 전체 이동·다중 편집·배기 구멍 및 별도 유출 경계/물리 확장은 후속이다.
+근거(커밋 제외): Saved/Build_CeilingHeightCoupling.log, Saved/Logs/CeilingHeightCoupling_Tests.log, Saved/Automation/CeilingHeightCoupling/index.json. E:\UE_5.8 Editor Development 뒤 위3종 + 묶음 Automation RunTests -unattended -NullRHI. 빌드 중 소스 변경 없음.

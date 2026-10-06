@@ -477,4 +477,80 @@ bool FRoomCeilingCornerCouplingTest::RunTest(const FString& Parameters)
 	AddInfo(FString::Printf(TEXT("Ceiling corner warm%.2fs exact; one duplicate edited max(-4.25,3.85)m height2.63m opposite fixed, cancel/refusal/no-op Redo retained; final equipment/room revalidated; Load pending cancel/0records and next-entry9->16plate cells43x37x13, IT%.3e globalAbs%.3e pressure%.3e at1.02s."),Warm.SimTimeS,MaxIt,MaxEnergy,MaxDiv));
 	for(const auto& Name:{File,BadFile}) IFileManager::Get().Delete(*VrgLayoutFile::PathFor(Name)); return true;
 }
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FRoomCeilingHeightCouplingTest,"VRG.Interaction.Layout.RoomCeilingHeightHistoryPersistence",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::CommandletContext | EAutomationTestFlags::EngineFilter)
+bool FRoomCeilingHeightCouplingTest::RunTest(const FString& Parameters)
+{
+	FRoomFileFixture F; FString Message; const auto Manual=RoomFileDomain(); const auto InitialInput=F.Racks[0]->Input;
+	const FString File=TEXT("AutomationCeilingHeight"),BadFile=File+TEXT("Bad");
+	FRoomCeilingPlate P; P.MinXYM=FVector2D(-5.13,3.13); P.MaxXYM=FVector2D(-4.61,3.62); P.HeightM=2.63; // Existing synthetic fixture metres.
+	const TArray<FRoomCeilingPlate> Before{P,P}; F.Sim->TrySetRoomAirDomain(Manual,Message); F.Sim->TrySetRoomCeilingPlates(Before,Message);
+	F.Sim->EnterSimulationMode(); F.Sim->Tick(.021f); const double ReferenceIt=F.Sim->GetSnapshot().TotalItHeatW;
+	for(int32 I=0;I<25;++I) F.Sim->Tick(.04f); F.Sim->EnterLayoutMode(); const auto Warm=F.Sim->GetSnapshot();
+	const auto Temps=F.Air->GetMutableSolver().GetGrid().TemperatureK; const auto Mask=F.Air->GetMutableSolver().GetGrid().bSolidCell;
+	const auto Origin=F.Air->GetActorLocation(); const auto Pose=F.Racks[0]->GetActorTransform(); const int32 Pipes=F.Room->GetMutableNetwork().GetNumPipes();
+	auto Frozen=[&]() { const auto S=F.Sim->GetSnapshot(); return S.SimTimeS==Warm.SimTimeS && S.EnergyInJ==Warm.EnergyInJ && S.EnergyOutJ==Warm.EnergyOutJ
+		&& S.EnergyStoredJ==Warm.EnergyStoredJ && F.Air->GetMutableSolver().GetGrid().TemperatureK==Temps && F.Air->GetMutableSolver().GetGrid().bSolidCell==Mask
+		&& F.Air->GetActorLocation()==Origin && F.Room->GetMutableNetwork().GetNumPipes()==Pipes; };
+	const FVector PickEye(-490,340,400),Down(0,0,-1),Eye(-390,337.5,270),Side(-1,0,0);
+	auto Begin=[&]() { return F.C->SetRoomCeilingEditing(true) && F.C->SelectRoomCeilingAlongRay(PickEye,Down) && F.C->BeginRoomCeilingHeightDrag(Eye,Side); };
+	TestTrue(TEXT("Selected duplicate height begins"),Begin()); F.C->UpdateRoomCeilingCornerDrag(Eye+FVector(0,0,22),Side);
+	FRoomCeilingPlate Edited; bool Valid=false; TestTrue(TEXT("Valid height candidate"),F.C->GetRoomCeilingPreview(Edited,Valid) && Valid);
+	const TArray<FRoomCeilingPlate> After{Edited,P};
+	TestTrue(TEXT("Height snap/XY exact and live state frozen before release"),FMath::IsNearlyEqual(Edited.HeightM,2.85,1e-12)
+		&& Edited.MinXYM==P.MinXYM && Edited.MaxXYM==P.MaxXYM && F.Sim->GetRoomCeilingPlates()==Before && F.C->GetLayoutUndoCount()==0 && Frozen());
+	TestTrue(TEXT("Only selected duplicate changed, one record"),F.C->EndRoomCeilingCornerDrag(true) && F.Sim->GetRoomCeilingPlates()==After && F.C->GetLayoutUndoCount()==1 && Frozen());
+	TestTrue(TEXT("Whole list Undo/Redo exact"),F.C->TryUndoLayout() && F.Sim->GetRoomCeilingPlates()==Before && F.C->TryRedoLayout() && F.Sim->GetRoomCeilingPlates()==After && Frozen()); F.C->TryUndoLayout();
+	Begin(); TestFalse(TEXT("Unmoved authored2.63m click not recorded/snapped"),F.C->EndRoomCeilingCornerDrag(true));
+	Begin(); F.C->UpdateRoomCeilingCornerDrag(Eye+FVector(0,0,22),Side); F.C->EndRoomCeilingCornerDrag(false);
+	Begin(); F.C->UpdateRoomCeilingCornerDrag(Eye+FVector(0,0,60),Side); TestFalse(TEXT("Out-of-room release refused"),F.C->EndRoomCeilingCornerDrag(true));
+	Begin(); F.C->UpdateRoomCeilingCornerDrag(Eye+FVector(0,0,22),Side); F.C->UpdateRoomCeilingCornerDrag(PickEye,Down);
+	TestFalse(TEXT("Parallel update cannot commit old valid height"),F.C->EndRoomCeilingCornerDrag(true));
+	TestTrue(TEXT("Cancel/no-op/refusal preserve list and BOTH stacks/warm state"),F.Sim->GetRoomCeilingPlates()==Before && F.C->GetLayoutUndoCount()==0 && F.C->GetLayoutRedoCount()==1 && Frozen());
+	Begin(); F.C->UpdateRoomCeilingCornerDrag(Eye+FVector(0,0,22),Side);
+	F.Racks[0]->SetActorLocation(FVector(-485,340,100*(2.8-F.Racks[0]->RackSizeM.Z)));
+	TestTrue(TEXT("Final equipment collision revalidated, records/state retained"),!F.C->EndRoomCeilingCornerDrag(true) && F.Sim->GetRoomCeilingPlates()==Before
+		&& F.C->GetLayoutUndoCount()==0 && F.C->GetLayoutRedoCount()==1 && Frozen()); F.Racks[0]->SetActorTransform(Pose);
+	Begin(); auto Taller=Manual; Taller.CeilingHeightM=3.2; F.Sim->TrySetRoomAirDomain(Taller,Message);
+	TestTrue(TEXT("External room change prevents commit"),!F.C->EndRoomCeilingCornerDrag(true) && F.Sim->GetRoomAirDomain()==Taller && F.Sim->GetRoomCeilingPlates()==Before
+		&& F.C->GetLayoutRedoCount()==1 && Frozen()); F.Sim->TrySetRoomAirDomain(Manual,Message);
+	Begin(); F.C->UpdateRoomCeilingCornerDrag(PickEye,Down); F.C->UpdateRoomCeilingCornerDrag(Eye+FVector(0,0,22),Side);
+	TestTrue(TEXT("Recovered valid height commit clears Redo"),F.C->EndRoomCeilingCornerDrag(true) && F.Sim->GetRoomCeilingPlates()==After && F.C->GetLayoutUndoCount()==1 && F.C->GetLayoutRedoCount()==0 && Frozen());
+	F.Racks[0]->SetActorLocation(FVector(-485,340,100*(2.6-F.Racks[0]->RackSizeM.Z)));
+	TestTrue(TEXT("Undo obstruction keeps entire record and live state"),!F.C->TryUndoLayout() && F.Sim->GetRoomCeilingPlates()==After
+		&& F.C->GetLayoutUndoCount()==1 && F.C->GetLayoutRedoCount()==0 && Frozen()); F.Racks[0]->SetActorTransform(Pose);
+	TestTrue(TEXT("Undo/Redo works after obstruction removed"),F.C->TryUndoLayout() && F.C->TryRedoLayout() && F.Sim->GetRoomCeilingPlates()==After && Frozen());
+	TestTrue(TEXT("Save height list"),VrgLayoutFile::Save(F.W,File,Message));
+	auto Bad=ReadRoomFile(File); Bad->GetObjectField(TEXT("settings"))->GetArrayField(TEXT("roomCeilingPlates"))[0]->AsObject()->SetNumberField(TEXT("heightM"),0); WriteRoomFile(BadFile,Bad);
+	Begin(); F.C->UpdateRoomCeilingCornerDrag(Eye+FVector(0,0,5),Side);
+	TestTrue(TEXT("Failed Load retains pending height/list/state/history"),!VrgLayoutFile::Load(F.W,BadFile,Message) && F.C->IsLayoutDragging()
+		&& F.Sim->GetRoomCeilingPlates()==After && F.C->GetLayoutUndoCount()==1 && Frozen());
+	TestTrue(TEXT("Success Load cancels pending height and clears selection/history, old mask until entry"),VrgLayoutFile::Load(F.W,File,Message)
+		&& F.Sim->GetRoomCeilingPlates()==After && !F.C->IsRoomCeilingEditing() && !F.C->IsLayoutDragging() && F.C->GetSelectedRoomCeilingIndex()==INDEX_NONE
+		&& F.C->GetLayoutUndoCount()==0 && F.C->GetLayoutRedoCount()==0 && F.Air->GetMutableSolver().GetGrid().bSolidCell==Mask
+		&& F.Air->GetMutableSolver().GetGrid().TemperatureK==Temps && F.Sim->GetSnapshot().SimTimeS==Warm.SimTimeS);
+	TestTrue(TEXT("Repeated Load not appended"),VrgLayoutFile::Load(F.W,File,Message) && F.Sim->GetRoomCeilingPlates()==After);
+	double MaxIt=0,MaxEnergy=0,MaxDiv=0;
+	auto Run=[&](FRoomFileFixture& Case)
+	{
+		for(auto* Rack:Case.Racks) Rack->Input=InitialInput;
+		Case.Sim->EnterSimulationMode(); Case.Sim->Tick(.021f); const auto First=Case.Sim->GetSnapshot();
+		for(int32 I=0;I<25;++I) Case.Sim->Tick(.04f);
+		const auto S=Case.Sim->GetSnapshot(); const auto A=Case.Air->GetMutableSolver().MakeSnapshot(S.SimTimeS);
+		const double It=FMath::Abs(First.TotalItHeatW-ReferenceIt)/ReferenceIt;
+		MaxIt=FMath::Max(MaxIt,It); MaxEnergy=FMath::Max(MaxEnergy,FMath::Abs(S.NormalizedEnergyResidual)); MaxDiv=FMath::Max(MaxDiv,A.NormalizedDivergence);
+		TestTrue(TEXT("Next entry two distinct Z layers18cells and existing cooling/conservation/plausibility"),Case.Sim->GetNumCeilingCells()==18
+			&& Case.Sim->GetRoomCeilingPlates()==After && Case.Air->GridParams.NumCellsX==43 && Case.Air->GridParams.NumCellsY==37 && Case.Air->GridParams.NumCellsZ==13
+			&& It<1e-9 && FMath::Abs(S.NormalizedEnergyResidual)<1e-9 && S.bAirPressureConverged && A.bPressureConverged && A.NormalizedDivergence<1e-5
+			&& S.bHydraulicsConverged && !A.bDuctsRejected && S.CrahCoilRemovedW>0);
+		const auto& Grid=Case.Air->GetMutableSolver().GetGrid();
+		for(int32 Y=30;Y<33;++Y) for(int32 X=1;X<4;++X) for(int32 Z:{10,11}) TestTrue(TEXT("Requested2.63/2.85m occupy Z10/11 exactly"),Grid.bSolidCell[Grid.CellIndex(X,Y,Z)]);
+		for(auto* Rack:Case.Racks) for(double K:Rack->Input.SlotAirInletTempK) TestTrue(TEXT("Existing15..35C transient inlet safety"),K>288.15 && K<308.15);
+	};
+	Run(F);
+	{ FRoomFileFixture New; TestTrue(TEXT("Fresh world repeated Load retains height/XY/order and0records"),VrgLayoutFile::Load(New.W,File,Message) && VrgLayoutFile::Load(New.W,File,Message)
+		&& New.Sim->GetRoomCeilingPlates()==After && New.C->GetLayoutUndoCount()==0 && New.C->GetLayoutRedoCount()==0); Run(New); }
+	AddInfo(FString::Printf(TEXT("Ceiling height warm%.2fs exact; selected duplicate2.63->2.85m XY unchanged, Undo/Redo/cancel/refusal/ray/no-op/final-validation; Load pending cancel/0records; next-entry9->18cells Z10/11 h0.25m43x37x13, IT%.3e globalAbs%.3e pressure%.3e at1.02s."),Warm.SimTimeS,MaxIt,MaxEnergy,MaxDiv));
+	for(const auto& Name:{File,BadFile}) IFileManager::Get().Delete(*VrgLayoutFile::PathFor(Name)); return true;
+}
 #endif
