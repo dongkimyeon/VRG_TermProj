@@ -679,7 +679,12 @@ bool VrgLayoutFile::Load(UWorld* World, const FString& Name, FString& OutSummary
 	auto RollbackBarriers=[&]() {
 		if (!bBarriersReplaced) return;
 		for (auto* B : NewBarriers) if (IsValid(B)) { B->Rename(*MakeUniqueObjectName(B->GetOuter(),B->GetClass(),TEXT("RetiredLayoutBarrier")).ToString(),nullptr,REN_DontCreateRedirectors|REN_NonTransactional); B->Destroy(false,false); }
-		for (const auto& R : OldBarriers) verify(VrgBarrierLifecycle::Spawn(World, R));
+		for (int32 I = 0; I < OldBarriers.Num(); ++I)
+		{
+			auto* Restored = VrgBarrierLifecycle::Spawn(World, OldBarriers[I]);
+			checkf(Restored, TEXT("Layout Load rollback could not restore barrier %s"), *OldBarriers[I].Name.ToString());
+			for (TActorIterator<ADataCenterDebugController> It(World); It; ++It) It->NotifyLayoutBarrierRecreated(Restored, OldBarrierActors[I]);
+		}
 		bBarriersReplaced = false;
 	};
 	auto Rollback=[&]() {

@@ -3842,3 +3842,23 @@ Load는 최종 장비 기하만 임시 미실행 월드에 구성해 기존 Vali
 방 거절은 실제 장비/벽 생성·이동·삭제 전에 반환한다. 구조 적용은 기존 원복을 사용하고, 성공한 뒤 Load만 접근하는 friend로 검증한 방 값을 확정/기록 초기화한다. 격자는 진입 때 적용. 객체 없는 파일도 유지할 수동 방을 최종 장비로 검증한다.
 검증: E:\UE_5.8 Editor113.66s 성공. RoomSettingsPersistence/SaveLoadRoundTrip/BarrierGizmoUndoSave3종 무경고 성공(실패0/미실행0/종료0). 현재 밖의 랙/h0.05 대신 파일 랙/h0.25 사용·자동/수동·반복/새 월드·이전v1/v2·기록0/0·벽 유지/누락 제거 확인. 필드/높이/자원·자동 CRAH/덕트·파일 목적지 오류 거절은 실제 참조/변환·설정/양쪽 기록·온도 배열 변경0. 합성 요청10.6x9.1x3.1m(시설 치수/물성 아님), 실제43x37x13=20683셀·원점(-5.5,-4.5,0)m 정확 일치. 새 기준/물성 없음. 따뜻한 생성 실패·냉각 최종 보강은 후속.
 근거(커밋 제외): Saved/Build_RoomPersistence.log, Saved/Logs/RoomPersistence_Tests.log, Saved/Automation/RoomPersistence/index.json. 저장/Load UI·새 실행 화면 미확인. 전체/FPS/핸들/물리 확장 제외.
+## 2026-10-06 방 저장 원복·냉각 최종 검증
+
+RoomPersistenceRollbackCoupling은 같은 합성 NVL72 두 랙/CDU 한 대/0.2x1x2m 차단막과 수동 방을 사용한다. 방 좌표와 차단막 크기는 테스트 기하이며 코드 주석으로 표시했다(시설 규격/추정 물성이 아님). 벽 이동→방 변경→랙R→R Undo로 두 스택을 채우고 t1.02s까지 운전한 뒤 정지한다. 세 번째 랙을 필요로 하는 유효 파일의 실제 월드 Spawn만 실패시켜, 방 사전 검증이 아닌 구조 원복 경로를 검사한다.
+최초 추가 테스트 빌드2.25s 실패는 새 벽 getter 이름을 잘못 쓴 테스트 오류였다. 기존 GetNumBarrierCells/GetNumSplitDucts로 수정 후 Editor6.07s 성공. 후속4종 중 기존 InventorySaveLoad/MixedHistoryPersistenceCoupling/RoomSettingsUndoRedo3종 성공, 신규1종 실패: Load가 벽을 먼저 교체하고 랙 생성에 실패하면 벽 자체는 복구하지만 과거 이동 기록의 약한 참조는 삭제된 벽에 남았다. 기록 수는 같아도 실제 Undo/Redo가 불가능했다.
+NotifyLayoutBarrierRecreated로 기존 벽 Undo의 ID 기반 기록 재연결을 공유하고 Load 원복에도 적용했다. 실패 원복의 선택/호버도 이전 참조에서 복구한 벽으로 연결한다. 입력 차단·충돌·물리 기준을 완화하지 않았다. Editor105.39s 성공 후 실패한 신규1종과 이 공통 함수에 직접 영향받은 BarrierGizmoUndoSave만 재실행해 2종 무경고 성공(종료0). 이미 성공한 후속3종은 반복하지 않았다. 첫 저장3종+후속4종=고유 영향7종 최종 무경고 성공이다. 전체/FPS 반복 없음.
+
+| 검사 | 측정/확인 | 기존 기준·정규화/단위 |
+|---|---:|---|
+| 자동/수동·반복/새 월드·이전v1/v2 | 방 값 정확 복원/필드 없으면 현 값 유지 | 모드 bool, XY/천장 m; 실제43x37x13=20683셀(h0.25m) 정확 일치 |
+| 따뜻한 구조 실패 | 정지1.02s 유지·온도/고체/원점/시계/열장부/배관 변경0 | K / bool / 액터 cm / s / J / 정수; 정확 불변, 추가 랙 없음·벽 ID/전체 변환 복원 |
+| 기록·선택 원복 | Undo2/Redo1 유지·벽/방/R 모두 다시 재생 | 기록 개수, 장비/벽 변환은 기존 FTransform::Equals; 복원 벽으로 참조 재연결 |
+| 성공한 반복 Load | 기록0/0·정지 시각 유지 | 기존 Load 정책, live 온도 배열 유지; 다음 진입 첫 시각=FixedStepS |
+| 재진입 첫 IT 상대 변화 | 0 | abs(Load 뒤 첫IT−같은 배치/초기조건 참조IT)/참조W, 무차원 <1e-9 |
+| 재진입 전역 열수지 | 1.414e-14 | abs(입력J−유출J−축적J)/EnergyInJ(IT+CRAH 팬), 무차원 <1e-9 |
+| 압력 투영 뒤 발산 | 3.462e-08 | maxAbsDiv(1/s)/(maxAbsVelocity(m/s)/cellSize(m)), 무차원 <1e-5; 수렴 플래그 확인 |
+| 차단막·타당성 | 고체32셀·덕트 갈림0 | 기존 고체 정책, 덕트 거절 없음·수력 수렴·양의 CRAH 코일 냉각·흡기288.15~308.15K |
+
+물리는 재진입t1.02s의 균일 CPU/NullRHI 과도 검사다. 새로운 물성/허용치/솔버 식/레벨 에셋 변경 없음. 고정 CRAH 공급·수평/원래 치수 고체/덕트·펌프 손실 열 분배 부채와 최신 벽 한 셀 공기 통로/격자 밖 잘림 정책은 유지한다. 시설 전체 정확도/정상상태/GPU/옥트리/임의 실패 전수·자원 고갈 보장으로 확대하지 않는다.
+근거(커밋 제외): Saved/Build_RoomPersistenceCoupling{,_Repair}.log, Saved/Logs/RoomPersistenceCoupling_Tests.log(3성공/신규실패), Saved/Build_RoomPersistenceRollback.log, Saved/Logs/RoomPersistenceRollback_Tests.log, Saved/Automation/RoomPersistenceRollback/index.json(최종2성공/0실패). 실행은 Editor Development 뒤 해당 + 묶음 Automation RunTests, -unattended -NullRHI.
+화면: 방 UI/Undo 정상 사용자 보고만 반영했고 새 저장/Load·새 실행 화면은 미확인이다. 같은 도구 실패를 반복하지 않고 Tools/방설정_저장_확인_2026-10-06.md 직접 절차를 남겼다. 미추적 L_Test 에셋은 수정/커밋하지 않았다. 방 핸들·천장 판·외부 열 교환/플레넘·새 물리·전체 테스트·FPS는 제외했다.

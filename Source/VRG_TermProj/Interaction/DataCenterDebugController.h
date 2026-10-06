@@ -173,6 +173,7 @@ public:
 	void ClearLayoutHistory();
 	void ResetLayoutEditsForLoad();
 	void RefreshLayoutEquipmentReferences(bool bKeepSelection = false);
+	void NotifyLayoutBarrierRecreated(ALayoutBarrierActor* Barrier, ALayoutBarrierActor* Previous = nullptr);
 	void NotifyLayoutRackRecreated(ARackThermalActor* Rack, ARackThermalActor* Previous = nullptr) { RebindLayoutRack(Rack, Previous); }
  void NotifyLayoutCrahRecreated(ACrahUnitActor* Crah, ACrahUnitActor* Previous = nullptr);
 	void NotifyLayoutCduRecreated(ACoolingDistributionUnitActor* Cdu, ACoolingDistributionUnitActor* Previous = nullptr);

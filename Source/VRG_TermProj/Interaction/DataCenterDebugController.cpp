@@ -1463,12 +1463,8 @@ bool ADataCenterDebugController::RestoreBarrierPresence(const FLayoutTransformCo
 			}
 			Present.Add(Barrier);
 		}
-		// Earlier move/scale/rotate commands of the same barrier follow the recreated actor.
-		for (auto* Stack : {&LayoutUndo, &LayoutRedo})
-			for (FLayoutTransformCommand& C : *Stack)
-				for (FLayoutTransformMember& M : C.Members)
-					for (auto* Barrier : Present)
-						if (!M.BarrierId.IsEmpty() && M.BarrierId == VrgBarrierLifecycle::Identity(Barrier)) M.Actor = Barrier;
+		// Earlier move/scale/rotate commands follow sanctioned recreation (Undo and failed Load rollback).
+		for (auto* Barrier : Present) NotifyLayoutBarrierRecreated(Barrier);
 	}
 	else if (!VrgBarrierLifecycle::RemoveBatch(Present)) return false;
 	// Barriers are not in the room's routing; only selections and the air coupling need refreshing.
@@ -1631,6 +1627,20 @@ void ADataCenterDebugController::RefreshLayoutEquipmentReferences(bool bKeepSele
 		SelectedSledIndex = INDEX_NONE;
 	}
 	FindTargetActors();
+}
+
+void ADataCenterDebugController::NotifyLayoutBarrierRecreated(ALayoutBarrierActor* Barrier, ALayoutBarrierActor* Previous)
+{
+	for (auto* Stack : {&LayoutUndo, &LayoutRedo})
+		for (FLayoutTransformCommand& C : *Stack)
+			for (FLayoutTransformMember& M : C.Members)
+				if (!M.BarrierId.IsEmpty() && M.BarrierId == VrgBarrierLifecycle::Identity(Barrier)) M.Actor = Barrier;
+	if (Previous)
+	{
+		const TWeakObjectPtr<AActor> Old(Previous);
+		for (auto& Selected : LayoutSelection) if (Selected == Old) Selected = Barrier;
+		if (HoveredPlaceable == Old) HoveredPlaceable = Barrier;
+	}
 }
 
 ADataCenterDebugController::FLayoutTransformCommand ADataCenterDebugController::CaptureRackPresence(ARackThermalActor* Rack, bool bBeforePresent)

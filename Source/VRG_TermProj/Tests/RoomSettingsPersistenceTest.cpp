@@ -1,6 +1,7 @@
 #include "Misc/AutomationTest.h"
 #include "Interaction/VrgLayoutFile.h"
 #include "Interaction/DataCenterDebugController.h"
+#include "Interaction/VrgRackLifecycle.h"
 #include "Actors/AirFieldDebugActor.h"
 #include "Actors/DataCenterSimulationActor.h"
 #include "Actors/DataCenterRoomActor.h"
@@ -63,6 +64,7 @@ bool FRoomSettingsPersistenceTest::RunTest(const FString& Parameters)
 	const FString File = TEXT("AutomationRoomFile"), AutoFile = File + TEXT("Auto"), BadFile = File + TEXT("Bad"), OldFile = File + TEXT("Old");
 	TestTrue(TEXT("Save automatic including inactive metre values"), VrgLayoutFile::Save(F.W, AutoFile, Message));
 	TestTrue(TEXT("Set manual then save optional v2 room"), F.Sim->TrySetRoomAirDomain(Manual, Message));
+	// Synthetic barrier position/size in the fixture; no measured facility geometry or material constants.
 	const FLayoutBarrierRecord Wall{TEXT("room-file-wall"), TEXT("RoomFileWall"), FTransform(FRotator::ZeroRotator, FVector(-480, 200, 0), FVector(.2, 1, 2)), EBarrierKind::Wall};
 	TestNotNull(TEXT("Wall fixture"), VrgBarrierLifecycle::Spawn(F.W, Wall));
 	TestTrue(TEXT("Save manual and existing wall inventory"), VrgLayoutFile::Save(F.W, File, Message));
@@ -119,5 +121,78 @@ bool FRoomSettingsPersistenceTest::RunTest(const FString& Parameters)
 	AddInfo(TEXT("Room v2: auto/manual exact metre restoration; old v1/v2 preserve settings; final-layout rejection before live mutation; 43x37x13=20683 cells at h0.25m; history0/0 only on success."));
 	for (const auto& Name : {File, AutoFile, BadFile, OldFile}) IFileManager::Get().Delete(*VrgLayoutFile::PathFor(Name));
 	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FRoomFileCouplingTest, "VRG.Interaction.Layout.RoomPersistenceRollbackCoupling",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::CommandletContext | EAutomationTestFlags::EngineFilter)
+bool FRoomFileCouplingTest::RunTest(const FString& Parameters)
+{
+	FRoomFileFixture F; FString Message; const auto Manual = RoomFileDomain();
+	const FString File = TEXT("AutomationRoomCoupled"), FailureFile = File + TEXT("Failure");
+	TestTrue(TEXT("Manual room"), F.Sim->TrySetRoomAirDomain(Manual, Message));
+	// Same synthetic 0.2x1x2m geometry as the persistence fixture; not a physical curtain product rating.
+	const FLayoutBarrierRecord R{TEXT("room-coupled-wall"), TEXT("RoomCoupledWall"), FTransform(FRotator::ZeroRotator, FVector(-480, 200, 0), FVector(.2, 1, 2)), EBarrierKind::Curtain};
+	auto* Wall = VrgBarrierLifecycle::Spawn(F.W, R);
+	if (!TestNotNull(TEXT("Barrier"), Wall)) return false;
+	const FVector Down(0, 0, -1), Pivot = Wall->GetActorTransform().TransformPosition(FVector(0, 0, 50));
+	F.C->SelectLayoutAlongRay(Wall->GetActorLocation() + FVector(0, 0, 1000), Down);
+	F.C->SetLayoutGizmoMode(ELayoutGizmoMode::Translate);
+	TestTrue(TEXT("Wall move record"), F.C->BeginLayoutGizmoDrag(1, Pivot + FVector(0, 0, 1000), Down));
+	F.C->UpdateLayoutGizmoDrag(Pivot + FVector(0, 100, 1000), Down); F.C->EndLayoutDrag(true);
+	const FTransform MovedWall = Wall->GetActorTransform();
+	auto Edited = Manual; Edited.CeilingHeightM = 3.2;
+	F.C->OpenRoomSettings(); F.C->ApplyRoomSettings(Edited, Message); F.C->CloseRoomSettings();
+	F.C->TryLayoutRotation(F.Racks[0], FRotator(0, 90, 0), true); F.C->TryUndoLayout();
+	TestTrue(TEXT("Mixed history fixture has BOTH stacks"), F.C->GetLayoutUndoCount() == 2 && F.C->GetLayoutRedoCount() == 1);
+	F.C->SelectLayoutAlongRay(Wall->GetActorLocation() + FVector(0, 0, 1000), Down);
+	F.Sim->EnterSimulationMode(); F.Sim->Tick(.021f);
+	const double ReferenceItW = F.Sim->GetSnapshot().TotalItHeatW;
+	for (int32 I = 0; I < 25; ++I) F.Sim->Tick(.04f);
+	F.Sim->EnterLayoutMode(); const auto Warm = F.Sim->GetSnapshot();
+	const auto Temperatures = F.Air->GetMutableSolver().GetGrid().TemperatureK;
+	const auto Solid = F.Air->GetMutableSolver().GetGrid().bSolidCell;
+	const FVector Origin = F.Air->GetActorLocation(); const int32 Pipes = F.Room->GetMutableNetwork().GetNumPipes();
+	TestTrue(TEXT("Save warm layout writes authored settings only"), VrgLayoutFile::Save(F.W, File, Message));
+	// A valid file needs one new rack. Inject failure AFTER barrier replacement, then require old move refs.
+	auto* Extra = VrgRackLifecycle::Spawn(F.W, TEXT("RoomFileExtra"), TEXT("room-file-extra"), ARackThermalActor::StaticClass(),
+		FTransform(FRotator::ZeroRotator, FVector(-150, 150, 0)), F.Racks[0]->CaptureLayoutSettings());
+	if (!TestNotNull(TEXT("Extra file rack"), Extra)) return false;
+	TestTrue(TEXT("Save pending three-rack inventory"), VrgLayoutFile::Save(F.W, FailureFile, Message)); VrgRackLifecycle::Remove(Extra);
+	bool bInjected = false;
+	const FDelegateHandle Hook = F.W->AddOnActorSpawnedHandler(FOnActorSpawned::FDelegate::CreateLambda([&](AActor* A)
+	{
+		if (Cast<ARackThermalActor>(A) && A->GetName().StartsWith(TEXT("PendingLayoutEquipment"))) { bInjected = true; A->Destroy(false, false); }
+	}));
+	TestFalse(TEXT("Middle equipment creation failure rolls back entire Load"), VrgLayoutFile::Load(F.W, FailureFile, Message));
+	F.W->RemoveOnActorSpawnedHandler(Hook);
+	TestTrue(TEXT("Failure was actually injected, not a room rejection"), bInjected);
+	const auto After = F.Sim->GetSnapshot();
+	auto* RestoredWall = VrgBarrierLifecycle::Find(F.W, R.Id);
+	TestTrue(TEXT("Warm failure keeps setting/grid/clock/energy/routing/history and no extra rack"), RestoredWall && RestoredWall->GetActorTransform().Equals(MovedWall)
+		&& !VrgRackLifecycle::Find(F.W, TEXT("room-file-extra")) && F.Sim->GetRoomAirDomain() == Edited
+		&& F.C->GetLayoutUndoCount() == 2 && F.C->GetLayoutRedoCount() == 1 && After.SimTimeS == Warm.SimTimeS
+		&& After.EnergyInJ == Warm.EnergyInJ && After.EnergyOutJ == Warm.EnergyOutJ && After.EnergyStoredJ == Warm.EnergyStoredJ
+		&& F.C->GetSelectedLayoutActor() == RestoredWall
+		&& F.Air->GetActorLocation() == Origin && F.Air->GetMutableSolver().GetGrid().TemperatureK == Temperatures
+		&& F.Air->GetMutableSolver().GetGrid().bSolidCell == Solid && F.Room->GetMutableNetwork().GetNumPipes() == Pipes);
+	TestTrue(TEXT("Preserved room record still undoes"), F.C->TryUndoLayout() && F.Sim->GetRoomAirDomain() == Manual);
+	TestTrue(TEXT("Preserved wall move record rebinds to rollback wall"), F.C->TryUndoLayout()
+		&& VrgBarrierLifecycle::Find(F.W, R.Id)->GetActorTransform().Equals(R.Transform));
+	TestTrue(TEXT("Preserved wall/room/R Redo remains usable"), F.C->TryRedoLayout() && F.C->TryRedoLayout() && F.C->TryRedoLayout());
+	for (int32 I = 0; I < 2; ++I) TestTrue(TEXT("Repeated successful Load after failure"), VrgLayoutFile::Load(F.W, File, Message));
+	TestTrue(TEXT("Load keeps stopped time and old live grid but clears history"), F.Sim->GetSnapshot().SimTimeS == Warm.SimTimeS
+		&& F.Air->GetMutableSolver().GetGrid().TemperatureK == Temperatures && F.C->GetLayoutUndoCount() == 0 && F.C->GetLayoutRedoCount() == 0);
+	F.Sim->EnterSimulationMode(); F.Sim->Tick(.021f); const auto First = F.Sim->GetSnapshot();
+	for (int32 I = 0; I < 25; ++I) F.Sim->Tick(.04f);
+	const auto S = F.Sim->GetSnapshot(); const auto A = F.Air->GetMutableSolver().MakeSnapshot(S.SimTimeS);
+	const double ItRelative = FMath::Abs(First.TotalItHeatW - ReferenceItW) / ReferenceItW;
+	TestTrue(TEXT("Fresh coupled run preserves IT/energy/pressure/duct/hydraulic criteria"), ItRelative < 1e-9 && First.SimTimeS == F.Sim->FixedStepS
+		&& FMath::Abs(S.NormalizedEnergyResidual) < 1e-9 && S.bAirPressureConverged && A.bPressureConverged && A.NormalizedDivergence < 1e-5
+		&& S.bHydraulicsConverged && !A.bDuctsRejected && S.CrahCoilRemovedW > 0);
+	TestTrue(TEXT("Barrier is solid in restored manual air grid"), F.Sim->GetNumBarrierCells() > 0 && F.Sim->GetNumSplitDucts() == 0);
+	for (auto* Rack : F.Racks) for (double K : Rack->Input.SlotAirInletTempK) TestTrue(TEXT("Existing inlet plausibility range15..35C"), K > 288.15 && K < 308.15);
+	AddInfo(FString::Printf(TEXT("Room Load rollback/coupling: warm %.2fs unchanged; wall refs and mixed history retained; successful Load0/0 then fresh run %.2fs, IT relative %.3e, global %.3e, pressure %.3e, barrier solids%d."),
+		Warm.SimTimeS, S.SimTimeS, ItRelative, S.NormalizedEnergyResidual, A.NormalizedDivergence, F.Sim->GetNumBarrierCells()));
+	for (const auto& Name : {File, FailureFile}) IFileManager::Get().Delete(*VrgLayoutFile::PathFor(Name)); return true;
 }
 #endif
