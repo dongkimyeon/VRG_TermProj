@@ -68,3 +68,19 @@ bool VrgRoomAirDomain::BuildCeilingPlans(const FRoomAirDomainSettings& Room, con
 	OutPlans = MoveTemp(Plans);
 	return true;
 }
+
+TArray<int32> VrgRoomAirDomain::MarkCeilingCells(FUniformAirGrid& Grid, const TArray<FRoomCeilingPlan>& Plans)
+{
+	TArray<int32> Added;
+	for (const auto& P : Plans)
+		for (int32 Z = P.MinCell.Z; Z < P.MaxCellExclusive.Z; ++Z)
+			for (int32 Y = P.MinCell.Y; Y < P.MaxCellExclusive.Y; ++Y)
+				for (int32 X = P.MinCell.X; X < P.MaxCellExclusive.X; ++X)
+				{
+					const int32 Index = Grid.CellIndex(X,Y,Z);
+					if (Grid.bSolidCell[Index]) continue;
+					Grid.bSolidCell[Index] = true;
+					Added.Add(Index);
+				}
+	return Added;
+}

@@ -121,6 +121,7 @@ public:
 	// Value-only layout API; no actor spawn, solid mutation, history or persistence until later work.
 	bool TrySetRoomCeilingPlates(const TArray<FRoomCeilingPlate>& Plates, FString& Reason);
 	const TArray<FRoomCeilingPlate>& GetRoomCeilingPlates() const { return RoomCeilingPlates; }
+	int32 GetNumCeilingCells() const { return CeilingSolidCells; } // newly owned cells, overlaps counted once
 	const FRoomAirDomainSettings& GetRoomAirDomain() const { return RoomAirDomain; }
 	const FString& GetRoomAirDomainMessage() const { return RoomAirDomainMessage; }
 
@@ -397,6 +398,9 @@ private:
 	static constexpr int32 BarrierSolidOwner = -3;
 	int32 BarrierSolidCells = 0;
 	int32 BarrierCellsKeptOpen = 0;
+	static constexpr int32 CeilingSolidOwner = -4;
+	int32 CeilingSolidCells = 0;
+	void MarkCeilingSolidCells(FUniformAirGrid& Grid, const FVector& GridOriginM);
 	int32 SplitDucts = 0;
 	// Walls / curtains as solids. Runs after the cabinets, CRAH units and containment have their cells.
 	void MarkBarrierSolidCells(FUniformAirGrid& Grid, const FVector& GridOriginM);

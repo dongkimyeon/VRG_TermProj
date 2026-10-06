@@ -6,6 +6,8 @@
 #include "Actors/CrahUnitActor.h"
 #include "Actors/SpineCabinetActor.h"
 #include "Actors/RackThermalActor.h"
+#include "Actors/LayoutBarrierActor.h"
+#include "Interaction/VrgLayoutFile.h"
 #include <limits>
 #include "Engine/Engine.h"
 #include "Engine/World.h"
@@ -189,6 +191,135 @@ bool FRoomCeilingFoundationTest::RunTest(const FString& Parameters)
 	F.Racks[0]->SetActorTransform(Pose);
 	TestTrue(TEXT("Clearing list is value-only"),F.Sim->TrySetRoomCeilingPlates({},Reason) && F.Air->GetMutableSolver().GetGrid().bSolidCell==Solids);
 	AddInfo(TEXT("Ceiling fixture request XY[-5.13,-4.61]x[3.13,3.62]m at2.63m -> XY[-5.25,-4.5]x[3,3.75]m, Z[2.5,2.75]m, nine cells in one0.25m layer; warm0.02s state unchanged. No holes/vents/history/persistence."));
+	return true;
+}
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FRoomCeilingCouplingTest, "VRG.Interaction.Layout.RoomCeilingCoupling",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::CommandletContext | EAutomationTestFlags::EngineFilter)
+bool FRoomCeilingCouplingTest::RunTest(const FString& Parameters)
+{
+	double MaxEnergy=0,MaxPressure=0,MaxWater=0,MaxDuct=0,MaxHydraulic=0,MaxIt=0,MaxSizing=0;
+	double MinInlet=TNumericLimits<double>::Max(),MaxInlet=0;
+	for(int32 Mode=0;Mode<2;++Mode)
+	{
+		FRoomFixture F; FString Reason; F.Sim->CrahLayout=Mode==0?ECrahLayout::InRow:ECrahLayout::Perimeter;
+		F.Sim->Containment=EAisleContainment::BlankingAndColdAisleRoof;
+		auto Room=ManualRoom(); Room.CeilingHeightM=4; // Synthetic plate clearance fixture, not facility data.
+		TestTrue(TEXT("Manual baseline accepted"),F.Sim->TrySetRoomAirDomain(Room,Reason));
+		auto* Wall=F.World->SpawnActor<ALayoutBarrierActor>(FVector(-400,320,0),FRotator::ZeroRotator);
+		Wall->SetActorScale3D(FVector(.2,1,3.5)); // Synthetic wall intersects only the remote plate, not a duct.
+		const auto InitialInput=F.Racks[0]->Input;
+		F.Sim->EnterSimulationMode(); F.Sim->Tick(.021f); const auto Reference=F.Sim->GetSnapshot(); F.Sim->EnterLayoutMode();
+		const auto Baseline=F.Air->GetMutableSolver().GetGrid().bSolidCell;
+		const int32 RoofCells=F.Sim->GetNumContainmentCells(),WallCells=F.Sim->GetNumBarrierCells();
+		TestTrue(TEXT("Existing roof and wall represented before ceiling"),RoofCells>0 && WallCells>0);
+		FRoomCeilingPlate P; P.MinXYM=FVector2D(-2.6,-2); P.MaxXYM=FVector2D(2.6,2); P.HeightM=2.83;
+		FRoomCeilingPlate Remote; Remote.MinXYM=FVector2D(-4.3,3); Remote.MaxXYM=FVector2D(-3.7,3.4); Remote.HeightM=2.83;
+		TestTrue(TEXT("Plate and wall overlap allowed; no immediate solid changes"),F.Sim->TrySetRoomCeilingPlates({P,Remote,P},Reason)
+			&& F.Air->GetMutableSolver().GetGrid().bSolidCell==Baseline && F.Sim->GetNumCeilingCells()==0);
+		FAirGridParams GP; FBox Actual(ForceInit); TArray<FRoomCeilingPlan> Plans;
+		TestTrue(TEXT("Plan accepted for all existing paths"),F.Sim->ValidateRoomAirDomain(Room,GP,Actual,Reason)
+			&& VrgRoomAirDomain::BuildCeilingPlans(Room,F.Sim->GetRoomCeilingPlates(),GP,Actual,Plans,Reason));
+		if (Plans.Num()!=3) { AddError(Reason); return false; }
+		// Existing Load must include retained, not-yet-persisted plate data in FINAL equipment validation.
+		const auto Pose=F.Racks[0]->GetActorTransform(); F.Racks[0]->SetActorLocation(Pose.GetLocation()+FVector(0,0,100));
+		TestTrue(TEXT("Save collision fixture"),VrgLayoutFile::Save(F.World,TEXT("AutomationCeilingBlockedLoad"),Reason));
+		F.Racks[0]->SetActorTransform(Pose);
+		TestFalse(TEXT("Load cannot bypass ceiling using a final elevated rack"),VrgLayoutFile::Load(F.World,TEXT("AutomationCeilingBlockedLoad"),Reason));
+		TestTrue(TEXT("Load rejection has reason and retains geometry/grid/clock"),Reason.Contains(TEXT("천장 판"))
+			&& F.Racks[0]->GetActorTransform().Equals(Pose,0) && F.Sim->GetSnapshot().SimTimeS==Reference.SimTimeS
+			&& F.Air->GetMutableSolver().GetGrid().bSolidCell==Baseline && F.Sim->GetRoomCeilingPlates().Num()==3);
+		auto Run=[&](bool bPlaced)
+		{
+			for(auto* Rack:F.Racks) Rack->Input=InitialInput;
+			F.Sim->EnterSimulationMode(); F.Sim->Tick(.021f); const auto First=F.Sim->GetSnapshot();
+			const auto& G=F.Air->GetMutableSolver().GetGrid(); TArray<bool> Expected=Baseline; int32 Added=0;
+			for(const auto& Plan:Plans) for(int32 Z=Plan.MinCell.Z;Z<Plan.MaxCellExclusive.Z;++Z)
+				for(int32 Y=Plan.MinCell.Y;Y<Plan.MaxCellExclusive.Y;++Y) for(int32 X=Plan.MinCell.X;X<Plan.MaxCellExclusive.X;++X)
+				{ const int32 I=G.CellIndex(X,Y,Z); if(!Expected[I]) { Expected[I]=true; ++Added; } }
+			TestTrue(TEXT("Exact mask union; overlaps once; equipment/wall/roof retained"),G.bSolidCell==Expected
+				&& F.Sim->GetNumCeilingCells()==Added && F.Sim->GetNumContainmentCells()==RoofCells && F.Sim->GetNumBarrierCells()==WallCells);
+			const auto& PP=Plans[0]; TestTrue(TEXT("Upper air is left fluid"),!G.IsSolidCell(PP.MinCell.X,PP.MinCell.Y,PP.MaxCellExclusive.Z));
+			TestTrue(TEXT("CRAH conversion keeps count and geometry"),F.Sim->IsUsingPlacedCrahs()==bPlaced && F.Sim->GetNumCrahUnits()==(Mode==0?4:2));
+			TestFalse(TEXT("Cannot change ceiling while simulating"),F.Sim->TrySetRoomCeilingPlates({},Reason));
+			for(int32 I=0;I<25;++I) F.Sim->Tick(.04f);
+			const auto S=F.Sim->GetSnapshot(); const auto AS=F.Air->GetMutableSolver().MakeSnapshot(S.SimTimeS);
+			const double It=FMath::Abs(First.TotalItHeatW-Reference.TotalItHeatW)/Reference.TotalItHeatW;
+			const double Sizing=FMath::Max3(FMath::Abs(S.CrahFlowM3s-Reference.CrahFlowM3s)/Reference.CrahFlowM3s,
+				FMath::Abs(F.Sim->GetCrahTotalUAWK()-Reference.CrahFlowM3s*G.GetParams().DensityKgM3*G.GetParams().SpecificHeatJKgK
+				*(-FMath::Loge(1-F.Sim->CrahDesignAirDeltaTK/(F.Sim->CrahDesignAirDeltaTK+F.Sim->CrahDesignApproachK))))/F.Sim->GetCrahTotalUAWK(),
+				FMath::Abs(S.CrahFanPowerW-Reference.CrahFanPowerW)/Reference.CrahFanPowerW);
+			double RackFlow=0,Duct=0; for(int32 I=0;I<S.RackAirMassFlowKgs.Num();++I)
+			{ if(!TestTrue(TEXT("Rack has a matching positive duct coupling"),S.RackAirMassFlowKgs[I]>0 && S.RackDuctMassFlowKgs.IsValidIndex(I))) continue;
+				RackFlow+=S.RackAirMassFlowKgs[I]/G.GetParams().DensityKgM3;
+				Duct=FMath::Max(Duct,FMath::Abs(S.RackAirMassFlowKgs[I]-S.RackDuctMassFlowKgs[I])/S.RackAirMassFlowKgs[I]); }
+			Duct=FMath::Max(Duct,FMath::Abs(AS.DuctFlowM3s-RackFlow-S.CrahFlowM3s)/(RackFlow+S.CrahFlowM3s));
+			double Removed=0; for(auto* Rack:F.Racks) { Removed+=Rack->GetMutableModel().GetLastHeatRemovedByCoolantW();
+				TestTrue(TEXT("Coolant flow positive"),Rack->Input.CoolantMassFlowKgs>0);
+				for(double K:Rack->Input.SlotAirInletTempK) { MinInlet=FMath::Min(MinInlet,K); MaxInlet=FMath::Max(MaxInlet,K);
+					TestTrue(TEXT("Existing15..35C transient inlet safety"),K>288.15 && K<308.15); } }
+			const double Water=FMath::Abs(Removed-S.TotalRadiatorRejectedW)/S.TotalRadiatorRejectedW;
+			const auto HS=F.Room->GetLastSolveResult();
+			TestTrue(TEXT("Existing IT/sizing/duct/coolant/coil/energy criteria"),It<1e-9 && Sizing<1e-12 && Duct<1e-9 && Water<1e-12
+				&& !AS.bDuctsRejected && AS.NumDuctFaces>0 && S.CrahCoilRemovedW>0 && FMath::Abs(S.NormalizedEnergyResidual)<1e-9);
+			TestTrue(TEXT("Pressure/hydraulic convergence and pump scale"),S.bAirPressureConverged && AS.bPressureConverged && AS.NormalizedDivergence<1e-5
+				&& HS.bConverged && S.bHydraulicsConverged && HS.NormalizedResidual<F.Room->SolveSettings.NormalizedResidualTarget
+				&& F.Room->GetTotalPumpElectricalW()>0 && F.Room->GetTotalPumpElectricalW()/S.TotalItHeatW<.05);
+			MaxIt=FMath::Max(MaxIt,It); MaxSizing=FMath::Max(MaxSizing,Sizing); MaxDuct=FMath::Max(MaxDuct,Duct); MaxWater=FMath::Max(MaxWater,Water);
+			MaxEnergy=FMath::Max(MaxEnergy,FMath::Abs(S.NormalizedEnergyResidual)); MaxPressure=FMath::Max(MaxPressure,AS.NormalizedDivergence);
+			MaxHydraulic=FMath::Max(MaxHydraulic,HS.NormalizedResidual);
+			AddInfo(FString::Printf(TEXT("Ceiling mode%d placed%d grid43x37x16 added%d roof%d wall%d t%.2fs energy%.3e pressure%.3e"),Mode,bPlaced,Added,RoofCells,WallCells,S.SimTimeS,S.NormalizedEnergyResidual,AS.NormalizedDivergence));
+			F.Sim->EnterLayoutMode();
+		};
+		Run(false);
+		TArray<FCrahLayoutRecord> Auto; F.Sim->CaptureAutomaticCrahLayout(Auto);
+		for(const auto& R:Auto) { auto* Unit=F.World->SpawnActor<ACrahUnitActor>(R.Transform.GetLocation(),R.Transform.Rotator()); Unit->ApplyLayoutSettings(R.Settings); }
+		Run(true);
+		const auto Mask=F.Air->GetMutableSolver().GetGrid().bSolidCell;
+		TestTrue(TEXT("Clearing ceiling leaves live mask until entry"),F.Sim->TrySetRoomCeilingPlates({},Reason) && F.Air->GetMutableSolver().GetGrid().bSolidCell==Mask);
+		F.Sim->EnterSimulationMode(); TestTrue(TEXT("Next entry removes only ceiling; preserves existing geometry"),F.Sim->GetNumCeilingCells()==0 && F.Air->GetMutableSolver().GetGrid().bSolidCell==Baseline);
+	}
+	AddInfo(FString::Printf(TEXT("Ceiling maxima IT%.3e sizing%.3e duct%.3e coolant%.3e global%.3e pressure%.3e hydraulic%.3e; inlet%.9f..%.9fK"),MaxIt,MaxSizing,MaxDuct,MaxWater,MaxEnergy,MaxPressure,MaxHydraulic,MinInlet,MaxInlet));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FRoomCeilingBlocksFlowTest, "VRG.Air.Solid.CeilingBlocksFlow",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::CommandletContext | EAutomationTestFlags::EngineFilter)
+bool FRoomCeilingBlocksFlowTest::RunTest(const FString& Parameters)
+{
+	// Reuse BlocksFlow's 12-cell/h0.25m/297.15K/340K synthetic buoyancy fixture and existing criteria.
+	FAirGridParams GP; GP.NumCellsX=12; GP.NumCellsY=12; GP.NumCellsZ=12; GP.CellSizeM=.25;
+	FRoomAirDomainSettings Room; Room.bManual=true; Room.MinXYM=FVector2D(0,0); Room.MaxXYM=FVector2D(3,3); Room.CeilingHeightM=3;
+	FRoomCeilingPlate P; P.MinXYM=Room.MinXYM; P.MaxXYM=Room.MaxXYM; P.HeightM=1.55;
+	TArray<FRoomCeilingPlan> Plans; FString Reason;
+	TestTrue(TEXT("Horizontal single layer plan"),VrgRoomAirDomain::BuildCeilingPlans(Room,{P},GP,FBox(FVector(0),FVector(3)),Plans,Reason));
+	FAirSolver Solver; Solver.Initialize(GP,297.15); Solver.GetMutablePressureSettings().NormalizedResidualTarget=1e-7;
+	Solver.GetMutablePressureSettings().MaxIterations=3000;
+	auto& G=Solver.GetMutableGrid(); TestEqual(TEXT("One144-cell layer from production rasterizer"),VrgRoomAirDomain::MarkCeilingCells(G,Plans).Num(),144);
+	TestEqual(TEXT("Repeated plan adds no duplicate solids"),VrgRoomAirDomain::MarkCeilingCells(G,Plans).Num(),0); Solver.OnSolidCellsChanged();
+	for(int32 Y=4;Y<=7;++Y) for(int32 X=2;X<=4;++X) G.TemperatureK[G.CellIndex(X,Y,1)]=340;
+	FAirSolverInput Input; Input.CellHeatW.Init(0,G.GetNumCells()); for(int32 I=0;I<120;++I) Solver.Step(Input,.02);
+	double MaxNormal=0,MaxUpperError=0;
+	for(int32 Y=0;Y<12;++Y) for(int32 X=0;X<12;++X)
+	{
+		MaxNormal=FMath::Max3(MaxNormal,FMath::Abs(G.VelocityZMs[G.FaceZIndex(X,Y,6)]),FMath::Abs(G.VelocityZMs[G.FaceZIndex(X,Y,7)]));
+		for(int32 Z=7;Z<12;++Z) { TestFalse(TEXT("Air above remains fluid"),G.IsSolidCell(X,Y,Z));
+			MaxUpperError=FMath::Max(MaxUpperError,FMath::Abs(G.TemperatureK[G.CellIndex(X,Y,Z)]-297.15)); }
+	}
+	const auto S=Solver.MakeSnapshot(2.4);
+	TestTrue(TEXT("Existing solid flow/temperature/pressure criteria"),MaxNormal==0 && MaxUpperError<1e-9 && S.MaxSpeedMs>.01
+		&& S.bPressureConverged && S.NormalizedDivergence<1e-5);
+	AddInfo(FString::Printf(TEXT("Ceiling layer144 cells Z[1.5,1.75]m: normal%.3e m/s upper temperature error%.3e K maxspeed%.6f m/s pressure%.3e at2.4s"),MaxNormal,MaxUpperError,S.MaxSpeedMs,S.NormalizedDivergence));
+	// AirSolver returns zero normalized residual for zero EnergyInJ; manually seeded temperature above
+	// is a flow isolation fixture, not a conservation proof. Reuse EnergyConservation's synthetic1500W.
+	Solver.Initialize(GP,297.15); VrgRoomAirDomain::MarkCeilingCells(Solver.GetMutableGrid(),Plans); Solver.OnSolidCellsChanged();
+	Input.CellHeatW.Init(0,Solver.GetGrid().GetNumCells());
+	for(int32 Y=4;Y<=7;++Y) for(int32 X=2;X<=4;++X) Input.CellHeatW[Solver.GetGrid().CellIndex(X,Y,1)]=1500.0/12;
+	for(int32 I=0;I<120;++I) Solver.Step(Input,.02);
+	const auto Heat=Solver.MakeSnapshot(2.4);
+	TestTrue(TEXT("Positive known source makes ceiling energy criterion meaningful"),FMath::IsNearlyEqual(Solver.GetEnergyInJ(),3600.0,1e-9)
+		&& Solver.GetEnergyStoredJ()>0 && FMath::Abs(Heat.NormalizedEnergyResidual)<1e-9 && Heat.bPressureConverged && Heat.NormalizedDivergence<1e-5);
+	AddInfo(FString::Printf(TEXT("Ceiling positive heat fixture input%.9fJ stored%.9fJ absolute energy residual%.3eJ normalized%.3e pressure%.3e at2.4s"),
+		Solver.GetEnergyInJ(),Solver.GetEnergyStoredJ(),Solver.GetEnergyResidualJ(),Heat.NormalizedEnergyResidual,Heat.NormalizedDivergence));
 	return true;
 }
 #endif

@@ -55,4 +55,7 @@ namespace VrgRoomAirDomain
 	// Bounds are reported, never silently clipped; caller supplies the validated manual grid.
 	VRG_TERMPROJ_API bool BuildCeilingPlans(const FRoomAirDomainSettings& Room, const TArray<FRoomCeilingPlate>& Plates,
 		const FAirGridParams& Grid, const FBox& ActualRoomM, TArray<FRoomCeilingPlan>& OutPlans, FString& Reason);
+	// Union into the mask; return only newly marked cell indices for actor ownership/diagnostics.
+	// Plans must have been built for this grid. Caller notifies the solver once after all solids are ready.
+	VRG_TERMPROJ_API TArray<int32> MarkCeilingCells(FUniformAirGrid& Grid, const TArray<FRoomCeilingPlan>& Plans);
 }

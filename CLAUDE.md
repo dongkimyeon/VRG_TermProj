@@ -3928,3 +3928,28 @@ FRoomCeilingPlate는 월드m XY/높이 값, 기본 목록은 빈 배열이다. �
 Editor Development69.50s 성공(기존 VrgLayoutFile.cpp 지역 Name shadow 컴파일 경고 유지). RoomCeilingFoundation/RoomAirDomainFoundation/RoomSettingsPersistence 영향3종 무경고 성공, 실패0/미실행0/종료0. 새 후보 거절·기존 장비/자동 CRAH/덕트 겹침·자동/방 축소 거절·진입 직전 장비 재검증과 정지0.02s 온도K/시계s/장부J/격자·원점cm/배관개수 불변을 확인했다. 고체 셀 실제 적용/물리는 후속 작은 커밋이다.
 계산 계획 측정: 합성 요청XY[-5.13,-4.61]×[3.13,3.62]m·높이2.63m, h0.25m → 실제XY[-5.25,-4.5]×[3,3.75]m·Z[2.5,2.75]m,9셀 한 층. 정수 셀/좌표 정확 비교이며 새 물리 허용치가 아니다. XY는 floor/ceil 외향 포함, Z는 floor로 높이를 포함하는 단일 층이며 계획 실패는 출력 전체를 유지한다. 요청/계산 경계의 차이는 문서에서 구분한다.
 근거(커밋 제외): Saved/Build_RoomCeilingFoundation.log, Saved/Logs/RoomCeilingFoundation_Tests.log, Saved/Automation/RoomCeilingFoundation/index.json. 실행 E:\UE_5.8 Editor Development 뒤 위3종 + 묶음 -unattended -NullRHI. 기존 화면 도구 실패 재시도/성공 검사 반복/전체/FPS 없음. UI/Undo·Redo/판 저장·메시·배기 구멍·외부 열 교환·플레넘은 후속이다.
+## 2026-10-06 부분 천장 고체 셀·유동/냉각 통합
+
+기존 MarkRackSolidCells 경로에서 장비/CRAH/콜드아일 지붕/벽 다음에 판 셀을 합집합으로 추가하고 OnSolidCellsChanged를 한 번 호출한다. 순수 MarkCeilingCells는 새 셀 인덱스만 반환하고 액터가 소유자/개수를 기록한다. 기존 고체를 덮어쓰거나 중복 판을 중복 계상하지 않는다. bMarkRacksAsSolid 진단 스위치와 판 마스크는 구분한다. 값 교체/판 제거는 배치 중 기존 격자를 유지하고 다음 진입 때만 반영한다. 판 위 모든 셀을 채우는 코드·구멍/유출 경계·새 물성은 없다.
+기존 RoomAirDomainTest fixture를 재사용한 RoomCeilingCoupling은 자동 인로우4/벽면2와 같은 계획의 실제 CRAH에서 판/벽/지붕의 정확 합집합·상부 공기·중복 판/제거·덕트/코일/팬·IT/수력/냉각수/전역 열수지·압력·타당성을 확인했다. 판은 저장하지 않는 현 v2 Load가 최종 장비를 판 안에 복원하려 하면 사전 거절하고 상태를 유지하는 것도 확인했다.
+
+Editor62.51s 성공. 새 RoomCeilingCoupling/CeilingBlocksFlow + 기존 BlocksFlow/EnergyConservation/BarrierSolidsAndAirPath5종 성공(4 무경고, 기존 벽 부정 사례1 경고). 벽 검사 마지막 밀폐 포켓은 덕트9개의 흡기/배기를 다른 영역으로 나눠 압력 해가 없다는 기존 진단을 의도대로 확인한다. 이를 천장 정상 운전의 수렴 성공과 혼동하지 않는다.
+검증 검토에서 수동 온도 씨앗/열원0 사례의 정규화 열수지가 API 정책으로0이 되는 무의미한 증거를 발견했다. 제품/허용치는 바꾸지 않고 천장 검사만 보강했다: 기존 Solid.EnergyConservation의 합성1500W를 판 아래에 분배해2.4s 적분3600J의 양의 장부를 검사한다. Editor6.42s 성공 후 변경한 CeilingBlocksFlow1종만 무경고 재검증했다. 앞 데이터3종을 포함한 **고유 영향8종 최종 성공(7 무경고+1 기존 밀폐 진단 경고), 실패0/미실행0/종료0**. 소스 변경 뒤 영향 없는 성공 검사는 반복하지 않았다. 컴파일의 기존 지역 Name shadow/기존 높이 입력 FloorCm C4701 경고는 이번 제품 수정 범위 밖으로 유지했다.
+
+| 항목 | 측정 | 기존 기준·정규화·단위 |
+|---|---|---|
+| 방 통합 마스크 | 43×37×16=25456셀, 새 판356셀·지붕20셀·벽112셀 | h0.25m, 요청 판2종+중복1종; 전체 bool 마스크 정확 합집합, 위쪽 공기 유지 |
+| 유동 차단 | 법선 속도0m/s, 상부 온도 차0K | 전체144셀 Z[1.5,1.75]m 판;2.4s; 법선 정확0, abs(상부T−297.15K)<1e-9K; 실제 하부 최대속도0.457024m/s>기존0.01m/s |
+| 판 양의 열원 보존 | 유입3600J·축적3600.000000001J, 잔차-8.458e-10J·정규화abs2.350e-13 | 합성1500W×2.4s; abs(유입−유출−축적)/유입J, 무차원 <1e-9; 직접 온도 씨앗/열원0 사례는 보존 증거 제외 |
+| 첫 IT 상대 변화 | 0 | abs(판 추가 첫IT−동일 장비/초기조건 참조IT)/참조W, 무차원 <1e-9 |
+| CRAH 배분 변화 | 0 | 풍량m³/s·팬W는 각 참조, UA W/K는 현재 UA로 정규화한 최대, 무차원 <1e-12; 대수 비례 가정 없음 |
+| 덕트 보존 | 최대2.487e-15 | 랙 (질량유량−덕트질량유량)/랙kg/s 및 (총덕트풍량−랙풍량−CRAH풍량)/(랙+CRAH)m³/s, 무차원 <1e-9 |
+| 냉각수 장부 | 최대6.552e-15 | abs(랙 냉각수 회수W−라디에이터 방출W)/라디에이터W, 무차원 <1e-12 |
+| 전역 열수지 | 최대abs7.157e-14 | abs(입력J−유출J−축적J)/EnergyInJ(IT+CRAH 팬), 무차원 <1e-9 |
+| 압력 투영 뒤 발산 | 통합 최대4.316e-08; 판 단독1.218e-09/양의 열원8.329e-10 | maxAbsDiv(1/s)/(maxAbsVelocity(m/s)/h(m)), 무차원 <1e-5; 수렴 플래그 확인 |
+| 수력 수렴 | 최대7.348e-14 | 기존 HydraulicSolveSettings.NormalizedResidualTarget 이내, 솔버 정규화 잔차(무차원)/수렴 플래그 |
+| 타당성 안전망 | 랙 흡기295.861839915~297.147862914K | 기존 과도288.15~308.15K; 양의 냉각수 유량/코일 제거W·펌프전기W/IT W<0.05 확인 |
+
+통합t1.02s/단독t2.4s 균일 CPU/NullRHI의 짧은 과도·기하 검증이다. 시설 전체/정상상태/GPU/옥트리/FPS 검증으로 확대하지 않는다. 기존 바깥 경계/판 단열과 벽·장비 모델 부채 유지. 실제 천장 UI/메시가 없어 화면 확인을 하지 않았으며 기존 실패 도구도 재시도하지 않았다. 높이 핸들 직접 정상은 앞 사용자 보고 절을 따른다.
+실행: E:\UE_5.8 Editor Development 뒤 위5종 + 묶음 Automation RunTests -unattended -NullRHI, 보강 후 변경한 천장 단독1종만 실행. 근거(커밋 제외): Saved/Build_RoomCeilingCoupling.log, Saved/Build_RoomCeilingEnergyCheck.log, Saved/Logs/RoomCeiling{Coupling,EnergyCheck}_Tests.log, Saved/Automation/RoomCeiling{Coupling,EnergyCheck}/index.json. 첫 데이터 단계 근거는 앞 절.
+후속: 판 UI/핸들·Undo/Redo·판 저장·메시, 구멍 셀 편집과 별도의 배기 유량/열 경계, 외부 열 교환·플레넘. 현재 수동 방/C++ 값 API 기반, 같은 월드 Load는 현 판 유지/검증, 새 월드는 판 목록 없음. 레벨과 미추적 외부 액터 에셋을 변경/커밋하지 않았다.

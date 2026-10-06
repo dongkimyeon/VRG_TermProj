@@ -425,7 +425,8 @@ void ADataCenterSimulationActor::FindTargetActors()
 void ADataCenterSimulationActor::MarkRackSolidCells()
 {
 	SolidOwner.Reset();
-	if (AirField == nullptr || !bMarkRacksAsSolid)
+	CeilingSolidCells = 0;
+	if (AirField == nullptr || (!bMarkRacksAsSolid && RoomCeilingPlates.IsEmpty()))
 	{
 		return;
 	}
@@ -436,6 +437,13 @@ void ADataCenterSimulationActor::MarkRackSolidCells()
 	SolidOwner.Init(INDEX_NONE, Grid.GetNumCells());
 
 	const FVector GridOriginM = SimUnits::UnrealToMeters(AirField->GetActorLocation());
+	if (!bMarkRacksAsSolid)
+	{
+		// Keep the existing equipment-solid debug switch independent of the new ceiling geometry.
+		MarkCeilingSolidCells(Grid, GridOriginM);
+		Solver.OnSolidCellsChanged();
+		return;
+	}
 
 	for (int32 I = 0; I < Racks.Num() + Spines.Num(); ++I)
 	{
@@ -558,7 +566,25 @@ void ADataCenterSimulationActor::MarkRackSolidCells()
 	}
 
 	MarkBarrierSolidCells(Grid, GridOriginM);
+	MarkCeilingSolidCells(Grid, GridOriginM);
 	Solver.OnSolidCellsChanged();
+}
+
+void ADataCenterSimulationActor::MarkCeilingSolidCells(FUniformAirGrid& Grid, const FVector& GridOriginM)
+{
+	CeilingSolidCells = 0;
+	if (RoomCeilingPlates.IsEmpty()) return;
+	const auto& GP = Grid.GetParams();
+	const FBox Bounds(GridOriginM, GridOriginM + FVector(GP.NumCellsX, GP.NumCellsY, GP.NumCellsZ) * GP.CellSizeM);
+	TArray<FRoomCeilingPlan> Plans; FString Reason;
+	if (!VrgRoomAirDomain::BuildCeilingPlans(RoomAirDomain, RoomCeilingPlates, GP, Bounds, Plans, Reason))
+	{
+		UE_LOG(LogTemp, Error, TEXT("[VrgSim] 천장 셀 계획 실패: %s"), *Reason);
+		return; // Entry prevalidation supplies this same grid; never publish a partial plan.
+	}
+	const auto Added = VrgRoomAirDomain::MarkCeilingCells(Grid, Plans);
+	for (int32 Index : Added) SolidOwner[Index] = CeilingSolidOwner;
+	CeilingSolidCells = Added.Num(); // existing equipment/roof/wall ownership is preserved
 }
 
 void ADataCenterSimulationActor::MarkBarrierSolidCells(FUniformAirGrid& Grid, const FVector& GridOriginM)
