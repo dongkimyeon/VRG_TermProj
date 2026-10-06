@@ -208,7 +208,7 @@ FString ADataCenterDebugController::DescribeRoomCeilingPlan(const FRoomCeilingPl
 		*Plan.ActualBoundsM.Min.ToString(),*Plan.ActualBoundsM.Max.ToString(),GP.CellSizeM,N.X,N.Y,N.Z,N.X*N.Y*N.Z);
 	auto Plates=Sim->GetRoomCeilingPlates(); Plates.Add(P);
 	if (!Sim->ValidateRoomAirDomain(Sim->GetRoomAirDomain(),GP,Bounds,Reason,&Plates)) Message+=TEXT("거절: ")+Reason;
-	return Message+TEXT("고체는 다음 시뮬레이션 진입에 적용 · 판 저장 미지원.");
+	return Message+TEXT("고체는 다음 시뮬레이션 진입에 적용 · 판 목록은 배치 저장에 포함.");
 }
 
 bool ADataCenterDebugController::AddRoomCeiling(const FRoomCeilingPlate& P, FString& Message)

@@ -3978,3 +3978,13 @@ Editor Development140.13s 성공(기존 컴파일 경고 유지). 신규 RoomCei
 
 실제 신규 UMG 창/버튼·선 렌더·OS 포커스는 미확인이다. 기존 화면 도구 실패는 재시도하지 않았으며 Tools/부분천장_UI_Undo_확인_2026-10-06.md에 직접 확인 절차를 남겼다. 기존 방 높이 핸들 직접 정상 보고와 구분한다. UIOnly/닫기 후 입력 복귀는 자동화 경로 검증이며 OS 직접 확인으로 쓰지 않는다.
 근거(커밋 제외): Saved/Build_CeilingHistory.log, Saved/Logs/CeilingHistory_Tests.log, Saved/Automation/CeilingHistory/index.json. 실행 E:\UE_5.8 Editor Development 뒤 Automation RunTests VRG.Interaction.Layout.RoomCeilingHistory+VRG.Interaction.Layout.RoomSettingsUndoRedo -unattended -NullRHI. 빌드 중 소스 변경/전체 테스트/성공 검사 반복 없음. UI 단계 근거는 앞 절.
+## 2026-10-06 부분 천장 UI·Undo/Redo 사용자 직접 확인
+
+사용자가 직접 확인 절차를 진행하고 부분 천장 UI·Undo/Redo 전체 정상으로 보고했다. 수동 방 적용·판 추가/거절·요청/계산 범위 표시·Undo/Redo·Esc·닫기 후 입력/카메라·모드 전환의 해당 보고 범위다. 이는 AI의 새 캡처/로그/물리/FPS 측정이 아니며 새 저장/Load·새 월드 확인으로 확대하지 않는다. 기존 도구 실패는 재시도하지 않았다. 당시 격자 초안은 CDU 외형Y[-2.9,-2.1]m를 포함하지 못해 수동 방 최소Y 확장이 필요했고, 기존 검증이 이유를 표시하며 거절한 정상 동작이다. 시험 방/판 좌표는 시설 규격이나 물성 기본값으로 도입하지 않았다. 직접 절차 Tools/부분천장_UI_Undo_확인_2026-10-06.md.
+## 2026-10-06 부분 천장 저장 v2 연결
+
+settings.roomCeilingPlates를 선택 v2 필드로 추가했다. 각 객체의 minXM/minYM/maxXM/maxYM/heightM만 월드m로 저장한다. 전체 목록을 교체하므로 반복/새 월드 Load에서 덧붙이지 않으며 순서/동일 기하도 원본 값 그대로 유지한다. []는 제거, 필드가 없는 이전 v1/v2는 현 목록 유지다. 판이 있는 자동 방은 기존 검증으로 거절하고, 자동 방+명시적 빈 목록은 기존 수동 판이 있어도 함께 복원할 수 있다.
+기존 임시 검증 월드에 저장된 방·최종 장비 변환/치수·자동 CRAH/containment·h와 후보 판 목록을 전달한다. 잘못된 형식/필드/유한값·기하/통로/자원 한도는 실제 편집 전에 거절한다. 기존 모든 생성/이름/변환/제거 성공 뒤에만 방과 판 목록을 함께 교체하고 성공 Load만 기록을 비운다. 목록 검증/교체는 공기 고체를 적용하지 않는다. 실제 고체는 다음 시뮬레이션 진입 때 기존 경로를 사용한다. 판 저장 미지원 UI 안내를 갱신했으며 온도/적분/시계/장비 참조/격자 마스크/Undo 기록은 저장하지 않는다. 장비/벽/방 필드와 v2 버전은 유지한다.
+
+첫 빌드113.06s에서 새 파서의 Values가 기존 로컬을 가리는 C4456 오류가 났다. PlateValues로 이름만 수정한 뒤 Editor11.16s 성공(기존 VrgLayoutFile 지역 Name shadow/높이 입력 FloorCm 경고는 유지). 신규 RoomCeilingPersistence+기존 RoomSettingsPersistence/RoomCeilingUiInput3종 무경고 성공, 실패0/미실행0/종료0. 저장 객체5개 m 값·판2개, 반복/새 월드 교체·명시적 빈 목록/자동 복원·필드 없는 v1/v2 유지·잘못된 배열/객체/필드/높이/자동 상태 거절·기존 벽/방 보존·성공 기록0/0·다음 진입18셀(h0.25m)을 확인했다. 정수 셀/목록/변환은 정확 비교이며 새 물리 허용치는 없다. 따뜻한 Load 중간 실패와 냉각 물리 통합은 다음 작은 검증 커밋이다.
+근거(커밋 제외): Saved/Build_CeilingPersistence{,Repair}.log, Saved/Logs/CeilingPersistence_Tests.log, Saved/Automation/CeilingPersistence/index.json. 실행 E:\UE_5.8 Editor Development 뒤 Automation RunTests VRG.Interaction.Layout.RoomCeilingPersistence+VRG.Interaction.Layout.RoomSettingsPersistence+VRG.Interaction.Layout.RoomCeilingUiInput -unattended -NullRHI. 빌드 중 소스 변경/성공 검사 반복/전체/FPS/화면 도구 재시도 없음. 기존 UI 직접 정상은 앞 사용자 보고 절이며 새 저장/Load 직접 화면 확인은 별도다.

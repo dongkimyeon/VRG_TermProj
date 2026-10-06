@@ -225,7 +225,7 @@ bool FRoomCeilingCouplingTest::RunTest(const FString& Parameters)
 		TestTrue(TEXT("Plan accepted for all existing paths"),F.Sim->ValidateRoomAirDomain(Room,GP,Actual,Reason)
 			&& VrgRoomAirDomain::BuildCeilingPlans(Room,F.Sim->GetRoomCeilingPlates(),GP,Actual,Plans,Reason));
 		if (Plans.Num()!=3) { AddError(Reason); return false; }
-		// Existing Load must include retained, not-yet-persisted plate data in FINAL equipment validation.
+		// Existing Load must include saved plate data in FINAL equipment validation.
 		const auto Pose=F.Racks[0]->GetActorTransform(); F.Racks[0]->SetActorLocation(Pose.GetLocation()+FVector(0,0,100));
 		TestTrue(TEXT("Save collision fixture"),VrgLayoutFile::Save(F.World,TEXT("AutomationCeilingBlockedLoad"),Reason));
 		F.Racks[0]->SetActorTransform(Pose);
@@ -356,7 +356,7 @@ bool FRoomCeilingUiTest::RunTest(const FString& Parameters)
 	TestFalse(TEXT("Collision refuses and still reports quantized plan"),C->AddRoomCeiling(Bad,Message));
 	TestTrue(TEXT("Collision reason/range/thickness available"),Message.Contains(TEXT("거절")) && Message.Contains(TEXT("두께")) && Message.Contains(TEXT("계산 최소")));
 	TestTrue(TEXT("Explicit Add alone appends exactly one"),C->AddRoomCeiling(P,Message) && F.Sim->GetRoomCeilingPlates()==TArray<FRoomCeilingPlate>{P});
-	TestTrue(TEXT("Geometry reported; physical grid delayed"),Message.Contains(TEXT("3x3x1 = 9")) && Message.Contains(TEXT("저장 미지원"))
+	TestTrue(TEXT("Geometry reported; physical grid delayed"),Message.Contains(TEXT("3x3x1 = 9")) && Message.Contains(TEXT("배치 저장에 포함"))
 		&& F.Air->GetMutableSolver().GetGrid().bSolidCell==Mask && F.Air->GetActorLocation()==Origin && F.Air->GridParams.NumCellsZ==Grid.NumCellsZ);
 	FInputKeyEventArgs Esc; Esc.Key=EKeys::Escape; Esc.Event=IE_Pressed; C->InputKey(Esc);
 	TestTrue(TEXT("Esc closes without removing confirmed plate"),!C->IsRoomSettingsOpen() && C->bShowMouseCursor && F.Sim->GetRoomCeilingPlates().Num()==1);
@@ -415,7 +415,7 @@ bool FRoomCeilingHistoryTest::RunTest(const FString& Parameters)
 	for(auto* Rack:F.Racks) for(double K:Rack->Input.SlotAirInletTempK) TestTrue(TEXT("Existing transient15..35C inlet safety"),K>288.15 && K<308.15);
 	F.Sim->EnterLayoutMode(); TestTrue(TEXT("Mode transition preserves shared history"),C->GetLayoutUndoCount()==2);
 	C->SetPatchMapOpen(true); TestFalse(TEXT("Patch blocks history"),C->TryUndoLayout()); C->SetPatchMapOpen(false);
-	const FString File=TEXT("AutomationCeilingHistory"); TestTrue(TEXT("Existing Load retains unsaved plates but clears all history"),VrgLayoutFile::Save(F.World,File,Message)
+	const FString File=TEXT("AutomationCeilingHistory"); TestTrue(TEXT("Load restores saved plates and clears all history"),VrgLayoutFile::Save(F.World,File,Message)
 		&& VrgLayoutFile::Load(F.World,File,Message) && C->GetLayoutUndoCount()==0 && C->GetLayoutRedoCount()==0 && F.Sim->GetRoomCeilingPlates()==TArray<FRoomCeilingPlate>{Other});
 	F.Sim->TrySetRoomCeilingPlates({},Message);
 	for(int32 I=0;I<105;++I) TestTrue(TEXT("Existing100-command cap with repeated individual Add"),Add(P) && C->GetLayoutUndoCount()<=100);
@@ -423,7 +423,7 @@ bool FRoomCeilingHistoryTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("Five evicted additions remain"),F.Sim->GetRoomCeilingPlates().Num()==5 && !C->TryUndoLayout() && C->GetLayoutRedoCount()==100);
 	for(int32 I=0;I<100;++I) TestTrue(TEXT("Redo retained ceiling addition"),C->TryRedoLayout());
 	TestEqual(TEXT("All retained additions restored"),F.Sim->GetRoomCeilingPlates().Num(),105);
-	AddInfo(FString::Printf(TEXT("Ceiling history: one record/list exact restoration; cancel/refusal/stale state preserved at0.02s; shared cap100 and Load clears history but retains unsaved list; next-entry9cells IT%.3e energy%.3e pressure%.3e at%.2fs."),It,S.NormalizedEnergyResidual,AS.NormalizedDivergence,S.SimTimeS));
+	AddInfo(FString::Printf(TEXT("Ceiling history: one record/list exact restoration; cancel/refusal/stale state preserved at0.02s; shared cap100 and Load clears history but restores saved list; next-entry9cells IT%.3e energy%.3e pressure%.3e at%.2fs."),It,S.NormalizedEnergyResidual,AS.NormalizedDivergence,S.SimTimeS));
 	return true;
 }
 #endif

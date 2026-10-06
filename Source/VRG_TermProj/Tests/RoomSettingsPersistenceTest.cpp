@@ -123,6 +123,67 @@ bool FRoomSettingsPersistenceTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FRoomCeilingPersistenceTest, "VRG.Interaction.Layout.RoomCeilingPersistence",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::CommandletContext | EAutomationTestFlags::EngineFilter)
+bool FRoomCeilingPersistenceTest::RunTest(const FString& Parameters)
+{
+	FRoomFileFixture F; FString Message; const auto Manual = RoomFileDomain();
+	const FString File=TEXT("AutomationCeilingFile"), Empty=File+TEXT("Empty"), Old=File+TEXT("Old"), BadFile=File+TEXT("Bad");
+	TestTrue(TEXT("Save explicit empty automatic list"),VrgLayoutFile::Save(F.W,Empty,Message));
+	TestTrue(TEXT("Manual room"),F.Sim->TrySetRoomAirDomain(Manual,Message));
+	// Synthetic corner geometry from the existing ceiling fixture, not a facility dimension/rating.
+	FRoomCeilingPlate P; P.MinXYM=FVector2D(-5.13,3.13); P.MaxXYM=FVector2D(-4.61,3.62); P.HeightM=2.63;
+	auto Second=P; Second.MinXYM.X+=1; Second.MaxXYM.X+=1;
+	const TArray<FRoomCeilingPlate> Saved{P,Second};
+	const FLayoutBarrierRecord Wall{TEXT("ceiling-file-wall"),TEXT("CeilingFileWall"),FTransform(FRotator::ZeroRotator,FVector(-480,200,0),FVector(.2,1,2)),EBarrierKind::Wall};
+	TestNotNull(TEXT("Existing barrier inventory"),VrgBarrierLifecycle::Spawn(F.W,Wall));
+	TestTrue(TEXT("Save complete authored ceiling list"),F.Sim->TrySetRoomCeilingPlates(Saved,Message) && VrgLayoutFile::Save(F.W,File,Message));
+	const auto Root=ReadRoomFile(File); const auto Values=Root->GetObjectField(TEXT("settings"))->GetArrayField(TEXT("roomCeilingPlates"));
+	TestTrue(TEXT("v2 stores exactly five metre values per plate, no thermal state"),Root->GetIntegerField(TEXT("version"))==2 && Values.Num()==2
+		&& Values[0]->AsObject()->Values.Num()==5 && Values[0]->AsObject()->GetNumberField(TEXT("minXM"))==P.MinXYM.X
+		&& Values[0]->AsObject()->GetNumberField(TEXT("maxYM"))==P.MaxXYM.Y && Values[0]->AsObject()->GetNumberField(TEXT("heightM"))==P.HeightM);
+	F.Sim->TrySetRoomCeilingPlates({},Message); F.Racks[0]->SetActorLocation(FVector(900,0,0)); F.Air->GridParams.CellSizeM=.05;
+	TestTrue(TEXT("Final saved equipment/grid/list validated instead of current world"),VrgLayoutFile::Load(F.W,File,Message)
+		&& F.Sim->GetRoomCeilingPlates()==Saved && F.Racks[0]->GetActorLocation().X==-150 && F.Air->GridParams.CellSizeM==.25);
+	for(int32 I=0;I<2;++I) TestTrue(TEXT("Repeated Load replaces, never appends"),VrgLayoutFile::Load(F.W,File,Message) && F.Sim->GetRoomCeilingPlates()==Saved);
+	{
+		FRoomFileFixture New;
+		for(int32 I=0;I<2;++I) TestTrue(TEXT("New world restores room/wall/ceiling list without duplication"),VrgLayoutFile::Load(New.W,File,Message)
+			&& New.Sim->GetRoomAirDomain()==Manual && New.Sim->GetRoomCeilingPlates()==Saved && VrgBarrierLifecycle::Find(New.W,Wall.Id));
+		TestTrue(TEXT("Explicit empty list commits with automatic room despite old plates"),VrgLayoutFile::Load(New.W,Empty,Message)
+			&& !New.Sim->GetRoomAirDomain().bManual && New.Sim->GetRoomCeilingPlates().IsEmpty());
+	}
+	auto Current=P; Current.HeightM=2.53; F.Sim->TrySetRoomCeilingPlates({Current},Message);
+	for(int32 Version:{2,1})
+	{
+		auto Legacy=ReadRoomFile(File); Legacy->SetNumberField(TEXT("version"),Version); Legacy->GetObjectField(TEXT("settings"))->RemoveField(TEXT("roomCeilingPlates")); WriteRoomFile(Old,Legacy);
+		TestTrue(TEXT("Absent optional field preserves current list in v1/v2"),VrgLayoutFile::Load(F.W,Old,Message) && F.Sim->GetRoomCeilingPlates()==TArray<FRoomCeilingPlate>{Current});
+	}
+	auto Edited=Manual; Edited.CeilingHeightM=3.2; F.C->OpenRoomSettings(); F.C->ApplyRoomSettings(Edited,Message); F.C->CloseRoomSettings();
+	F.C->TryLayoutRotation(F.Racks[0],FRotator(0,90,0),true); F.C->TryUndoLayout();
+	const int32 Undo=F.C->GetLayoutUndoCount(),Redo=F.C->GetLayoutRedoCount(); const auto Pose=F.Racks[0]->GetActorTransform();
+	auto* WallBefore=VrgBarrierLifecycle::Find(F.W,Wall.Id); const auto GridBefore=F.Air->GetMutableSolver().GetGrid().TemperatureK;
+	auto Reject=[&](const TSharedPtr<FJsonObject>& Bad)
+	{
+		WriteRoomFile(BadFile,Bad); TestFalse(TEXT("Malformed/invalid plate list rejects whole Load"),VrgLayoutFile::Load(F.W,BadFile,Message));
+		TestTrue(TEXT("Refusal retains actors/wall/room/plates/grid/BOTH history stacks"),F.Racks[0]->GetActorTransform().Equals(Pose)
+			&& VrgBarrierLifecycle::Find(F.W,Wall.Id)==WallBefore && F.Sim->GetRoomAirDomain()==Edited
+			&& F.Sim->GetRoomCeilingPlates()==TArray<FRoomCeilingPlate>{Current} && F.C->GetLayoutUndoCount()==Undo && F.C->GetLayoutRedoCount()==Redo
+			&& F.Air->GetMutableSolver().GetGrid().TemperatureK==GridBefore);
+	};
+	auto Bad=ReadRoomFile(File); Bad->GetObjectField(TEXT("settings"))->SetStringField(TEXT("roomCeilingPlates"),TEXT("bad")); Reject(Bad);
+	Bad=ReadRoomFile(File); Bad->GetObjectField(TEXT("settings"))->SetArrayField(TEXT("roomCeilingPlates"),{MakeShared<FJsonValueNumber>(1)}); Reject(Bad);
+	Bad=ReadRoomFile(File); Bad->GetObjectField(TEXT("settings"))->GetArrayField(TEXT("roomCeilingPlates"))[0]->AsObject()->RemoveField(TEXT("heightM")); Reject(Bad);
+	Bad=ReadRoomFile(File); Bad->GetObjectField(TEXT("settings"))->GetArrayField(TEXT("roomCeilingPlates"))[0]->AsObject()->SetNumberField(TEXT("heightM"),0); Reject(Bad);
+	Bad=ReadRoomFile(File); Bad->GetObjectField(TEXT("settings"))->GetObjectField(TEXT("roomAirDomain"))->SetBoolField(TEXT("manual"),false); Reject(Bad);
+	TestTrue(TEXT("Valid Load alone clears both stacks and restores saved list"),VrgLayoutFile::Load(F.W,File,Message)
+		&& F.Sim->GetRoomCeilingPlates()==Saved && F.C->GetLayoutUndoCount()==0 && F.C->GetLayoutRedoCount()==0
+		&& F.Air->GetMutableSolver().GetGrid().TemperatureK==GridBefore);
+	F.Sim->EnterSimulationMode(); TestEqual(TEXT("Next entry marks both nine-cell plates"),F.Sim->GetNumCeilingCells(),18);
+	AddInfo(TEXT("Ceiling optional v2: exact two-plate metre list; repeated/new-world replacement, [] clears with auto, absent v1/v2 retains; malformed/geometry failures preserve state/history; next-entry18cells at h0.25m."));
+	for(const auto& Name:{File,Empty,Old,BadFile}) IFileManager::Get().Delete(*VrgLayoutFile::PathFor(Name)); return true;
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FRoomFileCouplingTest, "VRG.Interaction.Layout.RoomPersistenceRollbackCoupling",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::CommandletContext | EAutomationTestFlags::EngineFilter)
 bool FRoomFileCouplingTest::RunTest(const FString& Parameters)

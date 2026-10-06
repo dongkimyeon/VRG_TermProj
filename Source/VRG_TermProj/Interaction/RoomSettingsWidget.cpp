@@ -87,7 +87,7 @@ void URoomSettingsWidget::InitializeDraft(const FRoomAirDomainSettings& Settings
 	if (bCeiling)
 	{
 		Title->SetText(FText::FromString(TEXT("부분 천장 추가 (m)")));
-		Intro->SetText(FText::FromString(TEXT("XY 범위와 방 천장보다 낮은 판 높이를 입력하세요. 추가 버튼만 확정합니다.\n한 셀 두께 판 · 공기 격자는 다음 진입에 적용 · 판 저장 미지원.")));
+		Intro->SetText(FText::FromString(TEXT("XY 범위와 방 천장보다 낮은 판 높이를 입력하세요. 추가 버튼만 확정합니다.\n한 셀 두께 판 · 공기 격자는 다음 진입에 적용 · 판 목록은 배치 저장에 포함.")));
 		ApplyLabel->SetText(FText::FromString(TEXT("추가"))); Manual->SetVisibility(ESlateVisibility::Collapsed);
 		HeightLabel->SetText(FText::FromString(TEXT("판 높이 (m)")));
 	}
@@ -129,7 +129,7 @@ void URoomSettingsWidget::OnApply()
 	{ Status->SetColorAndOpacity(FLinearColor(1, .3f, .3f)); Status->SetText(FText::FromString(Message)); Plan->SetText(FText::FromString(Message)); return; }
 	DraftSeed = Settings;
 	Status->SetColorAndOpacity(FLinearColor(.3f, 1, .4f));
-	Status->SetText(FText::FromString(bCeilingMode ? TEXT("판 한 장 추가됨. 닫고 Ctrl+Z/Y. 고체는 다음 진입에 적용 · 판 저장 미지원.") : TEXT("설정 적용됨. 공기 격자는 시뮬레이션 진입 때 적용됩니다.")));
+	Status->SetText(FText::FromString(bCeilingMode ? TEXT("판 한 장 추가됨. 닫고 Ctrl+Z/Y. 고체는 다음 진입에 적용 · 판 목록은 배치 저장에 포함.") : TEXT("설정 적용됨. 공기 격자는 시뮬레이션 진입 때 적용됩니다.")));
 	Plan->SetText(FText::FromString(TEXT("적용된 설정의 계획:\n") + Message));
 }
 

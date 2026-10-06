@@ -213,6 +213,15 @@ bool VrgLayoutFile::Save(UWorld* World, const FString& Name, FString& OutSummary
 		Domain->SetNumberField(TEXT("maxXM"), Room.MaxXYM.X); Domain->SetNumberField(TEXT("maxYM"), Room.MaxXYM.Y);
 		Domain->SetNumberField(TEXT("ceilingHeightM"), Room.CeilingHeightM);
 		Settings->SetObjectField(TEXT("roomAirDomain"), Domain); // Optional v2, authored metres only; no live grid/state.
+		TArray<TSharedPtr<FJsonValue>> Plates;
+		for (const auto& P : Sim->GetRoomCeilingPlates())
+		{
+			TSharedRef<FJsonObject> O = MakeShared<FJsonObject>();
+			O->SetNumberField(TEXT("minXM"), P.MinXYM.X); O->SetNumberField(TEXT("minYM"), P.MinXYM.Y);
+			O->SetNumberField(TEXT("maxXM"), P.MaxXYM.X); O->SetNumberField(TEXT("maxYM"), P.MaxXYM.Y);
+			O->SetNumberField(TEXT("heightM"), P.HeightM); Plates.Add(MakeShared<FJsonValueObject>(O));
+		}
+		Settings->SetArrayField(TEXT("roomCeilingPlates"), Plates); // Complete authored metre list; empty clears, absent retains.
 	}
 	if (const AAirFieldDebugActor* Air = LayoutFindFirst<AAirFieldDebugActor>(World))
 		Settings->SetNumberField(TEXT("cellSizeM"), Air->GridParams.CellSizeM);
@@ -266,10 +275,11 @@ namespace
 	// modify live equipment, barriers or history. Deferred native actors carry only consumed geometry;
 	// no construction, visuals, thermal state or solver is needed for room/automatic CRAH/duct validation.
 	bool ValidateLoadedRoom(UWorld* World, ADataCenterSimulationActor* Source, const FRoomAirDomainSettings& Domain,
+		const TArray<FRoomCeilingPlate>& Plates,
 		const TSharedPtr<FJsonObject>& Cooling, const TArray<FLoadedEquipment>& Items,
 		const TArray<AActor*>& Current, const TSet<AActor*>& Removed, FAirGridParams& Grid, FBox& Bounds, FString& Reason)
 	{
-		if (!Domain.bManual) return Source->ValidateRoomAirDomain(Domain, Grid, Bounds, Reason);
+		if (!Domain.bManual) return Source->ValidateRoomAirDomain(Domain, Grid, Bounds, Reason, &Plates);
 		UWorld* Preview = UWorld::CreateWorld(EWorldType::Game, false);
 		if (!Preview) { Reason = TEXT("방 검증 월드 생성 실패"); return false; }
 		GEngine->CreateNewWorldContext(EWorldType::Game).SetCurrentWorld(Preview);
@@ -316,9 +326,8 @@ namespace
 			if (!Project(I)) { Reason = TEXT("유지 장비의 방 검증 준비 실패"); return false; }
 		}
 		// Barriers are intentionally excluded by the existing validator; persistence is untouched.
-		// Ceiling plates are transient for now; Load retains the live list. Include it in FINAL-layout
-		// validation so a saved room/equipment change cannot bypass its clearance check. No file extension.
-		return Sim->ValidateRoomAirDomain(Domain, Grid, Bounds, Reason, &Source->GetRoomCeilingPlates());
+		// Validate the final saved list (or retained legacy list), never the current live list instead.
+		return Sim->ValidateRoomAirDomain(Domain, Grid, Bounds, Reason, &Plates);
 	}
 }
 
@@ -554,6 +563,23 @@ bool VrgLayoutFile::Load(UWorld* World, const FString& Name, FString& OutSummary
 			|| !ReadLayoutNumber(*Domain, TEXT("maxXM"), LoadedRoom.MaxXYM.X) || !ReadLayoutNumber(*Domain, TEXT("maxYM"), LoadedRoom.MaxXYM.Y)
 			|| !ReadLayoutNumber(*Domain, TEXT("ceilingHeightM"), LoadedRoom.CeilingHeightM)) return Fail(TEXT("방 설정 객체/유한값 오류 또는 통합 액터 없음"));
 	}
+	const bool bCeilingsStored = Version == 2 && (*SettingsObject)->HasField(TEXT("roomCeilingPlates"));
+	TArray<FRoomCeilingPlate> LoadedCeilings = Sim ? Sim->GetRoomCeilingPlates() : TArray<FRoomCeilingPlate>{};
+	if (bCeilingsStored)
+	{
+		const TArray<TSharedPtr<FJsonValue>>* PlateValues = nullptr;
+		if (!Sim || !(*SettingsObject)->TryGetArrayField(TEXT("roomCeilingPlates"), PlateValues)) return Fail(TEXT("천장 판 목록 형식 오류 또는 통합 액터 없음"));
+		LoadedCeilings.Reset();
+		for (const auto& Value : *PlateValues)
+		{
+			if (!Value.IsValid() || Value->Type != EJson::Object) return Fail(TEXT("천장 판 객체 형식 오류"));
+			const auto O = Value->AsObject(); FRoomCeilingPlate P;
+			if (!ReadLayoutNumber(O, TEXT("minXM"), P.MinXYM.X) || !ReadLayoutNumber(O, TEXT("minYM"), P.MinXYM.Y)
+				|| !ReadLayoutNumber(O, TEXT("maxXM"), P.MaxXYM.X) || !ReadLayoutNumber(O, TEXT("maxYM"), P.MaxXYM.Y)
+				|| !ReadLayoutNumber(O, TEXT("heightM"), P.HeightM)) return Fail(TEXT("천장 판 유한값/필드 오류"));
+			LoadedCeilings.Add(P);
+		}
+	}
 	// Walls / curtains: validate the whole list before anything changes. Absent flag = barriers stay as they are.
 	bool bBarrierInventory = false;
 	if (Version == 2 && Root->HasField(TEXT("barrierInventory")) && !Root->TryGetBoolField(TEXT("barrierInventory"), bBarrierInventory))
@@ -638,7 +664,7 @@ bool VrgLayoutFile::Load(UWorld* World, const FString& Name, FString& OutSummary
 		TSet<AActor*> Removed;
 		for (auto* A : Remove) Removed.Add(A); for (auto* A : RemoveSpines) Removed.Add(A);
 		for (auto* A : RemoveCdus) Removed.Add(A); for (auto* A : RemoveCrahs) Removed.Add(A);
-		if (!ValidateLoadedRoom(World, Sim, LoadedRoom, *SettingsObject, Items, Current, Removed, RoomGrid, RoomBounds, RoomReason))
+		if (!ValidateLoadedRoom(World, Sim, LoadedRoom, LoadedCeilings, *SettingsObject, Items, Current, Removed, RoomGrid, RoomBounds, RoomReason))
 			return Fail(TEXT("불러올 배치의 방 설정 거절: ") + RoomReason); // Before live spawn, transform, removal or history change.
 	}
 	TArray<FTransform> OldTransforms;
@@ -837,6 +863,9 @@ bool VrgLayoutFile::Load(UWorld* World, const FString& Name, FString& OutSummary
 				RoomGrid.NumCellsX, RoomGrid.NumCellsY, RoomGrid.NumCellsZ, *RoomBounds.Min.ToString(), *RoomBounds.Max.ToString())
 			: TEXT("불러온 자동 방 맞춤 사용");
 	}
+	// All fallible structural edits are finished. Commit together with the validated room; do not
+	// revalidate an intermediate world or apply solids/reset the running air grid during Load.
+	if (bCeilingsStored) Sim->RoomCeilingPlates = MoveTemp(LoadedCeilings);
 	for (TActorIterator<ADataCenterDebugController> It(World);It;++It) It->ResetLayoutEditsForLoad();
 	for (auto& Item:Items) if (Item.Rack.IsSet())
 	{
@@ -880,6 +909,7 @@ bool VrgLayoutFile::Load(UWorld* World, const FString& Name, FString& OutSummary
 	OutSummary += FString::Printf(TEXT(" | CRAH%d 생성/%d 제거"), Items.FilterByPredicate([](const auto& I){return I.bSpawned && I.Crah.IsSet();}).Num(), RemoveCrahs.Num());
 	if (bBarrierInventory) OutSummary += FString::Printf(TEXT(" | 벽/차단막 %d개 (이전 %d개 교체)"), NewBarriers.Num(), OldBarriers.Num());
 	OutSummary += bRoomStored ? TEXT(" | 방 설정 복원 (격자는 진입 시 적용)") : TEXT(" | 현 방 설정 유지");
+	OutSummary += bCeilingsStored ? TEXT(" | 천장 판 목록 복원 (고체는 진입 시 적용)") : TEXT(" | 현 천장 판 목록 유지");
 	return true;
 }
 

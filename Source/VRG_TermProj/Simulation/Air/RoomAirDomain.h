@@ -30,7 +30,7 @@ namespace VrgRoomAirDomain
 }
 
 // User decision 2026-10-06: a one-cell horizontal plate, NOT a filled volume above HeightM.
-// World metres, no holes/outlets yet; array empty preserves existing worlds. Not persisted in v2 yet.
+// World metres, no holes/outlets yet; optional v2 complete list, absent field retains the current list.
 USTRUCT()
 struct VRG_TERMPROJ_API FRoomCeilingPlate
 {
