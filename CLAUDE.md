@@ -3690,4 +3690,31 @@ MixedHistoryPersistenceCoupling은 기존 컨트롤러·생명주기·재구축�
 
 Editor100.88s 성공 후 신규1종 실패: acos 기반 같은 쿼터니언 각도가2.415e-6°로 계산됐고, 기존 R의0.4s 지연 재구축 전에 연결 상태를 캡처했다. 테스트 측정은 상대 쿼터니언 atan2로 바꾸고, fixture만 LayoutSettleS=0과 실제 Room Tick 두 번으로 기존 지연 재구축 경로를 처리한다. 제품 정책/충돌/보존 기준은 유지했다. Editor23.57s 성공 뒤 신규1종만 재실행 무경고 성공. 위치 최대0cm·방향 최대0°·스케일 최대0(무차원), 계획 위치1e-6cm/방향1e-6° 및 기존 스케일1e-9 기준 충족. 배치 시계는 계산하지 않는다.
 
-실행: Editor 빌드 후 Automation RunTests VRG.Interaction.Layout.MixedHistoryPersistenceCoupling;Quit, -unattended -NullRHI. 근거(커밋 제외): Saved/Build_MixedHistory{,_Repair}.log, Saved/Logs/MixedHistory{,Repair}_Tests.log, Saved/Automation/MixedHistoryRepair/index.json. 현재는 초기/중간 파일 Save까지이며 Load/열수지/타당성은 후속 보강 중이다. 기존 검사/전체 테스트·UI 도구/FPS 반복 없음. 고정22개 재현 시퀀스로 무작위/모든 조합 검증을 주장하지 않는다.
+실행: Editor 빌드 후 Automation RunTests VRG.Interaction.Layout.MixedHistoryPersistenceCoupling;Quit, -unattended -NullRHI. 근거(커밋 제외): Saved/Build_MixedHistory{,_Repair}.log, Saved/Logs/MixedHistory{,Repair}_Tests.log, Saved/Automation/MixedHistoryRepair/index.json. 1차 커밋 당시 초기/중간 파일 Save까지였으며 Load/열수지/타당성의 최종 범위는 아래 후속 절을 따른다. 기존 검사/전체 테스트·UI 도구/FPS 반복 없음. 고정22개 재현 시퀀스로 무작위/모든 조합 검증을 주장하지 않는다.
+
+## 2026-10-06 혼합 편집 저장·물리 통합 검증 (최종)
+
+기존 네이티브 배치 랙/스파인/CDU/벽면 CRAH 각1대에서 시작한다. 22개 이동·R·추가·복제·삭제 뒤 각2대(총8대), 18번째 중간 저장본은 랙/스파인 각2대·CDU/CRAH 각3대(총10대)다. 앞 절의 모든 Undo/Redo 접두 배치 비교에 더해, 복제의 현재 원본 설정/방향/스케일/높이 유지·독립 런타임 ID를 확인했다. 현재 온도/적분/시계를 저장하는 코드나 제품 기능은 추가하지 않았다.
+
+Undo21/Redo1가 남은 최종 편집 월드에서 중간 파일을 두 번 Load해 중복 없음·기록0/0·과거 Undo/Redo 거절과 전체 장비/연결 복원을 검사했다. 같은 네이티브 초기 배치로 만든 새 월드에서도 이전 R 기록을 만든 뒤 중간 파일을 두 번 Load해 기존 랙/스파인 삭제 의도를 반영하고 기록/시계0을 확인했다. 이어 최종 파일을 두 번 Load해 네 종류 모두의 기존 장비 삭제 의도와 런타임2대씩을 복원했다. 현재 월드에서 최초 파일을 두 번 Load하면 원래4대와 연결이 복원된다. 기존 저장 v2/생명주기·재구축/설정 캡처만 사용하며 새 저장 형식 없음.
+
+물리 체크포인트는 최초·최종·전체 Undo·전체 Redo·중간 Load·새 월드 중간/최종 Load, 각각 t1.02s다. 랙의 저장된 작성 입력만 다시 설정하고 기존 재구축으로 초기화한다. 현재 인벤토리의 랙/스파인 각 장비를 기존 파라미터·초기 열상태로 따로 한 스텝 계산해 첫 IT를 비교한다. CDU/CRAH가 IT로 더해지지 않고 팬 입력은 전역 장부에 한 번, 펌프는 별도 전력 평가에 한 번 들어간다. 대수와 비례하는 총풍량/용량을 가정하지 않고 기존 설계 부하·풍량0 분담/UA/팬 정책을 검사한다.
+
+| 검사 | 측정 최대/범위 | 기존 기준·정규화/단위 |
+|---|---:|---|
+| 전체 Undo/Redo·저장 복원 변환 | 위치0 / 방향0 / 스케일0 | cm / ° / 무차원; 계획 위치1e-6cm·방향1e-6°·기존 스케일1e-9. 상대 쿼터니언 atan2 각도 |
+| 첫 스텝 IT / 독립 장비 참조 상대 차 | 74511.428923~150226.966646 / 0 | W / 무차원; abs(현재IT−현재 인벤토리의 초기 장비 참조 합)/참조W <1e-9 |
+| 설계 총풍량 / 팬 / 펌프 | 1.308949~2.722527 / 545.395514~1134.386396 / 2055.656765~3535.988935 | m³/s / W / W; 팬은 전기입력, 펌프는 기존 운전점 전기입력 |
+| 풍량/UA/팬 배분 상대 차 | 4.009e-16 | 각각 기존 설계 풍량m³/s·UA W/K·팬W 기대값 기준, 무차원 <1e-12 |
+| 랙/스파인·CRAH 덕트 풍량 잔차 | 2.140e-15 | 개별 abs(공기−덕트 질량유량)/공기kg/s 및 전체 abs(덕트−장비 유량/ρ−CRAH 풍량)/기대 덕트m³/s 최대, 무차원 <1e-9 |
+| 냉각수 전달 | 1.566e-14 | abs(랙 냉각수 제거W−외부 방출W)/방출W 및 각 줄 abs(dutyW−Σmdot·cp·ΔT)/dutyW 최대, 무차원 <1e-12 |
+| 전역 열수지 | 1.638e-13 | abs(입력J−유출J−축적J)/EnergyInJ(IT+CRAH 팬), 무차원 <1e-9 |
+| 수력 Newton / 압력 투영 뒤 발산 | 3.165e-13 / 9.275e-08 | 기존 ReferenceFlowM3s·ReferencePressurePa 정규화 목표1e-10 / maxAbsDiv(1/s)/(maxAbsVelocity(m/s)/cellSize(m)), 무차원 <1e-5; 수렴 플래그 확인 |
+| 흡기 / 코일 duty | 297.150019~297.150594 / 6596.597322~13720.583346 | K / W; 기존 288.15~308.15K·양의 코일 냉각·공기 냉각 장부 일치 |
+| 저장/Load | 원래4·중간10·최종8, 반복/새 월드 중복0·기록0/0 | ID/이름/설정/출처/전환 여부·연결 비교; 새 월드 첫 Load0s, 운전 후 Load는 정지 시각 유지 |
+
+실제 장비 수와 공기/열 결합 대상 수·활성 코일/덕트/팬, 모든 살아 있는 랙의 줄/CDU·분기, 패치 포트/미연결 진단을 검사했다. 양의 공기/냉각수 유량·duty·회수>공급≥설비수 공급·펌프/IT<5% 안전망을 재사용했다. 새 물리 값/추정 물성·보존 허용치/솔버 식 변경 없음. 기존 고정 CRAH 냉수 공급·CDU 체적 지연/펌프 손실 열 분배 부채는 유지한다.
+
+검증: 저장/물리 보강 Editor11.22s 성공, 신규 MixedHistoryPersistenceCoupling/기존 SingleMoveUndoRedo/SingleRotationUndoRedo/InventorySaveLoad/SaveLoadRoundTrip 고유5종 무경고 성공(실패0/미실행0/종료0). 네 종류 삭제 의도의 최종 파일 새 월드 반복 Load를 보강한 뒤 Editor22.60s 성공, 신규1종 실패: 중간 Load 뒤 이미1.02s까지 운전한 월드를 아직 미실행 새 월드로 취급해 최종 Load 직후 시계0을 기대했다. 기존 EnterLayoutMode/Load는 정지 시각을 유지하고 다음 EnterSimulationMode에서만 t=0 재구축한다. 테스트를 실제 정지 시각 불변·기록0/0 및 다음 실행 첫 스텝=FixedStepS로 수정하고, 각 랙 양의 냉각수 유량도 명시 검사했다. Editor26.97s 성공 후 실패한 신규1종만 재실행 무경고 성공(실패0/미실행0/종료0). 정지 시각1.02→1.02s·기록0/0·다음 실행 초기화 확인. 신규 최종1종과 앞서 성공한 기존4종을 합쳐 고유5종 최종 무경고 성공이다. 기존 성공4종은 반복하지 않았다. 첫 검사 준비 실패/수정은 앞 절에 남겼으며 제품 문제는 확인되지 않아 제품 코드는 수정하지 않았다.
+실행: Editor 빌드 후 위5종을 RunTests의 +로 묶어 -unattended -NullRHI; 마지막 보강은 MixedHistoryPersistenceCoupling만 실행. 근거(커밋 제외): Saved/Build_MixedPersistence{,_Final,_Repair}.log, Saved/Logs/MixedPersistence{,Final,Repair}_Tests.log, Saved/Automation/MixedPersistence{,Final,Repair}/index.json.
+한계: 실제 CRAH가 있는 월드의 고정22개 재현 trace다. 임의 시퀀스 전수/무작위 fuzz·이번 trace의 자동 CRAH 전환·극단 자원 고갈은 검사하지 않는다(자동 전환은 기존 전용 검사 범위). 정상상태·시설 전체 정확도·UI 조합 입력·FPS 보장으로 확대하지 않는다. 사용자 요청대로 UI 도구 재시도·전체 테스트·FPS·방 편집/새 물리 모델은 수행하지 않았다.
