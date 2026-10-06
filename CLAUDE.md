@@ -4042,3 +4042,22 @@ Editor57.34s 성공. 신규 RoomCeilingDeletePersistenceCoupling+직접 영향 R
 
 입력 검증: Editor Development128.35s 성공(기존 FloorCm C4701/저장 Name shadow 경고 유지). RoomCeilingCornerPreview + RoomCornerPreview + RoomCeilingSelectionDelete 고유3종 무경고 성공, 실패0/미실행0/종료0. 네 코너5cm 스냅·반대 좌표/높이 정확 유지, 목록/장비/공기 배열/기록 미변경, 교차/방 밖/교점 불능/no-op/Esc·숫자·패치·외부 목록·공통 포커스 취소·모드 전환과 입력 게이트를 확인했다. 물리 오차 기준은 새로 만들지 않았다. 확정/저장/냉각 통합은 다음 작은 커밋이다.
 근거(커밋 제외): Saved/Build_CeilingCornerPreview.log, Saved/Logs/CeilingCornerPreview_Tests.log, Saved/Automation/CeilingCornerPreview/index.json. E:\UE_5.8 Editor Development 뒤 위3종 + 묶음 Automation RunTests -unattended -NullRHI. 실제 픽셀/OS 포커스는 신규 직접 절차 미확인이다. 빌드 중 소스 변경·성공 검사 반복·전체/FPS·화면 도구 재시도 없음.
+
+## 2026-10-06 부분 천장 XY 확정·기록·저장·냉각 통합
+
+기존 두 NVL72/한 CDU 합성 월드와 저장 fixture를 재사용한 RoomCeilingCornerHistoryPersistence를 추가했다. 중복 두 판 중 첫 인덱스만 변경하고 높이/반대 좌표를 정확히 유지한다. 확정 한 건·전체 목록 Undo/Redo, no-op/취소/거절의 Redo 유지·새 확정 Redo 초기화, 확정 직전 새 장비 충돌 재검증·외부 방 변경 거절·복원 충돌 거절을 확인했다. 예열1.02s의 시계/온도/마스크/원점/열장부/배관은 값 편집/실패 동안 유지한다. 실패 Load는 미확정 제스처/선택/기록도 유지하고 성공 Load는 기존 경로로 미확정·선택·두 기록 스택을 초기화한다. 성공 Load의 기존 결합 장부 초기화는 실패 상태 불변과 구분한다.
+
+Editor Development51.95s 성공(기존 저장 Name shadow 경고 유지). 신규 RoomCeilingCornerHistoryPersistence + RoomCeilingDeletePersistenceCoupling + RoomCeilingPersistenceRollbackCoupling3종 무경고 성공, 실패0/미실행0/종료0. 앞 입력3종 포함 이번 고유 영향6종 모두 무경고 성공이다. 제품 수정/성공 검사 반복·전체 Automation 없이 부족한 통합 조건만 추가했다.
+
+| 항목 | 측정 | 기존 기준·정규화·단위 |
+|---|---|---|
+| XY·높이·목록 복원 | 확정 최대(-4.25,3.85)m, 최소(-5.13,3.13)m·높이2.63m 유지, 두 목록 항목 중 하나 변경 | 기존5cm 스냅; Undo/Redo/같은·새 월드 저장 목록 정확 비교, m |
+| 다음 진입 고체 | 판 합집합9→16셀,43×37×13=20683셀 | h0.25m 한 Z층. 요청 편집 판XY[-5.13,-4.25]×[3.13,3.85]m → 계산XY[-5.25,-4.25]×[3,4]m·Z[2.5,2.75]m; 중복 기존9셀은 합집합 내부. 다음 진입만 적용 |
+| 편집·취소·거절 상태 | 변경0 | 예열1.02s의 K/s/J/원점UE cm·배관/기록 정수 정확 비교 |
+| 첫 IT 상대 변화 | 같은·새 월드 최대0 | abs(복원 첫IT−동일 장비/초기조건 참조IT)/참조W, 무차원 <1e-9 |
+| 전역 열수지 | 같은·새 월드 최대abs3.780e-15 | abs(입력J−유출J−축적J)/EnergyInJ(IT+CRAH 팬), 무차원 <1e-9 |
+| 압력 투영 뒤 발산 | 같은·새 월드 최대3.461e-08 | maxAbsDiv(1/s)/(maxAbsVelocity(m/s)/h(m)), 무차원 <1e-5; 수렴 플래그 확인 |
+| 냉각·타당성 | 수력 수렴·덕트 거절 없음·양의 CRAH 코일 제거W·흡기288.15~308.15K 내부 | 기존 수력 목표·15~35°C 과도 기준; 새 물리 수치/허용치 없음 |
+
+t1.02s 균일 CPU/NullRHI의 짧은 과도·기하 검증이며 시설 정확도/정상상태/GPU/옥트리/FPS로 확대하지 않는다. 물성/솔버/단열·기존 부채/저장 스키마/레벨 에셋 변경 없음. 신규 핸들 픽셀·실제 마우스/OS 포커스는 미확인이고 기존 실패 도구를 반복하지 않았다. Tools/부분천장_XY핸들_확인_2026-10-06.md에 상세 직접 절차를 남겼다. 기존 선택·삭제 직접 정상 사용자 보고와 구분한다.
+근거(커밋 제외): Saved/Build_CeilingCornerCoupling.log, Saved/Logs/CeilingCornerCoupling_Tests.log, Saved/Automation/CeilingCornerCoupling/index.json. 실행 E:\UE_5.8 Editor Development 뒤 위3종 + 묶음 Automation RunTests -unattended -NullRHI. 빌드 중 소스 변경 없음. 후속은 판 높이 핸들/전체 이동/다중 편집·배기 구멍 및 별도 유출 경계/물리 확장이다.
