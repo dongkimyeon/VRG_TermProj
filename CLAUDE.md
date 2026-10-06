@@ -3988,3 +3988,20 @@ settings.roomCeilingPlates를 선택 v2 필드로 추가했다. 각 객체의 mi
 
 첫 빌드113.06s에서 새 파서의 Values가 기존 로컬을 가리는 C4456 오류가 났다. PlateValues로 이름만 수정한 뒤 Editor11.16s 성공(기존 VrgLayoutFile 지역 Name shadow/높이 입력 FloorCm 경고는 유지). 신규 RoomCeilingPersistence+기존 RoomSettingsPersistence/RoomCeilingUiInput3종 무경고 성공, 실패0/미실행0/종료0. 저장 객체5개 m 값·판2개, 반복/새 월드 교체·명시적 빈 목록/자동 복원·필드 없는 v1/v2 유지·잘못된 배열/객체/필드/높이/자동 상태 거절·기존 벽/방 보존·성공 기록0/0·다음 진입18셀(h0.25m)을 확인했다. 정수 셀/목록/변환은 정확 비교이며 새 물리 허용치는 없다. 따뜻한 Load 중간 실패와 냉각 물리 통합은 다음 작은 검증 커밋이다.
 근거(커밋 제외): Saved/Build_CeilingPersistence{,Repair}.log, Saved/Logs/CeilingPersistence_Tests.log, Saved/Automation/CeilingPersistence/index.json. 실행 E:\UE_5.8 Editor Development 뒤 Automation RunTests VRG.Interaction.Layout.RoomCeilingPersistence+VRG.Interaction.Layout.RoomSettingsPersistence+VRG.Interaction.Layout.RoomCeilingUiInput -unattended -NullRHI. 빌드 중 소스 변경/성공 검사 반복/전체/FPS/화면 도구 재시도 없음. 기존 UI 직접 정상은 앞 사용자 보고 절이며 새 저장/Load 직접 화면 확인은 별도다.
+## 2026-10-06 부분 천장 저장 원복·냉각 통합 검증
+
+기존 RoomSettingsPersistenceTest의 고정 이름·장비/벽·입출 장부 fixture와 실패 주입 경로를 재사용했다. 새 RoomCeilingPersistenceRollbackCoupling은 저장된 방/판과 최종 높이가 다른 랙을 함께 검증해 거절하는지, 벽 교체 뒤 새 랙 생성 실패가 실제 발생했는지 확인한다. 실패 전 현 판3개/저장 판2개를 달리 두어 목록의 성급한 교체도 잡는다. 실패 뒤 천장 추가와 방 변경 Undo/Redo 기록이 여전히 사용 가능하며 성공 Load는 판2개로 교체/기록0/0, 실제 격자는 다음 진입까지 유지한다. 같은/새 월드의 반복 Load 뒤 판/벽/기존 냉각 연결을 검사했다. 제품 경로는 앞 저장 연결 그대로이며 추가적인 물리 코드/완화는 없다.
+
+Editor49.09s 성공. 신규 RoomCeilingPersistenceRollbackCoupling+직접 영향 RoomPersistenceRollbackCoupling/RoomCeilingHistory/RoomCeilingCoupling4종 무경고 성공, 실패0/미실행0/종료0. 앞 저장/입력3종과 합해 이번 **고유 영향7종 최종 무경고 성공**이다. 빌드 중 소스 변경/영향 없는 성공 검사 반복/전체 VRG/FPS/기존 화면 도구 재시도 없음. 새 저장/Load·새 실행 화면은 미확인이며 Tools/부분천장_저장_확인_2026-10-06.md에 콘솔 명령/직접 절차를 남겼다. 기존 천장 UI·Undo 직접 전체 정상 사용자 보고와 구분한다.
+
+| 항목 | 측정 | 기존 기준·정규화·단위 |
+|---|---|---|
+| 실패/원복 상태 | 예열1.02s의 방·판·장비 전체 변환·벽 변환·온도K·마스크·원점cm·배관 수·시계s·입출/축적 장부J·Undo/Redo1/1 정확 유지 | 사전 거절은 벽 객체도 동일; 중간 실패는 기존 원복의 벽 재생성/참조 재연결 사용 |
+| 목록/진입 셀 | 판2개·새 판18셀,43×37×13=20683셀 | 합성 판2종, h0.25m 한 Z층; 요청 XY/높이 m·실제 셀 수 정확 비교; Load는 목록 교체이고 격자 적용은 다음 진입 |
+| 첫 IT 상대 변화 | 같은/새 월드 최대0 | abs(복원 첫IT−동일 장비/초기조건 참조IT)/참조W, 무차원 <1e-9 |
+| 전역 열수지 | 같은/새 월드 최대abs5.767e-14 | abs(입력J−유출J−축적J)/EnergyInJ(IT+CRAH 팬), 무차원 <1e-9 |
+| 압력 투영 뒤 발산 | 같은/새 월드 최대3.460e-08 | maxAbsDiv(1/s)/(maxAbsVelocity(m/s)/h(m)), 무차원 <1e-5; 압력 수렴 플래그 확인 |
+| 기존 냉각·타당성 | 벽 고체 있음·수력 수렴/덕트 거절 없음/양의 코일 제거W·흡기288.15~308.15K 내부 확인 | 기존 수력 수렴 목표·과도15~35°C 기준; 새 수치/물성/허용치 없음 |
+
+성공 Load의 기존 결합 장부 초기화는 실패/취소 상태 불변과 구분한다. 이번 Load는 온도·적분·시계 재생 기능이 아니며 성공 직후 정지 시계/기존 공기 마스크·온도를 유지하다 다음 진입에 새 초기조건으로 재구축한다. 측정은 t1.02s 균일 CPU/NullRHI의 짧은 과도이며 시설 전체/정상상태/GPU/옥트리/FPS 검증으로 확대하지 않는다. 판 선택/삭제·핸들·배기 구멍/유출 경계·외부 열 교환·플레넘은 후속이다.
+근거(커밋 제외): Saved/Build_CeilingPersistenceCoupling.log, Saved/Logs/CeilingPersistenceCoupling_Tests.log, Saved/Automation/CeilingPersistenceCoupling/index.json. 실행 E:\UE_5.8 Editor Development 뒤 위4종 + 묶음 Automation RunTests -unattended -NullRHI. 첫 저장 단계 근거/컴파일 이름 충돌 수정은 앞 절을 따른다.

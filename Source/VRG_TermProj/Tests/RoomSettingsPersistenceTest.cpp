@@ -184,6 +184,83 @@ bool FRoomCeilingPersistenceTest::RunTest(const FString& Parameters)
 	for(const auto& Name:{File,Empty,Old,BadFile}) IFileManager::Get().Delete(*VrgLayoutFile::PathFor(Name)); return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FRoomCeilingFileCouplingTest, "VRG.Interaction.Layout.RoomCeilingPersistenceRollbackCoupling",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::CommandletContext | EAutomationTestFlags::EngineFilter)
+bool FRoomCeilingFileCouplingTest::RunTest(const FString& Parameters)
+{
+	FRoomFileFixture F; FString Message; const auto Manual=RoomFileDomain(); const auto InitialInput=F.Racks[0]->Input;
+	const FString File=TEXT("AutomationCeilingCoupled"), BadFile=File+TEXT("Bad"), FailureFile=File+TEXT("Failure");
+	TestTrue(TEXT("Manual room"),F.Sim->TrySetRoomAirDomain(Manual,Message));
+	// Existing synthetic corner plate/wall and extra-rack fixture, not new product/physics defaults.
+	FRoomCeilingPlate P; P.MinXYM=FVector2D(-5.13,3.13); P.MaxXYM=FVector2D(-4.61,3.62); P.HeightM=2.63;
+	auto Second=P; Second.MinXYM.X+=1; Second.MaxXYM.X+=1;
+	const TArray<FRoomCeilingPlate> Saved{P,Second};
+	const FLayoutBarrierRecord Wall{TEXT("ceiling-coupled-wall"),TEXT("CeilingCoupledWall"),FTransform(FRotator::ZeroRotator,FVector(-480,200,0),FVector(.2,1,2)),EBarrierKind::Curtain};
+	TestNotNull(TEXT("Barrier"),VrgBarrierLifecycle::Spawn(F.W,Wall));
+	TestTrue(TEXT("Save room/barrier/two-plate reference"),F.Sim->TrySetRoomCeilingPlates(Saved,Message) && VrgLayoutFile::Save(F.W,File,Message));
+	F.Sim->EnterSimulationMode(); F.Sim->Tick(.021f); const double ReferenceIt=F.Sim->GetSnapshot().TotalItHeatW;
+	for(int32 I=0;I<25;++I) F.Sim->Tick(.04f); F.Sim->EnterLayoutMode(); const auto Warm=F.Sim->GetSnapshot();
+	const auto Temps=F.Air->GetMutableSolver().GetGrid().TemperatureK;
+	const auto Mask=F.Air->GetMutableSolver().GetGrid().bSolidCell; const auto Origin=F.Air->GetActorLocation();
+	const int32 Pipes=F.Room->GetMutableNetwork().GetNumPipes(); const auto Pose=F.Racks[0]->GetActorTransform();
+	auto Third=P; Third.MinXYM.X+=2; Third.MaxXYM.X+=2; Third.HeightM=2.53;
+	F.C->OpenRoomCeilingSettings(); TestTrue(TEXT("Pending ceiling history differs from saved list"),F.C->AddRoomCeiling(Third,Message)); F.C->CloseRoomSettings();
+	auto Edited=Manual; Edited.CeilingHeightM=3.2; F.C->OpenRoomSettings(); F.C->ApplyRoomSettings(Edited,Message); F.C->CloseRoomSettings(); F.C->TryUndoLayout();
+	const TArray<FRoomCeilingPlate> Current{P,Second,Third};
+	TestTrue(TEXT("Both stacks before refusal"),F.C->GetLayoutUndoCount()==1 && F.C->GetLayoutRedoCount()==1);
+	auto Unchanged=[&]()
+	{
+		const auto S=F.Sim->GetSnapshot(); auto* B=VrgBarrierLifecycle::Find(F.W,Wall.Id);
+		return F.Sim->GetSimMode()==ESimMode::Layout && F.Sim->GetRoomAirDomain()==Manual && F.Sim->GetRoomCeilingPlates()==Current
+			&& F.C->GetLayoutUndoCount()==1 && F.C->GetLayoutRedoCount()==1 && F.Racks[0]->GetActorTransform().Equals(Pose,0)
+			&& B && B->GetActorTransform().Equals(Wall.Transform) && F.Air->GetActorLocation()==Origin
+			&& F.Air->GetMutableSolver().GetGrid().TemperatureK==Temps && F.Air->GetMutableSolver().GetGrid().bSolidCell==Mask
+			&& F.Room->GetMutableNetwork().GetNumPipes()==Pipes && S.SimTimeS==Warm.SimTimeS && S.EnergyInJ==Warm.EnergyInJ
+			&& S.EnergyOutJ==Warm.EnergyOutJ && S.EnergyStoredJ==Warm.EnergyStoredJ;
+	};
+	// The CURRENT rack at Z0 clears a Z2.5 plate; the loaded rack at Z1 does not. Validate FINAL geometry.
+	auto Bad=ReadRoomFile(File); auto O=Bad->GetObjectField(TEXT("settings"))->GetArrayField(TEXT("roomCeilingPlates"))[0]->AsObject();
+	O->SetNumberField(TEXT("minXM"),-1.7); O->SetNumberField(TEXT("maxXM"),-1.3); O->SetNumberField(TEXT("minYM"),-.1); O->SetNumberField(TEXT("maxYM"),.1);
+	for(const auto& V:Bad->GetArrayField(TEXT("equipment"))) if(V->AsObject()->GetStringField(TEXT("name"))==F.Racks[0]->GetName()) V->AsObject()->SetNumberField(TEXT("z_m"),1);
+	auto* BarrierBefore=VrgBarrierLifecycle::Find(F.W,Wall.Id); WriteRoomFile(BadFile,Bad);
+	TestTrue(TEXT("Loaded elevated rack rejects saved plate before live changes"),!VrgLayoutFile::Load(F.W,BadFile,Message)
+		&& Message.Contains(TEXT("천장 판")) && Unchanged() && VrgBarrierLifecycle::Find(F.W,Wall.Id)==BarrierBefore);
+	auto* Extra=VrgRackLifecycle::Spawn(F.W,TEXT("CeilingFileExtra"),TEXT("ceiling-file-extra"),ARackThermalActor::StaticClass(),
+		FTransform(FRotator::ZeroRotator,FVector(-150,150,0)),F.Racks[0]->CaptureLayoutSettings());
+	if(!TestNotNull(TEXT("Extra file rack"),Extra)) return false;
+	TestTrue(TEXT("Save pending three-rack inventory"),VrgLayoutFile::Save(F.W,FailureFile,Message)); VrgRackLifecycle::Remove(Extra);
+	auto Failure=ReadRoomFile(FailureFile); Failure->GetObjectField(TEXT("settings"))->SetArrayField(TEXT("roomCeilingPlates"),ReadRoomFile(File)->GetObjectField(TEXT("settings"))->GetArrayField(TEXT("roomCeilingPlates"))); WriteRoomFile(FailureFile,Failure);
+	bool bInjected=false; const auto Hook=F.W->AddOnActorSpawnedHandler(FOnActorSpawned::FDelegate::CreateLambda([&](AActor* A)
+	{ if(Cast<ARackThermalActor>(A) && A->GetName().StartsWith(TEXT("PendingLayoutEquipment"))) { bInjected=true; A->Destroy(false,false); } }));
+	TestFalse(TEXT("Middle creation failure rejects whole Load"),VrgLayoutFile::Load(F.W,FailureFile,Message)); F.W->RemoveOnActorSpawnedHandler(Hook);
+	TestTrue(TEXT("Failure actually injected after preflight and preserves warm state/plates/history"),bInjected && Unchanged() && !VrgRackLifecycle::Find(F.W,TEXT("ceiling-file-extra")));
+	TestTrue(TEXT("Ceiling and room history remain usable after rollback"),F.C->TryUndoLayout() && F.Sim->GetRoomCeilingPlates()==Saved
+		&& F.C->TryRedoLayout() && F.Sim->GetRoomCeilingPlates()==Current && F.C->TryRedoLayout() && F.Sim->GetRoomAirDomain()==Edited && F.C->TryUndoLayout());
+	for(int32 I=0;I<2;++I) TestTrue(TEXT("Successful repeated Load replaces three with saved two plates"),VrgLayoutFile::Load(F.W,File,Message)
+		&& F.Sim->GetRoomCeilingPlates()==Saved && F.C->GetLayoutUndoCount()==0 && F.C->GetLayoutRedoCount()==0);
+	TestTrue(TEXT("Load delays solid/temperature application and retains stopped clock"),F.Air->GetMutableSolver().GetGrid().TemperatureK==Temps
+		&& F.Air->GetMutableSolver().GetGrid().bSolidCell==Mask && F.Sim->GetSnapshot().SimTimeS==Warm.SimTimeS);
+	double MaxEnergy=0,MaxDiv=0,MaxIt=0;
+	auto Run=[&](FRoomFileFixture& Case)
+	{
+		for(auto* Rack:Case.Racks) Rack->Input=InitialInput;
+		Case.Sim->EnterSimulationMode(); Case.Sim->Tick(.021f); const auto First=Case.Sim->GetSnapshot();
+		for(int32 I=0;I<25;++I) Case.Sim->Tick(.04f);
+		const auto S=Case.Sim->GetSnapshot(); const auto A=Case.Air->GetMutableSolver().MakeSnapshot(S.SimTimeS);
+		const double It=FMath::Abs(First.TotalItHeatW-ReferenceIt)/ReferenceIt;
+		MaxIt=FMath::Max(MaxIt,It); MaxEnergy=FMath::Max(MaxEnergy,FMath::Abs(S.NormalizedEnergyResidual)); MaxDiv=FMath::Max(MaxDiv,A.NormalizedDivergence);
+		TestTrue(TEXT("Reloaded plates/wall and existing IT/heat/pressure/hydraulic/duct/coil criteria"),Case.Sim->GetNumCeilingCells()==18 && Case.Sim->GetNumBarrierCells()>0
+			&& Case.Air->GridParams.NumCellsX==43 && Case.Air->GridParams.NumCellsY==37 && Case.Air->GridParams.NumCellsZ==13
+			&& It<1e-9 && FMath::Abs(S.NormalizedEnergyResidual)<1e-9 && S.bAirPressureConverged && A.bPressureConverged && A.NormalizedDivergence<1e-5
+			&& S.bHydraulicsConverged && !A.bDuctsRejected && S.CrahCoilRemovedW>0 && First.SimTimeS==Case.Sim->FixedStepS);
+		for(auto* Rack:Case.Racks) for(double K:Rack->Input.SlotAirInletTempK) TestTrue(TEXT("Existing inlet safety15..35C"),K>288.15 && K<308.15);
+	};
+	Run(F);
+	{ FRoomFileFixture New; TestTrue(TEXT("Fresh world repeated Load before coupled run"),VrgLayoutFile::Load(New.W,File,Message) && VrgLayoutFile::Load(New.W,File,Message)); Run(New); }
+	AddInfo(FString::Printf(TEXT("Ceiling v2 warm rollback %.2fs exact; final loaded rack/plate collision rejected; shared records survive; success0/0 and delayed grid; same/new-world18plate cells43x37x13, IT%.3e globalAbs%.3e pressure%.3e at1.02s."),Warm.SimTimeS,MaxIt,MaxEnergy,MaxDiv));
+	for(const auto& Name:{File,BadFile,FailureFile}) IFileManager::Get().Delete(*VrgLayoutFile::PathFor(Name)); return true;
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FRoomFileCouplingTest, "VRG.Interaction.Layout.RoomPersistenceRollbackCoupling",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::CommandletContext | EAutomationTestFlags::EngineFilter)
 bool FRoomFileCouplingTest::RunTest(const FString& Parameters)
