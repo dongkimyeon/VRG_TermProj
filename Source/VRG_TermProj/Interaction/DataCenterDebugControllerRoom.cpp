@@ -193,6 +193,53 @@ bool ADataCenterDebugController::CommitRoomSettings(const FRoomAirDomainSettings
 	Message = DescribeRoomSettingsPlan(Settings); return true;
 }
 
+FString ADataCenterDebugController::DescribeRoomCeilingPlan(const FRoomCeilingPlate& P)
+{
+	auto* Sim=FindSimActor();
+	FString Message=FString::Printf(TEXT("요청 XY %s ~ %s m · 높이 %.6g m\n"),*P.MinXYM.ToString(),*P.MaxXYM.ToString(),P.HeightM);
+	if (!Sim) return Message+TEXT("통합 시뮬레이션 액터가 없습니다.");
+	FAirGridParams GP; FBox Bounds(ForceInit); FString Reason; TArray<FRoomCeilingPlan> Plans;
+	AAirFieldDebugActor* Air=nullptr;
+	for(TActorIterator<AAirFieldDebugActor> It(GetWorld());It;++It) { Air=*It; break; }
+	if (!Air || !VrgRoomAirDomain::BuildGrid(Sim->GetRoomAirDomain(),Air->GridParams,GP,Bounds,Reason)
+		|| !VrgRoomAirDomain::BuildCeilingPlans(Sim->GetRoomAirDomain(),{P},GP,Bounds,Plans,Reason)) return Message+Reason;
+	const auto& Plan=Plans[0]; const auto N=Plan.MaxCellExclusive-Plan.MinCell;
+	Message+=FString::Printf(TEXT("계산 최소 %s m\n계산 최대 %s m\n두께 %.6g m · 셀 %dx%dx%d = %d개\n"),
+		*Plan.ActualBoundsM.Min.ToString(),*Plan.ActualBoundsM.Max.ToString(),GP.CellSizeM,N.X,N.Y,N.Z,N.X*N.Y*N.Z);
+	auto Plates=Sim->GetRoomCeilingPlates(); Plates.Add(P);
+	if (!Sim->ValidateRoomAirDomain(Sim->GetRoomAirDomain(),GP,Bounds,Reason,&Plates)) Message+=TEXT("거절: ")+Reason;
+	return Message+TEXT("고체는 다음 시뮬레이션 진입에 적용 · 판 저장 미지원.");
+}
+
+bool ADataCenterDebugController::AddRoomCeiling(const FRoomCeilingPlate& P, FString& Message)
+{
+	auto* Sim=FindSimActor();
+	if (!bRoomSettingsOpen || !bRoomCeilingOpen || OpenPatchMaps>0 || !IsLayoutMode() || !Sim)
+	{ Message=TEXT("배치 모드의 부분 천장 창에서 추가하세요."); return false; }
+	Message=DescribeRoomCeilingPlan(P);
+	auto Plates=Sim->GetRoomCeilingPlates(); Plates.Add(P); FString Reason;
+	if (!Sim->TrySetRoomCeilingPlates(Plates,Reason)) { Message+=TEXT("\n")+Reason; return false; }
+	return true;
+}
+
+void ADataCenterDebugController::DrawRoomCeilings() const
+{
+	auto* Sim=FindSimActor(); if (!Sim || !IsLayoutMode() || !IsCameraInputAvailable()) return;
+	AAirFieldDebugActor* Air=nullptr; for(TActorIterator<AAirFieldDebugActor> It(GetWorld());It;++It) { Air=*It; break; }
+	if (!Air || Sim->GetRoomCeilingPlates().IsEmpty()) return;
+	FAirGridParams GP; FBox Bounds(ForceInit); FString Reason; TArray<FRoomCeilingPlan> Plans;
+	if (!VrgRoomAirDomain::BuildGrid(Sim->GetRoomAirDomain(),Air->GridParams,GP,Bounds,Reason)
+		|| !VrgRoomAirDomain::BuildCeilingPlans(Sim->GetRoomAirDomain(),Sim->GetRoomCeilingPlates(),GP,Bounds,Plans,Reason)) return;
+	for(int32 I=0;I<Plans.Num();++I)
+	{
+		const auto& P=Sim->GetRoomCeilingPlates()[I]; const auto& B=Plans[I].ActualBoundsM;
+		DrawDebugBox(GetWorld(),SimUnits::MetersToUnreal(B.GetCenter()),SimUnits::MetersToUnreal(B.GetExtent()),FColor(255,165,0),false,-1,0,1);
+		const FVector V[]={FVector(P.MinXYM.X,P.MinXYM.Y,P.HeightM),FVector(P.MaxXYM.X,P.MinXYM.Y,P.HeightM),
+			FVector(P.MaxXYM.X,P.MaxXYM.Y,P.HeightM),FVector(P.MinXYM.X,P.MaxXYM.Y,P.HeightM)};
+		for(int32 J=0;J<4;++J) DrawDebugLine(GetWorld(),SimUnits::MetersToUnreal(V[J]),SimUnits::MetersToUnreal(V[(J+1)%4]),FColor::Cyan,false,-1,0,1);
+	}
+}
+
 void ADataCenterDebugController::DrawRoomBounds() const
 {
 	FRoomAirDomainSettings S; bool bValid;

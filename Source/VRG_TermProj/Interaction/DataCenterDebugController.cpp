@@ -2708,6 +2708,7 @@ void ADataCenterDebugController::Tick(float DeltaTime)
 
 	RefreshTargetsIfStale(DeltaTime);
 	DrawRoomBounds();
+	DrawRoomCeilings();
 
 	// Start view: retried for a few frames (the pawn is possessed after BeginPlay), then given up.
 	if (!bRoomSettingsOpen && bFrameEquipmentOnStart && StartFrameAttempts >= 0 && StartFrameAttempts < 30)
@@ -2958,8 +2959,9 @@ void ADataCenterDebugController::RefreshInteractionInputMode()
 	else SetInputMode(FInputModeGameOnly());
 }
 
-bool ADataCenterDebugController::OpenRoomSettings()
+bool ADataCenterDebugController::OpenRoomSettings(bool bCeiling)
 {
+	if (bCeiling && (!FindSimActor() || !FindSimActor()->GetRoomAirDomain().bManual)) return false;
 	if (!GetWorld() || !GetWorld()->IsGameWorld() || !FindSimActor() || !IsLayoutMode() || !IsCameraInputAvailable()
 		|| bAddingRack || bMarqueeActive || IsLayoutDragging() || Grabbed.IsValid() || IsInputKeyDown(EKeys::RightMouseButton)) return false;
 	SetRoomBoundsEditing(false);
@@ -2969,6 +2971,7 @@ bool ADataCenterDebugController::OpenRoomSettings()
 		if (!RoomSettingsWidget) return false;
 	}
 	bRoomSettingsOpen = true; bInputModeInitialized = false;
+	bRoomCeilingOpen = bCeiling;
 	if (PlayerInput) PlayerInput->FlushPressedKeys();
 	bLayoutLeftControl = bLayoutRightControl = false; RotationInput = FRotator::ZeroRotator;
 	bShowMouseCursor = true;
@@ -2976,7 +2979,7 @@ bool ADataCenterDebugController::OpenRoomSettings()
 	if (RoomSettingsWidget)
 	{
 		RoomSettingsWidget->AddToViewport(110);
-		RoomSettingsWidget->InitializeDraft(GetRoomSettingsDraft());
+		RoomSettingsWidget->InitializeDraft(GetRoomSettingsDraft(), bCeiling);
 		FInputModeUIOnly Input; Input.SetWidgetToFocus(RoomSettingsWidget->TakeWidget());
 		Input.SetLockMouseToViewportBehavior(EMouseLockMode::DoNotLock); SetInputMode(Input);
 	}
@@ -2988,6 +2991,7 @@ void ADataCenterDebugController::CloseRoomSettings(URoomSettingsWidget* Expected
 	if (!bRoomSettingsOpen) return;
 	if (ExpectedWidget && ExpectedWidget != RoomSettingsWidget) return;
 	bRoomSettingsOpen = false;
+	bRoomCeilingOpen = false;
 	if (PlayerInput) PlayerInput->FlushPressedKeys();
 	bLayoutLeftControl = bLayoutRightControl = false;
 	if (RoomSettingsWidget) { RoomSettingsWidget->RemoveFromParent(); RoomSettingsWidget = nullptr; }
@@ -3023,7 +3027,7 @@ FString ADataCenterDebugController::DescribeRoomSettingsPlan(const FRoomAirDomai
 bool ADataCenterDebugController::ApplyRoomSettings(const FRoomAirDomainSettings& Settings, FString& Message)
 {
 	auto* Sim = FindSimActor();
-	if (!bRoomSettingsOpen || OpenPatchMaps > 0 || !IsLayoutMode() || !Sim)
+	if (!bRoomSettingsOpen || bRoomCeilingOpen || OpenPatchMaps > 0 || !IsLayoutMode() || !Sim)
 	{ Message = TEXT("배치 모드의 방 설정 창에서 적용하세요."); return false; }
 	const auto Before = Sim->GetRoomAirDomain();
 	auto Candidate = Settings.bManual ? Settings : Before;

@@ -19,7 +19,9 @@ class ULayoutRackPalette : public UUserWidget
 	GENERATED_BODY()
 protected:
 	virtual void NativeOnInitialized() override;
+	virtual void NativeTick(const FGeometry& Geometry, float DeltaTime) override;
 private:
+	UPROPERTY() TObjectPtr<ULayoutRackButton> CeilingButton;
 	UFUNCTION()
 	void OnAddRack();
 	UFUNCTION() void OnAddSpine();
@@ -27,6 +29,7 @@ private:
  UFUNCTION() void OnAddCrah();
  UFUNCTION() void OnAddPerimeterCrah();
 	UFUNCTION() void OnRoomSettings();
+	UFUNCTION() void OnRoomCeiling();
 	UFUNCTION() void OnRoomBounds();
 	UFUNCTION() void OnAddWall();
 	UFUNCTION() void OnAddCurtain();

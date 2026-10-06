@@ -3953,3 +3953,9 @@ Editor62.51s 성공. 새 RoomCeilingCoupling/CeilingBlocksFlow + 기존 BlocksFl
 통합t1.02s/단독t2.4s 균일 CPU/NullRHI의 짧은 과도·기하 검증이다. 시설 전체/정상상태/GPU/옥트리/FPS 검증으로 확대하지 않는다. 기존 바깥 경계/판 단열과 벽·장비 모델 부채 유지. 실제 천장 UI/메시가 없어 화면 확인을 하지 않았으며 기존 실패 도구도 재시도하지 않았다. 높이 핸들 직접 정상은 앞 사용자 보고 절을 따른다.
 실행: E:\UE_5.8 Editor Development 뒤 위5종 + 묶음 Automation RunTests -unattended -NullRHI, 보강 후 변경한 천장 단독1종만 실행. 근거(커밋 제외): Saved/Build_RoomCeilingCoupling.log, Saved/Build_RoomCeilingEnergyCheck.log, Saved/Logs/RoomCeiling{Coupling,EnergyCheck}_Tests.log, Saved/Automation/RoomCeiling{Coupling,EnergyCheck}/index.json. 첫 데이터 단계 근거는 앞 절.
 후속: 판 UI/핸들·Undo/Redo·판 저장·메시, 구멍 셀 편집과 별도의 배기 유량/열 경계, 외부 열 교환·플레넘. 현재 수동 방/C++ 값 API 기반, 같은 월드 Load는 현 판 유지/검증, 새 월드는 판 목록 없음. 레벨과 미추적 외부 액터 에셋을 변경/커밋하지 않았다.
+## 2026-10-06 부분 천장 추가 UI·표시
+
+기존 RoomSettingsWidget의 엄격한5필드 m 파싱·UIOnly·공유 숫자 창 입력 게이트/닫기·패치/모드 종료·뷰포트 복귀를 재사용했다. 수동 방에서만 부분 천장 버튼을 활성화하고 같은 창을 판 추가 모드로 사용한다. 입력 변경/Enter는 적용하지 않는다. Add는 기존 목록에 한 장만 더해 기존 검증 API로 확정하며 실패는 값/격자를 유지한다. 충돌 후보도 요청 XY/높이와 계산 최소/최대·h 두께·셀 수/거절 이유를 표시한다. 실제 공기 고체는 다음 진입에만 반영한다.
+배치 중 확정된 판은 청록 요청 사각형과 주황 실제 계산 상자를 DrawDebug 선으로 표시한다. 새 충돌 액터/메시가 없어 장비 픽/카메라 입력에 참여하지 않는다. 숫자 창/패치에서는 기존 월드 입력 차단을 그대로 사용한다. 새 UI/색상은 표현 값이며 물성/새 물리 모델은 없다. 판 저장 미지원 안내를 창에 적었다. 공유 기록/최종 물리 검증은 다음 작은 커밋이다.
+Editor165.89s 성공(기존 컴파일 경고 유지). RoomCeilingUiInput/RoomSettingsUiInput2종 무경고 성공, 실패0/미실행0/종료0. 자동/중복 창 거절·strict draft/미적용·모달 카메라/장비/단축키/모드 차단·거절 이유/계산 범위·한 장 추가·Esc/패치/외부 모드·닫기 뒤 카메라 복귀를 검증했다. 합성2.63m 요청→h0.25m의9셀은 다음 진입에만 적용됐다. 렌더 픽셀/UMG 버튼 실제 클릭/OS 포커스는 별도이며 기존 도구 실패 재시도 없이 Tools/부분천장_UI_Undo_확인_2026-10-06.md 직접 절차를 남겼다. 전체/FPS/저장 확장/판 선택·삭제/핸들/배기 구멍/외부 교환·플레넘 없음.
+근거(커밋 제외): Saved/Build_CeilingUi.log, Saved/Logs/CeilingUi_Tests.log, Saved/Automation/CeilingUi/index.json. 실행 E:\UE_5.8 Editor Development 뒤 위2종 + 묶음 -unattended -NullRHI. 빌드 중 소스 변경 없음.

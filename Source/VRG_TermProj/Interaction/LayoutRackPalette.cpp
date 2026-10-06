@@ -76,6 +76,8 @@ void ULayoutRackPalette::NativeOnInitialized()
 	AddBarrierButton(TEXT("벽 추가"), 270)->OnClicked.AddDynamic(this, &ULayoutRackPalette::OnAddWall);
 	AddBarrierButton(TEXT("차단막 추가"), 460)->OnClicked.AddDynamic(this, &ULayoutRackPalette::OnAddCurtain);
 	AddBarrierButton(TEXT("방 범위 편집"), 650)->OnClicked.AddDynamic(this, &ULayoutRackPalette::OnRoomBounds);
+	CeilingButton=AddBarrierButton(TEXT("부분 천장 추가"),840);
+	CeilingButton->SetIsEnabled(false); CeilingButton->OnClicked.AddDynamic(this,&ULayoutRackPalette::OnRoomCeiling);
 }
 
 void ULayoutRackPalette::OnAddRack()
@@ -101,6 +103,17 @@ void ULayoutRackPalette::OnAddCrah()
 void ULayoutRackPalette::OnAddPerimeterCrah()
 {
  if(auto* Controller=Cast<ADataCenterDebugController>(GetOwningPlayer())) Controller->BeginPerimeterCrahAddition();
+}
+
+void ULayoutRackPalette::NativeTick(const FGeometry& Geometry, float DeltaTime)
+{
+	Super::NativeTick(Geometry,DeltaTime);
+	if (CeilingButton) { auto* C=Cast<ADataCenterDebugController>(GetOwningPlayer()); CeilingButton->SetIsEnabled(C && C->GetRoomSettingsDraft().bManual); }
+}
+
+void ULayoutRackPalette::OnRoomCeiling()
+{
+	if (auto* C=Cast<ADataCenterDebugController>(GetOwningPlayer())) C->OpenRoomCeilingSettings();
 }
 
 void ULayoutRackPalette::OnRoomSettings()

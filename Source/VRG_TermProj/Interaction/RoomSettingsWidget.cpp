@@ -52,7 +52,7 @@ void URoomSettingsWidget::NativeOnInitialized()
 		Label->SetAutoWrapText(true); auto Font = Label->GetFont(); Font.Size = 16; Label->SetFont(Font);
 		Body->AddChildToVerticalBox(Label)->SetPadding(FMargin(0, 0, 0, 10)); return Label;
 	};
-	Text(TEXT("방 설정 (m)")); Text(TEXT("바닥 Z=0m. 입력은 초안이며 적용 버튼으로 확정합니다.\n공기 격자는 시뮬레이션 진입 때 적용됩니다."));
+	Title = Text(TEXT("방 설정 (m)")); Intro = Text(TEXT("바닥 Z=0m. 입력은 초안이며 적용 버튼으로 확정합니다.\n공기 격자는 시뮬레이션 진입 때 적용됩니다."));
 	Manual = WidgetTree->ConstructWidget<UCheckBox>();
 	auto* ModeLabel = WidgetTree->ConstructWidget<UTextBlock>(); ModeLabel->SetText(FText::FromString(TEXT("수동 방 (해제하면 장비에 자동 맞춤)")));
 	Manual->AddChild(ModeLabel); Manual->OnCheckStateChanged.AddDynamic(this, &URoomSettingsWidget::OnModeChanged);
@@ -62,6 +62,7 @@ void URoomSettingsWidget::NativeOnInitialized()
 	{
 		auto* Row = WidgetTree->ConstructWidget<UHorizontalBox>();
 		auto* Label = WidgetTree->ConstructWidget<UTextBlock>(); Label->SetText(FText::FromString(Name));
+		if (Inputs.Num()==4) HeightLabel=Label;
 		Row->AddChildToHorizontalBox(Label)->SetSize(FSlateChildSize(ESlateSizeRule::Fill));
 		auto* Input = WidgetTree->ConstructWidget<UEditableTextBox>(); Input->SetMinDesiredWidth(300);
 		Input->OnTextChanged.AddDynamic(this, &URoomSettingsWidget::OnDraftChanged); Inputs.Add(Input);
@@ -74,20 +75,29 @@ void URoomSettingsWidget::NativeOnInitialized()
 		auto* Label = WidgetTree->ConstructWidget<UTextBlock>(); Label->SetText(FText::FromString(Name)); B->AddChild(Label);
 		Buttons->AddChildToHorizontalBox(B)->SetPadding(FMargin(0, 8, 20, 12)); return B;
 	};
-	Button(TEXT("적용"))->OnClicked.AddDynamic(this, &URoomSettingsWidget::OnApply);
+	auto* ApplyButton = Button(TEXT("적용")); ApplyLabel = Cast<UTextBlock>(ApplyButton->GetChildAt(0));
+	ApplyButton->OnClicked.AddDynamic(this, &URoomSettingsWidget::OnApply);
 	Button(TEXT("닫기 (Esc)"))->OnClicked.AddDynamic(this, &URoomSettingsWidget::OnClose);
 	Body->AddChildToVerticalBox(Buttons); Status = Text(TEXT("")); Plan = Text(TEXT(""));
 }
 
-void URoomSettingsWidget::InitializeDraft(const FRoomAirDomainSettings& Settings)
+void URoomSettingsWidget::InitializeDraft(const FRoomAirDomainSettings& Settings, bool bCeiling)
 {
+	bCeilingMode = bCeiling;
+	if (bCeiling)
+	{
+		Title->SetText(FText::FromString(TEXT("부분 천장 추가 (m)")));
+		Intro->SetText(FText::FromString(TEXT("XY 범위와 방 천장보다 낮은 판 높이를 입력하세요. 추가 버튼만 확정합니다.\n한 셀 두께 판 · 공기 격자는 다음 진입에 적용 · 판 저장 미지원.")));
+		ApplyLabel->SetText(FText::FromString(TEXT("추가"))); Manual->SetVisibility(ESlateVisibility::Collapsed);
+		HeightLabel->SetText(FText::FromString(TEXT("판 높이 (m)")));
+	}
 	DraftSeed = Settings; bInitializing = true;
 	const double Values[] = {Settings.MinXYM.X, Settings.MaxXYM.X, Settings.MinXYM.Y, Settings.MaxXYM.Y, Settings.CeilingHeightM};
 	for (int32 I = 0; I < Inputs.Num(); ++I) Inputs[I]->SetText(FText::FromString(FString::Printf(TEXT("%.17g"), Values[I])));
 	Manual->SetIsChecked(Settings.bManual); OnModeChanged(Settings.bManual); bInitializing = false;
 	Status->SetText(FText::FromString(TEXT("미확정 초안은 닫으면 버립니다. 적용된 변경은 유지됩니다.")));
 	if (auto* C = Cast<ADataCenterDebugController>(GetOwningPlayer()))
-		Plan->SetText(FText::FromString(TEXT("현재 설정의 계획:\n") + C->DescribeRoomSettingsPlan(Settings)));
+		Plan->SetText(FText::FromString(bCeiling ? TEXT("초안은 추가할 때 검증합니다. 방의 천장 높이는 변경하지 않습니다.") : TEXT("현재 설정의 계획:\n") + C->DescribeRoomSettingsPlan(Settings)));
 }
 
 void URoomSettingsWidget::OnDraftChanged(const FText& Text)
@@ -108,11 +118,18 @@ void URoomSettingsWidget::OnApply()
 	auto* C = Cast<ADataCenterDebugController>(GetOwningPlayer()); if (!C) return;
 	TArray<FString> Fields; for (const auto& Input : Inputs) Fields.Add(Input->GetText().ToString());
 	auto Settings = DraftSeed; FString Message;
-	if (!ParseDraft(Manual->IsChecked(), Fields, Settings, Message) || !C->ApplyRoomSettings(Settings, Message))
-	{ Status->SetColorAndOpacity(FLinearColor(1, .3f, .3f)); Status->SetText(FText::FromString(Message)); return; }
+	bool bOk = ParseDraft(bCeilingMode || Manual->IsChecked(), Fields, Settings, Message);
+	if (bOk && bCeilingMode)
+	{
+		FRoomCeilingPlate P; P.MinXYM=Settings.MinXYM; P.MaxXYM=Settings.MaxXYM; P.HeightM=Settings.CeilingHeightM;
+		bOk = C->AddRoomCeiling(P,Message);
+	}
+	else if (bOk) bOk = C->ApplyRoomSettings(Settings,Message);
+	if (!bOk)
+	{ Status->SetColorAndOpacity(FLinearColor(1, .3f, .3f)); Status->SetText(FText::FromString(Message)); Plan->SetText(FText::FromString(Message)); return; }
 	DraftSeed = Settings;
 	Status->SetColorAndOpacity(FLinearColor(.3f, 1, .4f));
-	Status->SetText(FText::FromString(TEXT("설정 적용됨. 공기 격자는 시뮬레이션 진입 때 적용됩니다.")));
+	Status->SetText(FText::FromString(bCeilingMode ? TEXT("판 한 장 추가됨. 닫고 Ctrl+Z/Y. 고체는 다음 진입에 적용 · 판 저장 미지원.") : TEXT("설정 적용됨. 공기 격자는 시뮬레이션 진입 때 적용됩니다.")));
 	Plan->SetText(FText::FromString(TEXT("적용된 설정의 계획:\n") + Message));
 }
 

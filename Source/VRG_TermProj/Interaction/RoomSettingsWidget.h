@@ -14,7 +14,7 @@ class VRG_TERMPROJ_API URoomSettingsWidget : public UUserWidget
 {
 	GENERATED_BODY()
 public:
-	void InitializeDraft(const FRoomAirDomainSettings& Settings);
+	void InitializeDraft(const FRoomAirDomainSettings& Settings, bool bCeiling = false);
 	static bool ParseDraft(bool bManual, const TArray<FString>& Fields, FRoomAirDomainSettings& InOutSettings, FString& Reason);
 protected:
 	virtual void NativeOnInitialized() override;
@@ -25,6 +25,11 @@ private:
 	UPROPERTY() TArray<TObjectPtr<UEditableTextBox>> Inputs;
 	UPROPERTY() TObjectPtr<UTextBlock> Status;
 	UPROPERTY() TObjectPtr<UTextBlock> Plan;
+	UPROPERTY() TObjectPtr<UTextBlock> Title;
+	UPROPERTY() TObjectPtr<UTextBlock> Intro;
+	UPROPERTY() TObjectPtr<UTextBlock> ApplyLabel;
+	UPROPERTY() TObjectPtr<UTextBlock> HeightLabel;
+	bool bCeilingMode = false;
 	FRoomAirDomainSettings DraftSeed;
 	bool bInitializing = false;
 	UFUNCTION() void OnApply();

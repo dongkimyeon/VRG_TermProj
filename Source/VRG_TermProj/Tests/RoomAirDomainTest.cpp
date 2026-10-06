@@ -8,6 +8,11 @@
 #include "Actors/RackThermalActor.h"
 #include "Actors/LayoutBarrierActor.h"
 #include "Interaction/VrgLayoutFile.h"
+#include "Interaction/DataCenterDebugController.h"
+#include "Interaction/RoomSettingsWidget.h"
+#include "GameFramework/DefaultPawn.h"
+#include "GameFramework/PlayerInput.h"
+#include "InputKeyEventArgs.h"
 #include <limits>
 #include "Engine/Engine.h"
 #include "Engine/World.h"
@@ -320,6 +325,48 @@ bool FRoomCeilingBlocksFlowTest::RunTest(const FString& Parameters)
 		&& Solver.GetEnergyStoredJ()>0 && FMath::Abs(Heat.NormalizedEnergyResidual)<1e-9 && Heat.bPressureConverged && Heat.NormalizedDivergence<1e-5);
 	AddInfo(FString::Printf(TEXT("Ceiling positive heat fixture input%.9fJ stored%.9fJ absolute energy residual%.3eJ normalized%.3e pressure%.3e at2.4s"),
 		Solver.GetEnergyInJ(),Solver.GetEnergyStoredJ(),Solver.GetEnergyResidualJ(),Heat.NormalizedEnergyResidual,Heat.NormalizedDivergence));
+	return true;
+}
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FRoomCeilingUiTest,"VRG.Interaction.Layout.RoomCeilingUiInput",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::CommandletContext | EAutomationTestFlags::EngineFilter)
+bool FRoomCeilingUiTest::RunTest(const FString& Parameters)
+{
+	FRoomFixture F; auto* C=F.World->SpawnActor<ADataCenterDebugController>(); C->bFrameEquipmentOnStart=false;
+	auto* Pawn=F.World->SpawnActor<ADefaultPawn>(); C->Possess(Pawn); C->PlayerInput=NewObject<UPlayerInput>(C); C->RefreshInteractionInputMode();
+	FString Message; TestFalse(TEXT("Automatic room cannot open ceiling modal"),C->OpenRoomCeilingSettings());
+	TestTrue(TEXT("Manual room"),F.Sim->TrySetRoomAirDomain(ManualRoom(),Message));
+	const auto Mask=F.Air->GetMutableSolver().GetGrid().bSolidCell; const auto Grid=F.Air->GridParams; const auto Origin=F.Air->GetActorLocation();
+	const auto Pose=F.Racks[0]->GetActorTransform(); const auto Camera=Pawn->GetActorLocation();
+	TestTrue(TEXT("Ceiling modal shares numeric focus gate"),C->OpenRoomCeilingSettings());
+	TestFalse(TEXT("Duplicate/different modal blocked"),C->OpenRoomSettings());
+	FRoomAirDomainSettings Draft; const TArray<FString> Fields={TEXT("-5.13"),TEXT("-4.61"),TEXT("3.13"),TEXT("3.62"),TEXT("2.63")};
+	TestTrue(TEXT("Reuse strict five-field metre parser"),URoomSettingsWidget::ParseDraft(true,Fields,Draft,Message));
+	auto BadFields=Fields; BadFields[4]=TEXT("nan"); const auto Seed=Draft;
+	TestFalse(TEXT("Invalid numeric draft leaves value output"),URoomSettingsWidget::ParseDraft(true,BadFields,Draft,Message));
+	TestTrue(TEXT("Parsing/draft did not apply"),Draft==Seed && F.Sim->GetRoomCeilingPlates().IsEmpty());
+	C->ApplyLayoutCameraInput(1,FVector(1,1,1),1,true); C->BeginRackAddition();
+	for(auto Key:{EKeys::R,EKeys::Delete,EKeys::D,EKeys::Z,EKeys::Y,EKeys::Enter}) { FInputKeyEventArgs A; A.Key=Key; A.Event=IE_Pressed; C->InputKey(A); }
+	TestTrue(TEXT("Modal blocks camera/equipment/mode/history"),Pawn->GetActorLocation()==Camera && F.Racks[0]->GetActorTransform().Equals(Pose,0)
+		&& !C->IsAddingRack() && F.Sim->GetSimMode()==ESimMode::Layout && C->GetLayoutUndoCount()==0);
+	TestFalse(TEXT("Ceiling modal cannot change room"),C->ApplyRoomSettings(ManualRoom(),Message));
+	FRoomCeilingPlate P; P.MinXYM=Draft.MinXYM; P.MaxXYM=Draft.MaxXYM; P.HeightM=Draft.CeilingHeightM;
+	auto Bad=P; Bad.HeightM=0; TestFalse(TEXT("Invalid height refuses without creating plate"),C->AddRoomCeiling(Bad,Message));
+	TestTrue(TEXT("Refusal includes requested geometry"),Message.Contains(TEXT("요청")) && F.Sim->GetRoomCeilingPlates().IsEmpty());
+	Bad=P; Bad.MinXYM=FVector2D(-1.7,-.1); Bad.MaxXYM=FVector2D(-1.3,.1); Bad.HeightM=1;
+	TestFalse(TEXT("Collision refuses and still reports quantized plan"),C->AddRoomCeiling(Bad,Message));
+	TestTrue(TEXT("Collision reason/range/thickness available"),Message.Contains(TEXT("거절")) && Message.Contains(TEXT("두께")) && Message.Contains(TEXT("계산 최소")));
+	TestTrue(TEXT("Explicit Add alone appends exactly one"),C->AddRoomCeiling(P,Message) && F.Sim->GetRoomCeilingPlates()==TArray<FRoomCeilingPlate>{P});
+	TestTrue(TEXT("Geometry reported; physical grid delayed"),Message.Contains(TEXT("3x3x1 = 9")) && Message.Contains(TEXT("저장 미지원"))
+		&& F.Air->GetMutableSolver().GetGrid().bSolidCell==Mask && F.Air->GetActorLocation()==Origin && F.Air->GridParams.NumCellsZ==Grid.NumCellsZ);
+	FInputKeyEventArgs Esc; Esc.Key=EKeys::Escape; Esc.Event=IE_Pressed; C->InputKey(Esc);
+	TestTrue(TEXT("Esc closes without removing confirmed plate"),!C->IsRoomSettingsOpen() && C->bShowMouseCursor && F.Sim->GetRoomCeilingPlates().Num()==1);
+	C->ApplyLayoutCameraInput(1,FVector(1,0,0),0,true); TestTrue(TEXT("Close restores camera path"),Pawn->GetActorLocation()!=Camera);
+	TestFalse(TEXT("Closed modal cannot add"),C->AddRoomCeiling(P,Message));
+	C->OpenRoomCeilingSettings(); C->SetPatchMapOpen(true); TestFalse(TEXT("Patch closes modal and blocks reopening"),C->IsRoomSettingsOpen() || C->OpenRoomCeilingSettings()); C->SetPatchMapOpen(false);
+	C->OpenRoomCeilingSettings(); F.Sim->EnterSimulationMode(); C->RefreshInteractionInputMode();
+	TestTrue(TEXT("Mode change closes modal and applies nine ceiling cells"),!C->IsRoomSettingsOpen() && F.Sim->GetNumCeilingCells()==9);
+	TestFalse(TEXT("Simulation cannot open ceiling modal"),C->OpenRoomCeilingSettings());
+	AddInfo(TEXT("Ceiling numeric modal: request2.63m -> single0.25m layer9 cells; strict parsing, blocked input/patch/mode, append only on Add and grid delayed. Actual widget render/OS focus are direct-check scope."));
 	return true;
 }
 #endif

@@ -73,7 +73,10 @@ public:
 	// The patch window temporarily owns mouse focus; restore the current mode when it closes.
 	void SetPatchMapOpen(bool bOpen);
 	void RefreshInteractionInputMode();
-	bool OpenRoomSettings();
+	bool OpenRoomSettings(bool bCeiling = false);
+	bool OpenRoomCeilingSettings() { return OpenRoomSettings(true); }
+	bool AddRoomCeiling(const FRoomCeilingPlate& Plate, FString& Message);
+	FString DescribeRoomCeilingPlan(const FRoomCeilingPlate& Plate);
 	void CloseRoomSettings(URoomSettingsWidget* ExpectedWidget = nullptr);
 	bool IsRoomSettingsOpen() const { return bRoomSettingsOpen; }
 	// Key hint lines for the HUD: one short line, or the grouped list after H.
@@ -323,6 +326,7 @@ private:
 	TObjectPtr<ULayoutRackPalette> RackPalette;
 	UPROPERTY(Transient) TObjectPtr<URoomSettingsWidget> RoomSettingsWidget;
 	bool bRoomSettingsOpen = false;
+	bool bRoomCeilingOpen = false;
 	bool bRoomBoundsEditing = false;
 	int32 RoomDragCorner = INDEX_NONE;
 	FRoomAirDomainSettings RoomDragBefore, RoomDragPreview;
@@ -337,6 +341,7 @@ private:
 	void ValidateRoomBoundsPreview();
 	void UpdateRoomCornerFromCursor();
 	void DrawRoomBounds() const;
+	void DrawRoomCeilings() const;
 	bool CommitRoomSettings(const FRoomAirDomainSettings& Settings, FString& Message);
 	bool bAddingRack = false; // Shared equipment preview activity; existing input guards use this flag.
 	bool bAddingSpine = false;
