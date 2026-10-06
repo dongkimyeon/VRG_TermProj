@@ -4115,3 +4115,11 @@ Editor Development61.28s 성공(기존 저장 Name shadow 경고 유지). 신규
 
 t1.02s 균일 CPU/NullRHI의 짧은 과도·기하 검증이며 정상상태/시설 정확도/GPU/옥트리/FPS로 확대하지 않는다. 저장 스키마/물성/솔버/단열·기존 부채/레벨 에셋 변경 없음. 높이 직접 정상 사용자 보고와 신규 몸체 이동의 실제 픽셀·마우스/OS 포커스 미확인을 구분한다. 기존 실패 화면 도구는 재시도하지 않고 Tools/부분천장_전체이동_확인_2026-10-06.md에 상세 절차를 남겼다. 다중 편집·판 회전·배기 구멍 및 별도 유출 경계/물리 확장은 후속이다.
 근거(커밋 제외): Saved/Build_CeilingMoveCoupling.log, Saved/Logs/CeilingMoveCoupling_Tests.log, Saved/Automation/CeilingMoveCoupling/index.json. E:\UE_5.8 Editor Development 뒤 위3종 + 묶음 Automation RunTests -unattended -NullRHI. 빌드 중 소스 변경 없음.
+
+## 2026-10-06 부분 천장 구멍 데이터·검증
+
+전체 XY 이동 직접 확인은 사용자 정상 보고를 반영했다. 사용자 요청대로 판 최소 XY 기준 로컬 m 구멍 배열을 추가했다. 판 이동/높이에 따라가며 크기 변경 때 구멍을 축소/클리핑하지 않는다. 완전히 포함된 XY 셀만 개방 계획에 넣고 경계·0셀 거절·장비/필요 덕트와 남은 판 셀의 충돌 검사·선택 v2 holes 필드를 기존 경로에 연결했다. 요청/계산 규칙과 이전 파일 해석은 Tools/부분천장_구멍_기반_2026-10-06.md를 따른다. 새 물성/추정 수치 없음; 테스트 기하는 합성이며 단위 m다.
+
+Editor Development120.27s 성공(기존 FloorCm/Name shadow 경고 유지). RoomCeilingHolePlan + RoomCeilingFoundation + RoomCeilingPersistence + 접두어로 포함된 RoomCeilingPersistenceRollbackCoupling 총4종 무경고 성공, 실패0/미실행0. h0.25m·로컬[0.125,0.875]^2m는 실제 월드[-5,-4.5]×[3.25,3.75]m의2×2셀 계획이며 Z[2.5,2.75]m다. 정확한 셀 경계의1셀은 허용, 최소 면을1e-12m 안쪽으로 좁힌0셀 요청은 거절한다. 정수 인덱스/전체 목록 정확 비교, 실패 계획 출력·상태 보존을 확인했다. 이는 데이터/검증 커밋이며 실제 고체 제외·유동/냉각 통합은 다음 커밋에서 구현/측정한다. UI·외부 배기·열 제거 없음.
+
+근거(커밋 제외): Saved/Build_CeilingHoleData.log, Saved/Logs/CeilingHoleData_Tests.log, Saved/Automation/CeilingHoleData/index.json. E:\UE_5.8 Editor Development와 위3개 접두어 Automation RunTests -unattended -NullRHI. 전체/FPS/기존 화면 실패 재시도·빌드 중 소스 변경 없음.

@@ -219,7 +219,20 @@ bool VrgLayoutFile::Save(UWorld* World, const FString& Name, FString& OutSummary
 			TSharedRef<FJsonObject> O = MakeShared<FJsonObject>();
 			O->SetNumberField(TEXT("minXM"), P.MinXYM.X); O->SetNumberField(TEXT("minYM"), P.MinXYM.Y);
 			O->SetNumberField(TEXT("maxXM"), P.MaxXYM.X); O->SetNumberField(TEXT("maxYM"), P.MaxXYM.Y);
-			O->SetNumberField(TEXT("heightM"), P.HeightM); Plates.Add(MakeShared<FJsonValueObject>(O));
+			O->SetNumberField(TEXT("heightM"), P.HeightM);
+			if (!P.Holes.IsEmpty())
+			{
+				TArray<TSharedPtr<FJsonValue>> Holes;
+				for (const auto& Hole : P.Holes)
+				{
+					auto HO = MakeShared<FJsonObject>();
+					HO->SetNumberField(TEXT("minXM"), Hole.LocalMinXYM.X); HO->SetNumberField(TEXT("minYM"), Hole.LocalMinXYM.Y);
+					HO->SetNumberField(TEXT("maxXM"), Hole.LocalMaxXYM.X); HO->SetNumberField(TEXT("maxYM"), Hole.LocalMaxXYM.Y);
+					Holes.Add(MakeShared<FJsonValueObject>(HO));
+				}
+				O->SetArrayField(TEXT("holes"), Holes); // Optional plate-local metres, no state or exterior boundary.
+			}
+			Plates.Add(MakeShared<FJsonValueObject>(O));
 		}
 		Settings->SetArrayField(TEXT("roomCeilingPlates"), Plates); // Complete authored metre list; empty clears, absent retains.
 	}
@@ -577,6 +590,20 @@ bool VrgLayoutFile::Load(UWorld* World, const FString& Name, FString& OutSummary
 			if (!ReadLayoutNumber(O, TEXT("minXM"), P.MinXYM.X) || !ReadLayoutNumber(O, TEXT("minYM"), P.MinXYM.Y)
 				|| !ReadLayoutNumber(O, TEXT("maxXM"), P.MaxXYM.X) || !ReadLayoutNumber(O, TEXT("maxYM"), P.MaxXYM.Y)
 				|| !ReadLayoutNumber(O, TEXT("heightM"), P.HeightM)) return Fail(TEXT("천장 판 유한값/필드 오류"));
+			if (O->HasField(TEXT("holes")))
+			{
+				const TArray<TSharedPtr<FJsonValue>>* HoleValues = nullptr;
+				if (!O->TryGetArrayField(TEXT("holes"), HoleValues)) return Fail(TEXT("천장 구멍 목록 형식 오류"));
+				for (const auto& HV : *HoleValues)
+				{
+					if (!HV.IsValid() || HV->Type != EJson::Object) return Fail(TEXT("천장 구멍 객체 형식 오류"));
+					const auto HO = HV->AsObject(); FRoomCeilingHole Hole;
+					if (!ReadLayoutNumber(HO, TEXT("minXM"), Hole.LocalMinXYM.X) || !ReadLayoutNumber(HO, TEXT("minYM"), Hole.LocalMinXYM.Y)
+						|| !ReadLayoutNumber(HO, TEXT("maxXM"), Hole.LocalMaxXYM.X) || !ReadLayoutNumber(HO, TEXT("maxYM"), Hole.LocalMaxXYM.Y))
+						return Fail(TEXT("천장 구멍 로컬 m 유한값/필드 오류"));
+					P.Holes.Add(Hole);
+				}
+			}
 			LoadedCeilings.Add(P);
 		}
 	}

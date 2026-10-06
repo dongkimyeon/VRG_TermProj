@@ -30,7 +30,18 @@ namespace VrgRoomAirDomain
 }
 
 // User decision 2026-10-06: a one-cell horizontal plate, NOT a filled volume above HeightM.
-// World metres, no holes/outlets yet; optional v2 complete list, absent field retains the current list.
+// Hole metres are relative to the owning plate's MinXYM; no exterior outlet boundary.
+USTRUCT()
+struct VRG_TERMPROJ_API FRoomCeilingHole
+{
+	GENERATED_BODY()
+	UPROPERTY() FVector2D LocalMinXYM = FVector2D::ZeroVector;
+	UPROPERTY() FVector2D LocalMaxXYM = FVector2D::ZeroVector;
+	bool operator==(const FRoomCeilingHole& Other) const
+	{ return LocalMinXYM == Other.LocalMinXYM && LocalMaxXYM == Other.LocalMaxXYM; }
+};
+
+// World metres; optional v2 complete list, absent field retains the current list.
 USTRUCT()
 struct VRG_TERMPROJ_API FRoomCeilingPlate
 {
@@ -38,8 +49,9 @@ struct VRG_TERMPROJ_API FRoomCeilingPlate
 	UPROPERTY() FVector2D MinXYM = FVector2D::ZeroVector;
 	UPROPERTY() FVector2D MaxXYM = FVector2D::ZeroVector;
 	UPROPERTY() double HeightM = 0.0;
+	UPROPERTY() TArray<FRoomCeilingHole> Holes;
 	bool operator==(const FRoomCeilingPlate& Other) const
-	{ return MinXYM == Other.MinXYM && MaxXYM == Other.MaxXYM && HeightM == Other.HeightM; }
+	{ return MinXYM == Other.MinXYM && MaxXYM == Other.MaxXYM && HeightM == Other.HeightM && Holes == Other.Holes; }
 };
 
 struct VRG_TERMPROJ_API FRoomCeilingPlan
@@ -47,6 +59,8 @@ struct VRG_TERMPROJ_API FRoomCeilingPlan
 	FIntVector MinCell = FIntVector::ZeroValue;
 	FIntVector MaxCellExclusive = FIntVector::ZeroValue;
 	FBox ActualBoundsM = FBox(ForceInit);
+	// Global grid XY indices [Min,Max), only cells whose whole footprint lies in a requested hole.
+	TArray<FIntRect> OpenCells;
 };
 
 namespace VrgRoomAirDomain
@@ -55,6 +69,9 @@ namespace VrgRoomAirDomain
 	// Bounds are reported, never silently clipped; caller supplies the validated manual grid.
 	VRG_TERMPROJ_API bool BuildCeilingPlans(const FRoomAirDomainSettings& Room, const TArray<FRoomCeilingPlate>& Plates,
 		const FAirGridParams& Grid, const FBox& ActualRoomM, TArray<FRoomCeilingPlan>& OutPlans, FString& Reason);
+	VRG_TERMPROJ_API bool IsCeilingCellOpen(const FRoomCeilingPlan& Plan, int32 X, int32 Y);
+	// Positive volume overlap with remaining plate cells, for the existing equipment/duct validator.
+	VRG_TERMPROJ_API bool CeilingIntersectsBox(const FRoomCeilingPlan& Plan, const FBox& BoxM, double CellSizeM);
 	// Union into the mask; return only newly marked cell indices for actor ownership/diagnostics.
 	// Plans must have been built for this grid. Caller notifies the solver once after all solids are ready.
 	VRG_TERMPROJ_API TArray<int32> MarkCeilingCells(FUniformAirGrid& Grid, const TArray<FRoomCeilingPlan>& Plans);

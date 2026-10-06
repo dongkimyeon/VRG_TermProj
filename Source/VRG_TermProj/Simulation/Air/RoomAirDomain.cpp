@@ -63,10 +63,56 @@ bool VrgRoomAirDomain::BuildCeilingPlans(const FRoomAirDomainSettings& Room, con
 			|| Plan.MaxCellExclusive.Z > Grid.NumCellsZ)
 		{ Reason = FString::Printf(TEXT("천장 판 %d: 계산 셀 범위가 공기 격자 밖입니다. 판을 잘라 적용하지 않습니다."), I); return false; }
 		Plan.ActualBoundsM = FBox(ActualRoomM.Min + FVector(Plan.MinCell) * H, ActualRoomM.Min + FVector(Plan.MaxCellExclusive) * H);
+		for (int32 J = 0; J < P.Holes.Num(); ++J)
+		{
+			const auto& Hole = P.Holes[J];
+			const FVector2D Span = P.MaxXYM - P.MinXYM;
+			if (Hole.LocalMinXYM.ContainsNaN() || Hole.LocalMaxXYM.ContainsNaN()
+				|| Hole.LocalMinXYM.X < 0 || Hole.LocalMinXYM.Y < 0
+				|| Hole.LocalMinXYM.X >= Hole.LocalMaxXYM.X || Hole.LocalMinXYM.Y >= Hole.LocalMaxXYM.Y
+				|| Hole.LocalMaxXYM.X > Span.X || Hole.LocalMaxXYM.Y > Span.Y)
+			{ Reason = FString::Printf(TEXT("천장 판 %d 구멍 %d: 유한한 양의 로컬 XY 범위가 판 안에 있어야 합니다."), I, J); return false; }
+			const FVector2D WorldMin = P.MinXYM + Hole.LocalMinXYM, WorldMax = P.MinXYM + Hole.LocalMaxXYM;
+			FIntRect Open;
+			for (int32 Axis = 0; Axis < 2; ++Axis)
+			{
+				Open.Min[Axis] = FMath::CeilToInt32((WorldMin[Axis] - ActualRoomM.Min[Axis]) / H);
+				Open.Max[Axis] = FMath::FloorToInt32((WorldMax[Axis] - ActualRoomM.Min[Axis]) / H);
+				// Division rounding must never open a cell face outside the authored hole. No outward epsilon.
+				while (Open.Min[Axis] < Open.Max[Axis] && ActualRoomM.Min[Axis] + Open.Min[Axis] * H < WorldMin[Axis]) ++Open.Min[Axis];
+				while (Open.Max[Axis] > Open.Min[Axis] && ActualRoomM.Min[Axis] + Open.Max[Axis] * H > WorldMax[Axis]) --Open.Max[Axis];
+			}
+			if (Open.Min.X >= Open.Max.X || Open.Min.Y >= Open.Max.Y)
+			{ Reason = FString::Printf(TEXT("천장 판 %d 구멍 %d: 요청 범위에 완전히 포함되는 개방 셀이 없습니다 (h=%.6fm)."), I, J, H); return false; }
+			Plan.OpenCells.Add(Open);
+		}
 		Plans.Add(Plan);
 	}
 	OutPlans = MoveTemp(Plans);
 	return true;
+}
+
+bool VrgRoomAirDomain::IsCeilingCellOpen(const FRoomCeilingPlan& Plan, int32 X, int32 Y)
+{
+	for (const auto& Open : Plan.OpenCells)
+		if (X >= Open.Min.X && X < Open.Max.X && Y >= Open.Min.Y && Y < Open.Max.Y) return true;
+	return false;
+}
+
+bool VrgRoomAirDomain::CeilingIntersectsBox(const FRoomCeilingPlan& Plan, const FBox& BoxM, double H)
+{
+	auto Overlap = [](const FBox& A, const FBox& B)
+	{ return A.Min.X < B.Max.X && A.Max.X > B.Min.X && A.Min.Y < B.Max.Y && A.Max.Y > B.Min.Y && A.Min.Z < B.Max.Z && A.Max.Z > B.Min.Z; };
+	if (!Overlap(Plan.ActualBoundsM, BoxM)) return false;
+	if (Plan.OpenCells.IsEmpty()) return true; // Exact legacy rectangle path for plates without holes.
+	for (int32 Y = Plan.MinCell.Y; Y < Plan.MaxCellExclusive.Y; ++Y)
+		for (int32 X = Plan.MinCell.X; X < Plan.MaxCellExclusive.X; ++X)
+		{
+			if (IsCeilingCellOpen(Plan, X, Y)) continue;
+			const FVector Min = Plan.ActualBoundsM.Min + FVector(X - Plan.MinCell.X, Y - Plan.MinCell.Y, 0) * H;
+			if (Overlap(FBox(Min, Min + FVector(H)), BoxM)) return true;
+		}
+	return false;
 }
 
 TArray<int32> VrgRoomAirDomain::MarkCeilingCells(FUniformAirGrid& Grid, const TArray<FRoomCeilingPlan>& Plans)

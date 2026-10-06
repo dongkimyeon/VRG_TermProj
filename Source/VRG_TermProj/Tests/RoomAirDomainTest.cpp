@@ -626,4 +626,52 @@ bool FRoomCeilingMovePreviewTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("Mode cancels move and applies original union"),!C->IsRoomCeilingEditing() && !C->IsLayoutDragging() && F.Sim->GetNumCeilingCells()==9);
 	AddInfo(TEXT("Ceiling body movement: minimum XY anchor5cm, initial offset, size/height unchanged; handle priority including failed ray; live state frozen and no-op/miss/ray/refusal/cancel/input/list gates. Actual UI pixel press/drag pending direct check.")); return true;
 }
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FRoomCeilingHolePlanTest, "VRG.Interaction.Layout.RoomCeilingHolePlan",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::CommandletContext | EAutomationTestFlags::EngineFilter)
+bool FRoomCeilingHolePlanTest::RunTest(const FString& Parameters)
+{
+	FRoomFixture F; FString Reason; const auto Room=ManualRoom();
+	TestTrue(TEXT("Manual fixture"), F.Sim->TrySetRoomAirDomain(Room,Reason));
+	FAirGridParams GP; FBox Actual(ForceInit); TArray<FRoomCeilingPlan> Plans;
+	TestTrue(TEXT("Reuse room/grid/resource validation"), F.Sim->ValidateRoomAirDomain(Room,GP,Actual,Reason));
+	// Synthetic geometry, exact binary fractions isolate full-cell inclusion from measured hardware.
+	FRoomCeilingPlate P; P.MinXYM=FVector2D(-5.25,3); P.MaxXYM=FVector2D(-4.25,4); P.HeightM=2.625;
+	FRoomCeilingHole Hole; Hole.LocalMinXYM=FVector2D(.125,.125); Hole.LocalMaxXYM=FVector2D(.875,.875); P.Holes.Add(Hole);
+	TestTrue(TEXT("Local hole accepted"), F.Sim->TrySetRoomCeilingPlates({P},Reason)
+		&& VrgRoomAirDomain::BuildCeilingPlans(Room,{P},GP,Actual,Plans,Reason));
+	if (Plans.Num()!=1 || Plans[0].OpenCells.Num()!=1) return false;
+	const auto Plan=Plans[0];
+	TestTrue(TEXT("Only four fully included cells open"), Plan.OpenCells[0]==FIntRect(2,31,4,33)
+		&& VrgRoomAirDomain::IsCeilingCellOpen(Plan,2,31) && !VrgRoomAirDomain::IsCeilingCellOpen(Plan,1,31));
+	TestFalse(TEXT("Open passage excluded from equipment/duct overlap"), VrgRoomAirDomain::CeilingIntersectsBox(Plan,FBox(FVector(-5,3.25,2.5),FVector(-4.5,3.75,2.75)),GP.CellSizeM));
+	TestTrue(TEXT("Remaining plate still obstructs duct"), VrgRoomAirDomain::CeilingIntersectsBox(Plan,FBox(FVector(-5.25,3,2.5),FVector(-5,3.25,2.75)),GP.CellSizeM));
+	const auto List=F.Sim->GetRoomCeilingPlates(); const auto Clock=F.Sim->GetSnapshot().SimTimeS;
+	auto Reject=[&](FRoomCeilingPlate Bad)
+	{
+		const auto Kept=Plans;
+		TestFalse(TEXT("Invalid hole rejects complete plan"),VrgRoomAirDomain::BuildCeilingPlans(Room,{P,Bad},GP,Actual,Plans,Reason));
+		TestTrue(TEXT("Reason and previous output preserved"),!Reason.IsEmpty() && Plans.Num()==Kept.Num() && Plans[0].OpenCells==Kept[0].OpenCells);
+		TestFalse(TEXT("Invalid list rejected by existing API"),F.Sim->TrySetRoomCeilingPlates({Bad},Reason));
+		TestTrue(TEXT("List/grid/clock unaffected"),F.Sim->GetRoomCeilingPlates()==List && F.Sim->GetSnapshot().SimTimeS==Clock);
+	};
+	auto Bad=P; Bad.Holes[0].LocalMaxXYM.X=.125; Reject(Bad);
+	Bad=P; Bad.Holes[0].LocalMinXYM.X=-.01; Reject(Bad);
+	Bad=P; Bad.Holes[0].LocalMaxXYM.Y=1.01; Reject(Bad);
+	Bad=P; Bad.Holes[0].LocalMaxXYM.X=std::numeric_limits<double>::infinity(); Reject(Bad);
+	Bad=P; Bad.Holes[0].LocalMaxXYM=FVector2D(.2,.2); Reject(Bad);
+	Bad=P; Bad.MaxXYM.X=P.MinXYM.X+.75; Reject(Bad); // Resize cannot truncate the local hole.
+	// A cell exactly on each face is allowed; the tiniest inward request must not round outwards.
+	Bad=P; Bad.Holes[0].LocalMinXYM=FVector2D(.25,.25); Bad.Holes[0].LocalMaxXYM=FVector2D(.5,.5);
+	TestTrue(TEXT("Exact one-cell hole allowed"),VrgRoomAirDomain::BuildCeilingPlans(Room,{Bad},GP,Actual,Plans,Reason) && Plans[0].OpenCells[0]==FIntRect(2,31,3,32));
+	Bad.Holes[0].LocalMinXYM.X+=1e-12;
+	TestFalse(TEXT("Inward face cannot open an almost-contained cell"),VrgRoomAirDomain::BuildCeilingPlans(Room,{Bad},GP,Actual,Plans,Reason));
+	Bad=P; Bad.MinXYM+=FVector2D(.5,-.5); Bad.MaxXYM+=FVector2D(.5,-.5); Bad.HeightM=2.875;
+	TestTrue(TEXT("Local data follows translated plate and height"),VrgRoomAirDomain::BuildCeilingPlans(Room,{Bad},GP,Actual,Plans,Reason)
+		&& Plans[0].OpenCells[0]==FIntRect(4,29,6,31) && Plans[0].MinCell.Z==11 && Bad.Holes==P.Holes);
+	FRoomCeilingPlate Legacy=P; Legacy.Holes.Reset();
+	TestTrue(TEXT("No-hole geometry retains old plan"),VrgRoomAirDomain::BuildCeilingPlans(Room,{Legacy},GP,Actual,Plans,Reason)
+		&& Plans[0].OpenCells.IsEmpty() && Plans[0].MinCell==FIntVector(1,30,10) && Plans[0].MaxCellExclusive==FIntVector(5,34,11));
+	AddInfo(TEXT("Hole plan: local[0.125,0.875]^2m -> fully contained2x2 cells h0.25m; world[-5,-4.5]x[3.25,3.75]m Z[2.5,2.75]m. Validation only; rasterization checked separately."));
+	return true;
+}
 #endif

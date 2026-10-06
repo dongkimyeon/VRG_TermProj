@@ -208,7 +208,7 @@ bool ADataCenterSimulationActor::TrySetRoomCeilingPlates(const TArray<FRoomCeili
 	if (!ValidateRoomAirDomain(RoomAirDomain, Grid, Bounds, Reason, &Plates))
 	{ RoomAirDomainMessage = Reason; return false; }
 	RoomCeilingPlates = Plates;
-	RoomAirDomainMessage = FString::Printf(TEXT("천장 판 %d개 설정 (고체 셀은 시뮬레이션 진입 시 적용, 저장/Undo 미지원)"), Plates.Num());
+	RoomAirDomainMessage = FString::Printf(TEXT("천장 판 %d개 설정 (고체 셀은 다음 시뮬레이션 진입 시 적용)"), Plates.Num());
 	return true;
 }
 
@@ -251,8 +251,7 @@ bool ADataCenterSimulationActor::ValidateRoomAirDomain(const FRoomAirDomainSetti
 		for (int32 I = 0; I < CeilingPlans.Num(); ++I)
 		{
 			const FBox& B = CeilingPlans[I].ActualBoundsM;
-			if (Required.Min.X < B.Max.X && Required.Max.X > B.Min.X && Required.Min.Y < B.Max.Y && Required.Max.Y > B.Min.Y
-				&& Required.Min.Z < B.Max.Z && Required.Max.Z > B.Min.Z)
+			if (VrgRoomAirDomain::CeilingIntersectsBox(CeilingPlans[I], Required, H))
 			{ Reason = FString::Printf(TEXT("천장 판 %d 계산 범위 %s m가 %s와 겹칩니다."), I, *B.ToString(), *Name); return false; }
 		}
 		return true;
