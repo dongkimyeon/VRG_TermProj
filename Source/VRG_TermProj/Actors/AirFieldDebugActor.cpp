@@ -1,6 +1,8 @@
 // Fill out your copyright notice in the Description page of Project Settings.
 
 #include "Actors/AirFieldDebugActor.h"
+#include "Simulation/Air/RoomAirDomain.h"
+#include "Actors/DataCenterSimulationActor.h"
 #include "Simulation/Core/VrgHud.h"
 
 #include "Actors/DataCenterSimulationActor.h"
@@ -329,6 +331,11 @@ void AAirFieldDebugActor::UpdateDomainBounds()
 void AAirFieldDebugActor::BeginPlay()
 {
 	Super::BeginPlay();
+	// Actor BeginPlay order is not guaranteed. A manual integrated run may already have built its
+	// grid and ducts; a later standalone auto-fit/reset here must not overwrite them.
+	if (bDrivenExternally)
+		for (TActorIterator<ADataCenterSimulationActor> It(GetWorld()); It; ++It)
+			if (It->GetRoomAirDomain().bManual && It->GetSimMode() == ESimMode::Simulation) return;
 	if (bAutoFitToRacks)
 	{
 		FitToRacks();
@@ -503,6 +510,14 @@ namespace
 	}
 }
 
+void AAirFieldDebugActor::ApplyRoomAirGrid(const FAirGridParams& Params, const FVector& OriginM)
+{
+	GridParams = Params;
+	SetActorLocation(SimUnits::MetersToUnreal(OriginM));
+	UpdateDomainBounds();
+	bNeedsReset = true;
+}
+
 void AAirFieldDebugActor::FitToRacks()
 {
 	const TArray<ARackThermalActor*> Racks = GatherRacks(GetWorld());
@@ -551,7 +566,7 @@ void AAirFieldDebugActor::FitToRacks()
 	BoundsM = BoundsM.ExpandBy(FVector(MarginM, MarginM, 0.0));
 	BoundsM.Max.Z = FMath::Max(BoundsM.Max.Z, ExhaustTopZM + 1.0);
 
-	const double CellSizeM = FMath::Max(GridParams.CellSizeM, 0.01);
+	const double CellSizeM = FMath::Max(GridParams.CellSizeM, VrgRoomAirDomain::MinFitCellSizeM);
 
 	// 도메인 원점은 격자 (0,0,0) 셀의 바깥 모서리다. 액터를 거기에 둔다.
 	SetActorLocation(SimUnits::MetersToUnreal(BoundsM.Min));
@@ -562,15 +577,15 @@ void AAirFieldDebugActor::FitToRacks()
 		// Same room at every resolution (vrg.Air.CellSize); the tolerance keeps 13.5 / (0.25 / 3) from rounding up to 163.
 		const double Q = GVrgFitSpanQuantumM;
 		SpanM = FVector(FMath::CeilToDouble(SpanM.X / Q - 1e-9), FMath::CeilToDouble(SpanM.Y / Q - 1e-9), FMath::CeilToDouble(SpanM.Z / Q - 1e-9)) * Q;
-		GridParams.NumCellsX = FMath::Clamp(FMath::CeilToInt32(SpanM.X / CellSizeM - 1e-9), 1, 128);
-		GridParams.NumCellsY = FMath::Clamp(FMath::CeilToInt32(SpanM.Y / CellSizeM - 1e-9), 1, 128);
-		GridParams.NumCellsZ = FMath::Clamp(FMath::CeilToInt32(SpanM.Z / CellSizeM - 1e-9), 1, 128);
+		GridParams.NumCellsX = FMath::Clamp(FMath::CeilToInt32(SpanM.X / CellSizeM - 1e-9), 1, VrgRoomAirDomain::MaxFitCellsPerAxis);
+		GridParams.NumCellsY = FMath::Clamp(FMath::CeilToInt32(SpanM.Y / CellSizeM - 1e-9), 1, VrgRoomAirDomain::MaxFitCellsPerAxis);
+		GridParams.NumCellsZ = FMath::Clamp(FMath::CeilToInt32(SpanM.Z / CellSizeM - 1e-9), 1, VrgRoomAirDomain::MaxFitCellsPerAxis);
 	}
 	else
 	{
-		GridParams.NumCellsX = FMath::Clamp(FMath::CeilToInt32(SpanM.X / CellSizeM), 1, 128);
-		GridParams.NumCellsY = FMath::Clamp(FMath::CeilToInt32(SpanM.Y / CellSizeM), 1, 128);
-		GridParams.NumCellsZ = FMath::Clamp(FMath::CeilToInt32(SpanM.Z / CellSizeM), 1, 128);
+		GridParams.NumCellsX = FMath::Clamp(FMath::CeilToInt32(SpanM.X / CellSizeM), 1, VrgRoomAirDomain::MaxFitCellsPerAxis);
+		GridParams.NumCellsY = FMath::Clamp(FMath::CeilToInt32(SpanM.Y / CellSizeM), 1, VrgRoomAirDomain::MaxFitCellsPerAxis);
+		GridParams.NumCellsZ = FMath::Clamp(FMath::CeilToInt32(SpanM.Z / CellSizeM), 1, VrgRoomAirDomain::MaxFitCellsPerAxis);
 	}
 
 	UE_LOG(LogTemp, Log,

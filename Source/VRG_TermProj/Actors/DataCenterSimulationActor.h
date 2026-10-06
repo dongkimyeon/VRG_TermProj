@@ -8,6 +8,7 @@
 #include "Simulation/Coupling/CouplingBridge.h"
 #include "Simulation/Evaluation/VrgEvaluation.h"
 #include "Interaction/VrgCrahLifecycle.h"
+#include "Simulation/Air/RoomAirDomain.h"
 #include "DataCenterSimulationActor.generated.h"
 
 class AAirFieldDebugActor;
@@ -112,6 +113,12 @@ public:
 	// coupling) and starts the clock at 0.
 	UFUNCTION(BlueprintCallable, Category = "Simulation")
 	void EnterSimulationMode();
+	// Layout-only, validate before committing. Existing worlds default to automatic fit.
+	bool TrySetRoomAirDomain(const FRoomAirDomainSettings& Settings, FString& Reason);
+	bool ValidateRoomAirDomain(const FRoomAirDomainSettings& Settings, FAirGridParams& OutGrid,
+		FBox& OutActualBoundsM, FString& Reason);
+	const FRoomAirDomainSettings& GetRoomAirDomain() const { return RoomAirDomain; }
+	const FString& GetRoomAirDomainMessage() const { return RoomAirDomainMessage; }
 
 	// Stops integration and drops the simulated state (the next EnterSimulationMode starts fresh).
 	UFUNCTION(BlueprintCallable, Category = "Simulation")
@@ -278,6 +285,8 @@ public:
 	const FVrgEvaluation& GetEvaluation() const { return Eval; }
 
 private:
+	UPROPERTY() FRoomAirDomainSettings RoomAirDomain;
+	FString RoomAirDomainMessage;
 	FVrgEvaluation Eval;
 	bool bEvalReady = false;
 	void EvalBeforeStep();

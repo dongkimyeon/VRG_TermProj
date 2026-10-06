@@ -297,6 +297,8 @@ public:
 	// 위치와 셀 개수를 직접 맞추는 건 손이 많이 간다.
 	UFUNCTION(BlueprintCallable, CallInEditor, Category = "Air")
 	void FitToRacks();
+	// A prevalidated manual plan; no integration/reset until the shared simulation starts.
+	void ApplyRoomAirGrid(const FAirGridParams& Params, const FVector& OriginM);
 
 	// Fit the grid to the racks, spines and placed CRAH units every time play starts, so a moved or added rack is
 	// always inside the air domain without pressing FitToRacks. Off = keep the grid exactly as set in the level.

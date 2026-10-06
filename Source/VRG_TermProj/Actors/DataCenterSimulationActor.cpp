@@ -16,6 +16,7 @@
 #include "Actors/DataCenterRoomActor.h"
 #include "Actors/RackThermalActor.h"
 #include "Actors/SpineCabinetActor.h"
+#include "Interaction/DataCenterDebugController.h"
 #include "Visualization/GjRackLayout.h"
 #include "Simulation/Air/AirSolver.h"
 #include "Simulation/Core/SimUnits.h"
@@ -108,6 +109,12 @@ void ADataCenterSimulationActor::BeginPlay()
 		EnterLayoutMode();
 		return;
 	}
+	if (RoomAirDomain.bManual)
+	{
+		EnterLayoutMode();
+		EnterSimulationMode();
+		return;
+	}
 	Mode = ESimMode::Simulation;
 	RebuildCoupling();
 	StartSim();
@@ -142,6 +149,14 @@ void ADataCenterSimulationActor::EnterLayoutMode()
 
 void ADataCenterSimulationActor::EnterSimulationMode()
 {
+	FAirGridParams ManualGrid;
+	FBox ManualBounds(ForceInit);
+	if (!ValidateRoomAirDomain(RoomAirDomain, ManualGrid, ManualBounds, RoomAirDomainMessage))
+	{
+		UE_LOG(LogTemp, Display, TEXT("[VrgSim] 방 설정 거절: %s"), *RoomAirDomainMessage);
+		if (GEngine) GEngine->AddOnScreenDebugMessage(static_cast<uint64>(GetUniqueID()), 6.0f, FColor::Red, RoomAirDomainMessage);
+		return; // Before mode, clock, rows, models, solver or bridge are changed.
+	}
 	bDisplaySnapshotValid = false;
 	bEvalReady = false;  // the evaluation starts with the run (reset at the first step, when the inlets exist)
 	for (FEvalEvent& E : EvalEvents) E.bApplied = false;
@@ -153,7 +168,8 @@ void ADataCenterSimulationActor::EnterSimulationMode()
 	if (AirField != nullptr)
 	{
 		AirField->SetLayoutMode(false);
-		if (AirField->bAutoFitToRacks) AirField->FitToRacks();
+		if (RoomAirDomain.bManual) AirField->ApplyRoomAirGrid(ManualGrid, ManualBounds.Min);
+		else if (AirField->bAutoFitToRacks) AirField->FitToRacks();
 		AirField->ResetSim();
 		AirField->StartSim();
 	}
@@ -166,6 +182,121 @@ void ADataCenterSimulationActor::EnterSimulationMode()
 	bSimRunning = true;
 	UE_LOG(LogTemp, Display, TEXT("[VrgSim] 시뮬레이션 모드: 랙 %d대 / 스파인 %d대 / CRAH %d대로 구성하고 t=0부터 시작."),
 		Racks.Num(), Spines.Num(), CrahPlacements.Num());
+}
+
+bool ADataCenterSimulationActor::TrySetRoomAirDomain(const FRoomAirDomainSettings& Settings, FString& Reason)
+{
+	if (Mode != ESimMode::Layout) { Reason = TEXT("방 설정은 배치 모드에서만 변경할 수 있습니다."); return false; }
+	FAirGridParams Grid; FBox Bounds(ForceInit);
+	if (!ValidateRoomAirDomain(Settings, Grid, Bounds, Reason))
+	{ RoomAirDomainMessage = Reason; return false; }
+	RoomAirDomain = Settings;
+	RoomAirDomainMessage = Settings.bManual
+		? FString::Printf(TEXT("수동 방: 실제 격자 %dx%dx%d, 원점 %s m, 최대 %s m (시뮬레이션 진입 시 적용)"),
+			Grid.NumCellsX, Grid.NumCellsY, Grid.NumCellsZ, *Bounds.Min.ToString(), *Bounds.Max.ToString())
+		: TEXT("자동 방 맞춤 사용");
+	Reason.Reset();
+	return true;
+}
+
+bool ADataCenterSimulationActor::ValidateRoomAirDomain(const FRoomAirDomainSettings& Settings,
+	FAirGridParams& OutGrid, FBox& OutActualBoundsM, FString& Reason)
+{
+	Reason.Reset();
+	if (!Settings.bManual) return true; // Preserve legacy auto-fit, including worlds with no room setting.
+	if (!GetWorld()) { Reason = TEXT("방 검증에 실행 월드가 필요합니다."); return false; }
+	AAirFieldDebugActor* Field = nullptr;
+	for (TActorIterator<AAirFieldDebugActor> It(GetWorld()); It; ++It)
+	{
+		if (Field) { Reason = TEXT("수동 방은 공기 격자 액터 한 대를 요구합니다."); return false; }
+		Field = *It;
+	}
+	if (!Field) { Reason = TEXT("공기 격자 액터가 없습니다."); return false; }
+	FAirGridParams Grid; FBox Actual(ForceInit);
+	if (!VrgRoomAirDomain::BuildGrid(Settings, Field->GridParams, Grid, Actual, Reason)) return false;
+	const FBox Requested(FVector(Settings.MinXYM.X, Settings.MinXYM.Y, 0),
+		FVector(Settings.MaxXYM.X, Settings.MaxXYM.Y, Settings.CeilingHeightM));
+	const double H = Grid.CellSizeM;
+	auto Contains = [&](const FBox& Required, const FString& Name)
+	{
+		if (!Required.IsValid || Required.Min.ContainsNaN() || Required.Max.ContainsNaN())
+		{ Reason = Name + TEXT(": 유효하지 않은 장비/덕트 경계입니다."); return false; }
+		for (int32 Axis = 0; Axis < 3; ++Axis)
+			if (Required.Min[Axis] < Requested.Min[Axis] || Required.Max[Axis] > Requested.Max[Axis])
+			{
+				Reason = FString::Printf(TEXT("%s: %c축 필요 범위 [%.6f, %.6f]m가 방 [%.6f, %.6f]m 밖입니다."),
+					*Name, TCHAR('X' + Axis), Required.Min[Axis], Required.Max[Axis], Requested.Min[Axis], Requested.Max[Axis]);
+				return false;
+			}
+		return true;
+	};
+	auto CheckBox = [&](const FVector& SizeM, const FTransform& Transform, const FString& Name,
+		bool bCabinet, bool bCrah, bool bTopIntake)
+	{
+		if (SizeM.ContainsNaN() || SizeM.GetMin() <= 0 || !Transform.IsValid() || Transform.GetScale3D().GetAbsMin() <= 0)
+		{ Reason = Name + TEXT(": 장비 크기/변환이 유효하지 않습니다."); return false; }
+		FTransform M = Transform; M.SetTranslation(SimUnits::UnrealToMeters(Transform.GetTranslation()));
+		const FVector MinM(-SizeM.X * .5, -SizeM.Y * .5, 0), MaxM(SizeM.X * .5, SizeM.Y * .5, SizeM.Z);
+		if (!Contains(VrgRoomAirDomain::TransformedBoxM(MinM, MaxM, M), Name + TEXT(" 외형"))) return false;
+		if (!bCabinet && !bCrah) return true;
+		// Current coupling uses unscaled, upright boxes and a horizontal forward axis. Check this envelope
+		// in addition to the actual full actor transform; do not silently replace the existing physics model.
+		FVector Forward = Transform.GetRotation().GetForwardVector().GetSafeNormal2D();
+		if (Forward.IsNearlyZero()) { Reason = Name + TEXT(": 수평 공기 방향이 없습니다."); return false; }
+		if (bCrah) Forward = FMath::Abs(Forward.X) >= FMath::Abs(Forward.Y)
+			? FVector(Forward.X >= 0 ? 1 : -1, 0, 0) : FVector(0, Forward.Y >= 0 ? 1 : -1, 0);
+		M.SetRotation(Forward.Rotation().Quaternion()); M.SetScale3D(FVector::OneVector);
+		FVector DuctMin = MinM, DuctMax = MaxM;
+		if (bCabinet)
+		{
+			if (!FMath::IsFinite(InletSampleDepthM) || !FMath::IsFinite(ExhaustDepthM)
+				|| InletSampleDepthM <= 0 || ExhaustDepthM <= 0)
+			{ Reason = TEXT("흡기/배기 표본 깊이가 유효하지 않습니다."); return false; }
+			DuctMin.X -= FMath::Max(H, ExhaustDepthM); DuctMax.X += FMath::Max(H, InletSampleDepthM);
+		}
+		else
+		{
+			// Required neighbouring fluid cell: front supply; rear in-row intake or top perimeter intake.
+			DuctMax.X += H;
+			if (bTopIntake) DuctMax.Z += H; else DuctMin.X -= H;
+		}
+		return Contains(VrgRoomAirDomain::TransformedBoxM(DuctMin, DuctMax, M), Name + TEXT(" 공기 덕트"));
+	};
+	bool bPlacedCrahs = false;
+	for (TActorIterator<AActor> It(GetWorld()); It; ++It)
+	{
+		FVector SizeM;
+		if (!ADataCenterDebugController::PlaceableBoxM(*It, SizeM)) continue;
+		const ACrahUnitActor* Crah = Cast<ACrahUnitActor>(*It);
+		bPlacedCrahs |= Crah != nullptr;
+		if (!CheckBox(SizeM, It->GetActorTransform(), It->GetName(),
+			It->IsA<ARackThermalActor>() || It->IsA<ASpineCabinetActor>(),
+			Crah != nullptr && CrahLayout != ECrahLayout::CeilingCoil, Crah && Crah->Kind == ECrahUnitKind::Perimeter)) return false;
+	}
+	// Read the fresh world, not potentially stale routed racks. Share the planner, but neither filter to
+	// the OLD grid nor spawn/convert automatic CRAHs. Restore every planning cache on exit.
+	TGuardValue<TArray<TObjectPtr<ARackThermalActor>>> RackGuard(Racks, {});
+	TGuardValue<TArray<TObjectPtr<ASpineCabinetActor>>> SpineGuard(Spines, {});
+	TGuardValue<TArray<FCabinetRow>> RowGuard(CabinetRows, {});
+	TGuardValue<TArray<FColdAisle>> AisleGuard(ColdAisles, {});
+	TGuardValue<TArray<FCrahPlacement>> PlacementGuard(CrahPlacements, {});
+	TGuardValue<int32> UnpairedGuard(NumUnpairedRows, 0);
+	for (TActorIterator<ARackThermalActor> It(GetWorld()); It; ++It) Racks.Add(*It);
+	for (TActorIterator<ASpineCabinetActor> It(GetWorld()); It; ++It) Spines.Add(*It);
+	GroupCabinetRows();
+	if (!bPlacedCrahs && CrahLayout != ECrahLayout::CeilingCoil)
+	{
+		PlanAutoCrahUnits();
+		for (const FCrahPlacement& P : CrahPlacements)
+			if (!CheckBox(P.SizeM, FTransform(P.ForwardM.Rotation(), SimUnits::MetersToUnreal(P.BaseM)),
+				TEXT("자동 CRAH"), false, true, P.bTopIntake)) return false;
+	}
+	if (Containment == EAisleContainment::BlankingAndColdAisleRoof)
+		for (const FColdAisle& Aisle : ColdAisles)
+			if (Aisle.TopZ + H > Requested.Max.Z)
+			{ Reason = TEXT("콜드아일 지붕의 한 셀 두께가 천장 밖입니다."); return false; }
+	OutGrid = Grid; OutActualBoundsM = Actual;
+	return true;
 }
 
 #if WITH_EDITOR
@@ -1355,6 +1486,7 @@ void ADataCenterSimulationActor::QueueWarmupSteps(int32 NumSteps)
 	if (Mode == ESimMode::Layout)
 	{
 		EnterSimulationMode();
+		if (Mode == ESimMode::Layout) return; // Rejected room must not enter through warm-up.
 	}
 	if (bNeedsRebuild)
 	{

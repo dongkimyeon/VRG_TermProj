@@ -3718,3 +3718,25 @@ Undo21/Redo1가 남은 최종 편집 월드에서 중간 파일을 두 번 Load�
 검증: 저장/물리 보강 Editor11.22s 성공, 신규 MixedHistoryPersistenceCoupling/기존 SingleMoveUndoRedo/SingleRotationUndoRedo/InventorySaveLoad/SaveLoadRoundTrip 고유5종 무경고 성공(실패0/미실행0/종료0). 네 종류 삭제 의도의 최종 파일 새 월드 반복 Load를 보강한 뒤 Editor22.60s 성공, 신규1종 실패: 중간 Load 뒤 이미1.02s까지 운전한 월드를 아직 미실행 새 월드로 취급해 최종 Load 직후 시계0을 기대했다. 기존 EnterLayoutMode/Load는 정지 시각을 유지하고 다음 EnterSimulationMode에서만 t=0 재구축한다. 테스트를 실제 정지 시각 불변·기록0/0 및 다음 실행 첫 스텝=FixedStepS로 수정하고, 각 랙 양의 냉각수 유량도 명시 검사했다. Editor26.97s 성공 후 실패한 신규1종만 재실행 무경고 성공(실패0/미실행0/종료0). 정지 시각1.02→1.02s·기록0/0·다음 실행 초기화 확인. 신규 최종1종과 앞서 성공한 기존4종을 합쳐 고유5종 최종 무경고 성공이다. 기존 성공4종은 반복하지 않았다. 첫 검사 준비 실패/수정은 앞 절에 남겼으며 제품 문제는 확인되지 않아 제품 코드는 수정하지 않았다.
 실행: Editor 빌드 후 위5종을 RunTests의 +로 묶어 -unattended -NullRHI; 마지막 보강은 MixedHistoryPersistenceCoupling만 실행. 근거(커밋 제외): Saved/Build_MixedPersistence{,_Final,_Repair}.log, Saved/Logs/MixedPersistence{,Final,Repair}_Tests.log, Saved/Automation/MixedPersistence{,Final,Repair}/index.json.
 한계: 실제 CRAH가 있는 월드의 고정22개 재현 trace다. 임의 시퀀스 전수/무작위 fuzz·이번 trace의 자동 CRAH 전환·극단 자원 고갈은 검사하지 않는다(자동 전환은 기존 전용 검사 범위). 정상상태·시설 전체 정확도·UI 조합 입력·FPS 보장으로 확대하지 않는다. 사용자 요청대로 UI 도구 재시도·전체 테스트·FPS·방 편집/새 물리 모델은 수행하지 않았다.
+
+## 2026-10-06 수동 방 범위·공기 도메인 기반
+
+통합 액터가 FRoomAirDomainSettings를 소유한다. 기본 bManual=false는 기존 자동 맞춤이며 배치 모드의 TrySetRoomAirDomain/ValidateRoomAirDomain C++ API로 수동 XY 최소/최대와 천장 높이를 검증한다. 바닥 Z=0m. 방 편집 UI/RoomShell 액터·벽/천장 판·Undo/배치 파일 저장은 아직 도입하지 않았다. 사용/격자/제한은 Tools/방편집_기반_2026-10-06.md.
+
+기존 h와 방 맞춤 최소0.01m·축128셀 정책을 공통 상수로 사용한다. 수동은 각 축 ceil(길이/h), 실제 원점=(MinX,MinY,0), 최대=원점+N*h이며 자동 span quantum은 사용하지 않는다. 초과는 거절하며 범위/h를 잘라 적용하지 않는다. GPU 자동 선택100000셀은 상한이 아니며 기존 정책을 유지한다. 자동 모드 알고리즘/물성/공기 솔버 식은 그대로다.
+
+기존 배치 상자의 전체 변환 8모서리와 기존 공기 결합의 수평/원래 치수 덕트 영역을 함께 검사한다. 실제·자동 CRAH의 앞/뒤 또는 위 이웃 유체 셀 h, 기존 랙 흡기/배기 표본 깊이와 콜드아일 지붕 한 셀 두께도 포함한다. 자동 계획은 새 월드 배치에서 재조회하고 이전 격자로 필터하지 않으며 계획 캐시는 복구한다. 셀 올림 확장으로 요청 방 밖 장비/덕트를 허용하지 않는다.
+
+설정 수락은 격자/온도/시계/줄을 바꾸지 않는다. 진입 직전 재검증 실패는 모드/모델/재구축 이전에 이유를 반환·표시한다. 예열 우회도 막는다. 수동 통합 구성이 끝난 뒤 AirField BeginPlay가 호출되어도 독립 자동 맞춤/Reset으로 덮어쓰지 않는다. 자동 모드 복귀는 기존 Fit 경로이며 bAutoFitToRacks를 영구 변경하지 않는다.
+
+| 기반 검사 | 측정/확인 | 기준·단위 |
+|---|---:|---|
+| 요청/실제 도메인 | 10.6×9.1×3.1 / 10.75×9.25×3.25 | m; 합성 fixture, 실제 시설 규격/추정 물성 아님. 요청 포함·외향 올림 |
+| 셀/원점/최대 | 43×37×13=20683 / (-5.5,-4.5,0) / (5.25,4.75,3.25) | 셀 정수 / m / m; h0.25m에서 계산 결과와 정확 일치 |
+| 자원 경계 | 128 수락 / 129 거절 | 셀/축; 실패한 순수 계획의 출력 불변 |
+| 거절·재진입 상태 | 변경0 | 유효 설정/모드·격자 원점·온도 K 배열·공유 시계 s·누적 입력 J·배관 수 불변. 음수/0/무한값·크기/회전/스케일/높이·자동 CRAH·덕트/셀 변경 검사 |
+
+검증: 최초 Editor120.35s 실패(테스트 Rack 헤더/Infinity API·표시 함수 오버로드). 헤더/std::numeric_limits 및 uint64 지정 후 Editor9.91s 성공; 중간10.67s 실패는 표시 형식 수정 반영 전 빌드였다. 자원 경계·시작 순서 보강 Editor25.09s/덕트 진단 첫 스텝 fixture 보강6.83s 성공. Foundation 최초1종 실패는 자동 CRAH 검사 방이 먼저 CDU를 제외한 테스트 구성 때문이었다. 한쪽 Y 경계만 줄여 원인을 분리한 뒤 최종 Foundation1종 무경고 성공(실패0/미실행0/종료0). 온도/장부가 남은 배치에서 장비를 방 밖으로 옮겼을 때 재진입 거절·상태 불변과 늦은 Air BeginPlay도 확인했다. 기준을 완화하지 않았다.
+실행: E:\UE_5.8 Editor Win64 Development, Automation RunTests VRG.Interaction.Layout.RoomAirDomainFoundation -unattended -NullRHI. 로컬 로그/리포트(커밋 제외): Saved/Build_RoomDomain*.log, Saved/Logs/RoomDomain_FoundationFinal_Tests.log, Saved/Automation/RoomDomain_FoundationFinal/index.json. 냉각 통합 검증의 정량 결과는 후속 절/커밋에 기록한다.
+
+현재 배치 저장 v1/v2는 방 설정을 기록하지 않는다. Load는 현 월드 방 설정을 유지하며 새 실행에서 별도 설정이 없으면 자동 맞춤이다. 방 Undo/저장·UI/핸들·벽/천장 판·외부 열 교환/플레넘은 후속. 전체 테스트/화면/FPS는 수행하지 않았다. 기존 장비 고체/덕트가 수평 방향·원래 치수를 쓰는 물리 모델 제한은 유지하며 전체 변환의 포함 검사를 새 기울기/스케일 유동 모델 구현으로 확대하지 않는다.
