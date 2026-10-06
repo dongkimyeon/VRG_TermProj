@@ -360,7 +360,7 @@ bool ADataCenterDebugController::TryDeleteRoomCeiling()
 
 bool ADataCenterDebugController::SetRoomCeilingHoleEditing(bool bEnable)
 {
-	if(!bEnable) { bRoomCeilingHoleEditing=false; SelectedRoomCeilingHole=INDEX_NONE; return true; }
+	if(!bEnable) { bRoomCeilingHoleEditing=false; SelectedRoomCeilingHole=INDEX_NONE; CeilingEditMessage.Reset(); return true; }
 	const int32 Plate=GetSelectedRoomCeilingIndex();
 	if(Plate==INDEX_NONE || !IsCameraInputAvailable() || IsLayoutDragging() || bAddingRack || bMarqueeActive || Grabbed.IsValid()
 		|| IsInputKeyDown(EKeys::RightMouseButton) || SelectedCeilingList[Plate].Holes.IsEmpty()) return false;
@@ -404,7 +404,7 @@ bool ADataCenterDebugController::SelectRoomCeilingHoleAlongRay(const FVector& Ey
 		}
 		if(bHit && (Best==INDEX_NONE || Lo<BestT)) { Best=I; BestT=Lo; }
 	}
-	SelectedRoomCeilingHole=Best;
+	SelectedRoomCeilingHole=Best; bCeilingPreviewValid=true;
 	CeilingEditMessage=Best==INDEX_NONE ? TEXT("구멍 선택 해제 · Esc 구멍 편집 종료")
 		: FString::Printf(TEXT("구멍 #%d 선택 · Delete 한 개 삭제 · Esc 구멍 편집 종료\n%s"),Best+1,*DescribeRoomCeilingCandidate(SelectedCeilingList[Plate],SelectedCeilingList));
 	return Best!=INDEX_NONE;
@@ -419,12 +419,12 @@ bool ADataCenterDebugController::TryDeleteRoomCeilingHole()
 	FString Reason;
 	if(!Sim->TrySetRoomCeilingPlates(After,Reason))
 	{
-		CeilingEditMessage=TEXT("구멍 삭제 거절: ")+Reason;
+		bCeilingPreviewValid=false; CeilingEditMessage=TEXT("구멍 삭제 거절: ")+Reason;
 		UE_LOG(LogTemp,Display,TEXT("[VrgLayout] %s"),*CeilingEditMessage); return false;
 	}
 	FLayoutTransformCommand Command; Command.bRoomCeilings=true; Command.RoomSettingsTarget=Sim;
 	Command.CeilingsBefore=Before; Command.CeilingsAfter=After; PushLayoutCommand(MoveTemp(Command));
-	SelectedCeilingList=MoveTemp(After); SelectedRoomCeilingHole=INDEX_NONE;
+	SelectedCeilingList=MoveTemp(After); SelectedRoomCeilingHole=INDEX_NONE; bCeilingPreviewValid=true;
 	CeilingEditMessage=TEXT("구멍 한 개 삭제 완료 · 실제 셀은 다음 시뮬레이션 진입 때 적용 · Esc 구멍 편집 종료");
 	return true;
 }

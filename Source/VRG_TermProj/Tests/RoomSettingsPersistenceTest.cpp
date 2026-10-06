@@ -1,4 +1,5 @@
 #include "Misc/AutomationTest.h"
+#include "InputKeyEventArgs.h"
 #include "Interaction/VrgLayoutFile.h"
 #include "Interaction/DataCenterDebugController.h"
 #include "Interaction/VrgRackLifecycle.h"
@@ -796,5 +797,73 @@ bool FRoomCeilingHoleUiHistoryTest::RunTest(const FString& Parameters)
 		&& New.Sim->GetRoomCeilingPlates()==After && New.C->GetLayoutUndoCount()==0 && New.C->GetLayoutRedoCount()==0); Run(New); }
 	AddInfo(FString::Printf(TEXT("Hole UI history warm%.2fs state exact; one hole per record; Undo/Redo/cancel/refusal/Redo clearing; modal failed Load retained/success closes; repeated/fresh v2 exact; next-entry16->7solid cells with9open h0.25m43x37x13; IT%.3e globalAbs%.3e pressure%.3e at1.02s."),Warm.SimTimeS,MaxIt,MaxEnergy,MaxDiv));
 	for(const auto& Name:{File,BadFile}) IFileManager::Get().Delete(*VrgLayoutFile::PathFor(Name)); return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FRoomCeilingHoleDeleteHistoryTest,"VRG.Interaction.Layout.RoomCeilingHoleDeleteHistoryPersistence",
+ EAutomationTestFlags::EditorContext | EAutomationTestFlags::CommandletContext | EAutomationTestFlags::EngineFilter)
+bool FRoomCeilingHoleDeleteHistoryTest::RunTest(const FString& Parameters)
+{
+ FRoomFileFixture F; FString Message; const auto InitialInput=F.Racks[0]->Input;
+ const FString File=TEXT("AutomationCeilingHoleDelete"),BadFile=File+TEXT("Bad"),ClosedFile=File+TEXT("Closed");
+ FRoomCeilingPlate P; P.MinXYM=FVector2D(-5.25,3); P.MaxXYM=FVector2D(-4.25,4); P.HeightM=2.625; // Existing synthetic metre fixture, not a facility dimension.
+ FRoomCeilingHole H,B; H.LocalMinXYM=FVector2D(.125); H.LocalMaxXYM=FVector2D(.875); B.LocalMinXYM=FVector2D(0); B.LocalMaxXYM=FVector2D(.75); P.Holes={H,H,B};
+ const TArray<FRoomCeilingPlate> Before{P}; F.Sim->TrySetRoomAirDomain(RoomFileDomain(),Message); F.Sim->TrySetRoomCeilingPlates(Before,Message);
+ F.Sim->EnterSimulationMode(); F.Sim->Tick(.021f); const double ReferenceIt=F.Sim->GetSnapshot().TotalItHeatW;
+ for(int32 I=0;I<25;++I) F.Sim->Tick(.04f); F.Sim->EnterLayoutMode(); const auto Warm=F.Sim->GetSnapshot();
+ const auto Mask=F.Air->GetMutableSolver().GetGrid().bSolidCell; const auto Temps=F.Air->GetMutableSolver().GetGrid().TemperatureK;
+ const auto Pose=F.Racks[0]->GetActorTransform(); const int32 Pipes=F.Room->GetMutableNetwork().GetNumPipes();
+ auto Frozen=[&]() { const auto S=F.Sim->GetSnapshot(); return S.SimTimeS==Warm.SimTimeS && S.EnergyInJ==Warm.EnergyInJ && S.EnergyOutJ==Warm.EnergyOutJ && S.EnergyStoredJ==Warm.EnergyStoredJ
+  && F.Air->GetMutableSolver().GetGrid().bSolidCell==Mask && F.Air->GetMutableSolver().GetGrid().TemperatureK==Temps && F.Room->GetMutableNetwork().GetNumPipes()==Pipes && F.Racks[0]->GetActorTransform().Equals(Pose,0); };
+ const FVector Eye(-475,350,400),BEye(-512.5,312.5,400),Down(0,0,-1);
+ auto Select=[&](const FVector& At) { F.C->SetRoomCeilingHoleEditing(false); return F.C->SetRoomCeilingEditing(true) && F.C->SelectRoomCeilingAlongRay(At,Down)
+  && F.C->SetRoomCeilingHoleEditing(true) && F.C->SelectRoomCeilingHoleAlongRay(At,Down); };
+ TestEqual(TEXT("Initial hole union9 cells despite duplicates"),F.Sim->GetNumCeilingCells(),7);
+ TestTrue(TEXT("Pick unique part of third hole"),Select(BEye) && F.C->GetSelectedRoomCeilingHoleIndex()==2 && F.C->TryDeleteRoomCeilingHole());
+ TestTrue(TEXT("One Delete one whole-list record, thermal state delayed"),F.Sim->GetRoomCeilingPlates()[0].Holes==TArray<FRoomCeilingHole>{H,H} && F.C->GetLayoutUndoCount()==1 && Frozen());
+ TestTrue(TEXT("Delete one duplicate only"),Select(Eye) && F.C->GetSelectedRoomCeilingHoleIndex()==0 && F.C->TryDeleteRoomCeilingHole());
+ auto Final=P; Final.Holes={H}; const TArray<FRoomCeilingPlate> After{Final};
+ TestTrue(TEXT("Two deletions leave one hole and two records"),F.Sim->GetRoomCeilingPlates()==After && F.C->GetLayoutUndoCount()==2 && Frozen());
+ FInputKeyEventArgs Esc; Esc.Key=EKeys::Escape; Esc.Event=IE_Pressed; F.C->InputKey(Esc); TestTrue(TEXT("Esc only exits hole picking, history unchanged"),!F.C->IsRoomCeilingHoleEditing() && F.C->GetLayoutUndoCount()==2 && Frozen());
+ TestTrue(TEXT("Undo both restores exact order/duplicates; Redo both restores final"),F.C->TryUndoLayout() && F.C->TryUndoLayout() && F.Sim->GetRoomCeilingPlates()==Before
+  && F.C->TryRedoLayout() && F.C->TryRedoLayout() && F.Sim->GetRoomCeilingPlates()==After && Frozen());
+ TestTrue(TEXT("Select before save"),Select(Eye)); TestTrue(TEXT("Save final confirmed list"),VrgLayoutFile::Save(F.W,File,Message));
+ auto Bad=ReadRoomFile(File); Bad->GetObjectField(TEXT("settings"))->GetArrayField(TEXT("roomCeilingPlates"))[0]->AsObject()->GetArrayField(TEXT("holes"))[0]->AsObject()->SetNumberField(TEXT("maxXM"),1.1); WriteRoomFile(BadFile,Bad);
+ TestTrue(TEXT("Failed Load retains hole mode/index/room/list/both histories and warm state"),!VrgLayoutFile::Load(F.W,BadFile,Message) && F.C->IsRoomCeilingHoleEditing() && F.C->GetSelectedRoomCeilingHoleIndex()==0
+  && F.Sim->GetRoomCeilingPlates()==After && F.Sim->GetRoomAirDomain()==RoomFileDomain() && F.C->GetLayoutUndoCount()==2 && F.C->GetLayoutRedoCount()==0 && Frozen());
+ TestTrue(TEXT("Success Load ends hole/plate modes and clears records; actual grid delayed"),VrgLayoutFile::Load(F.W,File,Message) && !F.C->IsRoomCeilingHoleEditing() && !F.C->IsRoomCeilingEditing()
+  && F.C->GetSelectedRoomCeilingHoleIndex()==INDEX_NONE && F.C->GetLayoutUndoCount()==0 && F.C->GetLayoutRedoCount()==0
+  && F.Sim->GetRoomCeilingPlates()==After && F.Air->GetMutableSolver().GetGrid().bSolidCell==Mask && F.Air->GetMutableSolver().GetGrid().TemperatureK==Temps && F.Sim->GetSnapshot().SimTimeS==Warm.SimTimeS);
+ TestTrue(TEXT("Stale selected index cannot delete after success Load; repeated exact list"),!F.C->TryDeleteRoomCeilingHole() && VrgLayoutFile::Load(F.W,File,Message) && F.Sim->GetRoomCeilingPlates()==After);
+ double MaxIt=0,MaxEnergy=0,MaxDiv=0,MaxWater=0,MaxDuct=0;
+ auto Run=[&](FRoomFileFixture& Case,bool bClosed)
+ {
+  for(auto* Rack:Case.Racks) Rack->Input=InitialInput;
+  Case.Sim->EnterSimulationMode(); Case.Sim->Tick(.021f); const auto First=Case.Sim->GetSnapshot();
+  TestEqual(TEXT("Next entry remaining union4 open or all16 closed cells"),Case.Sim->GetNumCeilingCells(),bClosed?16:12);
+  const auto& G=Case.Air->GetMutableSolver().GetGrid();
+  for(int32 Y=30;Y<34;++Y) for(int32 X=1;X<5;++X) TestEqual(TEXT("Exact remaining-union mask and restored solid"),G.IsSolidCell(X,Y,10),bClosed || !(X>=2 && X<4 && Y>=31 && Y<33));
+  for(int32 I=0;I<25;++I) Case.Sim->Tick(.04f); const auto S=Case.Sim->GetSnapshot(); const auto A=Case.Air->GetMutableSolver().MakeSnapshot(S.SimTimeS);
+  const double It=FMath::Abs(First.TotalItHeatW-ReferenceIt)/ReferenceIt;
+  MaxIt=FMath::Max(MaxIt,It); MaxEnergy=FMath::Max(MaxEnergy,FMath::Abs(S.NormalizedEnergyResidual)); MaxDiv=FMath::Max(MaxDiv,A.NormalizedDivergence);
+  double Removed=0,Duct=0; for(auto* Rack:Case.Racks) { Removed+=Rack->GetMutableModel().GetLastHeatRemovedByCoolantW(); TestTrue(TEXT("Positive coolant flow"),Rack->Input.CoolantMassFlowKgs>0); }
+  for(int32 I=0;I<S.RackAirMassFlowKgs.Num();++I) { TestTrue(TEXT("Positive rack airflow"),S.RackAirMassFlowKgs[I]>0); Duct=FMath::Max(Duct,FMath::Abs(S.RackAirMassFlowKgs[I]-S.RackDuctMassFlowKgs[I])/S.RackAirMassFlowKgs[I]); }
+  const double Water=FMath::Abs(Removed-S.TotalRadiatorRejectedW)/S.TotalRadiatorRejectedW;
+  MaxWater=FMath::Max(MaxWater,Water); MaxDuct=FMath::Max(MaxDuct,Duct);
+  TestTrue(TEXT("Existing coupled conservation/convergence/plausibility criteria"),It<1e-9 && FMath::Abs(S.NormalizedEnergyResidual)<1e-9 && S.bAirPressureConverged && A.bPressureConverged && A.NormalizedDivergence<1e-5
+   && S.bHydraulicsConverged && !A.bDuctsRejected && S.CrahCoilRemovedW>0 && G.GetNumCells()==20683 && Water<1e-12 && Duct<1e-9);
+  for(auto* Rack:Case.Racks) for(double K:Rack->Input.SlotAirInletTempK) TestTrue(TEXT("Existing15..35C inlet safety"),K>288.15 && K<308.15);
+  TestTrue(TEXT("Existing pump ratio safety"),Case.Room->GetTotalPumpElectricalW()>0 && Case.Room->GetTotalPumpElectricalW()/S.TotalItHeatW<.05);
+  AddInfo(FString::Printf(TEXT("Hole Delete loaded closed%d t%.2fs plateSolid%d open%d energy%.3e pressure%.3e water%.3e duct%.3e"),bClosed,S.SimTimeS,Case.Sim->GetNumCeilingCells(),bClosed?0:4,S.NormalizedEnergyResidual,A.NormalizedDivergence,Water,Duct));
+  Case.Sim->EnterLayoutMode();
+ };
+ Run(F,false); TestTrue(TEXT("Delete last hole yields closed plate metadata"),Select(Eye) && F.C->TryDeleteRoomCeilingHole() && F.Sim->GetRoomCeilingPlates()[0].Holes.IsEmpty());
+ TestTrue(TEXT("Save closed result"),VrgLayoutFile::Save(F.W,ClosedFile,Message)); Run(F,true);
+ { FRoomFileFixture New;
+  TestTrue(TEXT("Fresh repeated Load restores one remaining hole, no duplicate or records"),VrgLayoutFile::Load(New.W,File,Message) && VrgLayoutFile::Load(New.W,File,Message)
+   && New.Sim->GetRoomCeilingPlates()==After && New.C->GetLayoutUndoCount()==0 && New.C->GetLayoutRedoCount()==0); Run(New,false);
+  TestTrue(TEXT("Fresh repeated Load restores closed result"),VrgLayoutFile::Load(New.W,ClosedFile,Message) && VrgLayoutFile::Load(New.W,ClosedFile,Message) && New.Sim->GetRoomCeilingPlates()[0].Holes.IsEmpty()); Run(New,true);
+ }
+ AddInfo(FString::Printf(TEXT("Hole Delete history2 exact Undo/Redo; warm%.2fs unchanged; failed Load mode/index preserved/success stale cleared; same/fresh v2 union9->4->0open of16 cells h0.25m43x37x13; IT%.3e globalAbs%.3e pressure%.3e water%.3e duct%.3e at1.02s."),Warm.SimTimeS,MaxIt,MaxEnergy,MaxDiv,MaxWater,MaxDuct));
+ for(const auto& Name:{File,BadFile,ClosedFile}) IFileManager::Get().Delete(*VrgLayoutFile::PathFor(Name)); return true;
 }
 #endif

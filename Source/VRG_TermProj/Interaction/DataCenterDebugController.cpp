@@ -3094,6 +3094,11 @@ void ADataCenterDebugController::GetHelpLines(TArray<FString>& Out) const
 	// "DisableAllScreenMessages" hint).
 	Out.Reset();
 	const bool bLayout = IsLayoutMode();
+	if(bRoomCeilingHoleEditing)
+	{
+		Out.Add(FString::Printf(TEXT("구멍 편집 | 보라 개방 범위 클릭 / Delete 한 개 / Ctrl+Z/Y / Esc 구멍 모드 종료 | 선택 구멍 %d"),GetSelectedRoomCeilingHoleIndex()+1));
+		return;
+	}
 	if(bRoomCeilingEditing)
 	{
 		Out.Add(FString::Printf(TEXT("천장 편집 | 클릭 선택 · 판 내부 이동 / 모서리 XY / 중앙점 높이(5 cm) / Delete 한 장 / Ctrl+Z/Y / Esc 취소·종료 | 선택 %d / 판 %d"),

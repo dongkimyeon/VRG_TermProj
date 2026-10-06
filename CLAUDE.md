@@ -4186,3 +4186,24 @@ Editor Development104.85s 성공(기존 컴파일 경고 유지). 신규 RoomCei
 구멍 추가 UI는 사용자 직접 확인 정상 보고다. 별도 ‘구멍 선택·삭제’는 선택 판의 계산 개방 셀 상자만 픽킹한다. 동일 거리/기하는 첫 배열 항목을 선택하고 Delete는 RemoveAt 한 항목만 적용한다. 빈 곳은 구멍 선택만 해제, Esc는 구멍 모드만 종료한다. 판 드래그/핸들/Delete와 입력 경로를 분리하고 숫자 창·패치·편집·시뮬레이션 차단 및 전체 값 목록의 stale 보호를 재사용했다. 삭제 후보는 기존 전체 검증으로 장비/덕트 포함·자원 제한을 다시 확인한다. CDU 외형을 통과하는 구멍 삭제가 거절되어 선택·목록·기록·예열 온도/시계/마스크가 유지됨을 검사했다. 성공 한 건은 기존 전체 목록 기록/v2를 사용하고 실제 셀은 다음 진입까지 유지한다.
 
 E:\UE_5.8 Editor Development 빌드167.12s 성공(기존 FloorCm C4701/Name C4457 경고 잔존). Automation RoomCeilingHoleSelectionDelete / RoomCeilingSelectionDelete / RoomCeilingHoleUiInput 3종 무경고 성공. 근거: Saved/Build_CeilingHoleSelect.log, Saved/Logs/CeilingHoleSelect_Tests.log, Saved/Automation/CeilingHoleSelect/index.json(커밋 제외). 기록/저장·최종 셀/물리 통합 검증은 다음 작은 커밋에서 진행한다. 새 수치·물성·물리 허용치 없음. 신규 실제 화면/OS 포커스는 미확인: Tools/부분천장_구멍선택삭제_확인_2026-10-07.md. 기존 화면 도구 실패 재시도·전체 Automation/FPS 없음.
+
+
+### 2026-10-07 구멍 선택·삭제 기록/v2·고체 복원 통합 완료
+
+선택한 구멍 한 개 삭제·중복 한 항목 제거·두 삭제 전체 Undo/Redo의 배열 순서/값 복원·Esc 기록 불변을 확인했다. 실패 Load는 구멍 모드/인덱스·방/판·양 기록·예열 상태를 유지하고 성공 Load는 선택/모드/기록을 초기화한다. 반복/새 월드 v2 복원은 구멍을 덧붙이지 않는다. 1.02s 예열 뒤 편집과 Undo/Redo는 실제 온도·시계·열 장부·고체 마스크·배관/장비를 그대로 유지한다. 다음 진입에 초기 개방 합집합9셀(중복 포함)→남은4셀→0셀, 판 고체7→12→16셀을 정확히 적용했다. 원래 구멍의 고체 제외·다른 판/벽/장비/콜드아일 지붕 보존 및 이전 파일 호환은 기존 RoomCeilingHoleHistoryPersistence를 재사용해 함께 검증했다. 실제 유동 연결 솔버를 수정하지 않았다.
+
+구멍 전용 키 안내를 분리하고 종료 후 오래된 안내를 지우며, 삭제 거절 이유는 기존 HUD 유효 플래그로 빨간 표시한다. 원인 없이 입력/충돌 조건을 완화하거나 물성을 새로 정의하지 않았다.
+
+| 검사 | 새 삭제 시나리오 측정(같은/새 월드, 남은 구멍/닫힌 판, t1.02s) | 정규화·단위·기존 기준 |
+|---|---|---|
+| 기하/격자 | h0.25m,43×37×13=20683셀, 판16셀 중 개방9→4→0 / 고체7→12→16 | 요청1m×1m 판·높이2.625m 합성 시험 기하. 새 시설 수치/물성이 아님; 셀별 정확 일치 |
+| 랙 IT 불변 | 최대 상대0 | abs(첫IT−동일 프리셋/부하/초기조건 참조IT)/참조IT(W), 무차원<1e-9 |
+| 전역 열수지 | maxAbs1.305e-14 | abs(Ein−Eout−Stored)/EnergyInJ(IT+CRAH 팬), 무차원<1e-9 |
+| 압력 발산 | max3.461e-08, 수렴 | maxAbsDiv(1/s)/(maxAbsVelocity(m/s)/h(m)), 무차원<1e-5 + 압력 수렴 플래그 |
+| 냉각수 열 결합 | max7.544e-15 | abs(랙 coolant 제거합W−라디에이터 방출W)/라디에이터 방출W, 무차원<1e-12 |
+| 랙/덕트 공기 결합 | max8.641e-16 | abs(랙 풍량kg/s−덕트 풍량kg/s)/랙 풍량kg/s, 무차원<1e-9 및 양의 풍량 |
+| 타당성/냉각 | 수력 수렴·덕트 거절 없음·양의 코일 제거W·흡기288.15~308.15K 내부·펌프 비율 정상 | 기존15~35°C 과도 안전망 및0<펌프 전력W/IT 전력W<0.05. 새 허용치 없음 |
+
+Editor Development96.93s 성공. RoomCeilingHoleDeleteHistoryPersistence / 기존 RoomCeilingHoleHistoryPersistence / 표시·종료 코드 변경 영향의 RoomCeilingHoleSelectionDelete 3종 무경고 성공(후자는 해당 변경 때문에 재검사). 앞 입력 포함 고유 영향5종 최종 모두 성공. 기존 구멍/다른 고체 통합 재검사 전역maxAbs5.999e-14·압력2.793e-08·냉각수2.382e-15·덕트8.641e-16로 기존 기준 충족. 근거(커밋 제외): Saved/Build_CeilingHoleDeleteHistory.log, Saved/Logs/CeilingHoleDeleteHistory_Tests.log, Saved/Automation/CeilingHoleDeleteHistory/index.json. 균일 CPU/NullRHI 합성 시험이므로 시설 정확도·정상상태·GPU/옥트리·실제 UI/FPS 확인으로 확대하지 않는다.
+
+신규 선택/삭제 UI 픽셀·직접 입력/OS 포커스는 미확인이고 Tools/부분천장_구멍선택삭제_확인_2026-10-07.md 상세 절차를 따른다. 사용자 보고로 정상 확인된 것은 기존 구멍 추가 UI다. 구멍 핸들·다중 편집·외부 배기·물리 확장·전체 Automation/FPS는 제외했으며 빌드 중 소스 변경·환경 변화 없는 화면 도구 재시도·변경 없는 성공 검사 반복은 하지 않았다.
