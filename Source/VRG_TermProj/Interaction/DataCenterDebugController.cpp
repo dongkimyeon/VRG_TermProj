@@ -695,7 +695,7 @@ bool ADataCenterDebugController::IsLayoutBoxBlocked(UWorld* World, const FVector
 
 void ADataCenterDebugController::BeginRackAddition()
 {
-	if (!IsLayoutMode() || !IsCameraInputAvailable()) return;
+	if (!IsLayoutMode() || !IsEquipmentInputAvailable()) return;
 	EndLayoutDrag(false);
 	EndLayoutMarquee(false);
 	Grabbed.Reset();
@@ -717,14 +717,14 @@ void ADataCenterDebugController::BeginRackAddition()
 
 void ADataCenterDebugController::BeginSpineAddition()
 {
- if (!IsLayoutMode() || !IsCameraInputAvailable()) return;
+ if (!IsLayoutMode() || !IsEquipmentInputAvailable()) return;
  BeginRackAddition();
  if (bAddingRack) bAddingSpine = true;
 }
 
 void ADataCenterDebugController::BeginCduAddition()
 {
- if (!IsLayoutMode() || !IsCameraInputAvailable() || IsLayoutDragging() || bMarqueeActive || bAddingRack
+ if (!IsLayoutMode() || !IsEquipmentInputAvailable() || IsLayoutDragging() || bMarqueeActive || bAddingRack
   || Grabbed.IsValid() || IsInputKeyDown(EKeys::RightMouseButton)) return;
  BeginRackAddition();
  if (bAddingRack) bAddingCdu = true;
@@ -742,7 +742,7 @@ void ADataCenterDebugController::BeginPerimeterCrahAddition()
 
 void ADataCenterDebugController::BeginCrahAdditionOfKind(ECrahUnitKind Kind)
 {
- if (!GetWorld() || !GetWorld()->IsGameWorld() || !IsLayoutMode() || !IsCameraInputAvailable()
+ if (!GetWorld() || !GetWorld()->IsGameWorld() || !IsLayoutMode() || !IsEquipmentInputAvailable()
   || IsLayoutDragging() || bMarqueeActive || bAddingRack || Grabbed.IsValid() || IsInputKeyDown(EKeys::RightMouseButton)) return;
  auto* Sim=FindSimActor(); TArray<FCrahLayoutRecord> Automatic;
  if (!Sim || !Sim->CaptureAutomaticCrahLayout(Automatic)) return; // Never implicitly change the ceiling-coil model.
@@ -751,7 +751,7 @@ void ADataCenterDebugController::BeginCrahAdditionOfKind(ECrahUnitKind Kind)
 
 void ADataCenterDebugController::BeginBarrierAddition(EBarrierKind Kind)
 {
-	if (!GetWorld() || !GetWorld()->IsGameWorld() || !IsLayoutMode() || !IsCameraInputAvailable()
+	if (!GetWorld() || !GetWorld()->IsGameWorld() || !IsLayoutMode() || !IsEquipmentInputAvailable()
 		|| IsLayoutDragging() || bMarqueeActive || bAddingRack || Grabbed.IsValid() || IsInputKeyDown(EKeys::RightMouseButton)) return;
 	BeginRackAddition();
 	if (!bAddingRack) return;
@@ -764,7 +764,7 @@ void ADataCenterDebugController::BeginBarrierAddition(EBarrierKind Kind)
 bool ADataCenterDebugController::BeginBarrierDuplication()
 {
 	UWorld* World = GetWorld();
-	if (!World || !World->IsGameWorld() || !IsLayoutMode() || !IsCameraInputAvailable()
+	if (!World || !World->IsGameWorld() || !IsLayoutMode() || !IsEquipmentInputAvailable()
 		|| bAddingRack || IsLayoutDragging() || bMarqueeActive || Grabbed.IsValid() || IsInputKeyDown(EKeys::RightMouseButton)) return false;
 	const auto Selected = GetSelectedLayoutActors();
 	if (Selected.IsEmpty()) return false;
@@ -787,7 +787,7 @@ bool ADataCenterDebugController::BeginBarrierDuplication()
 bool ADataCenterDebugController::BeginRackDuplication()
 {
 	UWorld* CurrentWorld = GetWorld();
-	if (!CurrentWorld || !CurrentWorld->IsGameWorld() || !IsLayoutMode() || !IsCameraInputAvailable()
+	if (!CurrentWorld || !CurrentWorld->IsGameWorld() || !IsLayoutMode() || !IsEquipmentInputAvailable()
 		|| bAddingRack || IsLayoutDragging() || bMarqueeActive || Grabbed.IsValid() || IsInputKeyDown(EKeys::RightMouseButton)) return false;
 	const TArray<AActor*> Selected = GetSelectedLayoutActors();
 	if (Selected.IsEmpty()) return false;
@@ -818,7 +818,7 @@ void ADataCenterDebugController::OnDuplicateLayoutRack()
 bool ADataCenterDebugController::BeginSpineDuplication()
 {
 	UWorld* World = GetWorld();
-	if (!World || !World->IsGameWorld() || !IsLayoutMode() || !IsCameraInputAvailable()
+	if (!World || !World->IsGameWorld() || !IsLayoutMode() || !IsEquipmentInputAvailable()
 		|| bAddingRack || IsLayoutDragging() || bMarqueeActive || Grabbed.IsValid() || IsInputKeyDown(EKeys::RightMouseButton)) return false;
 	const auto Selected = GetSelectedLayoutActors();
 	if (Selected.IsEmpty()) return false;
@@ -842,7 +842,7 @@ bool ADataCenterDebugController::BeginSpineDuplication()
 bool ADataCenterDebugController::BeginCduDuplication()
 {
  UWorld* World = GetWorld();
- if (!World || !World->IsGameWorld() || !IsLayoutMode() || !IsCameraInputAvailable()
+ if (!World || !World->IsGameWorld() || !IsLayoutMode() || !IsEquipmentInputAvailable()
   || bAddingRack || IsLayoutDragging() || bMarqueeActive || Grabbed.IsValid() || IsInputKeyDown(EKeys::RightMouseButton)) return false;
  const auto Selected = GetSelectedLayoutActors();
  if (Selected.IsEmpty()) return false;
@@ -866,7 +866,7 @@ bool ADataCenterDebugController::BeginCduDuplication()
 bool ADataCenterDebugController::BeginCrahDuplication()
 {
  UWorld* World = GetWorld();
- if (!World || !World->IsGameWorld() || !IsLayoutMode() || !IsCameraInputAvailable()
+ if (!World || !World->IsGameWorld() || !IsLayoutMode() || !IsEquipmentInputAvailable()
   || bAddingRack || IsLayoutDragging() || bMarqueeActive || Grabbed.IsValid() || IsInputKeyDown(EKeys::RightMouseButton)) return false;
  const auto Selected = GetSelectedLayoutActors();
  if (Selected.IsEmpty()) return false;
@@ -891,6 +891,11 @@ bool ADataCenterDebugController::BeginCrahDuplication()
 
 bool ADataCenterDebugController::InputKey(const FInputKeyEventArgs& Params)
 {
+	if (bRoomBoundsEditing && Params.Key == EKeys::Escape)
+	{
+		if (Params.Event == IE_Pressed) OnCancelLayoutDrag();
+		return true; // One cancel per press, even if Enhanced Input would route the same key later.
+	}
 	if (bRoomSettingsOpen)
 	{
 		if (Params.Key == EKeys::Escape && Params.Event == IE_Pressed) CloseRoomSettings();
@@ -946,7 +951,7 @@ void ADataCenterDebugController::UpdateRackAdditionAlongRay(const FVector& EyeCm
 {
 	if (!bAddingRack) return;
 	FVector FloorCm;
-	bRackAdditionHasFloor = IsLayoutMode() && IsCameraInputAvailable()
+	bRackAdditionHasFloor = IsLayoutMode() && IsEquipmentInputAvailable()
 		&& FloorPointSnapped(EyeCm, Direction, (!RackDuplicationMembers.IsEmpty() || !SpineDuplicationMembers.IsEmpty() || !CduDuplicationMembers.IsEmpty() || !CrahDuplicationMembers.IsEmpty() || !BarrierDuplicationMembers.IsEmpty()) ? RackAdditionTransform.GetLocation().Z : 0.0, PlaceSnapM, FloorCm);
 	if (bRackAdditionHasFloor) RackAdditionTransform.SetLocation(FloorCm);
 }
@@ -960,7 +965,7 @@ void ADataCenterDebugController::UpdateRackAdditionFromCursor()
 	int32 Width = 0, Height = 0;
 	GetViewportSize(Width, Height);
 	const UGameViewportClient* Client = GetWorld() ? GetWorld()->GetGameViewport() : nullptr;
-	if (!IsCameraInputAvailable() || IsInputKeyDown(EKeys::RightMouseButton)
+	if (!IsEquipmentInputAvailable() || IsInputKeyDown(EKeys::RightMouseButton)
 		|| !Client || !Client->Viewport || !Client->Viewport->HasFocus()
 		|| !GetMousePosition(X, Y) || X < 0 || Y < 0 || X >= Width || Y >= Height
 		|| !DeprojectMousePositionToWorld(EyeCm, Direction))
@@ -1002,7 +1007,7 @@ void ADataCenterDebugController::LogLayoutInputState(const TCHAR* Context) const
 
 bool ADataCenterDebugController::GetRackAdditionPreview(FTransform& Out, FVector& SizeM, int32 MemberIndex) const
 {
-	if (!bAddingRack || !bRackAdditionHasFloor || !IsLayoutMode() || !IsCameraInputAvailable()
+	if (!bAddingRack || !bRackAdditionHasFloor || !IsLayoutMode() || !IsEquipmentInputAvailable()
 		|| MemberIndex < 0 || MemberIndex >= GetRackAdditionPreviewCount()) return false;
 	Out = RackAdditionTransform;
 	if (bAddingBarrier)
@@ -1058,7 +1063,7 @@ bool ADataCenterDebugController::GetRackAdditionPreview(FTransform& Out, FVector
 
 bool ADataCenterDebugController::TryRotateRackAddition()
 {
-	if (!bAddingRack || !IsLayoutMode() || !IsCameraInputAvailable() || GetRackAdditionPreviewCount() > 1
+	if (!bAddingRack || !IsLayoutMode() || !IsEquipmentInputAvailable() || GetRackAdditionPreviewCount() > 1
 		|| IsInputKeyDown(EKeys::RightMouseButton)) return false;
 	RackAdditionTransform.SetRotation(FRotator(0, 90, 0).Quaternion() * RackAdditionTransform.GetRotation());
 	return true;
@@ -1270,7 +1275,7 @@ ASpineCabinetActor* ADataCenterDebugController::ConfirmSpineAddition()
 bool ADataCenterDebugController::TryDeleteLayoutRack()
 {
 	UWorld* CurrentWorld = GetWorld();
-	if (!CurrentWorld || !CurrentWorld->IsGameWorld() || !IsLayoutMode() || !IsCameraInputAvailable()
+	if (!CurrentWorld || !CurrentWorld->IsGameWorld() || !IsLayoutMode() || !IsEquipmentInputAvailable()
 		|| bAddingRack || IsLayoutDragging() || bMarqueeActive || Grabbed.IsValid() || IsInputKeyDown(EKeys::RightMouseButton)) return false;
 	const TArray<AActor*> Selected = GetSelectedLayoutActors();
 	if (Selected.IsEmpty()) return false;
@@ -1300,7 +1305,7 @@ void ADataCenterDebugController::OnDeleteLayoutEquipment()
 bool ADataCenterDebugController::TryDeleteLayoutCrah()
 {
  auto* World=GetWorld();
- if(!World || !World->IsGameWorld() || !IsLayoutMode() || !IsCameraInputAvailable()
+ if(!World || !World->IsGameWorld() || !IsLayoutMode() || !IsEquipmentInputAvailable()
   || bAddingRack || IsLayoutDragging() || bMarqueeActive || Grabbed.IsValid() || IsInputKeyDown(EKeys::RightMouseButton)) return false;
  const auto Selected=GetSelectedLayoutActors();
  if(Selected.IsEmpty()) return false;
@@ -1334,7 +1339,7 @@ bool ADataCenterDebugController::TryDeleteLayoutCrah()
 bool ADataCenterDebugController::TryDeleteLayoutCdu()
 {
  UWorld* World = GetWorld();
- if (!World || !World->IsGameWorld() || !IsLayoutMode() || !IsCameraInputAvailable()
+ if (!World || !World->IsGameWorld() || !IsLayoutMode() || !IsEquipmentInputAvailable()
   || bAddingRack || IsLayoutDragging() || bMarqueeActive || Grabbed.IsValid() || IsInputKeyDown(EKeys::RightMouseButton)) return false;
  const auto Selected = GetSelectedLayoutActors();
  if (Selected.IsEmpty()) return false;
@@ -1355,7 +1360,7 @@ bool ADataCenterDebugController::TryDeleteLayoutCdu()
 bool ADataCenterDebugController::TryDeleteLayoutSpine()
 {
 	UWorld* World = GetWorld();
-	if (!World || !World->IsGameWorld() || !IsLayoutMode() || !IsCameraInputAvailable()
+	if (!World || !World->IsGameWorld() || !IsLayoutMode() || !IsEquipmentInputAvailable()
 		|| bAddingRack || IsLayoutDragging() || bMarqueeActive || Grabbed.IsValid() || IsInputKeyDown(EKeys::RightMouseButton)) return false;
 	const auto Selected = GetSelectedLayoutActors();
 	if (Selected.IsEmpty()) return false;
@@ -1410,7 +1415,7 @@ ALayoutBarrierActor* ADataCenterDebugController::ConfirmBarrierAddition()
 bool ADataCenterDebugController::TryDeleteLayoutBarrier()
 {
 	UWorld* World = GetWorld();
-	if (!World || !World->IsGameWorld() || !IsLayoutMode() || !IsCameraInputAvailable()
+	if (!World || !World->IsGameWorld() || !IsLayoutMode() || !IsEquipmentInputAvailable()
 		|| bAddingRack || IsLayoutDragging() || bMarqueeActive || Grabbed.IsValid() || IsInputKeyDown(EKeys::RightMouseButton)) return false;
 	const auto Selected = GetSelectedLayoutActors();
 	if (Selected.IsEmpty()) return false;
@@ -1477,7 +1482,7 @@ bool ADataCenterDebugController::TryLayoutMove(AActor* Actor, const FVector& Tar
 {
 	if (bAddingRack || bMarqueeActive) return false;
 	if (GetSelectedLayoutActors().Num() > 1) return false;
-	if (!IsLayoutMode() || !IsCameraInputAvailable() || !IsValid(Actor) || Actor->GetWorld() != GetWorld() || TargetCm.ContainsNaN()) return false;
+	if (!IsLayoutMode() || !IsEquipmentInputAvailable() || !IsValid(Actor) || Actor->GetWorld() != GetWorld() || TargetCm.ContainsNaN()) return false;
 	FTransform Proposed = Actor->GetActorTransform();
 	Proposed.SetLocation(TargetCm);
 	if (IsLayoutPlacementBlocked(Actor, Proposed)) return false;
@@ -1495,6 +1500,7 @@ void ADataCenterDebugController::ClearLayoutHistory()
 
 void ADataCenterDebugController::ResetLayoutEditsForLoad()
 {
+	SetRoomBoundsEditing(false);
 	CancelRackAddition();
 	EndLayoutDrag(false);
 	EndLayoutMarquee(false);
@@ -1971,7 +1977,7 @@ bool ADataCenterDebugController::TryLayoutRotation(AActor* Actor, const FRotator
 {
 	if (bAddingRack || bMarqueeActive) return false;
 	if (GetSelectedLayoutActors().Num() > 1) return false;
-	if (!IsLayoutMode() || !IsCameraInputAvailable() || IsLayoutDragging() || !IsValid(Actor)
+	if (!IsLayoutMode() || !IsEquipmentInputAvailable() || IsLayoutDragging() || !IsValid(Actor)
 		|| Actor->GetWorld() != GetWorld() || Rotation.ContainsNaN()) return false;
 	FTransform Proposed = Actor->GetActorTransform();
 	Proposed.SetRotation(Rotation.Quaternion());
@@ -1992,7 +1998,7 @@ bool ADataCenterDebugController::TryLayoutRotation(AActor* Actor, const FRotator
 
 bool ADataCenterDebugController::TryRotateLayoutSelection()
 {
-	if (!IsLayoutMode() || !IsCameraInputAvailable() || bAddingRack || IsLayoutDragging() || bMarqueeActive
+	if (!IsLayoutMode() || !IsEquipmentInputAvailable() || bAddingRack || IsLayoutDragging() || bMarqueeActive
 		|| IsInputKeyDown(EKeys::RightMouseButton) || Grabbed.IsValid()) return false;
 	const TArray<AActor*> Selected = GetSelectedLayoutActors();
 	if (Selected.Num() < 2) return false;
@@ -2046,7 +2052,7 @@ bool ADataCenterDebugController::TryRotateLayoutSelection()
 void ADataCenterDebugController::OnFocusEquipment()
 {
 	CancelRackAddition();
-	if (!IsLayoutMode() || !IsCameraInputAvailable()) return;
+	if (!IsLayoutMode() || !IsEquipmentInputAvailable()) return;
 	// Click selection persists when the view changes. Release legacy G movement before framing.
 	EndLayoutMarquee(false);
 	EndLayoutDrag(false);
@@ -2067,6 +2073,12 @@ void ADataCenterDebugController::OnSelectLayoutEquipment()
 {
 	LogLayoutInputState(TEXT("EnhancedSelectBegin"));
 	if (!IsLayoutMode() || !IsCameraInputAvailable() || IsInputKeyDown(EKeys::RightMouseButton)) return;
+	if (bRoomBoundsEditing)
+	{
+		FVector Eye, Dir; FVector2D Screen;
+		if (MouseRay(Eye, Dir, Screen)) BeginRoomCornerDrag(PickRoomCorner(Screen), Eye, Dir);
+		return; // Room handles own left clicks, including misses; no selection/marquee underneath.
+	}
 	FVector EyeCm, Direction;
 	// Failed deprojection (e.g. no viewport) is not an intentional click on empty space.
 	if (DeprojectMousePositionToWorld(EyeCm, Direction))
@@ -2110,7 +2122,7 @@ void ADataCenterDebugController::BeginLayoutDragAlongRay(const FVector& EyeCm, c
 	EndLayoutMarquee(false);
 	EndLayoutDrag(false);
 	SelectLayoutAlongRay(EyeCm, Direction, false, true);
-	if (!IsLayoutMode() || !IsCameraInputAvailable() || IsInputKeyDown(EKeys::RightMouseButton)
+	if (!IsLayoutMode() || !IsEquipmentInputAvailable() || IsInputKeyDown(EKeys::RightMouseButton)
 		|| EyeCm.ContainsNaN() || Direction.ContainsNaN() || Direction.IsNearlyZero()) return;
 	AActor* Selected = PickPlaceableAlongRay(GetWorld(), EyeCm, Direction.GetSafeNormal(), TNumericLimits<double>::Max());
 	if (!Selected || !FloorPointSnapped(EyeCm, Direction.GetSafeNormal(), Selected->GetActorLocation().Z, 0.0, DragStartFloorCm)) return;
@@ -2128,7 +2140,7 @@ void ADataCenterDebugController::BeginLayoutDragAlongRay(const FVector& EyeCm, c
 void ADataCenterDebugController::UpdateLayoutDragAlongRay(const FVector& EyeCm, const FVector& Direction, bool bDisableRowSnap)
 {
 	if (!IsLayoutDragging()) return;
-	if (!IsLayoutMode() || !IsCameraInputAvailable() || IsInputKeyDown(EKeys::RightMouseButton))
+	if (!IsLayoutMode() || !IsEquipmentInputAvailable() || IsInputKeyDown(EKeys::RightMouseButton))
 	{
 		EndLayoutDrag(false);
 		return;
@@ -2263,11 +2275,12 @@ bool ADataCenterDebugController::GetLayoutRowSnapGuide(FVector& StartCm, FVector
 
 void ADataCenterDebugController::EndLayoutDrag(bool bCommit)
 {
+	if (RoomDragCorner != INDEX_NONE) { EndRoomCornerDrag(bCommit); return; }
 	// Every cancel path (Esc, focus, patch, mode change) ends the gizmo the same way: release commits, cancel restores.
 	if (GizmoDrag.bActive) { EndLayoutGizmoDrag(bCommit); return; }
 	const bool bHadDrag = IsLayoutDragging();
 	if (bHadDrag) LogLayoutInputState(bCommit ? TEXT("DragEndCommitBegin") : TEXT("DragEndCancelBegin"));
-	if (bCommit && bDragMoved && IsLayoutDragging() && IsLayoutMode() && IsCameraInputAvailable()
+	if (bCommit && bDragMoved && IsLayoutDragging() && IsLayoutMode() && IsEquipmentInputAvailable()
 		&& !IsInputKeyDown(EKeys::RightMouseButton))
 	{
 		RefreshLayoutRowSnap(); // Re-read row positions/Alt at release without rebuilding any routing or meshes.
@@ -2315,6 +2328,10 @@ void ADataCenterDebugController::EndLayoutDrag(bool bCommit)
 
 void ADataCenterDebugController::OnReleaseLayoutEquipment()
 {
+	if (RoomDragCorner != INDEX_NONE)
+	{
+		UpdateRoomCornerFromCursor(); EndRoomCornerDrag(true); return;
+	}
 	LogLayoutInputState(TEXT("EnhancedReleaseBegin"));
 	if (bMarqueeActive)
 	{
@@ -2329,6 +2346,12 @@ void ADataCenterDebugController::OnReleaseLayoutEquipment()
 
 void ADataCenterDebugController::OnCancelLayoutDrag()
 {
+	if (bRoomBoundsEditing)
+	{
+		if (RoomDragCorner != INDEX_NONE) EndRoomCornerDrag(false);
+		else SetRoomBoundsEditing(false);
+		return;
+	}
 	LogLayoutInputState(TEXT("EnhancedCancelBegin"));
 	CancelRackAddition();
 	EndLayoutMarquee(false);
@@ -2337,6 +2360,7 @@ void ADataCenterDebugController::OnCancelLayoutDrag()
 
 void ADataCenterDebugController::UpdateLayoutDragFromCursor()
 {
+	if (RoomDragCorner != INDEX_NONE) { UpdateRoomCornerFromCursor(); return; }
 	if (!IsLayoutDragging()) return;
 	if (GizmoDrag.bActive)
 	{
@@ -2349,7 +2373,7 @@ void ADataCenterDebugController::UpdateLayoutDragFromCursor()
 	float X = 0.0f, Y = 0.0f;
 	int32 Width = 0, Height = 0;
 	GetViewportSize(Width, Height);
-	if (!IsLayoutMode() || !IsCameraInputAvailable() || IsInputKeyDown(EKeys::RightMouseButton)
+	if (!IsLayoutMode() || !IsEquipmentInputAvailable() || IsInputKeyDown(EKeys::RightMouseButton)
 		|| !Client || !Client->Viewport || !Client->Viewport->HasFocus()
 		|| !GetMousePosition(X, Y) || X < 0 || Y < 0 || X >= Width || Y >= Height)
 	{
@@ -2421,7 +2445,7 @@ bool ADataCenterDebugController::ProjectLayoutBoxToScreen(const AActor* Actor, c
 
 bool ADataCenterDebugController::SelectLayoutInScreenRect(const FBox2D& Rect, const FMatrix& ViewProjection, const FIntRect& ViewRect, bool bAdd)
 {
-	if (!IsLayoutMode() || !IsCameraInputAvailable() || IsLayoutDragging() || IsInputKeyDown(EKeys::RightMouseButton)
+	if (!IsLayoutMode() || !IsEquipmentInputAvailable() || IsLayoutDragging() || IsInputKeyDown(EKeys::RightMouseButton)
 		|| !Rect.bIsValid || Rect.Min.ContainsNaN() || Rect.Max.ContainsNaN() || ViewProjection.ContainsNaN()
 		|| ViewRect.Width() <= 0 || ViewRect.Height() <= 0) return false;
 	TArray<TWeakObjectPtr<AActor>> Selected;
@@ -2439,7 +2463,7 @@ bool ADataCenterDebugController::SelectLayoutInScreenRect(const FBox2D& Rect, co
 void ADataCenterDebugController::BeginLayoutMarquee(const FVector2D& Start, bool bAdd)
 {
 	if (bAddingRack) return;
-	if (!IsLayoutMode() || !IsCameraInputAvailable() || IsInputKeyDown(EKeys::RightMouseButton) || Start.ContainsNaN()) return;
+	if (!IsLayoutMode() || !IsEquipmentInputAvailable() || IsInputKeyDown(EKeys::RightMouseButton) || Start.ContainsNaN()) return;
 	EndLayoutDrag(false);
 	bMarqueeActive = true; bMarqueeMoved = false; bMarqueeAdd = bAdd;
 	MarqueeStart = MarqueeEnd = Start; // Selection is unchanged until release, so cancel requires no restoration.
@@ -2449,7 +2473,7 @@ void ADataCenterDebugController::BeginLayoutMarquee(const FVector2D& Start, bool
 void ADataCenterDebugController::UpdateLayoutMarquee(const FVector2D& Current)
 {
 	if (!bMarqueeActive) return;
-	if (!IsLayoutMode() || !IsCameraInputAvailable() || IsInputKeyDown(EKeys::RightMouseButton)) { EndLayoutMarquee(false); return; }
+	if (!IsLayoutMode() || !IsEquipmentInputAvailable() || IsInputKeyDown(EKeys::RightMouseButton)) { EndLayoutMarquee(false); return; }
 	if (Current.ContainsNaN()) return;
 	MarqueeEnd = Current;
 	bMarqueeMoved |= FVector2D::Distance(MarqueeStart, Current) >= 4.0; // Existing UI drag threshold, pixels.
@@ -2469,7 +2493,7 @@ void ADataCenterDebugController::EndLayoutMarquee(bool bCommit)
 	FBox2D Rect; GetLayoutMarqueeRect(Rect);
 	const bool bMoved = bMarqueeMoved, bAdd = bMarqueeAdd;
 	bMarqueeActive = false;
-	if (!bCommit || !IsLayoutMode() || !IsCameraInputAvailable() || IsInputKeyDown(EKeys::RightMouseButton)) return;
+	if (!bCommit || !IsLayoutMode() || !IsEquipmentInputAvailable() || IsInputKeyDown(EKeys::RightMouseButton)) return;
 	if (!bMoved) { LayoutSelection.Reset(); return; } // Empty click clears even when Shift was held.
 	const ULocalPlayer* LocalPlayer = GetLocalPlayer();
 	const UGameViewportClient* Client = GetWorld()->GetGameViewport();
@@ -2491,7 +2515,7 @@ void ADataCenterDebugController::UpdateLayoutMarqueeFromCursor()
 void ADataCenterDebugController::SelectLayoutAlongRay(const FVector& EyeCm, const FVector& Direction, bool bToggle, bool bKeepSelected)
 {
 	if (bAddingRack) return;
-	if (!IsLayoutMode() || !IsCameraInputAvailable() || IsInputKeyDown(EKeys::RightMouseButton)) return;
+	if (!IsLayoutMode() || !IsEquipmentInputAvailable() || IsInputKeyDown(EKeys::RightMouseButton)) return;
 	if (EyeCm.ContainsNaN() || Direction.ContainsNaN() || Direction.IsNearlyZero()) return;
 	EndLayoutMarquee(false);
 	// Layout can be viewed from well beyond the 15 m unit-undocking reach. Select the closest box
@@ -2542,7 +2566,7 @@ void ADataCenterDebugController::OnToggleSimMode()
 
 void ADataCenterDebugController::OnGrabOrDrop()
 {
-	if (bRoomSettingsOpen) return;
+	if (bRoomSettingsOpen || bRoomBoundsEditing) return;
 	if (bAddingRack || bMarqueeActive) return;
 	if (GetSelectedLayoutActors().Num() > 1) { Grabbed.Reset(); return; }
 	if (IsLayoutDragging()) return;
@@ -2560,7 +2584,7 @@ void ADataCenterDebugController::OnGrabOrDrop()
 
 void ADataCenterDebugController::OnCycleContainment()
 {
-	if (bRoomSettingsOpen) return;
+	if (bRoomSettingsOpen || bRoomBoundsEditing) return;
 	// S6: containment is part of the layout (none -> blanking -> blanking + cold-aisle roof); the next simulation entry builds it.
 	ADataCenterSimulationActor* Sim = FindSimActor();
 	if (Sim == nullptr || Sim->GetSimMode() != ESimMode::Layout) return;
@@ -2570,7 +2594,7 @@ void ADataCenterDebugController::OnCycleContainment()
 
 void ADataCenterDebugController::OnRotatePlaceable()
 {
-	if (bRoomSettingsOpen) return;
+	if (bRoomSettingsOpen || bRoomBoundsEditing) return;
 	if (bAddingRack || bMarqueeActive) return;
 	if (GetSelectedLayoutActors().Num() > 1) return;
 	if (IsLayoutDragging()) return;
@@ -2605,7 +2629,7 @@ void ADataCenterDebugController::OnToggleSelectedSled()
 	if (IsLayoutMode())
 	{
 		// E flies up with RMB held; without it, E is the barrier gizmo's rotate mode (Unreal W/E/R).
-		if (OpenPatchMaps == 0 && IsCameraInputAvailable() && !IsInputKeyDown(EKeys::RightMouseButton)) SetLayoutGizmoMode(ELayoutGizmoMode::Rotate);
+		if (OpenPatchMaps == 0 && IsEquipmentInputAvailable() && !IsInputKeyDown(EKeys::RightMouseButton)) SetLayoutGizmoMode(ELayoutGizmoMode::Rotate);
 		return; // never undocks hardware in layout
 	}
 	if (OpenPatchMaps > 0) return;
@@ -2634,7 +2658,7 @@ void ADataCenterDebugController::OnResetSim()
 			TryRotateRackAddition();
 			return;
 		}
-		if (!IsCameraInputAvailable() || IsLayoutDragging() || bMarqueeActive || IsInputKeyDown(EKeys::RightMouseButton) || Grabbed.IsValid()) return;
+		if (!IsEquipmentInputAvailable() || IsLayoutDragging() || bMarqueeActive || IsInputKeyDown(EKeys::RightMouseButton) || Grabbed.IsValid()) return;
 		// One selected wall/curtain: R is the gizmo's scale mode, as in Unreal (rotation is the E ring, 15 degree snap).
 		if (SetLayoutGizmoMode(ELayoutGizmoMode::Scale)) return;
 		if (GetSelectedLayoutActors().Num() > 1)
@@ -2683,6 +2707,7 @@ void ADataCenterDebugController::Tick(float DeltaTime)
 	Super::Tick(DeltaTime);
 
 	RefreshTargetsIfStale(DeltaTime);
+	DrawRoomBounds();
 
 	// Start view: retried for a few frames (the pawn is possessed after BeginPlay), then given up.
 	if (!bRoomSettingsOpen && bFrameEquipmentOnStart && StartFrameAttempts >= 0 && StartFrameAttempts < 30)
@@ -2791,6 +2816,7 @@ void ADataCenterDebugController::Tick(float DeltaTime)
 
 void ADataCenterDebugController::SetPatchMapOpen(bool bOpen)
 {
+	if (bOpen) SetRoomBoundsEditing(false);
 	if (bOpen) CloseRoomSettings();
 	if (bOpen) CancelRackAddition();
 	if (bOpen && RackPalette) RackPalette->SetVisibility(ESlateVisibility::Collapsed);
@@ -2806,7 +2832,7 @@ void ADataCenterDebugController::UpdateRotation(float DeltaTime)
 {
 	// DefaultPawn supplies mouse deltas. Only layout mode gates them behind RMB;
 	// simulation retains its existing free-look bindings. No simulation clock is advanced here.
-	if (!IsCameraInputAvailable() || bMarqueeActive || (IsLayoutMode() && !IsInputKeyDown(EKeys::RightMouseButton)))
+	if (!IsCameraInputAvailable() || IsLayoutDragging() || bMarqueeActive || (IsLayoutMode() && !IsInputKeyDown(EKeys::RightMouseButton)))
 		RotationInput = FRotator::ZeroRotator;
 	Super::UpdateRotation(DeltaTime);
 }
@@ -2896,6 +2922,9 @@ void ADataCenterDebugController::OnCameraWheelDown()
 
 void ADataCenterDebugController::RefreshInteractionInputMode()
 {
+	if (bRoomBoundsEditing && (!IsLayoutMode() || !FindSimActor() || !FindSimActor()->GetRoomAirDomain().bManual)) SetRoomBoundsEditing(false);
+	if (bRoomBoundsEditing && RoomDragCorner == INDEX_NONE && !(RoomDragPreview == FindSimActor()->GetRoomAirDomain()))
+	{ RoomDragPreview = FindSimActor()->GetRoomAirDomain(); ValidateRoomBoundsPreview(); }
 	if (bRoomSettingsOpen)
 	{
 		if (!IsLayoutMode()) CloseRoomSettings();
@@ -2933,6 +2962,7 @@ bool ADataCenterDebugController::OpenRoomSettings()
 {
 	if (!GetWorld() || !GetWorld()->IsGameWorld() || !FindSimActor() || !IsLayoutMode() || !IsCameraInputAvailable()
 		|| bAddingRack || bMarqueeActive || IsLayoutDragging() || Grabbed.IsValid() || IsInputKeyDown(EKeys::RightMouseButton)) return false;
+	SetRoomBoundsEditing(false);
 	if (GetLocalPlayer())
 	{
 		RoomSettingsWidget = CreateWidget<URoomSettingsWidget>(this);
@@ -2998,15 +3028,7 @@ bool ADataCenterDebugController::ApplyRoomSettings(const FRoomAirDomainSettings&
 	const auto Before = Sim->GetRoomAirDomain();
 	auto Candidate = Settings.bManual ? Settings : Before;
 	Candidate.bManual = Settings.bManual; // Disabled draft numbers cannot edit inactive automatic settings.
-	if (!Sim->TrySetRoomAirDomain(Candidate, Message)) return false;
-	if (!(Candidate == Before))
-	{
-		FLayoutTransformCommand Command; Command.bRoomSettings = true;
-		Command.RoomSettingsTarget = Sim; Command.RoomBefore = Before; Command.RoomAfter = Candidate;
-		PushLayoutCommand(MoveTemp(Command));
-	}
-	Message = DescribeRoomSettingsPlan(Candidate);
-	return true;
+	return CommitRoomSettings(Candidate, Message);
 }
 
 void ADataCenterDebugController::GetHelpLines(TArray<FString>& Out) const
@@ -3015,6 +3037,11 @@ void ADataCenterDebugController::GetHelpLines(TArray<FString>& Out) const
 	// "DisableAllScreenMessages" hint).
 	Out.Reset();
 	const bool bLayout = IsLayoutMode();
+	if (bRoomBoundsEditing)
+	{
+		Out.Add(TEXT("방 범위 편집 | 모서리 드래그·5 cm 스냅 | Esc 드래그 취소 / 편집 종료 | Ctrl+Z/Y | Enter 시뮬레이션"));
+		return;
+	}
 
 	// One short line by default; H opens the grouped list. Readouts stay in the log (vrg.Hud.Debug 1 shows them).
 	if (!bShowHelp)

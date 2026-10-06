@@ -37,7 +37,7 @@ namespace
 ALayoutBarrierActor* ADataCenterDebugController::GetLayoutGizmoTarget() const
 {
 	if (GizmoDrag.bActive) return GizmoDrag.Target.Get();
-	if (!IsLayoutMode() || bAddingRack || bMarqueeActive || !DragMembers.IsEmpty() || Grabbed.IsValid()) return nullptr;
+	if (bRoomBoundsEditing || !IsLayoutMode() || bAddingRack || bMarqueeActive || !DragMembers.IsEmpty() || Grabbed.IsValid()) return nullptr;
 	const TArray<AActor*> Selected = GetSelectedLayoutActors();
 	return Selected.Num() == 1 ? Cast<ALayoutBarrierActor>(Selected[0]) : nullptr;
 }
@@ -115,7 +115,7 @@ int32 ADataCenterDebugController::PickLayoutGizmoAxis(const FVector2D& Screen) c
 bool ADataCenterDebugController::BeginLayoutGizmoDrag(int32 Axis, const FVector& EyeCm, const FVector& Direction, const FVector2D& Screen)
 {
 	ALayoutBarrierActor* Target = GetLayoutGizmoTarget();
-	if (!Target || GizmoDrag.bActive || Axis < 0 || Axis > 2 || !IsCameraInputAvailable() || IsInputKeyDown(EKeys::RightMouseButton)
+	if (!Target || GizmoDrag.bActive || Axis < 0 || Axis > 2 || !IsEquipmentInputAvailable() || IsInputKeyDown(EKeys::RightMouseButton)
 		|| !Target->GetRootComponent() || Target->GetRootComponent()->Mobility != EComponentMobility::Movable
 		|| EyeCm.ContainsNaN() || Direction.ContainsNaN() || Direction.IsNearlyZero()) return false;
 	const FVector D = Direction.GetSafeNormal();
@@ -152,7 +152,7 @@ void ADataCenterDebugController::UpdateLayoutGizmoDrag(const FVector& EyeCm, con
 {
 	if (!GizmoDrag.bActive) return;
 	ALayoutBarrierActor* Target = GizmoDrag.Target.Get();
-	if (!IsValid(Target) || !IsLayoutMode() || !IsCameraInputAvailable() || IsInputKeyDown(EKeys::RightMouseButton))
+	if (!IsValid(Target) || !IsLayoutMode() || !IsEquipmentInputAvailable() || IsInputKeyDown(EKeys::RightMouseButton))
 	{
 		EndLayoutGizmoDrag(false);
 		return;
@@ -251,13 +251,13 @@ bool ADataCenterDebugController::MouseRay(FVector& EyeCm, FVector& Direction, FV
 
 void ADataCenterDebugController::OnGizmoTranslateKey()
 {
-	if (bRoomSettingsOpen || !IsLayoutMode() || !IsCameraInputAvailable() || IsInputKeyDown(EKeys::RightMouseButton)) return;
+	if (bRoomSettingsOpen || !IsLayoutMode() || !IsEquipmentInputAvailable() || IsInputKeyDown(EKeys::RightMouseButton)) return;
 	SetLayoutGizmoMode(ELayoutGizmoMode::Translate);
 }
 
 void ADataCenterDebugController::OnGizmoCycleKey()
 {
-	if (bRoomSettingsOpen || !IsLayoutMode() || !IsCameraInputAvailable() || IsInputKeyDown(EKeys::RightMouseButton)) return;
+	if (bRoomSettingsOpen || !IsLayoutMode() || !IsEquipmentInputAvailable() || IsInputKeyDown(EKeys::RightMouseButton)) return;
 	SetLayoutGizmoMode(static_cast<ELayoutGizmoMode>((uint8(GizmoMode) + 1) % 3));
 }
 

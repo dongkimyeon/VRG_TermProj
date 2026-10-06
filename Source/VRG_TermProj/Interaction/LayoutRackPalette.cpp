@@ -75,6 +75,7 @@ void ULayoutRackPalette::NativeOnInitialized()
 	};
 	AddBarrierButton(TEXT("벽 추가"), 270)->OnClicked.AddDynamic(this, &ULayoutRackPalette::OnAddWall);
 	AddBarrierButton(TEXT("차단막 추가"), 460)->OnClicked.AddDynamic(this, &ULayoutRackPalette::OnAddCurtain);
+	AddBarrierButton(TEXT("방 범위 편집"), 650)->OnClicked.AddDynamic(this, &ULayoutRackPalette::OnRoomBounds);
 }
 
 void ULayoutRackPalette::OnAddRack()
@@ -105,6 +106,11 @@ void ULayoutRackPalette::OnAddPerimeterCrah()
 void ULayoutRackPalette::OnRoomSettings()
 {
 	if (auto* Controller = Cast<ADataCenterDebugController>(GetOwningPlayer())) Controller->OpenRoomSettings();
+}
+
+void ULayoutRackPalette::OnRoomBounds()
+{
+	if (auto* Controller = Cast<ADataCenterDebugController>(GetOwningPlayer())) Controller->ToggleRoomBoundsEditing();
 }
 
 void ULayoutRackPalette::OnAddWall()

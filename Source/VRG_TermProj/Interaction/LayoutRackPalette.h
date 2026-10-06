@@ -27,6 +27,7 @@ private:
  UFUNCTION() void OnAddCrah();
  UFUNCTION() void OnAddPerimeterCrah();
 	UFUNCTION() void OnRoomSettings();
+	UFUNCTION() void OnRoomBounds();
 	UFUNCTION() void OnAddWall();
 	UFUNCTION() void OnAddCurtain();
 };

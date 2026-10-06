@@ -81,6 +81,16 @@ public:
 	FRoomAirDomainSettings GetRoomSettingsDraft() const;
 	FString DescribeRoomSettingsPlan(const FRoomAirDomainSettings& Settings);
 	bool ApplyRoomSettings(const FRoomAirDomainSettings& Settings, FString& Message);
+	// Exclusive room handles; view rays are UE cm, authored preview/settings remain metres.
+	bool SetRoomBoundsEditing(bool bEnable);
+	void ToggleRoomBoundsEditing() { SetRoomBoundsEditing(!bRoomBoundsEditing); }
+	bool IsRoomBoundsEditing() const { return bRoomBoundsEditing; }
+	bool BeginRoomCornerDrag(int32 Corner, const FVector& EyeCm, const FVector& Direction);
+	void UpdateRoomCornerDrag(const FVector& EyeCm, const FVector& Direction);
+	bool EndRoomCornerDrag(bool bCommit);
+	bool GetRoomBoundsPreview(FRoomAirDomainSettings& Out, bool& bValid) const;
+	FString GetRoomBoundsMessage() const { return RoomBoundsMessage; }
+	int32 PickRoomCorner(const FVector2D& Screen) const;
 
 	// CPU 칩 하나의 전부하 발열 [W].
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Debug")
@@ -205,7 +215,7 @@ public:
 	void BeginLayoutDragAlongRay(const FVector& EyeCm, const FVector& Direction);
 	void UpdateLayoutDragAlongRay(const FVector& EyeCm, const FVector& Direction, bool bDisableRowSnap = false);
 	void EndLayoutDrag(bool bCommit);
-	bool IsLayoutDragging() const { return !DragMembers.IsEmpty() || GizmoDrag.bActive; }
+	bool IsLayoutDragging() const { return !DragMembers.IsEmpty() || GizmoDrag.bActive || RoomDragCorner != INDEX_NONE; }
 	// ---- Barrier gizmo (layout mode, one selected barrier). UE cm at this view boundary. ----
 	ALayoutBarrierActor* GetLayoutGizmoTarget() const;
 	ELayoutGizmoMode GetLayoutGizmoMode() const { return GizmoMode; }
@@ -311,6 +321,20 @@ private:
 	TObjectPtr<ULayoutRackPalette> RackPalette;
 	UPROPERTY(Transient) TObjectPtr<URoomSettingsWidget> RoomSettingsWidget;
 	bool bRoomSettingsOpen = false;
+	bool bRoomBoundsEditing = false;
+	int32 RoomDragCorner = INDEX_NONE;
+	FRoomAirDomainSettings RoomDragBefore, RoomDragPreview;
+	FVector RoomDragStartFloorCm = FVector::ZeroVector;
+	FVector2D RoomDragStartMouse = FVector2D::ZeroVector;
+	bool bRoomMouseThresholdPassed = false;
+	bool bRoomFloorValid = true;
+	TWeakObjectPtr<ADataCenterSimulationActor> RoomDragTarget;
+	bool bRoomPreviewValid = false;
+	FString RoomBoundsMessage;
+	void ValidateRoomBoundsPreview();
+	void UpdateRoomCornerFromCursor();
+	void DrawRoomBounds() const;
+	bool CommitRoomSettings(const FRoomAirDomainSettings& Settings, FString& Message);
 	bool bAddingRack = false; // Shared equipment preview activity; existing input guards use this flag.
 	bool bAddingSpine = false;
 	bool bAddingCdu = false;
@@ -355,6 +379,7 @@ private:
 	// UI tuning, not equipment/physical parameters: 3 m/s, wheel x1.25, limits 0.25..24 m/s.
 	double LayoutCameraSpeedMs = 3.0;
 	bool IsCameraInputAvailable() const;
+	bool IsEquipmentInputAvailable() const { return !bRoomBoundsEditing && IsCameraInputAvailable(); }
 	void OnCameraWheelUp();
 	void OnCameraWheelDown();
 	UPROPERTY(Transient)

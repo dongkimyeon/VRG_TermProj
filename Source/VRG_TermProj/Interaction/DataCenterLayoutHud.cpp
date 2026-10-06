@@ -23,6 +23,16 @@ void ADataCenterLayoutHud::DrawHUD()
 			DrawText(Line, FLinearColor(.71f, .86f, 1.f), 50.f, Y, Font);
 			Y += LineHeight;
 		}
+		TArray<FString> RoomLines;
+		Controller->GetRoomBoundsMessage().ParseIntoArrayLines(RoomLines);
+		FRoomAirDomainSettings Preview; bool bValid = false;
+		Controller->GetRoomBoundsPreview(Preview, bValid);
+		for (const auto& Line : RoomLines)
+		{
+			DrawText(Line, FLinearColor(0, 0, 0, .8f), 51.f, Y + 1.f, Font);
+			DrawText(Line, bValid ? FLinearColor(1, .65f, 0) : FLinearColor::Red, 50.f, Y, Font);
+			Y += LineHeight;
+		}
 	}
 
 	FBox2D Rect;
