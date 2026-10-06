@@ -3683,3 +3683,11 @@ PerimeterCrahAdditionPersistenceCoupling은 마주 보는 NVL72 두 줄(각 한 
 실제 UI(2026-10-06): 일반 L_Test 게임 창에서 드라이버 안내 아니오를 선택했다. 컴퓨터 사용 도구 입력과 Alt+Print Screen → 클립보드 PNG 저장 → 이미지 확인으로 배치 전용 벽면 버튼/기존 인로우 유지, 주황 커서 미리보기·R90°·Esc 제거, 빈 바닥 클릭 실제 한 대 생성·Ctrl+Z 제거·Ctrl+Y 복원을 확인했다. 같은 목적지 재추가에서 빨간 중첩 표시·클릭 후 거절/미리보기 유지를 확인했고 Enter 시뮬레이션 전환에서 미확정 취소/팔레트 숨김, 배치 복귀도 확인했다. 마지막 Ctrl+Z로 확인용 전환+추가를 되돌려 원래 배치로 정리했다. 레벨 저장 없음. 실제 액터/ID·자동 경계·개수/상태 불변의 정량 근거는 위 Automation이며 이미지 자체로 수치 보존을 판정하지 않는다.
 미검증 UI: 패치 창 진입 취소, 이미 실제 CRAH인 상태의 두 번째 벽면 추가/Undo, 저장 버튼/반복 및 새 실행 Load. 이 항목들은 자동화에서는 통과했으나 화면 입력으로 확인하지 않았다. 실패한 도구 입력/기존 캡처 API 반복 없음. 짧은 직접 절차 Tools/배치벽면CRAH추가_확인_2026-10-06.md. FPS·장시간 L_Test 운전/전체 테스트는 수행하지 않았다.
 근거(커밋 제외): Saved/PerimeterCrahAddition_{Start,Preview,Rotate,Cancel,Destination,Confirm,Undo,Redo,Overlap,Reject,Mode,Cleanup}.png 및 Saved/Logs/PerimeterCrahAddition_UI.log. UI 로그에 별도 CRAH 생성 계측은 없으며 생성/제거 화면과 정량 자동화 결과를 구분한다.
+
+## 2026-10-06 혼합 장비 편집 기록 통합 검증 (1차)
+
+MixedHistoryPersistenceCoupling은 기존 컨트롤러·생명주기·재구축으로 랙/스파인/CDU/CRAH의 이동·R·추가·복제·기존 삭제를 고정 순서22개로 교차한다. 기본값과 다른 부하/슬롯 부하·스케일·스파인 구성·CDU 효율·벽면 종류/좌표는 합성 검사 조건이며 코드 주석에 표시했다. 새 물성/실측값·허용치·제품 코드 변경 없음. 각 기록 직후 인벤토리 값을 보관해 전체 Undo22/Redo22의 모든 접두 상태에서 ID/이름·설정·출처·전체 변환과 줄/CDU·배관/펌프 수·패치 포트/미연결 진단을 비교한다. 재생성 뒤 앞선 이동/R 참조와 런타임 후속 이동/R도 포함한다. 네 종류가 섞인 선택은 각 삭제/복제 진입점에서 전체 거절하고 인벤토리/기록/미리보기 상태를 유지한다.
+
+Editor100.88s 성공 후 신규1종 실패: acos 기반 같은 쿼터니언 각도가2.415e-6°로 계산됐고, 기존 R의0.4s 지연 재구축 전에 연결 상태를 캡처했다. 테스트 측정은 상대 쿼터니언 atan2로 바꾸고, fixture만 LayoutSettleS=0과 실제 Room Tick 두 번으로 기존 지연 재구축 경로를 처리한다. 제품 정책/충돌/보존 기준은 유지했다. Editor23.57s 성공 뒤 신규1종만 재실행 무경고 성공. 위치 최대0cm·방향 최대0°·스케일 최대0(무차원), 계획 위치1e-6cm/방향1e-6° 및 기존 스케일1e-9 기준 충족. 배치 시계는 계산하지 않는다.
+
+실행: Editor 빌드 후 Automation RunTests VRG.Interaction.Layout.MixedHistoryPersistenceCoupling;Quit, -unattended -NullRHI. 근거(커밋 제외): Saved/Build_MixedHistory{,_Repair}.log, Saved/Logs/MixedHistory{,Repair}_Tests.log, Saved/Automation/MixedHistoryRepair/index.json. 현재는 초기/중간 파일 Save까지이며 Load/열수지/타당성은 후속 보강 중이다. 기존 검사/전체 테스트·UI 도구/FPS 반복 없음. 고정22개 재현 시퀀스로 무작위/모든 조합 검증을 주장하지 않는다.
