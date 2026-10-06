@@ -4032,3 +4032,13 @@ Editor57.34s 성공. 신규 RoomCeilingDeletePersistenceCoupling+직접 영향 R
 
 성공 Load의 기존 결합 장부 초기화는 실패/취소 상태 불변과 구분한다. Load/삭제는 실제 공기 고체를 곧바로 적용하지 않으며 다음 진입에만 현재 목록으로 재구축한다. 측정은 t1.02s 균일 CPU/NullRHI 짧은 과도이며 시설 전체/정상상태/GPU/옥트리/FPS 검증으로 확대하지 않는다. 중첩 판 순환 선택·다중 삭제·이동/크기/높이 핸들·배기 구멍/유출 경계·외부 교환·플레넘은 후속이다.
 근거(커밋 제외): Saved/Build_CeilingDeleteCoupling.log, Saved/Logs/CeilingDeleteCoupling_Tests.log, Saved/Automation/CeilingDeleteCoupling/index.json. 실행 E:\UE_5.8 Editor Development 뒤 위3종 + 묶음 Automation RunTests -unattended -NullRHI. 첫 선택 단계 근거는 앞 절을 따른다.
+## 2026-10-06 부분 천장 선택·삭제 직접 확인과 XY 핸들
+
+사용자가 선택·삭제 직접 절차를 정상으로 보고했다. 해당 절차 범위이며 AI 캡처/로그/FPS 확인으로 확대하지 않는다.
+선택한 판에만 요청 높이의 네 모서리 점을 표시한다. 기존 방 모서리와 공유하는 delta/절대 XY 스냅(PlaceSnapM 기본0.05m), 반대 모서리/높이 보존과 기존 UI 픽10px/점16px/드래그4px 기준을 사용한다. 이는 UI 정책이며 새 물성/시설 치수가 아니다. 판 높이 평면의 기존 전방 아래 교점을 사용해 위에서 내려다보는 시점으로 편집한다. 평행/뒤 교점·잘못된 ray는 stale 미리보기 확정을 막는다.
+전체 목록 후보에서 선택 인덱스만 교체해 기존 방/천장 검증을 수행한다. 실제 목록/장비/공기 배열은 유지하며 주황/빨강 요청 선/계산 상자·이유·m 범위/두께/셀 수를 표시한다. 유효 release만 기존 전체 목록 명령으로 확정하고 직접 확정한 인덱스는 유지한다. Undo/Redo는 기존처럼 선택을 해제하며 저장 스키마는 바꾸지 않는다. 취소/거절/no-op은 기록하지 않는다.
+전체 목록 스냅샷/대상/방 설정을 확인해 외부 변경 뒤 오래된 인덱스 적용을 막는다. 드래그는 공통 IsLayoutDragging에 포함해 Delete/Undo/Redo/장비/카메라 입력을 차단하고, Esc는 드래그만 취소·유휴 때 편집 종료다. 숫자 창/패치/모드/성공 Load와 공통 포커스 취소 경로도 미확정을 취소한다. UI 실제 픽셀/OS 입력은 Tools/부분천장_XY핸들_확인_2026-10-06.md 직접 절차로 남긴다. 높이/전체 이동/다중 편집/구멍/물리 확장/전체/FPS 없음.
+빌드·검사 결과는 실행 후 아래에 기록한다.
+
+입력 검증: Editor Development128.35s 성공(기존 FloorCm C4701/저장 Name shadow 경고 유지). RoomCeilingCornerPreview + RoomCornerPreview + RoomCeilingSelectionDelete 고유3종 무경고 성공, 실패0/미실행0/종료0. 네 코너5cm 스냅·반대 좌표/높이 정확 유지, 목록/장비/공기 배열/기록 미변경, 교차/방 밖/교점 불능/no-op/Esc·숫자·패치·외부 목록·공통 포커스 취소·모드 전환과 입력 게이트를 확인했다. 물리 오차 기준은 새로 만들지 않았다. 확정/저장/냉각 통합은 다음 작은 커밋이다.
+근거(커밋 제외): Saved/Build_CeilingCornerPreview.log, Saved/Logs/CeilingCornerPreview_Tests.log, Saved/Automation/CeilingCornerPreview/index.json. E:\UE_5.8 Editor Development 뒤 위3종 + 묶음 Automation RunTests -unattended -NullRHI. 실제 픽셀/OS 포커스는 신규 직접 절차 미확인이다. 빌드 중 소스 변경·성공 검사 반복·전체/FPS·화면 도구 재시도 없음.

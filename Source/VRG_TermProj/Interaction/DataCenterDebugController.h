@@ -83,6 +83,12 @@ public:
 	bool SelectRoomCeilingAlongRay(const FVector& EyeCm, const FVector& Direction);
 	int32 GetSelectedRoomCeilingIndex() const;
 	bool TryDeleteRoomCeiling();
+	int32 PickRoomCeilingCorner(const FVector2D& Screen) const;
+	bool BeginRoomCeilingCornerDrag(int32 Corner, const FVector& EyeCm, const FVector& Direction);
+	void UpdateRoomCeilingCornerDrag(const FVector& EyeCm, const FVector& Direction);
+	bool EndRoomCeilingCornerDrag(bool bCommit);
+	bool GetRoomCeilingPreview(FRoomCeilingPlate& Out, bool& bValid) const;
+	FString GetRoomCeilingEditMessage() const { return CeilingEditMessage; }
 	void CloseRoomSettings(URoomSettingsWidget* ExpectedWidget = nullptr);
 	bool IsRoomSettingsOpen() const { return bRoomSettingsOpen; }
 	// Key hint lines for the HUD: one short line, or the grouped list after H.
@@ -226,7 +232,7 @@ public:
 	void BeginLayoutDragAlongRay(const FVector& EyeCm, const FVector& Direction);
 	void UpdateLayoutDragAlongRay(const FVector& EyeCm, const FVector& Direction, bool bDisableRowSnap = false);
 	void EndLayoutDrag(bool bCommit);
-	bool IsLayoutDragging() const { return !DragMembers.IsEmpty() || GizmoDrag.bActive || RoomDragCorner != INDEX_NONE; }
+	bool IsLayoutDragging() const { return !DragMembers.IsEmpty() || GizmoDrag.bActive || RoomDragCorner != INDEX_NONE || CeilingDragCorner != INDEX_NONE; }
 	// ---- Barrier gizmo (layout mode, one selected barrier). UE cm at this view boundary. ----
 	ALayoutBarrierActor* GetLayoutGizmoTarget() const;
 	ELayoutGizmoMode GetLayoutGizmoMode() const { return GizmoMode; }
@@ -340,6 +346,17 @@ private:
 	TArray<FRoomCeilingPlate> SelectedCeilingList;
 	TWeakObjectPtr<ADataCenterSimulationActor> SelectedCeilingTarget;
 	void ClearRoomCeilingSelection();
+	int32 CeilingDragCorner = INDEX_NONE;
+	FRoomCeilingPlate CeilingDragPreview;
+	FRoomAirDomainSettings CeilingDragRoom;
+	FVector CeilingDragStartCm = FVector::ZeroVector;
+	FVector2D CeilingDragStartMouse = FVector2D::ZeroVector;
+	bool bCeilingMouseThresholdPassed = false;
+	bool bCeilingPreviewValid = false;
+	FString CeilingEditMessage;
+	void ValidateRoomCeilingPreview();
+	void UpdateRoomCeilingFromCursor();
+	FString DescribeRoomCeilingCandidate(const FRoomCeilingPlate& P, const TArray<FRoomCeilingPlate>& Plates);
 	bool bRoomBoundsEditing = false;
 	int32 RoomDragCorner = INDEX_NONE;
 	FRoomAirDomainSettings RoomDragBefore, RoomDragPreview;

@@ -2095,7 +2095,14 @@ void ADataCenterDebugController::OnSelectLayoutEquipment()
 	if (!IsLayoutMode() || !IsCameraInputAvailable() || IsInputKeyDown(EKeys::RightMouseButton)) return;
 	if(bRoomCeilingEditing)
 	{
-		FVector Eye,Dir; if(DeprojectMousePositionToWorld(Eye,Dir)) SelectRoomCeilingAlongRay(Eye,Dir);
+		if(CeilingDragCorner!=INDEX_NONE) return;
+		FVector Eye,Dir; FVector2D Screen;
+		if(MouseRay(Eye,Dir,Screen))
+		{
+			const int32 Corner=PickRoomCeilingCorner(Screen);
+			if(Corner!=INDEX_NONE) BeginRoomCeilingCornerDrag(Corner,Eye,Dir);
+			else SelectRoomCeilingAlongRay(Eye,Dir);
+		}
 		return; // Ceiling mode owns misses too: no equipment drag or marquee underneath.
 	}
 	if (bRoomBoundsEditing)
@@ -2300,6 +2307,7 @@ bool ADataCenterDebugController::GetLayoutRowSnapGuide(FVector& StartCm, FVector
 
 void ADataCenterDebugController::EndLayoutDrag(bool bCommit)
 {
+	if(CeilingDragCorner!=INDEX_NONE) { EndRoomCeilingCornerDrag(bCommit); return; }
 	if (RoomDragCorner != INDEX_NONE) { EndRoomCornerDrag(bCommit); return; }
 	// Every cancel path (Esc, focus, patch, mode change) ends the gizmo the same way: release commits, cancel restores.
 	if (GizmoDrag.bActive) { EndLayoutGizmoDrag(bCommit); return; }
@@ -2353,7 +2361,7 @@ void ADataCenterDebugController::EndLayoutDrag(bool bCommit)
 
 void ADataCenterDebugController::OnReleaseLayoutEquipment()
 {
-	if(bRoomCeilingEditing) return;
+	if(bRoomCeilingEditing) { UpdateRoomCeilingFromCursor(); EndRoomCeilingCornerDrag(true); return; }
 	if (RoomDragCorner != INDEX_NONE)
 	{
 		UpdateRoomCornerFromCursor(); EndRoomCornerDrag(true); return;
@@ -2372,7 +2380,12 @@ void ADataCenterDebugController::OnReleaseLayoutEquipment()
 
 void ADataCenterDebugController::OnCancelLayoutDrag()
 {
-	if(bRoomCeilingEditing) { SetRoomCeilingEditing(false); return; }
+	if(bRoomCeilingEditing)
+	{
+		if(CeilingDragCorner!=INDEX_NONE) EndRoomCeilingCornerDrag(false);
+		else SetRoomCeilingEditing(false);
+		return;
+	}
 	if (bRoomBoundsEditing)
 	{
 		if (RoomDragCorner != INDEX_NONE) EndRoomCornerDrag(false);
@@ -2387,6 +2400,7 @@ void ADataCenterDebugController::OnCancelLayoutDrag()
 
 void ADataCenterDebugController::UpdateLayoutDragFromCursor()
 {
+	if(CeilingDragCorner!=INDEX_NONE) { UpdateRoomCeilingFromCursor(); return; }
 	if (RoomDragCorner != INDEX_NONE) { UpdateRoomCornerFromCursor(); return; }
 	if (!IsLayoutDragging()) return;
 	if (GizmoDrag.bActive)
@@ -2993,7 +3007,7 @@ bool ADataCenterDebugController::OpenRoomSettings(bool bCeiling)
 {
 	if (bCeiling && (!FindSimActor() || !FindSimActor()->GetRoomAirDomain().bManual)) return false;
 	if (!GetWorld() || !GetWorld()->IsGameWorld() || !FindSimActor() || !IsLayoutMode() || !IsCameraInputAvailable()
-		|| bAddingRack || bMarqueeActive || IsLayoutDragging() || Grabbed.IsValid() || IsInputKeyDown(EKeys::RightMouseButton)) return false;
+		|| bAddingRack || bMarqueeActive || (IsLayoutDragging() && CeilingDragCorner==INDEX_NONE) || Grabbed.IsValid() || IsInputKeyDown(EKeys::RightMouseButton)) return false;
 	SetRoomBoundsEditing(false); SetRoomCeilingEditing(false);
 	if (GetLocalPlayer())
 	{
@@ -3073,8 +3087,9 @@ void ADataCenterDebugController::GetHelpLines(TArray<FString>& Out) const
 	const bool bLayout = IsLayoutMode();
 	if(bRoomCeilingEditing)
 	{
-		Out.Add(FString::Printf(TEXT("천장 선택·삭제 | 클릭 선택 / 빈 곳 해제 / Delete 한 장 삭제 / Ctrl+Z/Y / Esc 종료 | 선택 %d / 판 %d"),
-			GetSelectedRoomCeilingIndex()+1,FindSimActor()?FindSimActor()->GetRoomCeilingPlates().Num():0)); return;
+		Out.Add(FString::Printf(TEXT("천장 편집 | 클릭 선택 · 모서리 XY 드래그(5 cm) / Delete 한 장 / Ctrl+Z/Y / Esc 취소·종료 | 선택 %d / 판 %d"),
+			GetSelectedRoomCeilingIndex()+1,FindSimActor()?FindSimActor()->GetRoomCeilingPlates().Num():0));
+		return;
 	}
 	if (bRoomBoundsEditing)
 	{

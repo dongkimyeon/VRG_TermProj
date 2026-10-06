@@ -34,6 +34,23 @@ namespace
 			*Bounds.Min.ToString(), *Bounds.Max.ToString(), Grid.NumCellsX, Grid.NumCellsY, Grid.NumCellsZ,
 			Grid.NumCellsX * Grid.NumCellsY * Grid.NumCellsZ, Grid.CellSizeM);
 	}
+	FVector CeilingCornerCm(const FRoomCeilingPlate& P, int32 Corner)
+	{
+		FRoomAirDomainSettings S; S.MinXYM=P.MinXYM; S.MaxXYM=P.MaxXYM;
+		auto Point=RoomCornerCm(S,Corner); Point.Z=SimUnits::MetersToCentimeters(P.HeightM); return Point;
+	}
+	// Shared room/plate corner delta and absolute XY snap; fixed opposite corner is never sorted/swapped.
+	FVector CornerTargetM(const FVector& CornerCm, const FVector& PointCm, const FVector& StartCm, double SnapM)
+	{
+		FVector Target=CornerCm+PointCm-StartCm;
+		if(SnapM>0)
+		{
+			const double SnapCm=SimUnits::MetersToCentimeters(SnapM);
+			Target.X=FMath::RoundToDouble(Target.X/SnapCm)*SnapCm;
+			Target.Y=FMath::RoundToDouble(Target.Y/SnapCm)*SnapCm;
+		}
+		return SimUnits::UnrealToMeters(Target);
+	}
 }
 
 bool ADataCenterDebugController::SetRoomBoundsEditing(bool bEnable)
@@ -137,14 +154,7 @@ void ADataCenterDebugController::UpdateRoomCornerDrag(const FVector& EyeCm, cons
 	if (!FloorPointSnapped(EyeCm, Direction.GetSafeNormal(), 0, 0, FloorCm))
 	{ bRoomRayValid = bRoomPreviewValid = false; RoomBoundsMessage = TEXT("커서가 바닥과 만나지 않아 확정할 수 없습니다."); return; }
 	const bool bRecoveredFloor = !bRoomRayValid; bRoomRayValid = true;
-	FVector Target = RoomCornerCm(RoomDragBefore, RoomDragCorner) + FloorCm - RoomDragStartFloorCm;
-	if (PlaceSnapM > 0)
-	{
-		const double SnapCm = SimUnits::MetersToCentimeters(PlaceSnapM);
-		Target.X = FMath::RoundToDouble(Target.X / SnapCm) * SnapCm;
-		Target.Y = FMath::RoundToDouble(Target.Y / SnapCm) * SnapCm;
-	}
-	const FVector TargetM = SimUnits::UnrealToMeters(Target);
+	const FVector TargetM = CornerTargetM(RoomCornerCm(RoomDragBefore,RoomDragCorner),FloorCm,RoomDragStartFloorCm,PlaceSnapM);
 	auto Candidate = RoomDragBefore;
 	(RoomDragCorner & 1 ? Candidate.MaxXYM.X : Candidate.MinXYM.X) = TargetM.X;
 	(RoomDragCorner & 2 ? Candidate.MaxXYM.Y : Candidate.MinXYM.Y) = TargetM.Y;
@@ -195,6 +205,13 @@ bool ADataCenterDebugController::CommitRoomSettings(const FRoomAirDomainSettings
 
 FString ADataCenterDebugController::DescribeRoomCeilingPlan(const FRoomCeilingPlate& P)
 {
+	auto* Sim=FindSimActor(); TArray<FRoomCeilingPlate> Plates;
+	if(Sim) Plates=Sim->GetRoomCeilingPlates(); Plates.Add(P);
+	return DescribeRoomCeilingCandidate(P,Plates);
+}
+
+FString ADataCenterDebugController::DescribeRoomCeilingCandidate(const FRoomCeilingPlate& P, const TArray<FRoomCeilingPlate>& Plates)
+{
 	auto* Sim=FindSimActor();
 	FString Message=FString::Printf(TEXT("요청 XY %s ~ %s m · 높이 %.6g m\n"),*P.MinXYM.ToString(),*P.MaxXYM.ToString(),P.HeightM);
 	if (!Sim) return Message+TEXT("통합 시뮬레이션 액터가 없습니다.");
@@ -206,7 +223,6 @@ FString ADataCenterDebugController::DescribeRoomCeilingPlan(const FRoomCeilingPl
 	const auto& Plan=Plans[0]; const auto N=Plan.MaxCellExclusive-Plan.MinCell;
 	Message+=FString::Printf(TEXT("계산 최소 %s m\n계산 최대 %s m\n두께 %.6g m · 셀 %dx%dx%d = %d개\n"),
 		*Plan.ActualBoundsM.Min.ToString(),*Plan.ActualBoundsM.Max.ToString(),GP.CellSizeM,N.X,N.Y,N.Z,N.X*N.Y*N.Z);
-	auto Plates=Sim->GetRoomCeilingPlates(); Plates.Add(P);
 	if (!Sim->ValidateRoomAirDomain(Sim->GetRoomAirDomain(),GP,Bounds,Reason,&Plates)) Message+=TEXT("거절: ")+Reason;
 	return Message+TEXT("고체는 다음 시뮬레이션 진입에 적용 · 판 목록은 배치 저장에 포함.");
 }
@@ -227,7 +243,9 @@ bool ADataCenterDebugController::AddRoomCeiling(const FRoomCeilingPlate& P, FStr
 
 void ADataCenterDebugController::ClearRoomCeilingSelection()
 {
+	EndRoomCeilingCornerDrag(false);
 	SelectedRoomCeiling=INDEX_NONE; SelectedCeilingList.Reset(); SelectedCeilingTarget.Reset();
+	CeilingEditMessage.Reset();
 }
 
 bool ADataCenterDebugController::SetRoomCeilingEditing(bool bEnable)
@@ -274,7 +292,7 @@ bool ADataCenterDebugController::SelectRoomCeilingAlongRay(const FVector& EyeCm,
 	}
 	ClearRoomCeilingSelection();
 	if(Best==INDEX_NONE) return false; // Valid empty click clears; malformed/deprojection failure does not.
-	SelectedRoomCeiling=Best; SelectedCeilingTarget=Sim; SelectedCeilingList=Sim->GetRoomCeilingPlates(); return true;
+	SelectedRoomCeiling=Best; SelectedCeilingTarget=Sim; SelectedCeilingList=Sim->GetRoomCeilingPlates(); bCeilingPreviewValid=true; return true;
 }
 
 bool ADataCenterDebugController::TryDeleteRoomCeiling()
@@ -293,6 +311,100 @@ bool ADataCenterDebugController::TryDeleteRoomCeiling()
 	FLayoutTransformCommand Command; Command.bRoomCeilings=true; Command.RoomSettingsTarget=Sim;
 	Command.CeilingsBefore=Before; Command.CeilingsAfter=After; PushLayoutCommand(MoveTemp(Command));
 	ClearRoomCeilingSelection(); return true;
+}
+
+bool ADataCenterDebugController::GetRoomCeilingPreview(FRoomCeilingPlate& Out, bool& bValid) const
+{
+	const int32 Index=GetSelectedRoomCeilingIndex();
+	if(Index==INDEX_NONE) return false;
+	Out=CeilingDragCorner==INDEX_NONE ? SelectedCeilingList[Index] : CeilingDragPreview;
+	bValid=bCeilingPreviewValid; return true;
+}
+
+int32 ADataCenterDebugController::PickRoomCeilingCorner(const FVector2D& Screen) const
+{
+	FRoomCeilingPlate P; bool bValid;
+	if(!GetRoomCeilingPreview(P,bValid) || !IsCameraInputAvailable() || Screen.ContainsNaN()) return INDEX_NONE;
+	int32 Best=INDEX_NONE; double RadiusPx=10; // Existing room/barrier UI pick radius, not physical tolerance.
+	for(int32 I=0;I<4;++I)
+	{
+		FVector2D XY; if(!ProjectWorldLocationToScreen(CeilingCornerCm(P,I),XY)) continue;
+		const double Distance=FVector2D::Distance(Screen,XY);
+		if(Distance<=RadiusPx) { RadiusPx=Distance; Best=I; }
+	}
+	return Best;
+}
+
+bool ADataCenterDebugController::BeginRoomCeilingCornerDrag(int32 Corner, const FVector& EyeCm, const FVector& Direction)
+{
+	const int32 Index=GetSelectedRoomCeilingIndex(); FVector Point;
+	if(Index==INDEX_NONE || Corner<0 || Corner>3 || !IsCameraInputAvailable() || IsLayoutDragging()
+		|| EyeCm.ContainsNaN() || Direction.ContainsNaN() || Direction.IsNearlyZero()
+		|| bAddingRack || bMarqueeActive || Grabbed.IsValid() || IsInputKeyDown(EKeys::RightMouseButton)
+		|| !FloorPointSnapped(EyeCm,Direction.GetSafeNormal(),SimUnits::MetersToCentimeters(SelectedCeilingList[Index].HeightM),0,Point)) return false;
+	CeilingDragPreview=SelectedCeilingList[Index]; CeilingDragRoom=FindSimActor()->GetRoomAirDomain();
+	CeilingDragCorner=Corner; CeilingDragStartCm=Point; bCeilingMouseThresholdPassed=false;
+	float X=0,Y=0; GetMousePosition(X,Y); CeilingDragStartMouse=FVector2D(X,Y);
+	ValidateRoomCeilingPreview(); return true;
+}
+
+void ADataCenterDebugController::ValidateRoomCeilingPreview()
+{
+	auto* Sim=FindSimActor(); const int32 Index=GetSelectedRoomCeilingIndex();
+	if(!Sim || Index==INDEX_NONE) { bCeilingPreviewValid=false; return; }
+	auto Plates=SelectedCeilingList; Plates[Index]=CeilingDragPreview;
+	FAirGridParams Grid; FBox Bounds(ForceInit); FString Reason;
+	bCeilingPreviewValid=Sim->ValidateRoomAirDomain(Sim->GetRoomAirDomain(),Grid,Bounds,Reason,&Plates);
+	CeilingEditMessage=DescribeRoomCeilingCandidate(CeilingDragPreview,Plates);
+	if(!bCeilingPreviewValid && !CeilingEditMessage.Contains(Reason)) CeilingEditMessage+=TEXT("\n거절: ")+Reason;
+}
+
+void ADataCenterDebugController::UpdateRoomCeilingCornerDrag(const FVector& EyeCm, const FVector& Direction)
+{
+	if(CeilingDragCorner==INDEX_NONE) return;
+	auto* Sim=FindSimActor(); const int32 Index=GetSelectedRoomCeilingIndex();
+	if(Index==INDEX_NONE || !IsCameraInputAvailable() || IsInputKeyDown(EKeys::RightMouseButton)
+		|| !Sim || !(Sim->GetRoomAirDomain()==CeilingDragRoom)) { EndRoomCeilingCornerDrag(false); return; }
+	FVector Point;
+	if(EyeCm.ContainsNaN() || Direction.ContainsNaN() || Direction.IsNearlyZero()
+		|| !FloorPointSnapped(EyeCm,Direction.GetSafeNormal(),SimUnits::MetersToCentimeters(CeilingDragPreview.HeightM),0,Point))
+	{ bCeilingPreviewValid=false; CeilingEditMessage=TEXT("커서가 판 높이 평면과 만나지 않아 확정할 수 없습니다."); return; }
+	const auto Target=CornerTargetM(CeilingCornerCm(SelectedCeilingList[Index],CeilingDragCorner),Point,CeilingDragStartCm,PlaceSnapM);
+	auto Candidate=SelectedCeilingList[Index];
+	(CeilingDragCorner&1 ? Candidate.MaxXYM.X : Candidate.MinXYM.X)=Target.X;
+	(CeilingDragCorner&2 ? Candidate.MaxXYM.Y : Candidate.MinXYM.Y)=Target.Y;
+	// Validate again while stationary: equipment may have moved externally without changing the list.
+	CeilingDragPreview=Candidate; ValidateRoomCeilingPreview();
+}
+
+void ADataCenterDebugController::UpdateRoomCeilingFromCursor()
+{
+	if(CeilingDragCorner==INDEX_NONE) return;
+	FVector Eye,Dir; FVector2D Screen;
+	if(!MouseRay(Eye,Dir,Screen) || !IsCameraInputAvailable()) { EndRoomCeilingCornerDrag(false); return; }
+	bCeilingMouseThresholdPassed |= FVector2D::Distance(CeilingDragStartMouse,Screen)>=4; // Existing UI drag threshold.
+	if(bCeilingMouseThresholdPassed) UpdateRoomCeilingCornerDrag(Eye,Dir);
+}
+
+bool ADataCenterDebugController::EndRoomCeilingCornerDrag(bool bCommit)
+{
+	if(CeilingDragCorner==INDEX_NONE) return false;
+	const int32 Index=GetSelectedRoomCeilingIndex(); auto* Sim=FindSimActor(); bool bOk=false;
+	if(bCommit && bCeilingPreviewValid && Index!=INDEX_NONE && Sim && Sim->GetRoomAirDomain()==CeilingDragRoom
+		&& IsCameraInputAvailable() && !IsInputKeyDown(EKeys::RightMouseButton) && !(CeilingDragPreview==SelectedCeilingList[Index]))
+	{
+		auto After=SelectedCeilingList; After[Index]=CeilingDragPreview; FString Reason;
+		if(Sim->TrySetRoomCeilingPlates(After,Reason))
+		{
+			FLayoutTransformCommand Command; Command.bRoomCeilings=true; Command.RoomSettingsTarget=Sim;
+			Command.CeilingsBefore=SelectedCeilingList; Command.CeilingsAfter=After; PushLayoutCommand(MoveTemp(Command));
+			SelectedCeilingList=After; bOk=true; // Same index stays selected in our own successful replacement.
+		}
+		else { bCeilingPreviewValid=false; CeilingEditMessage=TEXT("거절: ")+Reason; }
+	}
+	CeilingDragCorner=INDEX_NONE;
+	if(!bCommit) { CeilingEditMessage.Reset(); bCeilingPreviewValid=true; }
+	return bOk;
 }
 
 void ADataCenterDebugController::DrawRoomCeilings() const
@@ -317,6 +429,20 @@ void ADataCenterDebugController::DrawRoomCeilings() const
 		const auto& B=Plans[Selected].ActualBoundsM;
 		// Selected box last/thicker, so identical unselected plates do not hide the highlight. Display only.
 		DrawDebugBox(GetWorld(),SimUnits::MetersToUnreal(B.GetCenter()),SimUnits::MetersToUnreal(B.GetExtent()),FColor::Green,false,-1,0,3);
+		const auto& P=CeilingDragCorner==INDEX_NONE ? Sim->GetRoomCeilingPlates()[Selected] : CeilingDragPreview;
+		const FColor Color=CeilingDragCorner==INDEX_NONE ? FColor::Green : bCeilingPreviewValid ? FColor(255,165,0) : FColor::Red;
+		const int32 Order[]={0,1,3,2,0};
+		for(int32 I=0;I<4;++I)
+		{
+			DrawDebugLine(GetWorld(),CeilingCornerCm(P,Order[I]),CeilingCornerCm(P,Order[I+1]),Color,false,0,1,3);
+			DrawDebugPoint(GetWorld(),CeilingCornerCm(P,I),16,Color,false,0,1); // Existing room handle UI pixels.
+		}
+		TArray<FRoomCeilingPlan> PreviewPlans;
+		if(CeilingDragCorner!=INDEX_NONE && VrgRoomAirDomain::BuildCeilingPlans(Sim->GetRoomAirDomain(),{P},GP,Bounds,PreviewPlans,Reason))
+		{
+			const auto& Actual=PreviewPlans[0].ActualBoundsM;
+			DrawDebugBox(GetWorld(),SimUnits::MetersToUnreal(Actual.GetCenter()),SimUnits::MetersToUnreal(Actual.GetExtent()),Color,false,0,1,3);
+		}
 	}
 }
 
