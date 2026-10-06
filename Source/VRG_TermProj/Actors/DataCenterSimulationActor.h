@@ -117,7 +117,10 @@ public:
 	// Layout-only, validate before committing. Existing worlds default to automatic fit.
 	bool TrySetRoomAirDomain(const FRoomAirDomainSettings& Settings, FString& Reason);
 	bool ValidateRoomAirDomain(const FRoomAirDomainSettings& Settings, FAirGridParams& OutGrid,
-		FBox& OutActualBoundsM, FString& Reason);
+		FBox& OutActualBoundsM, FString& Reason, const TArray<FRoomCeilingPlate>* CeilingOverride = nullptr);
+	// Value-only layout API; no actor spawn, solid mutation, history or persistence until later work.
+	bool TrySetRoomCeilingPlates(const TArray<FRoomCeilingPlate>& Plates, FString& Reason);
+	const TArray<FRoomCeilingPlate>& GetRoomCeilingPlates() const { return RoomCeilingPlates; }
 	const FRoomAirDomainSettings& GetRoomAirDomain() const { return RoomAirDomain; }
 	const FString& GetRoomAirDomainMessage() const { return RoomAirDomainMessage; }
 
@@ -295,6 +298,7 @@ public:
 private:
 	friend bool VrgLayoutFile::Load(UWorld* World, const FString& Name, FString& OutSummary);
 	UPROPERTY() FRoomAirDomainSettings RoomAirDomain;
+	UPROPERTY() TArray<FRoomCeilingPlate> RoomCeilingPlates;
 	FString RoomAirDomainMessage;
 	FVrgEvaluation Eval;
 	bool bEvalReady = false;

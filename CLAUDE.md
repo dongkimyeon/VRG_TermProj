@@ -3921,3 +3921,10 @@ Editor Development43.38s 성공. RoomHeightHistoryPersistence/RoomCornerHistoryP
 ## 2026-10-06 방 높이 핸들 직접 확인 보고
 
 사용자가 방 높이 핸들 직접 확인 결과를 정상으로 보고했다. Tools/방높이_핸들_확인_2026-10-06.md 직접 절차의 보고로 남은작업 체크박스를 갱신했다. 앞 절의 당시 화면 미확인 기록을 이 보고가 보완하며, AI의 별도 화면/로그/FPS 측정으로 확대하지 않는다. 제품/물리/레벨 변경과 빌드·성공 검사 반복은 없다.
+## 2026-10-06 부분 천장 판 데이터·검증 기반
+
+사용자가 ‘천장은 셀로 해서 나중에 배기 구멍 추가’로 의미를 확정했다. 이번 판은 높이를 포함하는 Z 한 층이며 위쪽 공기 공간을 유지한다. 기존 계획의 ‘높이 위 전체 고체’는 이번 구현에서 사용하지 않는다. 기존 h의 단열 고체 모델이며 새 물성/시설 치수/팬 배기 경계는 없다. 상세 API·셀 범위/제한은 Tools/부분천장_기반_2026-10-06.md를 따른다.
+FRoomCeilingPlate는 월드m XY/높이 값, 기본 목록은 빈 배열이다. 배치 전용 TrySetRoomCeilingPlates는 수동 방을 요구하고 전체 후보를 기존 ValidateRoomAirDomain에서 검증한 뒤 목록만 교체한다. 자동 전환 전에 판을 제거해야 한다. 순서/유한성/요청 방 포함·기존 자원 정책, 셀 확장된 판과 전체 장비 외형/기존 표본·덕트/신선한 자동 CRAH 경계의 양의 체적 겹침을 검사한다. 판을 자르거나 통로를 몰래 비우지 않는다. 기존 Load의 최종 배치 검증에도 현 transient 판 목록을 전달하되 저장 형식은 확장하지 않았다.
+Editor Development69.50s 성공(기존 VrgLayoutFile.cpp 지역 Name shadow 컴파일 경고 유지). RoomCeilingFoundation/RoomAirDomainFoundation/RoomSettingsPersistence 영향3종 무경고 성공, 실패0/미실행0/종료0. 새 후보 거절·기존 장비/자동 CRAH/덕트 겹침·자동/방 축소 거절·진입 직전 장비 재검증과 정지0.02s 온도K/시계s/장부J/격자·원점cm/배관개수 불변을 확인했다. 고체 셀 실제 적용/물리는 후속 작은 커밋이다.
+계산 계획 측정: 합성 요청XY[-5.13,-4.61]×[3.13,3.62]m·높이2.63m, h0.25m → 실제XY[-5.25,-4.5]×[3,3.75]m·Z[2.5,2.75]m,9셀 한 층. 정수 셀/좌표 정확 비교이며 새 물리 허용치가 아니다. XY는 floor/ceil 외향 포함, Z는 floor로 높이를 포함하는 단일 층이며 계획 실패는 출력 전체를 유지한다. 요청/계산 경계의 차이는 문서에서 구분한다.
+근거(커밋 제외): Saved/Build_RoomCeilingFoundation.log, Saved/Logs/RoomCeilingFoundation_Tests.log, Saved/Automation/RoomCeilingFoundation/index.json. 실행 E:\UE_5.8 Editor Development 뒤 위3종 + 묶음 -unattended -NullRHI. 기존 화면 도구 실패 재시도/성공 검사 반복/전체/FPS 없음. UI/Undo·Redo/판 저장·메시·배기 구멍·외부 열 교환·플레넘은 후속이다.

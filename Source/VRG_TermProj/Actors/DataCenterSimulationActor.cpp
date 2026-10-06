@@ -201,11 +201,27 @@ bool ADataCenterSimulationActor::TrySetRoomAirDomain(const FRoomAirDomainSetting
 	return true;
 }
 
+bool ADataCenterSimulationActor::TrySetRoomCeilingPlates(const TArray<FRoomCeilingPlate>& Plates, FString& Reason)
+{
+	if (Mode != ESimMode::Layout) { Reason = TEXT("천장 판은 배치 모드에서만 변경할 수 있습니다."); return false; }
+	FAirGridParams Grid; FBox Bounds(ForceInit);
+	if (!ValidateRoomAirDomain(RoomAirDomain, Grid, Bounds, Reason, &Plates))
+	{ RoomAirDomainMessage = Reason; return false; }
+	RoomCeilingPlates = Plates;
+	RoomAirDomainMessage = FString::Printf(TEXT("천장 판 %d개 설정 (고체 셀은 시뮬레이션 진입 시 적용, 저장/Undo 미지원)"), Plates.Num());
+	return true;
+}
+
 bool ADataCenterSimulationActor::ValidateRoomAirDomain(const FRoomAirDomainSettings& Settings,
-	FAirGridParams& OutGrid, FBox& OutActualBoundsM, FString& Reason)
+	FAirGridParams& OutGrid, FBox& OutActualBoundsM, FString& Reason, const TArray<FRoomCeilingPlate>* CeilingOverride)
 {
 	Reason.Reset();
-	if (!Settings.bManual) return true; // Preserve legacy auto-fit, including worlds with no room setting.
+	const auto& Plates = CeilingOverride ? *CeilingOverride : RoomCeilingPlates;
+	if (!Settings.bManual)
+	{
+		if (Plates.IsEmpty()) return true; // Preserve legacy auto-fit, including worlds with no room setting.
+		Reason = TEXT("천장 판은 수동 방 범위에서만 설정할 수 있습니다. 자동 전환 전 판을 제거하세요."); return false;
+	}
 	if (!GetWorld()) { Reason = TEXT("방 검증에 실행 월드가 필요합니다."); return false; }
 	AAirFieldDebugActor* Field = nullptr;
 	for (TActorIterator<AAirFieldDebugActor> It(GetWorld()); It; ++It)
@@ -219,6 +235,8 @@ bool ADataCenterSimulationActor::ValidateRoomAirDomain(const FRoomAirDomainSetti
 	const FBox Requested(FVector(Settings.MinXYM.X, Settings.MinXYM.Y, 0),
 		FVector(Settings.MaxXYM.X, Settings.MaxXYM.Y, Settings.CeilingHeightM));
 	const double H = Grid.CellSizeM;
+	TArray<FRoomCeilingPlan> CeilingPlans;
+	if (!VrgRoomAirDomain::BuildCeilingPlans(Settings, Plates, Grid, Actual, CeilingPlans, Reason)) return false;
 	auto Contains = [&](const FBox& Required, const FString& Name)
 	{
 		if (!Required.IsValid || Required.Min.ContainsNaN() || Required.Max.ContainsNaN())
@@ -230,6 +248,13 @@ bool ADataCenterSimulationActor::ValidateRoomAirDomain(const FRoomAirDomainSetti
 					*Name, TCHAR('X' + Axis), Required.Min[Axis], Required.Max[Axis], Requested.Min[Axis], Requested.Max[Axis]);
 				return false;
 			}
+		for (int32 I = 0; I < CeilingPlans.Num(); ++I)
+		{
+			const FBox& B = CeilingPlans[I].ActualBoundsM;
+			if (Required.Min.X < B.Max.X && Required.Max.X > B.Min.X && Required.Min.Y < B.Max.Y && Required.Max.Y > B.Min.Y
+				&& Required.Min.Z < B.Max.Z && Required.Max.Z > B.Min.Z)
+			{ Reason = FString::Printf(TEXT("천장 판 %d 계산 범위 %s m가 %s와 겹칩니다."), I, *B.ToString(), *Name); return false; }
+		}
 		return true;
 	};
 	auto CheckBox = [&](const FVector& SizeM, const FTransform& Transform, const FString& Name,

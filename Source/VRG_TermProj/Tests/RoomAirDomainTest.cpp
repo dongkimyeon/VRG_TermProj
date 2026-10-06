@@ -124,4 +124,71 @@ bool FRoomAirDomainFoundationTest::RunTest(const FString& Parameters)
 	AddInfo(TEXT("Manual request 10.6x9.1x3.1m; h0.25m; actual10.75x9.25x3.25m,43x37x13=20683 cells; no cropping; config/entry rejection preserves clock/grid/routes."));
 	return true;
 }
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FRoomCeilingFoundationTest, "VRG.Interaction.Layout.RoomCeilingFoundation",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::CommandletContext | EAutomationTestFlags::EngineFilter)
+bool FRoomCeilingFoundationTest::RunTest(const FString& Parameters)
+{
+	FRoomFixture F; FString Reason; const auto Room=ManualRoom();
+	// Synthetic off-grid rectangle/height; these are test geometry, not facility/material parameters.
+	FRoomCeilingPlate P; P.MinXYM=FVector2D(-5.13,3.13); P.MaxXYM=FVector2D(-4.61,3.62); P.HeightM=2.63;
+	TestTrue(TEXT("Existing world has no ceiling plates"),F.Sim->GetRoomCeilingPlates().IsEmpty());
+	TestFalse(TEXT("Plate requires explicit manual domain"),F.Sim->TrySetRoomCeilingPlates({P},Reason));
+	TestTrue(TEXT("Manual domain accepted"),F.Sim->TrySetRoomAirDomain(Room,Reason));
+	F.Sim->EnterSimulationMode(); F.Sim->Tick(.021f); F.Sim->EnterLayoutMode();
+	const auto Warm=F.Sim->GetSnapshot(); const auto Temps=F.Air->GetMutableSolver().GetGrid().TemperatureK;
+	const auto Solids=F.Air->GetMutableSolver().GetGrid().bSolidCell; const auto Origin=F.Air->GetActorLocation();
+	const auto Pose=F.Racks[0]->GetActorTransform(); const int32 Pipes=F.Room->GetMutableNetwork().GetNumPipes();
+	TestTrue(TEXT("Value acceptance leaves warm grid/geometry/clock intact"),F.Sim->TrySetRoomCeilingPlates({P},Reason));
+	auto Unchanged=[&]() { const auto S=F.Sim->GetSnapshot(); return F.Sim->GetRoomAirDomain()==Room
+		&& F.Sim->GetRoomCeilingPlates()==TArray<FRoomCeilingPlate>{P} && S.SimTimeS==Warm.SimTimeS
+		&& S.EnergyInJ==Warm.EnergyInJ && S.EnergyOutJ==Warm.EnergyOutJ && S.EnergyStoredJ==Warm.EnergyStoredJ
+		&& F.Air->GetMutableSolver().GetGrid().TemperatureK==Temps && F.Air->GetMutableSolver().GetGrid().bSolidCell==Solids
+		&& F.Air->GetActorLocation()==Origin && F.Racks[0]->GetActorTransform().Equals(Pose,0) && F.Room->GetMutableNetwork().GetNumPipes()==Pipes; };
+	TestTrue(TEXT("No live mutation before next entry"),Unchanged());
+	FAirGridParams GP; FBox Actual(ForceInit); TArray<FRoomCeilingPlan> Plans;
+	TestTrue(TEXT("Reported plate plan"),F.Sim->ValidateRoomAirDomain(Room,GP,Actual,Reason)
+		&& VrgRoomAirDomain::BuildCeilingPlans(Room,{P},GP,Actual,Plans,Reason));
+	if (TestEqual(TEXT("One complete plan"),Plans.Num(),1))
+	{
+		TestTrue(TEXT("Containing single Z layer and conservative XY"),Plans[0].MinCell==FIntVector(1,30,10)
+			&& Plans[0].MaxCellExclusive==FIntVector(4,33,11) && Plans[0].ActualBoundsM.Min==FVector(-5.25,3,2.5)
+			&& Plans[0].ActualBoundsM.Max==FVector(-4.5,3.75,2.75));
+	}
+	auto Reject=[&](const FRoomCeilingPlate& Bad) { TestFalse(TEXT("Invalid candidate refused atomically"),F.Sim->TrySetRoomCeilingPlates({P,Bad},Reason));
+		TestTrue(TEXT("Reason and all live values retained"),!Reason.IsEmpty() && Unchanged()); };
+	auto Bad=P; Bad.MaxXYM.X=Bad.MinXYM.X; Reject(Bad);
+	Bad=P; Bad.HeightM=std::numeric_limits<double>::infinity(); Reject(Bad);
+	Bad=P; Bad.HeightM=0; Reject(Bad); Bad=P; Bad.HeightM=Room.CeilingHeightM; Reject(Bad);
+	Bad=P; Bad.MinXYM.X=Room.MinXYM.X-.01; Reject(Bad);
+	const auto Kept=Plans; Bad=P; Bad.HeightM=-1;
+	TestFalse(TEXT("Planner failure retains complete previous output"),VrgRoomAirDomain::BuildCeilingPlans(Room,{P,Bad},GP,Actual,Plans,Reason));
+	TestTrue(TEXT("No partial plan published"),Plans.Num()==Kept.Num() && Plans[0].ActualBoundsM==Kept[0].ActualBoundsM);
+	Bad=P; Bad.MinXYM=FVector2D(-1.7,-.1); Bad.MaxXYM=FVector2D(-1.3,.1); Bad.HeightM=1;
+	Reject(Bad); TestTrue(TEXT("Equipment identified"),Reason.Contains(TEXT("외형")));
+	// A grid column outside the rack body but inside its existing front sample/duct envelope.
+	const double Front=-1.5+.5*F.Racks[0]->RackSizeM.X;
+	const double Edge=Room.MinXYM.X+FMath::CeilToDouble((Front-Room.MinXYM.X)/GP.CellSizeM)*GP.CellSizeM;
+	Bad.MinXYM=FVector2D(Edge,-.1); Bad.MaxXYM=FVector2D(Edge+.01,.1);
+	Reject(Bad); TestTrue(TEXT("Required rack duct identified"),Reason.Contains(TEXT("덕트")));
+	TArray<FCrahLayoutRecord> Auto; F.Sim->CaptureAutomaticCrahLayout(Auto);
+	if (TestTrue(TEXT("Automatic CRAHs present without conversion"),!Auto.IsEmpty()))
+	{
+		const auto Base=Auto[0].Transform.GetLocation()/100;
+		Bad.MinXYM=FVector2D(Base.X-.01,Base.Y-.01); Bad.MaxXYM=FVector2D(Base.X+.01,Base.Y+.01); Bad.HeightM=.5*Auto[0].Settings.SizeM.Z;
+		Reject(Bad); TestTrue(TEXT("Automatic CRAH identified"),Reason.Contains(TEXT("자동 CRAH")));
+	}
+	auto Small=Room; Small.MaxXYM.Y=3.5;
+	TestFalse(TEXT("Room edits cannot clip existing ceiling"),F.Sim->TrySetRoomAirDomain(Small,Reason));
+	TestFalse(TEXT("Automatic mode cannot silently drop ceiling"),F.Sim->TrySetRoomAirDomain({},Reason));
+	TestTrue(TEXT("Room refusals unchanged"),Unchanged());
+	// Equipment moving into a quantized plate invalidates entry before mode/grid/bridge mutation.
+	F.Racks[0]->SetActorLocation(FVector(-465,340,100*(2.6-F.Racks[0]->RackSizeM.Z))); F.Sim->EnterSimulationMode();
+	TestTrue(TEXT("Entry revalidates plate before changing clock/grid"),F.Sim->GetSimMode()==ESimMode::Layout
+		&& F.Sim->GetRoomAirDomainMessage().Contains(TEXT("천장 판"))
+		&& F.Sim->GetSnapshot().SimTimeS==Warm.SimTimeS && F.Air->GetMutableSolver().GetGrid().TemperatureK==Temps);
+	F.Racks[0]->SetActorTransform(Pose);
+	TestTrue(TEXT("Clearing list is value-only"),F.Sim->TrySetRoomCeilingPlates({},Reason) && F.Air->GetMutableSolver().GetGrid().bSolidCell==Solids);
+	AddInfo(TEXT("Ceiling fixture request XY[-5.13,-4.61]x[3.13,3.62]m at2.63m -> XY[-5.25,-4.5]x[3,3.75]m, Z[2.5,2.75]m, nine cells in one0.25m layer; warm0.02s state unchanged. No holes/vents/history/persistence."));
+	return true;
+}
 #endif

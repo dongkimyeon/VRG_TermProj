@@ -316,7 +316,9 @@ namespace
 			if (!Project(I)) { Reason = TEXT("유지 장비의 방 검증 준비 실패"); return false; }
 		}
 		// Barriers are intentionally excluded by the existing validator; persistence is untouched.
-		return Sim->ValidateRoomAirDomain(Domain, Grid, Bounds, Reason);
+		// Ceiling plates are transient for now; Load retains the live list. Include it in FINAL-layout
+		// validation so a saved room/equipment change cannot bypass its clearance check. No file extension.
+		return Sim->ValidateRoomAirDomain(Domain, Grid, Bounds, Reason, &Source->GetRoomCeilingPlates());
 	}
 }
 

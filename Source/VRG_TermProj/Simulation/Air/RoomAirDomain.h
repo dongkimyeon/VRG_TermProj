@@ -28,3 +28,31 @@ namespace VrgRoomAirDomain
 	// Transform contains metres, including translation. Actor/UE conversion belongs to the caller.
 	VRG_TERMPROJ_API FBox TransformedBoxM(const FVector& LocalMinM, const FVector& LocalMaxM, const FTransform& TransformM);
 }
+
+// User decision 2026-10-06: a one-cell horizontal plate, NOT a filled volume above HeightM.
+// World metres, no holes/outlets yet; array empty preserves existing worlds. Not persisted in v2 yet.
+USTRUCT()
+struct VRG_TERMPROJ_API FRoomCeilingPlate
+{
+	GENERATED_BODY()
+	UPROPERTY() FVector2D MinXYM = FVector2D::ZeroVector;
+	UPROPERTY() FVector2D MaxXYM = FVector2D::ZeroVector;
+	UPROPERTY() double HeightM = 0.0;
+	bool operator==(const FRoomCeilingPlate& Other) const
+	{ return MinXYM == Other.MinXYM && MaxXYM == Other.MaxXYM && HeightM == Other.HeightM; }
+};
+
+struct VRG_TERMPROJ_API FRoomCeilingPlan
+{
+	FIntVector MinCell = FIntVector::ZeroValue;
+	FIntVector MaxCellExclusive = FIntVector::ZeroValue;
+	FBox ActualBoundsM = FBox(ForceInit);
+};
+
+namespace VrgRoomAirDomain
+{
+	// Conservative XY overlap, containing Z layer [floor(height/h), floor(height/h)+1).
+	// Bounds are reported, never silently clipped; caller supplies the validated manual grid.
+	VRG_TERMPROJ_API bool BuildCeilingPlans(const FRoomAirDomainSettings& Room, const TArray<FRoomCeilingPlate>& Plates,
+		const FAirGridParams& Grid, const FBox& ActualRoomM, TArray<FRoomCeilingPlan>& OutPlans, FString& Reason);
+}
