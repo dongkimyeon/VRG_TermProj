@@ -4216,3 +4216,24 @@ Editor Development96.93s 성공. RoomCeilingHoleDeleteHistoryPersistence / 기�
 기존 전체 후보 검증으로 판 밖·범위 역전·개방0셀·교점 실패를 거절하며, 유효했던 미리보기 뒤 교점 실패도 확정을 막는다. 모서리 클릭이 실패해도 중복 구멍 재선택이나 판 이동으로 내려가지 않는다. Esc는 드래그만 취소하고 다음 Esc는 구멍 모드를 끝낸다. 숫자 창/패치/모드·외부 목록 변경/공유 취소 경로를 검사했으며 실제 포커스는 기존 MouseRay의 뷰포트 HasFocus 검사 실패 시 같은 경로로 취소한다. 드래그 중 장비/카메라/Delete/Undo/Redo는 차단한다.
 
 Editor Development160.10s 성공. RoomCeilingHoleCornerPreview / 기존 RoomCeilingCornerPreview / RoomCeilingHoleSelectionDelete 3종 무경고 성공. 근거(커밋 제외): Saved/Build_CeilingHoleCorner.log, Saved/Logs/CeilingHoleCorner_Tests.log, Saved/Automation/CeilingHoleCorner/index.json. 확정/저장·물리 통합은 다음 작은 커밋이다. 새 물성·허용치 없음. 신규 핸들 실제 화면/OS 포커스는 미확인, Tools/부분천장_구멍XY핸들_확인_2026-10-07.md 직접 절차. 구멍 전체 이동·다중·외부 배기·물리 확장·전체/FPS와 기존 화면 도구 재시도 없음.
+
+
+### 2026-10-07 구멍 XY 핸들 기록/v2·고체 통합 완료
+
+유효한 모서리 한 확정은 기존 전체 목록의 공유 기록 한 건이다. 중복 구멍 앞 항목의 max만 변경하고 반대 모서리·판 기하/높이·다른 중복 구멍은 유지했다. 정확한 Undo/Redo·취소/거절/no-op의 양 기록 유지·새 확정 Redo 초기화를 검사했다. 실패 Load는 미확정 미리보기/드래그·선택·판/방·기록과 실제 예열 상태를 유지하고, 성공 Load는 드래그/선택/기록을 초기화한다. 반복/새 월드 v2는 확정 목록을 교체하며 중복 추가가 없다. 기록/저장 경로를 수정하지 않고 기존 경로의 부족한 통합 조건만 추가했다.
+
+1.02s 예열 뒤 편집·기록 복원은 실제 온도·시계·열 장부·마스크·장비·배관을 유지했다. 다음 진입에 선택 구멍의 요청 최대가 판 로컬(1.0,0.95)m로 바뀌어 합집합 개방4→6셀/판 고체12→10셀을 셀별로 확인했다. 네 모서리/세계5cm 스냅은 앞 입력 검사에서 확인했다. 별도 합성 판을 실제 CDU 외형 높이의 절반에 두고 구멍 축소로 닫히는 셀이 외형을 막으면 확정이 거절됨을 검사했다. 외형이 새 개방 영역으로 이동한 뒤 Undo가 고체를 복원해 막는 경우도 거절되며 현재 변환/목록/기록이 유지됐다. 외형을 원위치로 돌리면 Undo가 성공한다. 그 높이는 기존 CDU SizeM에서 읽으며 새 하드웨어 수치/물성을 정의하지 않는다.
+
+| 검사 | 새 모서리 시나리오 측정(같은/새 월드, t1.02s) | 정규화·단위·기존 기준 |
+|---|---|---|
+| 기하/격자 | h0.25m,43×37×13=20683셀, 판16셀 중 개방4→6/고체12→10 | 합성1m×1m 판·높이2.625m; 셀별 정확 일치. 시설 실측값 아님 |
+| 랙 IT 불변 | max 상대0 | abs(첫IT−동일 프리셋/부하/초기조건 참조IT)/참조IT(W), 무차원<1e-9 |
+| 전역 열수지 | maxAbs2.573e-14 | abs(Ein−Eout−Stored)/EnergyInJ(IT+CRAH 팬), 무차원<1e-9 |
+| 압력 발산 | max3.461e-08, 수렴 | maxAbsDiv(1/s)/(maxAbsVelocity(m/s)/h(m)), 무차원<1e-5 + 수렴 플래그 |
+| 냉각수 열 결합 | max3.971e-15 | abs(랙 coolant 제거합W−라디에이터 방출W)/라디에이터 방출W, 무차원<1e-12 |
+| 랙/덕트 공기 결합 | max8.641e-16 | abs(랙 풍량kg/s−덕트 풍량kg/s)/랙 풍량kg/s, 무차원<1e-9 및 양의 풍량 |
+| 타당성/냉각 | 수력 수렴·덕트 거절 없음·양의 코일 제거W·흡기288.15~308.15K 내부·펌프 비율 정상 | 기존15~35°C 과도 안전망 및0<펌프 전력W/IT 전력W<0.05. 새 허용치 없음 |
+
+Editor Development86.79s 성공. 신규 RoomCeilingHoleCornerHistoryPersistence / 기존 RoomCeilingHoleHistoryPersistence 2종 무경고 성공. 기존 검사는 이전 파일·다른 판/벽/장비/콜드아일 지붕 고체 보존을 재사용해 확인하며 전역maxAbs5.999e-14·발산2.793e-08 등 기존 기준 충족. 앞 입력3종 포함 고유 영향5종 최종 모두 성공. 근거(커밋 제외): Saved/Build_CeilingHoleCornerHistory.log, Saved/Logs/CeilingHoleCornerHistory_Tests.log, Saved/Automation/CeilingHoleCornerHistory/index.json. 실제 셀은 다음 진입 때 적용하며 외부 배기/열 제거는 없다.
+
+새 핸들 UI 픽셀·실제 마우스/OS 포커스는 미확인이고 Tools/부분천장_구멍XY핸들_확인_2026-10-07.md 상세 절차를 따른다. 사용자 직접 정상 확인된 것은 앞 구멍 선택·삭제다. 측정은 균일 CPU/NullRHI 합성 시험이고 시설 정확도·정상상태·GPU/옥트리·FPS로 확대하지 않는다. 구멍 전체 이동·다중 편집·외부 배기·물리 확장·전체 Automation/FPS는 제외했다. 빌드 중 소스 변경·기존 화면 실패 재시도·변경 없는 성공 검사 반복 없음.
