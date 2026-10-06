@@ -123,6 +123,8 @@ TArray<int32> VrgRoomAirDomain::MarkCeilingCells(FUniformAirGrid& Grid, const TA
 			for (int32 Y = P.MinCell.Y; Y < P.MaxCellExclusive.Y; ++Y)
 				for (int32 X = P.MinCell.X; X < P.MaxCellExclusive.X; ++X)
 				{
+					// Exclude this plate only. Never clear existing equipment/wall/roof/other-plate solids.
+					if (IsCeilingCellOpen(P, X, Y)) continue;
 					const int32 Index = Grid.CellIndex(X,Y,Z);
 					if (Grid.bSolidCell[Index]) continue;
 					Grid.bSolidCell[Index] = true;

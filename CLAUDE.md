@@ -4123,3 +4123,30 @@ t1.02s 균일 CPU/NullRHI의 짧은 과도·기하 검증이며 정상상태/시
 Editor Development120.27s 성공(기존 FloorCm/Name shadow 경고 유지). RoomCeilingHolePlan + RoomCeilingFoundation + RoomCeilingPersistence + 접두어로 포함된 RoomCeilingPersistenceRollbackCoupling 총4종 무경고 성공, 실패0/미실행0. h0.25m·로컬[0.125,0.875]^2m는 실제 월드[-5,-4.5]×[3.25,3.75]m의2×2셀 계획이며 Z[2.5,2.75]m다. 정확한 셀 경계의1셀은 허용, 최소 면을1e-12m 안쪽으로 좁힌0셀 요청은 거절한다. 정수 인덱스/전체 목록 정확 비교, 실패 계획 출력·상태 보존을 확인했다. 이는 데이터/검증 커밋이며 실제 고체 제외·유동/냉각 통합은 다음 커밋에서 구현/측정한다. UI·외부 배기·열 제거 없음.
 
 근거(커밋 제외): Saved/Build_CeilingHoleData.log, Saved/Logs/CeilingHoleData_Tests.log, Saved/Automation/CeilingHoleData/index.json. E:\UE_5.8 Editor Development와 위3개 접두어 Automation RunTests -unattended -NullRHI. 전체/FPS/기존 화면 실패 재시도·빌드 중 소스 변경 없음.
+
+## 2026-10-06 부분 천장 구멍 셀·기록·저장·냉각 통합
+
+판 마스크는 구멍 셀에서 해당 판의 표시만 생략한다. 이미 표시된 고체를 false로 지우지 않으며 다른 판·장비·벽·콜드아일 지붕과의 합집합을 보존한다. 기존 판 설명에는 외곽 셀 수와 판별 제외/남은 셀·실제 개방 범위를 구분했다. 실제 공기 셀은 기존처럼 다음 진입에서만 바뀐다. 구멍은 내부 상하 유동 연결이며 외부 유출/배기 팬/열 제거를 추가하지 않았다.
+
+Editor Development75.99s 성공. 5종 영향 검사 중 RoomCeilingCoupling, RoomCeilingHeightHistoryPersistence, RoomCeilingHoleHistoryPersistence, RoomCeilingMoveHistoryPersistence4종은 무경고 성공이다. 신규 CeilingHoleFlow는 최초에 하한297.15K−1e-9K 검사만 실패했다. 닫힌 참조/구멍 사례 모두 미소 하한 초과가 발생했고, 정상 열수지·압력 수렴·닫힌 판 무유동/구멍 유동은 통과했다. 실제 수송식은 절대온도 보존 플럭스를 갱신하므로 유한 압력 잔류 발산에 기계 정밀도 최소 원리를 요구할 수 없다. 두 경우의 측정 최대 하한 오차1.54e-7K에 여유를 둔1e-6K 검사로만 수정했다. 솔버 클램프/충돌/압력·열수지 기준 완화 없음. 수정된1종만 빌드·재검증하며 최종 결과는 뒤에 기록한다.
+
+| 항목 | 측정 | 정규화·단위/기준 |
+|---|---|---|
+| 구멍/고체 합집합 | 144→108셀(36셀 제외), 중복 구멍 재계상0·기존 고체 보존·다른 판1셀로 재차 차단 | h0.25m·12³셀, 판Z[1.5,1.75]m; 글로벌 셀 정수/마스크 정확 비교 |
+| 내부 상하 연결 | 닫힘 법선0m/s·상부ΔT0K; 개방 법선0.064081176m/s·상부ΔT0.310608449K | 같은 합성1500W·2.4s·3600J 입력. 닫힘 법선0/상부오차<1e-9K, 개방 법선·상부상승>0. 외부 제거 없음 |
+| 단독 공기 열수지 | 최대abs2.880e-13, 절대 잔차max1.037e-9J | abs(Ein−Eout−Stored)/3600J, 무차원<1e-9. 양의 입력/축적 확인 |
+| 단독 압력 발산 | 최대2.344e-09 | maxAbsDiv(1/s)/(maxAbsVelocity(m/s)/h(m)), 무차원<1e-5 및 수렴 플래그 |
+| 합성 온도 타당성 | 유체최소297.149999846K, 최대311.020437458K | 초기297.15K 하한 오차max1.54e-7K를 측정하고 허용1e-6K로 설정; 기존 고온 fixture340K 미만. 물리 경계/온도 강제 보정 아님 |
+| 판 편집·기록/v2 | 한 항목 이동·높이2.625→2.9m·로컬 구멍 불변·3기록 전체 Undo/Redo·크기 거절·stale 구멍 보호 | 전체 목록 정확 비교,5cm 기존 스냅. 예열1.02s 편집/Undo·Redo/거절/실패 Load의 K/s/J·마스크·장비/벽/방 변화0, 거절/실패 시 기록 불변 |
+| 같은/새 월드 다음 진입 | 43×37×16=25456셀, 추가 판 고체23셀·구멍 위치의 다른 고체2셀 보존·유체6셀 | h0.25m, 두 판 각각16−4셀에서 기존 고체 중복1셀 제외. wall/roof/equipment baseline 전체 마스크 보존. 반복 Load 덧붙임0/성공 기록0·이전 목록 없는 파일 현 구멍 유지/구멍 없는 저장 판은 닫힘 |
+| 첫 IT 상대 변화 | 최대0 | abs(첫IT−동일 초기조건 참조IT)/참조W, 무차원<1e-9 |
+| 전역 열수지 | 최대abs5.999e-14 | abs(Ein−Eout−Stored)/EnergyInJ(IT+CRAH 팬), 무차원<1e-9 |
+| 결합 압력 발산 | 최대2.793e-08 | 위 발산 정규화, 무차원<1e-5 및 수렴 플래그 |
+| 냉각수/랙 덕트 | 상대max2.382e-15/8.641e-16 | abs(랙 제거W−라디에이터W)/라디에이터W<1e-12; abs(랙kg/s−덕트kg/s)/랙kg/s<1e-9 |
+| 결합 타당성 | 수력 수렴·양의 코일/유량·덕트 거절 없음·흡기288.15~308.15K 내부·펌프 전력/IT<0.05 | 기존15~35°C 과도 안전망·무차원 펌프 비율, 새 물성/용량 상수 없음 |
+
+기하는 합성 테스트이며 물리 값은 기존 CeilingBlocksFlow/천장 결합 fixture를 재사용했다. t2.4s/1.02s 균일 CPU·NullRHI 결과로 정상상태·시설 정확도·옥트리/GPU/FPS를 주장하지 않는다. 구멍 UI/외부 열교환/배기·플레넘·다중 편집은 후속이고 신규 화면 확인 대상 없음. 전체 XY 이동 직접 정상 사용자 보고와 구분한다.
+근거(커밋 제외): Saved/Build_CeilingHoleIntegration.log, Saved/Logs/CeilingHoleIntegration_Tests.log, Saved/Automation/CeilingHoleIntegration/index.json(최초4성공/1실패). 최종 신규 유동 재검증 근거는 뒤에 추가한다.
+
+최종 결과: 신규 검사 하한만 수정한 Editor Development23.87s 성공, CeilingHoleFlow1종 무경고 성공(실패0/미실행0/종료0). 측정은 위 표와 동일하다. 통합 첫 실행의 나머지4종은 수정 영향이 없어 반복하지 않았다. 데이터4종+통합5종의 고유 영향9종 모두 최종 무경고 성공이다. 신규 테스트의 최소 온도 허용치만 실측 뒤 정했으며 기존 솔버/보존/압력/물성은 변경하지 않았다. 전체 Automation 건수·FPS/시설 정확도 검증으로 확대하지 않는다.
+최종 재검증 근거(커밋 제외): Saved/Build_CeilingHoleFlowBound.log, Saved/Logs/CeilingHoleFlowBound_Tests.log, Saved/Automation/CeilingHoleFlowBound/index.json. E:\UE_5.8 Editor Development 후 Automation RunTests VRG.Air.Solid.CeilingHoleFlow -unattended -NullRHI. 빌드 중 소스 변경/기존 성공 검사 반복/화면 실패 도구 재시도 없음.

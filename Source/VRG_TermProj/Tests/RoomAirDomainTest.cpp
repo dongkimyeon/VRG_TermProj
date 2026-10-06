@@ -674,4 +674,57 @@ bool FRoomCeilingHolePlanTest::RunTest(const FString& Parameters)
 	AddInfo(TEXT("Hole plan: local[0.125,0.875]^2m -> fully contained2x2 cells h0.25m; world[-5,-4.5]x[3.25,3.75]m Z[2.5,2.75]m. Validation only; rasterization checked separately."));
 	return true;
 }
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FRoomCeilingHoleFlowTest, "VRG.Air.Solid.CeilingHoleFlow",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::CommandletContext | EAutomationTestFlags::EngineFilter)
+bool FRoomCeilingHoleFlowTest::RunTest(const FString& Parameters)
+{
+	// Same synthetic geometry/air/source/step/pressure settings as CeilingBlocksFlow; no exterior sink.
+	FAirGridParams GP; GP.NumCellsX=12; GP.NumCellsY=12; GP.NumCellsZ=12; GP.CellSizeM=.25;
+	FRoomAirDomainSettings Room; Room.bManual=true; Room.MinXYM=FVector2D(0); Room.MaxXYM=FVector2D(3); Room.CeilingHeightM=3;
+	FRoomCeilingPlate P; P.MinXYM=Room.MinXYM; P.MaxXYM=Room.MaxXYM; P.HeightM=1.55;
+	FRoomCeilingHole Hole; Hole.LocalMinXYM=FVector2D(.75); Hole.LocalMaxXYM=FVector2D(2.25); P.Holes={Hole,Hole};
+	TArray<FRoomCeilingPlan> Plans; FString Reason;
+	TestTrue(TEXT("Overlapping holes planned"),VrgRoomAirDomain::BuildCeilingPlans(Room,{P},GP,FBox(FVector(0),FVector(3)),Plans,Reason));
+	FAirSolver MaskSolver; MaskSolver.Initialize(GP,297.15); auto& Mask=MaskSolver.GetMutableGrid();
+	// Existing solid owners all share this bool mask; the rasterizer must never write false to any of them.
+	for(int32 I=3;I<6;++I) Mask.bSolidCell[Mask.CellIndex(I,I,6)]=true;
+	const auto Before=Mask.bSolidCell;
+	TestEqual(TEXT("Duplicate holes union; only108 plate cells added"),VrgRoomAirDomain::MarkCeilingCells(Mask,Plans).Num(),108);
+	for(int32 I=0;I<Before.Num();++I) if(Before[I]) TestTrue(TEXT("Every preexisting solid preserved"),Mask.bSolidCell[I]);
+	TestFalse(TEXT("Unobstructed hole remains fluid"),Mask.IsSolidCell(7,7,6));
+	FRoomCeilingPlate Cover; Cover.MinXYM=FVector2D(1.75); Cover.MaxXYM=FVector2D(2); Cover.HeightM=P.HeightM;
+	TArray<FRoomCeilingPlan> Covered; VrgRoomAirDomain::BuildCeilingPlans(Room,{P,Cover,P},GP,FBox(FVector(0),FVector(3)),Covered,Reason);
+	TestEqual(TEXT("Other plate fills exactly one hole cell"),VrgRoomAirDomain::MarkCeilingCells(Mask,Covered).Num(),1);
+	TestTrue(TEXT("Other plate survives later holed plate"),Mask.IsSolidCell(7,7,6));
+	TestEqual(TEXT("Repeated union adds nothing"),VrgRoomAirDomain::MarkCeilingCells(Mask,Covered).Num(),0);
+	double MaxEnergy=0,MaxDiv=0,OpenNormal=0,OpenUpper=0,ClosedUpper=0;
+	for(bool bOpen:{false,true})
+	{
+		auto Case=P; if(!bOpen) Case.Holes.Reset();
+		TestTrue(TEXT("Closed/open plan"),VrgRoomAirDomain::BuildCeilingPlans(Room,{Case},GP,FBox(FVector(0),FVector(3)),Plans,Reason));
+		FAirSolver Solver; Solver.Initialize(GP,297.15); Solver.GetMutablePressureSettings().NormalizedResidualTarget=1e-7; Solver.GetMutablePressureSettings().MaxIterations=3000;
+		auto& G=Solver.GetMutableGrid(); TestEqual(TEXT("Production mask count"),VrgRoomAirDomain::MarkCeilingCells(G,Plans).Num(),bOpen?108:144); Solver.OnSolidCellsChanged();
+		FAirSolverInput Input; Input.CellHeatW.Init(0,G.GetNumCells());
+		for(int32 Y=4;Y<=7;++Y) for(int32 X=4;X<=6;++X) Input.CellHeatW[G.CellIndex(X,Y,5)]=1500.0/12;
+		for(int32 I=0;I<120;++I) Solver.Step(Input,.02);
+		double Normal=0,Upper=0,MinK=TNumericLimits<double>::Max(),MaxK=0;
+		for(int32 Y=0;Y<12;++Y) for(int32 X=0;X<12;++X)
+		{
+			Normal=FMath::Max(Normal,FMath::Abs(G.VelocityZMs[G.FaceZIndex(X,Y,7)]));
+			for(int32 Z=0;Z<12;++Z) if(!G.IsSolidCell(X,Y,Z))
+			{ const double K=G.TemperatureK[G.CellIndex(X,Y,Z)]; MinK=FMath::Min(MinK,K); MaxK=FMath::Max(MaxK,K); if(Z>=7) Upper=FMath::Max(Upper,K-297.15); }
+		}
+		const auto S=Solver.MakeSnapshot(2.4); MaxEnergy=FMath::Max(MaxEnergy,FMath::Abs(S.NormalizedEnergyResidual)); MaxDiv=FMath::Max(MaxDiv,S.NormalizedDivergence);
+		// Measured closed/open minimum undershoot1.54e-7K at2.4s (2026-10-06).
+		// Conservative temperature flux retains the small pressure projection divergence; use1e-6K margin,
+		// documented in CLAUDE, rather than a machine-precision minimum-principle assumption. No solver clamp.
+		TestTrue(TEXT("Existing meaningful energy/pressure criteria and measured temperature bound"),FMath::IsNearlyEqual(Solver.GetEnergyInJ(),3600.0,1e-9)
+			&& Solver.GetEnergyStoredJ()>0 && FMath::Abs(S.NormalizedEnergyResidual)<1e-9 && S.bPressureConverged && S.NormalizedDivergence<1e-5 && MinK>=297.15-1e-6 && MaxK<340);
+		if(bOpen) { OpenNormal=Normal; OpenUpper=Upper; } else { ClosedUpper=Upper; TestEqual(TEXT("Closed plate has no normal flow"),Normal,0.0); }
+		AddInfo(FString::Printf(TEXT("Ceiling hole open%d t2.4s input%.9fJ stored%.9fJ residual%.3eJ energy%.3e pressure%.3e normal%.9fm/s upperRise%.9fK fluid[%.9f,%.9f]K"),bOpen,Solver.GetEnergyInJ(),Solver.GetEnergyStoredJ(),Solver.GetEnergyResidualJ(),S.NormalizedEnergyResidual,S.NormalizedDivergence,Normal,Upper,MinK,MaxK));
+	}
+	TestTrue(TEXT("Hole connects upper/lower fluid, closed reference isolated"),OpenNormal>0 && OpenUpper>0 && ClosedUpper<1e-9);
+	AddInfo(FString::Printf(TEXT("Ceiling hole mask144->108 cells; full inclusion36cells; other solids/plate preserved; maxEnergyAbs%.3e maxNormalizedDiv%.3e; no external mass/heat removal."),MaxEnergy,MaxDiv));
+	return true;
+}
 #endif

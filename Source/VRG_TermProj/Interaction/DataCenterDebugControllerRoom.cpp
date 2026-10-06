@@ -231,6 +231,19 @@ FString ADataCenterDebugController::DescribeRoomCeilingCandidate(const FRoomCeil
 	const auto& Plan=Plans[0]; const auto N=Plan.MaxCellExclusive-Plan.MinCell;
 	Message+=FString::Printf(TEXT("계산 최소 %s m\n계산 최대 %s m\n두께 %.6g m · 셀 %dx%dx%d = %d개\n"),
 		*Plan.ActualBoundsM.Min.ToString(),*Plan.ActualBoundsM.Max.ToString(),GP.CellSizeM,N.X,N.Y,N.Z,N.X*N.Y*N.Z);
+	if (!Plan.OpenCells.IsEmpty())
+	{
+		int32 OpenCount=0;
+		for(int32 Y=Plan.MinCell.Y;Y<Plan.MaxCellExclusive.Y;++Y) for(int32 X=Plan.MinCell.X;X<Plan.MaxCellExclusive.X;++X)
+			if(VrgRoomAirDomain::IsCeilingCellOpen(Plan,X,Y)) ++OpenCount;
+		Message+=FString::Printf(TEXT("해당 판 제외 %d셀 · 남은 고체 %d셀 (다른 고체 유지)\n"),OpenCount,N.X*N.Y*N.Z-OpenCount);
+		for(const auto& Open:Plan.OpenCells)
+		{
+			const FVector Min=Bounds.Min+FVector(Open.Min.X,Open.Min.Y,Plan.MinCell.Z)*GP.CellSizeM;
+			const FVector Max=Bounds.Min+FVector(Open.Max.X,Open.Max.Y,Plan.MaxCellExclusive.Z)*GP.CellSizeM;
+			Message+=FString::Printf(TEXT("개방 계산 %s ~ %s m\n"),*Min.ToString(),*Max.ToString());
+		}
+	}
 	if (!Sim->ValidateRoomAirDomain(Sim->GetRoomAirDomain(),GP,Bounds,Reason,&Plates)) Message+=TEXT("거절: ")+Reason;
 	return Message+TEXT("고체는 다음 시뮬레이션 진입에 적용 · 판 목록은 배치 저장에 포함.");
 }
