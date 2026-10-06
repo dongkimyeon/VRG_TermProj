@@ -903,7 +903,7 @@ bool ADataCenterDebugController::InputKey(const FInputKeyEventArgs& Params)
 	}
 	if (bRoomCeilingEditing && Params.Key==EKeys::Delete)
 	{
-		if(Params.Event==IE_Pressed) TryDeleteRoomCeiling();
+		if(Params.Event==IE_Pressed) { if(bRoomCeilingHoleEditing) TryDeleteRoomCeilingHole(); else TryDeleteRoomCeiling(); }
 		return true; // One deletion per physical press; never route the same key to equipment/Enhanced Input.
 	}
 	if (Params.Key == EKeys::LeftMouseButton)
@@ -1303,7 +1303,7 @@ bool ADataCenterDebugController::TryDeleteLayoutRack()
 
 void ADataCenterDebugController::OnDeleteLayoutEquipment()
 {
-	if(bRoomCeilingEditing) { TryDeleteRoomCeiling(); return; }
+	if(bRoomCeilingEditing) { if(bRoomCeilingHoleEditing) TryDeleteRoomCeilingHole(); else TryDeleteRoomCeiling(); return; }
 	if (!TryDeleteLayoutRack() && !TryDeleteLayoutSpine() && !TryDeleteLayoutCdu() && !TryDeleteLayoutCrah() && !TryDeleteLayoutBarrier())
 		UE_LOG(LogTemp, Display, TEXT("[VrgLayout] 삭제 거절: 랙 선택 전체 또는 네이티브 스파인 선택 전체 또는 네이티브 CDU 선택 전체 또는 네이티브 CRAH 선택 전체와 배치 대기 상태가 필요합니다."));
 }
@@ -2100,8 +2100,8 @@ void ADataCenterDebugController::OnSelectLayoutEquipment()
 		FVector Eye,Dir; FVector2D Screen;
 		if(MouseRay(Eye,Dir,Screen))
 		{
-			const int32 Corner=PickRoomCeilingCorner(Screen);
-			BeginRoomCeilingPointerDrag(Corner,Eye,Dir);
+			if(bRoomCeilingHoleEditing) SelectRoomCeilingHoleAlongRay(Eye,Dir);
+			else { const int32 Corner=PickRoomCeilingCorner(Screen); BeginRoomCeilingPointerDrag(Corner,Eye,Dir); }
 		}
 		return; // Ceiling mode owns misses too: no equipment drag or marquee underneath.
 	}
@@ -2383,7 +2383,8 @@ void ADataCenterDebugController::OnCancelLayoutDrag()
 	if(bRoomSettingsOpen) { CloseRoomSettings(); return; }
 	if(bRoomCeilingEditing)
 	{
-		if(CeilingDragCorner!=INDEX_NONE) EndRoomCeilingCornerDrag(false);
+		if(bRoomCeilingHoleEditing) SetRoomCeilingHoleEditing(false);
+		else if(CeilingDragCorner!=INDEX_NONE) EndRoomCeilingCornerDrag(false);
 		else SetRoomCeilingEditing(false);
 		return;
 	}
@@ -3012,6 +3013,7 @@ bool ADataCenterDebugController::OpenRoomSettings(bool bCeiling, bool bHole)
 	if (!GetWorld() || !GetWorld()->IsGameWorld() || !FindSimActor() || !IsLayoutMode() || !IsCameraInputAvailable()
 		|| bAddingRack || bMarqueeActive || (IsLayoutDragging() && CeilingDragCorner==INDEX_NONE) || Grabbed.IsValid() || IsInputKeyDown(EKeys::RightMouseButton)) return false;
 	SetRoomBoundsEditing(false);
+	SetRoomCeilingHoleEditing(false); // A numeric draft ends hole picking but keeps its parent plate.
 	if (!bHole) SetRoomCeilingEditing(false); // Hole modal retains the selected value-list snapshot; no re-picking.
 	if (GetLocalPlayer())
 	{

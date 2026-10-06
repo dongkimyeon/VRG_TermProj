@@ -24,6 +24,7 @@ private:
 	UPROPERTY() TObjectPtr<ULayoutRackButton> CeilingButton;
 	UPROPERTY() TObjectPtr<ULayoutRackButton> CeilingEditButton;
 	UPROPERTY() TObjectPtr<ULayoutRackButton> CeilingHoleButton;
+	UPROPERTY() TObjectPtr<ULayoutRackButton> CeilingHoleEditButton;
 	UFUNCTION()
 	void OnAddRack();
 	UFUNCTION() void OnAddSpine();
@@ -34,6 +35,7 @@ private:
 	UFUNCTION() void OnRoomCeiling();
 	UFUNCTION() void OnRoomCeilingEdit();
 	UFUNCTION() void OnRoomCeilingHole();
+	UFUNCTION() void OnRoomCeilingHoleEdit();
 	UFUNCTION() void OnRoomBounds();
 	UFUNCTION() void OnAddWall();
 	UFUNCTION() void OnAddCurtain();

@@ -86,6 +86,11 @@ void ULayoutRackPalette::NativeOnInitialized()
 	auto* HoleSlot=Canvas->AddChildToCanvas(CeilingHoleButton); HoleSlot->SetAnchors(FAnchors(0,1)); HoleSlot->SetAlignment(FVector2D(0,1));
 	HoleSlot->SetPosition(FVector2D(20,-128)); HoleSlot->SetSize(FVector2D(240,44));
 	CeilingHoleButton->SetIsEnabled(false); CeilingHoleButton->OnClicked.AddDynamic(this,&ULayoutRackPalette::OnRoomCeilingHole);
+	CeilingHoleEditButton=WidgetTree->ConstructWidget<ULayoutRackButton>();
+	auto* EditLabel=WidgetTree->ConstructWidget<UTextBlock>(); EditLabel->SetText(FText::FromString(TEXT("구멍 선택·삭제"))); EditLabel->SetFont(Font); CeilingHoleEditButton->AddChild(EditLabel);
+	auto* EditSlot=Canvas->AddChildToCanvas(CeilingHoleEditButton); EditSlot->SetAnchors(FAnchors(0,1)); EditSlot->SetAlignment(FVector2D(0,1));
+	EditSlot->SetPosition(FVector2D(270,-128)); EditSlot->SetSize(FVector2D(240,44));
+	CeilingHoleEditButton->SetIsEnabled(false); CeilingHoleEditButton->OnClicked.AddDynamic(this,&ULayoutRackPalette::OnRoomCeilingHoleEdit);
 }
 
 void ULayoutRackPalette::OnAddRack()
@@ -121,12 +126,23 @@ void ULayoutRackPalette::NativeTick(const FGeometry& Geometry, float DeltaTime)
 		auto* C=Cast<ADataCenterDebugController>(GetOwningPlayer());
 		CeilingHoleButton->SetIsEnabled(C && C->IsRoomCeilingEditing() && C->GetSelectedRoomCeilingIndex()!=INDEX_NONE && !C->IsLayoutDragging());
 	}
+	if(CeilingHoleEditButton)
+	{
+		auto* C=Cast<ADataCenterDebugController>(GetOwningPlayer()); FRoomCeilingPlate P; bool bValid=false;
+		CeilingHoleEditButton->SetIsEnabled(C && !C->IsLayoutDragging() && (C->IsRoomCeilingHoleEditing() || (C->GetRoomCeilingPreview(P,bValid) && !P.Holes.IsEmpty())));
+		if(auto* Label=Cast<UTextBlock>(CeilingHoleEditButton->GetChildAt(0))) Label->SetText(FText::FromString(C && C->IsRoomCeilingHoleEditing()?TEXT("구멍 편집 끄기"):TEXT("구멍 선택·삭제")));
+	}
 	if (CeilingButton) { auto* C=Cast<ADataCenterDebugController>(GetOwningPlayer()); CeilingButton->SetIsEnabled(C && C->GetRoomSettingsDraft().bManual); }
 	if(CeilingEditButton)
 	{
 		auto* C=Cast<ADataCenterDebugController>(GetOwningPlayer()); CeilingEditButton->SetIsEnabled(C && C->GetRoomSettingsDraft().bManual);
 		if(auto* Label=Cast<UTextBlock>(CeilingEditButton->GetChildAt(0))) Label->SetText(FText::FromString(C && C->IsRoomCeilingEditing()?TEXT("천장 편집 끄기"):TEXT("천장 선택·삭제")));
 	}
+}
+
+void ULayoutRackPalette::OnRoomCeilingHoleEdit()
+{
+	if(auto* C=Cast<ADataCenterDebugController>(GetOwningPlayer())) C->ToggleRoomCeilingHoleEditing();
 }
 
 void ULayoutRackPalette::OnRoomCeilingHole()

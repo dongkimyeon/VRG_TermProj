@@ -778,4 +778,53 @@ bool FRoomCeilingHoleUiTest::RunTest(const FString& Parameters)
 	AddInfo(TEXT("Hole modal: four local m fields, selected duplicate only, full-list refusal/0cells, actual4cell plan h0.25m, world input gates/stale protection and modal-first Esc; no actual widget pixels/OS focus measured."));
 	return true;
 }
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FRoomCeilingHoleSelectionTest,"VRG.Interaction.Layout.RoomCeilingHoleSelectionDelete",
+ EAutomationTestFlags::EditorContext | EAutomationTestFlags::CommandletContext | EAutomationTestFlags::EngineFilter)
+bool FRoomCeilingHoleSelectionTest::RunTest(const FString& Parameters)
+{
+ FRoomFixture F; auto* C=F.World->SpawnActor<ADataCenterDebugController>(); C->bFrameEquipmentOnStart=false;
+ auto* Pawn=F.World->SpawnActor<ADefaultPawn>(); C->Possess(Pawn); C->PlayerInput=NewObject<UPlayerInput>(C); C->RefreshInteractionInputMode();
+ FString Message; F.Sim->TrySetRoomAirDomain(ManualRoom(),Message);
+ FRoomCeilingPlate P; P.MinXYM=FVector2D(-5.25,3); P.MaxXYM=FVector2D(-4.25,4); P.HeightM=2.625;
+ FRoomCeilingHole H; H.LocalMinXYM=FVector2D(.125); H.LocalMaxXYM=FVector2D(.875); P.Holes={H,H};
+ TestTrue(TEXT("Duplicate holes fixture accepted"),F.Sim->TrySetRoomCeilingPlates({P},Message));
+ F.Sim->EnterSimulationMode(); F.Sim->Tick(.021f); F.Sim->EnterLayoutMode();
+ const auto Mask=F.Air->GetMutableSolver().GetGrid().bSolidCell; const auto Temps=F.Air->GetMutableSolver().GetGrid().TemperatureK; const double Clock=F.Sim->GetSnapshot().SimTimeS;
+ auto Frozen=[&]() { return F.Air->GetMutableSolver().GetGrid().bSolidCell==Mask && F.Air->GetMutableSolver().GetGrid().TemperatureK==Temps && F.Sim->GetSnapshot().SimTimeS==Clock; };
+ const FVector Eye(-475,350,400),Down(0,0,-1);
+ TestFalse(TEXT("No parent selection blocks hole mode"),C->SetRoomCeilingHoleEditing(true));
+ TestTrue(TEXT("Parent selection then separate hole mode"),C->SetRoomCeilingEditing(true) && C->SelectRoomCeilingAlongRay(Eye,Down) && C->SetRoomCeilingHoleEditing(true));
+ TestFalse(TEXT("No selected hole Delete is harmless"),C->TryDeleteRoomCeilingHole());
+ TestTrue(TEXT("Duplicate tie picks first actual opening"),C->SelectRoomCeilingHoleAlongRay(Eye,Down) && C->GetSelectedRoomCeilingHoleIndex()==0);
+ TestTrue(TEXT("Hole owns click; cannot manipulate/delete parent"),!C->SelectRoomCeilingAlongRay(Eye,Down) && !C->BeginRoomCeilingPointerDrag(0,Eye,Down) && !C->TryDeleteRoomCeiling());
+ TestTrue(TEXT("Blank clears hole only"),!C->SelectRoomCeilingHoleAlongRay(FVector(-525,300,400),Down) && C->GetSelectedRoomCeilingHoleIndex()==INDEX_NONE && C->GetSelectedRoomCeilingIndex()==0 && C->IsRoomCeilingHoleEditing());
+ C->SelectRoomCeilingHoleAlongRay(Eye,Down);
+ TestTrue(TEXT("Invalid ray retains selection"),!C->SelectRoomCeilingHoleAlongRay(Eye,FVector::ZeroVector) && C->GetSelectedRoomCeilingHoleIndex()==0);
+ FInputKeyEventArgs Delete; Delete.Key=EKeys::Delete; Delete.Event=IE_Pressed; C->InputKey(Delete);
+ TestTrue(TEXT("Delete removes one duplicate, keeps plate/mode, clears hole only"),F.Sim->GetRoomCeilingPlates()[0].Holes==TArray<FRoomCeilingHole>{H} && C->GetLayoutUndoCount()==1 && C->GetSelectedRoomCeilingIndex()==0 && C->GetSelectedRoomCeilingHoleIndex()==INDEX_NONE && C->IsRoomCeilingHoleEditing() && Frozen());
+ Delete.Event=IE_Repeat; C->InputKey(Delete); TestEqual(TEXT("Held Delete does not repeat"),F.Sim->GetRoomCeilingPlates()[0].Holes.Num(),1);
+ FInputKeyEventArgs Esc; Esc.Key=EKeys::Escape; Esc.Event=IE_Pressed; C->InputKey(Esc);
+ TestTrue(TEXT("Esc leaves parent editing/selection intact"),!C->IsRoomCeilingHoleEditing() && C->IsRoomCeilingEditing() && C->GetSelectedRoomCeilingIndex()==0);
+ TestTrue(TEXT("Plate drag blocks hole mode"),C->BeginRoomCeilingMoveDrag(Eye,Down) && !C->SetRoomCeilingHoleEditing(true) && !C->TryDeleteRoomCeilingHole()); C->EndRoomCeilingCornerDrag(false);
+ C->SetRoomCeilingHoleEditing(true); C->SelectRoomCeilingHoleAlongRay(Eye,Down);
+ TestTrue(TEXT("Numeric dialog ends hole picking; Delete blocked"),C->OpenRoomCeilingHoleSettings() && !C->IsRoomCeilingHoleEditing() && !C->TryDeleteRoomCeilingHole()); C->CloseRoomSettings();
+ C->SetRoomCeilingHoleEditing(true); C->SelectRoomCeilingHoleAlongRay(Eye,Down);
+ auto External=F.Sim->GetRoomCeilingPlates(); External[0].Holes.Add(H); F.Sim->TrySetRoomCeilingPlates(External,Message);
+ TestTrue(TEXT("External list invalidates index before refresh"),C->GetSelectedRoomCeilingHoleIndex()==INDEX_NONE && !C->TryDeleteRoomCeilingHole()); C->RefreshInteractionInputMode();
+ TestFalse(TEXT("Refresh ends stale edit"),C->IsRoomCeilingHoleEditing());
+ // Fully open synthetic plate through the native CDU. Height derives from its actual exterior, no new physical default.
+ FRoomCeilingPlate Block; Block.MinXYM=FVector2D(-5,-3); Block.MaxXYM=FVector2D(-3,-1); Block.HeightM=F.Cdu->SizeM.Z*.5;
+ FRoomCeilingHole Full; Full.LocalMinXYM=FVector2D(0); Full.LocalMaxXYM=Block.MaxXYM-Block.MinXYM; Block.Holes={Full};
+ TestTrue(TEXT("Open plate permits native CDU exterior"),F.Sim->TrySetRoomCeilingPlates({Block},Message));
+ const FVector CduEye(-400,-200,400); C->SelectRoomCeilingAlongRay(CduEye,Down); C->SetRoomCeilingHoleEditing(true); C->SelectRoomCeilingHoleAlongRay(CduEye,Down);
+ const int32 Undo=C->GetLayoutUndoCount(),Redo=C->GetLayoutRedoCount();
+ TestTrue(TEXT("Refilled CDU obstruction refused atomically"),!C->TryDeleteRoomCeilingHole() && F.Sim->GetRoomCeilingPlates()==TArray<FRoomCeilingPlate>{Block} && C->GetSelectedRoomCeilingHoleIndex()==0
+  && C->GetLayoutUndoCount()==Undo && C->GetLayoutRedoCount()==Redo && C->GetRoomCeilingEditMessage().Contains(TEXT("거절")) && Frozen());
+ C->SetPatchMapOpen(true); TestTrue(TEXT("Patch exits hole mode and blocks Delete"),!C->IsRoomCeilingHoleEditing() && !C->TryDeleteRoomCeilingHole()); C->SetPatchMapOpen(false);
+ C->SetRoomCeilingEditing(true); C->SelectRoomCeilingAlongRay(CduEye,Down); C->SetRoomCeilingHoleEditing(true); F.Sim->EnterSimulationMode(); C->RefreshInteractionInputMode();
+ TestTrue(TEXT("Simulation mode ends picking and blocks Delete"),!C->IsRoomCeilingHoleEditing() && !C->TryDeleteRoomCeilingHole());
+ AddInfo(TEXT("Hole selection: actual-cell slab/tie first; duplicate RemoveAt one; parent/handle/drag/modal/patch/mode gates; stale snapshot; native CDU refill rejected with history/warm grid unchanged. No UI pixels/OS focus measured."));
+ return true;
+}
 #endif

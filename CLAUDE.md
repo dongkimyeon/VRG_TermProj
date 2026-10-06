@@ -4179,3 +4179,10 @@ Editor Development104.85s 성공(기존 컴파일 경고 유지). 신규 RoomCei
 
 측정은 합성 기하·균일 CPU/NullRHI·t1.02s 결과다. 시설 정확도/정상상태/GPU/옥트리/FPS 검증으로 확대하지 않는다. 실제 숫자 창/버튼/윤곽 픽셀·OS 포커스는 여전히 직접 미확인이고 상세 절차 문서를 따른다. 구멍 선택/삭제·핸들·외부 배기/열교환·다중 편집·전체 Automation/FPS는 제외했다.
 근거(커밋 제외): Saved/Build_CeilingHoleUiHistory.log, Saved/Logs/CeilingHoleUiHistory_Tests.log, Saved/Automation/CeilingHoleUiHistory/index.json. E:\UE_5.8 Editor Development 후 위2종 Automation RunTests -unattended -NullRHI. 빌드 중 소스 변경·앞 성공 UI 검사 반복·기존 화면 도구 실패 재시도 없음.
+
+
+### 2026-10-07 선택 판 구멍 단일 선택·삭제 입력
+
+구멍 추가 UI는 사용자 직접 확인 정상 보고다. 별도 ‘구멍 선택·삭제’는 선택 판의 계산 개방 셀 상자만 픽킹한다. 동일 거리/기하는 첫 배열 항목을 선택하고 Delete는 RemoveAt 한 항목만 적용한다. 빈 곳은 구멍 선택만 해제, Esc는 구멍 모드만 종료한다. 판 드래그/핸들/Delete와 입력 경로를 분리하고 숫자 창·패치·편집·시뮬레이션 차단 및 전체 값 목록의 stale 보호를 재사용했다. 삭제 후보는 기존 전체 검증으로 장비/덕트 포함·자원 제한을 다시 확인한다. CDU 외형을 통과하는 구멍 삭제가 거절되어 선택·목록·기록·예열 온도/시계/마스크가 유지됨을 검사했다. 성공 한 건은 기존 전체 목록 기록/v2를 사용하고 실제 셀은 다음 진입까지 유지한다.
+
+E:\UE_5.8 Editor Development 빌드167.12s 성공(기존 FloorCm C4701/Name C4457 경고 잔존). Automation RoomCeilingHoleSelectionDelete / RoomCeilingSelectionDelete / RoomCeilingHoleUiInput 3종 무경고 성공. 근거: Saved/Build_CeilingHoleSelect.log, Saved/Logs/CeilingHoleSelect_Tests.log, Saved/Automation/CeilingHoleSelect/index.json(커밋 제외). 기록/저장·최종 셀/물리 통합 검증은 다음 작은 커밋에서 진행한다. 새 수치·물성·물리 허용치 없음. 신규 실제 화면/OS 포커스는 미확인: Tools/부분천장_구멍선택삭제_확인_2026-10-07.md. 기존 화면 도구 실패 재시도·전체 Automation/FPS 없음.
