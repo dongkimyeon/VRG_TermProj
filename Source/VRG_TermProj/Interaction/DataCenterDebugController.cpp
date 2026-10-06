@@ -2100,7 +2100,9 @@ void ADataCenterDebugController::OnSelectLayoutEquipment()
 		FVector Eye,Dir; FVector2D Screen;
 		if(MouseRay(Eye,Dir,Screen))
 		{
-			if(bRoomCeilingHoleEditing) BeginRoomCeilingHolePointerDrag(PickRoomCeilingHoleCorner(Screen),Eye,Dir);
+			const bool bCycle=IsInputKeyDown(EKeys::LeftAlt) || IsInputKeyDown(EKeys::RightAlt);
+			if(bCycle) { if(bRoomCeilingHoleEditing) SelectRoomCeilingHoleAlongRay(Eye,Dir,true); else SelectRoomCeilingAlongRay(Eye,Dir,true); }
+			else if(bRoomCeilingHoleEditing) BeginRoomCeilingHolePointerDrag(PickRoomCeilingHoleCorner(Screen),Eye,Dir);
 			else { const int32 Corner=PickRoomCeilingCorner(Screen); BeginRoomCeilingPointerDrag(Corner,Eye,Dir); }
 		}
 		return; // Ceiling mode owns misses too: no equipment drag or marquee underneath.
@@ -3096,12 +3098,12 @@ void ADataCenterDebugController::GetHelpLines(TArray<FString>& Out) const
 	const bool bLayout = IsLayoutMode();
 	if(bRoomCeilingHoleEditing)
 	{
-		Out.Add(FString::Printf(TEXT("구멍 편집 | 보라 개방 범위 클릭 / 선택 내부 이동·모서리 XY(5cm) / Delete 한 개 / Ctrl+Z/Y / Esc 구멍 모드 종료 | 선택 구멍 %d"),GetSelectedRoomCeilingHoleIndex()+1));
+		Out.Add(FString::Printf(TEXT("구멍 편집 | Alt+클릭 겹침 순환 / 보라 개방 범위 클릭 / 선택 내부 이동·모서리 XY(5cm) / Delete 한 개 / Ctrl+Z/Y / Esc 구멍 모드 종료 | 선택 구멍 %d"),GetSelectedRoomCeilingHoleIndex()+1));
 		return;
 	}
 	if(bRoomCeilingEditing)
 	{
-		Out.Add(FString::Printf(TEXT("천장 편집 | 클릭 선택 · 판 내부 이동 / 모서리 XY / 중앙점 높이(5 cm) / Delete 한 장 / Ctrl+Z/Y / Esc 취소·종료 | 선택 %d / 판 %d"),
+		Out.Add(FString::Printf(TEXT("천장 편집 | Alt+클릭 겹침 순환 / 클릭 선택 · 판 내부 이동 / 모서리 XY / 중앙점 높이(5 cm) / Delete 한 장 / Ctrl+Z/Y / Esc 취소·종료 | 선택 %d / 판 %d"),
 			GetSelectedRoomCeilingIndex()+1,FindSimActor()?FindSimActor()->GetRoomCeilingPlates().Num():0));
 		return;
 	}

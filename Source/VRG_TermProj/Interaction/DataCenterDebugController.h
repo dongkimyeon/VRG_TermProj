@@ -82,13 +82,13 @@ public:
 	bool SetRoomCeilingEditing(bool bEnable);
 	void ToggleRoomCeilingEditing() { SetRoomCeilingEditing(!bRoomCeilingEditing); }
 	bool IsRoomCeilingEditing() const { return bRoomCeilingEditing; }
-	bool SelectRoomCeilingAlongRay(const FVector& EyeCm, const FVector& Direction);
+	bool SelectRoomCeilingAlongRay(const FVector& EyeCm, const FVector& Direction, bool bCycle = false, bool bKeepSelected = false);
 	int32 GetSelectedRoomCeilingIndex() const;
 	bool TryDeleteRoomCeiling();
 	bool SetRoomCeilingHoleEditing(bool bEnable);
 	void ToggleRoomCeilingHoleEditing() { SetRoomCeilingHoleEditing(!bRoomCeilingHoleEditing); }
 	bool IsRoomCeilingHoleEditing() const { return bRoomCeilingHoleEditing; }
-	bool SelectRoomCeilingHoleAlongRay(const FVector& EyeCm, const FVector& Direction);
+	bool SelectRoomCeilingHoleAlongRay(const FVector& EyeCm, const FVector& Direction, bool bCycle = false, bool bKeepSelected = false);
 	int32 GetSelectedRoomCeilingHoleIndex() const;
 	bool TryDeleteRoomCeilingHole();
 	int32 PickRoomCeilingHoleCorner(const FVector2D& Screen) const;

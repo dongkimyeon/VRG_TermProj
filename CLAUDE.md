@@ -4265,3 +4265,10 @@ Editor Development86.79s 성공. 신규 RoomCeilingHoleCornerHistoryPersistence 
 Editor Development92.38s 성공, 확장 RoomCeilingHoleHistoryPersistence / 신규 RoomCeilingHoleMoveValidation 2종 무경고 성공. 기존 사례도 같은 검사 안에서 이전 파일/구멍 저장·타 고체 보존을 확인했고 전역maxAbs5.999e-14·발산2.793e-08 등 기존 기준을 충족했다. 앞 입력3종 포함 고유 영향5종 최종 모두 성공. 근거(커밋 제외): Saved/Build_CeilingHoleMixed.log, Saved/Logs/CeilingHoleMixed_Tests.log, Saved/Automation/CeilingHoleMixed/index.json. 신규 물리 검사를 복제하지 않고 기존 함수를 사용했으며 빌드 중 소스 변경·변경 없는 성공 검사 반복·화면 실패 재시도 없음.
 
 새 내부 이동/혼합 실제 화면·마우스/OS 포커스는 직접 미확인이다. Tools/부분천장_구멍전체이동_확인_2026-10-07.md 상세 직접 절차를 따른다. 앞 모서리 핸들 정상 확인은 사용자 보고다. 측정은 균일 CPU/NullRHI 합성 시험이며 시설 정확도·정상상태·GPU/옥트리/FPS로 확대하지 않는다. 다중 편집·외부 배기·물리 확장·전체 Automation/FPS는 제외했다.
+
+
+### 2026-10-07 천장/구멍 Alt 클릭 선택 순환
+
+구멍 전체 XY 이동은 사용자 직접 확인 모두 정상 보고다. 계산 판/개방 상자의 모든 전방 교차를 거리→동일 거리 목록 인덱스 순서로 모아 Alt+클릭마다 다음 항목을 선택하고 끝에서 순환한다. 동일 기하도 별도 항목이며 HUD에 항목 번호·겹침 순서를 표시한다. 구멍은 선택한 한 부모 판에만 속한다. Alt 클릭은 핸들/몸체 드래그 대신 선택만 처리한다. 일반 클릭/핸들 우선순위는 유지하고 Alt로 고른 항목의 몸체를 잡으면 첫 중복 항목으로 돌아가지 않는다. malformed ray는 선택을 유지하며 유효 빈 곳 클릭은 선택 해제다. 외부 목록은 기존 전체 값 스냅샷으로 무효화한다.
+
+Editor Development112.38s 성공, 신규 RoomCeilingSelectionCycle / 기존 RoomCeilingSelectionDelete / RoomCeilingHoleSelectionDelete 3종 무경고 성공. 선택 순환·번호/순서·중복 유지·no-op 기록 불변·창/패치/제스처 차단·오래된 인덱스 보호를 확인했다. 실제 목록/격자/물리에는 변경이 없어 새 물성/오차 기준이 없다. 근거(커밋 제외): Saved/Build_CeilingCycle.log, Saved/Logs/CeilingCycle_Tests.log, Saved/Automation/CeilingCycle/index.json. 신규 화면/Alt 실제 키 입력은 직접 미확인, Tools/천장_선택순환_다중삭제_확인_2026-10-07.md 1단계 절차. 다중 선택/삭제는 다음 작은 커밋이며 외부 배기·물리 확장·전체/FPS 없음.

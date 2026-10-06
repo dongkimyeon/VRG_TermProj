@@ -8,6 +8,31 @@
 
 namespace
 {
+	// Same forward slab/parallel tolerance as equipment picking. Keep every hit, including exact duplicates.
+	TArray<int32> CeilingRayHits(const TArray<FBox>& Boxes, const FVector& EyeCm, const FVector& Direction)
+	{
+		const FVector Eye=SimUnits::UnrealToMeters(EyeCm),Dir=Direction.GetSafeNormal();
+		TArray<TPair<int32,double>> Hits;
+		for(int32 I=0;I<Boxes.Num();++I)
+		{
+			const auto& B=Boxes[I]; double Lo=0,Hi=TNumericLimits<double>::Max(); bool bHit=true;
+			for(int32 Axis=0;Axis<3 && bHit;++Axis)
+			{
+				if(FMath::Abs(Dir[Axis])<1e-9) { bHit=Eye[Axis]>=B.Min[Axis] && Eye[Axis]<=B.Max[Axis]; continue; }
+				double A=(B.Min[Axis]-Eye[Axis])/Dir[Axis],Z=(B.Max[Axis]-Eye[Axis])/Dir[Axis]; if(A>Z) Swap(A,Z);
+				Lo=FMath::Max(Lo,A); Hi=FMath::Min(Hi,Z); bHit=Lo<=Hi;
+			}
+			if(bHit) Hits.Emplace(I,Lo);
+		}
+		Hits.Sort([](const auto& A,const auto& B) { return A.Value==B.Value ? A.Key<B.Key : A.Value<B.Value; });
+		TArray<int32> Result; for(const auto& Hit:Hits) Result.Add(Hit.Key); return Result;
+	}
+	int32 CeilingRaySelection(const TArray<int32>& Hits,int32 Current,bool bCycle,bool bKeepSelected)
+	{
+		if(Hits.IsEmpty()) return INDEX_NONE;
+		const int32 Position=Hits.Find(Current);
+		return Position==INDEX_NONE ? Hits[0] : bCycle ? Hits[(Position+1)%Hits.Num()] : bKeepSelected ? Current : Hits[0];
+	}
 	// Corner bits: X max=1, Y max=2. The opposite corner remains fixed, including on rejection.
 	FVector RoomCornerCm(const FRoomAirDomainSettings& S, int32 Corner)
 	{
@@ -315,7 +340,7 @@ int32 ADataCenterDebugController::GetSelectedRoomCeilingIndex() const
 		? SelectedRoomCeiling : INDEX_NONE;
 }
 
-bool ADataCenterDebugController::SelectRoomCeilingAlongRay(const FVector& EyeCm, const FVector& Direction)
+bool ADataCenterDebugController::SelectRoomCeilingAlongRay(const FVector& EyeCm, const FVector& Direction, bool bCycle, bool bKeepSelected)
 {
 	if(bRoomCeilingHoleEditing) return false;
 	if (!bRoomCeilingEditing || !IsLayoutMode() || !IsCameraInputAvailable() || IsInputKeyDown(EKeys::RightMouseButton)
@@ -326,23 +351,13 @@ bool ADataCenterDebugController::SelectRoomCeilingAlongRay(const FVector& EyeCm,
 	FAirGridParams GP; FBox Bounds(ForceInit); FString Reason; TArray<FRoomCeilingPlan> Plans;
 	if (!Sim || !Air || !VrgRoomAirDomain::BuildGrid(Sim->GetRoomAirDomain(),Air->GridParams,GP,Bounds,Reason)
 		|| !VrgRoomAirDomain::BuildCeilingPlans(Sim->GetRoomAirDomain(),Sim->GetRoomCeilingPlates(),GP,Bounds,Plans,Reason)) return false;
-	const FVector Eye=SimUnits::UnrealToMeters(EyeCm), Dir=Direction.GetSafeNormal();
-	int32 Best=INDEX_NONE; double BestT=TNumericLimits<double>::Max();
-	for(int32 I=0;I<Plans.Num();++I)
-	{
-		// Same forward slab test/parallel tolerance as equipment picking, here against computed metre bounds.
-		const auto& B=Plans[I].ActualBoundsM; double Lo=0,Hi=BestT; bool bHit=true;
-		for(int32 Axis=0;Axis<3 && bHit;++Axis)
-		{
-			if(FMath::Abs(Dir[Axis])<1e-9) { bHit=Eye[Axis]>=B.Min[Axis] && Eye[Axis]<=B.Max[Axis]; continue; }
-			double A=(B.Min[Axis]-Eye[Axis])/Dir[Axis], Z=(B.Max[Axis]-Eye[Axis])/Dir[Axis]; if(A>Z) Swap(A,Z);
-			Lo=FMath::Max(Lo,A); Hi=FMath::Min(Hi,Z); bHit=Lo<=Hi;
-		}
-		if(bHit && (Best==INDEX_NONE || Lo<BestT)) { Best=I; BestT=Lo; } // Exact ties keep first list entry.
-	}
+	TArray<FBox> Boxes; for(const auto& Plan:Plans) Boxes.Add(Plan.ActualBoundsM);
+	const auto Hits=CeilingRayHits(Boxes,EyeCm,Direction);
+	const int32 Best=CeilingRaySelection(Hits,GetSelectedRoomCeilingIndex(),bCycle,bKeepSelected);
 	ClearRoomCeilingSelection();
 	if(Best==INDEX_NONE) return false; // Valid empty click clears; malformed/deprojection failure does not.
-	SelectedRoomCeiling=Best; SelectedCeilingTarget=Sim; SelectedCeilingList=Sim->GetRoomCeilingPlates(); bCeilingPreviewValid=true; return true;
+	SelectedRoomCeiling=Best; SelectedCeilingTarget=Sim; SelectedCeilingList=Sim->GetRoomCeilingPlates(); bCeilingPreviewValid=true;
+	CeilingEditMessage=FString::Printf(TEXT("판 #%d 선택 · 겹침 순서 %d/%d · Alt+클릭 순환"),Best+1,Hits.Find(Best)+1,Hits.Num()); return true;
 }
 
 bool ADataCenterDebugController::TryDeleteRoomCeiling()
@@ -383,7 +398,7 @@ int32 ADataCenterDebugController::GetSelectedRoomCeilingHoleIndex() const
 		? SelectedRoomCeilingHole : INDEX_NONE;
 }
 
-bool ADataCenterDebugController::SelectRoomCeilingHoleAlongRay(const FVector& EyeCm, const FVector& Direction)
+bool ADataCenterDebugController::SelectRoomCeilingHoleAlongRay(const FVector& EyeCm, const FVector& Direction, bool bCycle, bool bKeepSelected)
 {
 	const int32 Plate=GetSelectedRoomCeilingIndex();
 	if(!bRoomCeilingHoleEditing || Plate==INDEX_NONE || !IsCameraInputAvailable() || IsLayoutDragging() || bAddingRack || bMarqueeActive
@@ -393,26 +408,14 @@ bool ADataCenterDebugController::SelectRoomCeilingHoleAlongRay(const FVector& Ey
 	FAirGridParams GP; FBox Bounds(ForceInit); FString Reason; TArray<FRoomCeilingPlan> Plans;
 	if(!Air || !VrgRoomAirDomain::BuildGrid(Sim->GetRoomAirDomain(),Air->GridParams,GP,Bounds,Reason)
 		|| !VrgRoomAirDomain::BuildCeilingPlans(Sim->GetRoomAirDomain(),SelectedCeilingList,GP,Bounds,Plans,Reason)) return false;
-	const auto& Plan=Plans[Plate]; const FVector Eye=SimUnits::UnrealToMeters(EyeCm),Dir=Direction.GetSafeNormal();
-	int32 Best=INDEX_NONE; double BestT=TNumericLimits<double>::Max();
-	for(int32 I=0;I<Plan.OpenCells.Num();++I)
-	{
-		const auto& O=Plan.OpenCells[I];
-		const FBox B(Bounds.Min+FVector(O.Min.X,O.Min.Y,Plan.MinCell.Z)*GP.CellSizeM,
-			Bounds.Min+FVector(O.Max.X,O.Max.Y,Plan.MaxCellExclusive.Z)*GP.CellSizeM);
-		// Same forward slab/parallel tolerance as plate picking. Exact duplicates pick the first entry.
-		double Lo=0,Hi=BestT; bool bHit=true;
-		for(int32 Axis=0;Axis<3 && bHit;++Axis)
-		{
-			if(FMath::Abs(Dir[Axis])<1e-9) { bHit=Eye[Axis]>=B.Min[Axis] && Eye[Axis]<=B.Max[Axis]; continue; }
-			double A=(B.Min[Axis]-Eye[Axis])/Dir[Axis],Z=(B.Max[Axis]-Eye[Axis])/Dir[Axis]; if(A>Z) Swap(A,Z);
-			Lo=FMath::Max(Lo,A); Hi=FMath::Min(Hi,Z); bHit=Lo<=Hi;
-		}
-		if(bHit && (Best==INDEX_NONE || Lo<BestT)) { Best=I; BestT=Lo; }
-	}
+	const auto& Plan=Plans[Plate]; TArray<FBox> Boxes;
+	for(const auto& O:Plan.OpenCells) Boxes.Emplace(Bounds.Min+FVector(O.Min.X,O.Min.Y,Plan.MinCell.Z)*GP.CellSizeM,
+		Bounds.Min+FVector(O.Max.X,O.Max.Y,Plan.MaxCellExclusive.Z)*GP.CellSizeM);
+	const auto Hits=CeilingRayHits(Boxes,EyeCm,Direction);
+	const int32 Best=CeilingRaySelection(Hits,GetSelectedRoomCeilingHoleIndex(),bCycle,bKeepSelected);
 	SelectedRoomCeilingHole=Best; bCeilingPreviewValid=true;
 	CeilingEditMessage=Best==INDEX_NONE ? TEXT("구멍 선택 해제 · Esc 구멍 편집 종료")
-		: FString::Printf(TEXT("구멍 #%d 선택 · Delete 한 개 삭제 · Esc 구멍 편집 종료\n%s"),Best+1,*DescribeRoomCeilingCandidate(SelectedCeilingList[Plate],SelectedCeilingList));
+		: FString::Printf(TEXT("구멍 #%d 선택 · 겹침 순서 %d/%d · Alt+클릭 순환 · Delete 삭제\n%s"),Best+1,Hits.Find(Best)+1,Hits.Num(),*DescribeRoomCeilingCandidate(SelectedCeilingList[Plate],SelectedCeilingList));
 	return Best!=INDEX_NONE;
 }
 
@@ -475,7 +478,7 @@ bool ADataCenterDebugController::BeginRoomCeilingHolePointerDrag(int32 PickedHan
 {
 	// A picked hole handle owns an invalid ray too; never reselect a duplicate or move the parent.
 	if(PickedHandle!=INDEX_NONE) return BeginRoomCeilingHoleCornerDrag(PickedHandle,EyeCm,Direction);
-	return SelectRoomCeilingHoleAlongRay(EyeCm,Direction) && BeginRoomCeilingHoleMoveDrag(EyeCm,Direction);
+	return SelectRoomCeilingHoleAlongRay(EyeCm,Direction,false,true) && BeginRoomCeilingHoleMoveDrag(EyeCm,Direction);
 }
 
 bool ADataCenterDebugController::BeginRoomCeilingHoleMoveDrag(const FVector& EyeCm, const FVector& Direction)
@@ -517,7 +520,7 @@ bool ADataCenterDebugController::BeginRoomCeilingPointerDrag(int32 PickedHandle,
 {
 	// A picked handle owns the press even if its ray is invalid. Never fall through to body movement.
 	if(PickedHandle!=INDEX_NONE) return BeginRoomCeilingCornerDrag(PickedHandle,EyeCm,Direction);
-	return SelectRoomCeilingAlongRay(EyeCm,Direction) && BeginRoomCeilingMoveDrag(EyeCm,Direction);
+	return SelectRoomCeilingAlongRay(EyeCm,Direction,false,true) && BeginRoomCeilingMoveDrag(EyeCm,Direction);
 }
 
 void ADataCenterDebugController::ValidateRoomCeilingPreview()

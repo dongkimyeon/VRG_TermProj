@@ -924,4 +924,38 @@ bool FRoomCeilingHoleMovePreviewTest::RunTest(const FString& Parameters)
  C->SelectRoomCeilingHoleAlongRay(Eye,Down); C->BeginRoomCeilingHoleMoveDrag(Eye,Down); F.Sim->EnterSimulationMode(); C->RefreshInteractionInputMode(); TestTrue(TEXT("Mode cancels movement"),!C->IsLayoutDragging() && !C->IsRoomCeilingHoleEditing());
  AddInfo(TEXT("Hole body move: handle precedence, existing minimum-anchor/grab offset and world5cm snap to local m; size/parent/duplicate fixed; preview-only, invalid ray/outside/no-op/Esc/modal/patch/mode/stale guards. No actual UI/focus measured.")); return true;
 }
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FRoomCeilingCycleTest,"VRG.Interaction.Layout.RoomCeilingSelectionCycle",
+ EAutomationTestFlags::EditorContext | EAutomationTestFlags::CommandletContext | EAutomationTestFlags::EngineFilter)
+bool FRoomCeilingCycleTest::RunTest(const FString& Parameters)
+{
+ FRoomFixture F; FString Message; auto* C=F.World->SpawnActor<ADataCenterDebugController>(); C->bFrameEquipmentOnStart=false;
+ C->Possess(F.World->SpawnActor<ADefaultPawn>()); C->PlayerInput=NewObject<UPlayerInput>(C); C->RefreshInteractionInputMode();
+ FRoomCeilingPlate P; P.MinXYM=FVector2D(-5.25,3); P.MaxXYM=FVector2D(-4.25,4); P.HeightM=2.625; // Existing synthetic fixture.
+ FRoomCeilingHole H; H.LocalMinXYM=FVector2D(.125); H.LocalMaxXYM=FVector2D(.875); P.Holes={H,H}; auto Low=P; Low.HeightM=1.825;
+ const TArray<FRoomCeilingPlate> Before{P,P,Low}; F.Sim->TrySetRoomAirDomain(ManualRoom(),Message); F.Sim->TrySetRoomCeilingPlates(Before,Message);
+ const FVector Eye(-475,350,400),Down(0,0,-1); const auto Mask=F.Air->GetMutableSolver().GetGrid().bSolidCell;
+ TestTrue(TEXT("Nearest duplicate first; cycles distance/list order then wraps"),C->SetRoomCeilingEditing(true) && C->SelectRoomCeilingAlongRay(Eye,Down)
+  && C->GetSelectedRoomCeilingIndex()==0 && C->SelectRoomCeilingAlongRay(Eye,Down,true) && C->GetSelectedRoomCeilingIndex()==1
+  && C->SelectRoomCeilingAlongRay(Eye,Down,true) && C->GetSelectedRoomCeilingIndex()==2 && C->SelectRoomCeilingAlongRay(Eye,Down,true) && C->GetSelectedRoomCeilingIndex()==0);
+ C->SelectRoomCeilingAlongRay(Eye,Down,true);
+ TestTrue(TEXT("Cycle reports order and selection-only/no record"),C->GetRoomCeilingEditMessage().Contains(TEXT("2/3")) && !C->IsLayoutDragging() && C->GetLayoutUndoCount()==0);
+ TestTrue(TEXT("Normal body drag keeps explicitly cycled duplicate"),C->BeginRoomCeilingPointerDrag(INDEX_NONE,Eye,Down) && C->GetSelectedRoomCeilingIndex()==1);
+ TestFalse(TEXT("Stationary click records nothing"),C->EndRoomCeilingCornerDrag(true));
+ TestTrue(TEXT("Hole cycling belongs only to selected parent"),C->SetRoomCeilingHoleEditing(true) && C->SelectRoomCeilingHoleAlongRay(Eye,Down)
+  && C->GetSelectedRoomCeilingHoleIndex()==0 && C->SelectRoomCeilingHoleAlongRay(Eye,Down,true) && C->GetSelectedRoomCeilingHoleIndex()==1 && C->GetSelectedRoomCeilingIndex()==1);
+ TestTrue(TEXT("Cycle keeps hole number/order"),C->GetRoomCeilingEditMessage().Contains(TEXT("2/2")));
+ TestFalse(TEXT("Malformed ray preserves chosen duplicate"),C->SelectRoomCeilingHoleAlongRay(Eye,FVector::ZeroVector,true)); TestEqual(TEXT("Still second hole"),C->GetSelectedRoomCeilingHoleIndex(),1);
+ TestTrue(TEXT("Normal hole movement preserves cycled duplicate"),C->BeginRoomCeilingHolePointerDrag(INDEX_NONE,Eye,Down) && C->GetSelectedRoomCeilingHoleIndex()==1);
+ TestFalse(TEXT("Cycle blocked during gesture"),C->SelectRoomCeilingHoleAlongRay(Eye,Down,true)); C->EndRoomCeilingCornerDrag(false);
+ C->SelectRoomCeilingHoleAlongRay(Eye,Down,true); TestEqual(TEXT("Hole wrap"),C->GetSelectedRoomCeilingHoleIndex(),0);
+ TestFalse(TEXT("Blank click clears hole selection only"),C->SelectRoomCeilingHoleAlongRay(FVector(-525,300,400),Down,true)); TestEqual(TEXT("Parent kept"),C->GetSelectedRoomCeilingIndex(),1);
+ C->SelectRoomCeilingHoleAlongRay(Eye,Down,true); C->OpenRoomSettings(); TestFalse(TEXT("Modal blocks selection"),C->SelectRoomCeilingAlongRay(Eye,Down,true)); C->CloseRoomSettings();
+ C->SetRoomCeilingHoleEditing(false); C->SetPatchMapOpen(true); TestFalse(TEXT("Patch blocks cycling"),C->SelectRoomCeilingAlongRay(Eye,Down,true)); C->SetPatchMapOpen(false);
+ C->SetRoomCeilingEditing(true); C->SelectRoomCeilingAlongRay(Eye,Down); auto Changed=Before; Changed.RemoveAt(0); F.Sim->TrySetRoomCeilingPlates(Changed,Message);
+ TestEqual(TEXT("External list invalidates index"),C->GetSelectedRoomCeilingIndex(),INDEX_NONE);
+ TestTrue(TEXT("Fresh cycle cannot advance stale index"),C->SelectRoomCeilingAlongRay(Eye,Down,true) && C->GetSelectedRoomCeilingIndex()==0);
+ TestTrue(TEXT("Selection never changes records/actual mask"),C->GetLayoutUndoCount()==0 && C->GetLayoutRedoCount()==0 && F.Air->GetMutableSolver().GetGrid().bSolidCell==Mask);
+ AddInfo(TEXT("Selection cycle: nearest ray depth/list index ties, identical plates/holes selectable, explicit duplicate retained by body drag, selection-only and blocked modal/patch/gesture/stale guards. UI pixels not checked.")); return true;
+}
 #endif
