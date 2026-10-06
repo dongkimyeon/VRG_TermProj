@@ -3918,3 +3918,6 @@ Editor Development43.38s 성공. RoomHeightHistoryPersistence/RoomCornerHistoryP
 재진입t1.02s에서 기존 수력 수렴·덕트 거절 없음·양의 CRAH 코일 냉각·랙 흡기288.15~308.15K 타당성 기준도 확인했다. 짧은 균일 CPU/NullRHI 과도 검증이며 정상상태/시설 전체 정확도/GPU/옥트리/FPS 검증으로 확대하지 않는다. 기존 물리 부채와 방 범위의 벽 제외 정책은 유지한다.
 근거(커밋 제외): Saved/Build_RoomHeightHistory.log, Saved/Logs/RoomHeightHistory_Tests.log, Saved/Automation/RoomHeightHistory/index.json. 첫 입력 근거는 앞 절을 따른다. 빌드 중 소스 변경과 검사 재시도는 없었다.
 화면: XY 직접 정상은 사용자 보고다. 신규 높이 픽셀/렌더/실제 마우스·OS 포커스는 미확인이고, 기존 실패 환경 재시도 없이 Tools/방높이_핸들_확인_2026-10-06.md 절차를 남겼다. 천장 판·벽 확장·외부 열 교환·플레넘·전체/FPS는 제외했다. 미추적 L_Test 에셋은 수정/커밋하지 않았다.
+## 2026-10-06 방 높이 핸들 직접 확인 보고
+
+사용자가 방 높이 핸들 직접 확인 결과를 정상으로 보고했다. Tools/방높이_핸들_확인_2026-10-06.md 직접 절차의 보고로 남은작업 체크박스를 갱신했다. 앞 절의 당시 화면 미확인 기록을 이 보고가 보완하며, AI의 별도 화면/로그/FPS 측정으로 확대하지 않는다. 제품/물리/레벨 변경과 빌드·성공 검사 반복은 없다.
