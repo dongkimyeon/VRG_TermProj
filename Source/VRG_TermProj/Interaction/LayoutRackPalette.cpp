@@ -124,12 +124,12 @@ void ULayoutRackPalette::NativeTick(const FGeometry& Geometry, float DeltaTime)
 	if(CeilingHoleButton)
 	{
 		auto* C=Cast<ADataCenterDebugController>(GetOwningPlayer());
-		CeilingHoleButton->SetIsEnabled(C && C->IsRoomCeilingEditing() && C->GetSelectedRoomCeilingIndex()!=INDEX_NONE && !C->IsLayoutDragging());
+		CeilingHoleButton->SetIsEnabled(C && C->IsRoomCeilingEditing() && C->GetSelectedRoomCeilingIndices().Num()==1 && !C->IsLayoutDragging());
 	}
 	if(CeilingHoleEditButton)
 	{
 		auto* C=Cast<ADataCenterDebugController>(GetOwningPlayer()); FRoomCeilingPlate P; bool bValid=false;
-		CeilingHoleEditButton->SetIsEnabled(C && !C->IsLayoutDragging() && (C->IsRoomCeilingHoleEditing() || (C->GetRoomCeilingPreview(P,bValid) && !P.Holes.IsEmpty())));
+		CeilingHoleEditButton->SetIsEnabled(C && !C->IsLayoutDragging() && (C->IsRoomCeilingHoleEditing() || (C->GetSelectedRoomCeilingIndices().Num()==1 && C->GetRoomCeilingPreview(P,bValid) && !P.Holes.IsEmpty())));
 		if(auto* Label=Cast<UTextBlock>(CeilingHoleEditButton->GetChildAt(0))) Label->SetText(FText::FromString(C && C->IsRoomCeilingHoleEditing()?TEXT("구멍 편집 끄기"):TEXT("구멍 선택·삭제")));
 	}
 	if (CeilingButton) { auto* C=Cast<ADataCenterDebugController>(GetOwningPlayer()); CeilingButton->SetIsEnabled(C && C->GetRoomSettingsDraft().bManual); }

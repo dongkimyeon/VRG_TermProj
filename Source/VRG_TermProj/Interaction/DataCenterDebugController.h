@@ -82,14 +82,16 @@ public:
 	bool SetRoomCeilingEditing(bool bEnable);
 	void ToggleRoomCeilingEditing() { SetRoomCeilingEditing(!bRoomCeilingEditing); }
 	bool IsRoomCeilingEditing() const { return bRoomCeilingEditing; }
-	bool SelectRoomCeilingAlongRay(const FVector& EyeCm, const FVector& Direction, bool bCycle = false, bool bKeepSelected = false);
+	bool SelectRoomCeilingAlongRay(const FVector& EyeCm, const FVector& Direction, bool bCycle = false, bool bKeepSelected = false, bool bToggle = false);
 	int32 GetSelectedRoomCeilingIndex() const;
+	TArray<int32> GetSelectedRoomCeilingIndices() const;
 	bool TryDeleteRoomCeiling();
 	bool SetRoomCeilingHoleEditing(bool bEnable);
 	void ToggleRoomCeilingHoleEditing() { SetRoomCeilingHoleEditing(!bRoomCeilingHoleEditing); }
 	bool IsRoomCeilingHoleEditing() const { return bRoomCeilingHoleEditing; }
-	bool SelectRoomCeilingHoleAlongRay(const FVector& EyeCm, const FVector& Direction, bool bCycle = false, bool bKeepSelected = false);
+	bool SelectRoomCeilingHoleAlongRay(const FVector& EyeCm, const FVector& Direction, bool bCycle = false, bool bKeepSelected = false, bool bToggle = false);
 	int32 GetSelectedRoomCeilingHoleIndex() const;
+	TArray<int32> GetSelectedRoomCeilingHoleIndices() const;
 	bool TryDeleteRoomCeilingHole();
 	int32 PickRoomCeilingHoleCorner(const FVector2D& Screen) const;
 	bool BeginRoomCeilingHoleCornerDrag(int32 Corner, const FVector& EyeCm, const FVector& Direction);
@@ -362,6 +364,8 @@ private:
 	bool bRoomCeilingHoleEditing = false;
 	int32 SelectedRoomCeilingHole = INDEX_NONE;
 	int32 SelectedRoomCeiling = INDEX_NONE;
+	TArray<int32> SelectedRoomCeilings;
+	TArray<int32> SelectedRoomCeilingHoles;
 	TArray<FRoomCeilingPlate> SelectedCeilingList;
 	TWeakObjectPtr<ADataCenterSimulationActor> SelectedCeilingTarget;
 	void ClearRoomCeilingSelection();

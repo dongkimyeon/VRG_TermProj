@@ -4272,3 +4272,26 @@ Editor Development92.38s 성공, 확장 RoomCeilingHoleHistoryPersistence / 신�
 구멍 전체 XY 이동은 사용자 직접 확인 모두 정상 보고다. 계산 판/개방 상자의 모든 전방 교차를 거리→동일 거리 목록 인덱스 순서로 모아 Alt+클릭마다 다음 항목을 선택하고 끝에서 순환한다. 동일 기하도 별도 항목이며 HUD에 항목 번호·겹침 순서를 표시한다. 구멍은 선택한 한 부모 판에만 속한다. Alt 클릭은 핸들/몸체 드래그 대신 선택만 처리한다. 일반 클릭/핸들 우선순위는 유지하고 Alt로 고른 항목의 몸체를 잡으면 첫 중복 항목으로 돌아가지 않는다. malformed ray는 선택을 유지하며 유효 빈 곳 클릭은 선택 해제다. 외부 목록은 기존 전체 값 스냅샷으로 무효화한다.
 
 Editor Development112.38s 성공, 신규 RoomCeilingSelectionCycle / 기존 RoomCeilingSelectionDelete / RoomCeilingHoleSelectionDelete 3종 무경고 성공. 선택 순환·번호/순서·중복 유지·no-op 기록 불변·창/패치/제스처 차단·오래된 인덱스 보호를 확인했다. 실제 목록/격자/물리에는 변경이 없어 새 물성/오차 기준이 없다. 근거(커밋 제외): Saved/Build_CeilingCycle.log, Saved/Logs/CeilingCycle_Tests.log, Saved/Automation/CeilingCycle/index.json. 신규 화면/Alt 실제 키 입력은 직접 미확인, Tools/천장_선택순환_다중삭제_확인_2026-10-07.md 1단계 절차. 다중 선택/삭제는 다음 작은 커밋이며 외부 배기·물리 확장·전체/FPS 없음.
+
+
+### 2026-10-07 천장 판/구멍 다중 선택·일괄 삭제 완료
+
+Shift+클릭은 계산 상자의 첫 교차 항목을 선택에 추가/제거하고, Alt+Shift+클릭은 순환한 다음 항목을 추가/제거한다. 동일 기하도 인덱스로 구별한다. 판끼리 또는 선택한 한 부모 판의 구멍끼리만 선택하며 모든 선택 상자를 초록색으로 강조하고 HUD에 최근 항목·선택 개수를 표시한다. 빈 곳은 전체 해제다. 여러 항목 선택 중 핸들/몸체 드래그는 막고 핸들을 숨긴다. 선택 집합 내부 일반 클릭은 집합을 유지해 이동하지 않는다. 선택하지 않은 항목의 일반 클릭은 단일 선택으로 바꾸되 그 클릭에서는 그룹 이동을 시작하지 않으며, 다음 단일 드래그부터 기존 동작이다. 한 판만 선택했을 때 구멍 추가/편집 창이 가능하다. Alt/Shift 클릭은 핸들보다 선택 조작을 우선하며 일반 클릭의 기존 핸들 우선순위는 유지한다.
+
+Delete는 인덱스를 역순으로 제거한 후보 전체를 기존 TrySetRoomCeilingPlates에 한 번 전달한다. 검증 성공 후 목록 하나와 공유 기록 하나로 확정하므로 부분 삭제가 없다. Undo/Redo는 기존 전체 목록 검증/복원이며 방·장비·CRAH·덕트 충돌이면 전체 목록/기록을 유지한다. 선택은 기존 전체 값 스냅샷으로 보호하고 삭제/Undo/Redo/성공 Load 뒤 정리한다. 실패 Load는 다중 선택도 유지한다. 숫자 창·패치·드래그·시뮬레이션 입력 차단을 유지한다. 저장 형식/솔버/셀 정책은 바꾸지 않았고 실제 고체는 다음 진입에서만 바뀐다.
+
+새 RoomCeilingMultiSelectionDelete는 선택 추가/제거·동일 기하·입력 차단·빈 곳·다중 제스처 거절·선택 한정 삭제·한 기록 Undo/Redo·외부 목록 보호를 검사한다. 기존 RoomCeilingHoleDeleteHistoryPersistence의 함수와 냉각 fixture를 확장해 두 중복 판 전체 삭제/복원·장비가 있는 복원 전체 거절, 선택한 첫/셋째 구멍만 제거해 둘째 중복 유지, 실패 Load 다중 선택/기록 유지·성공 Load 초기화·반복/새 월드 복원과 실제 셀 합집합을 검증했다. 기존 CDU SizeM 기반 높이의 중복 통로 두 개를 함께 삭제해 고체가 외형을 막으면 전체 거절되고 선택/목록/기록/마스크가 유지된다. 배치 단계에서 .02s(기존 단일 사례1.02s) 예열 온도/시계/열 장부/마스크는 불변이다. 새 시설 치수·물성·허용치는 없으며 아래 기하는 기존 합성 시험값이다.
+
+| 검사 | 측정(같은/새 월드, t1.02s) | 정규화·단위·기존 기준 |
+|---|---|---|
+| 격자/고체 | h0.25m,43×37×13=20683셀; 중복 판2장 삭제의 새 판 고체7→0셀; 지정 구멍2개 삭제 후 계획 개방9→4/판 고체7→12셀 | 합성1m×1m 판·높이2.625m; 같은 기하 중복은 합집합. 요청 판 지역의 모든 셀 정확 일치; 나머지 고체를 지우는 경로 변경 없음 |
+| 랙 IT 불변 | max 상대0 | abs(첫IT−동일 프리셋/부하/초기조건 참조IT)/참조IT(W), 무차원<1e-9 |
+| 전역 열수지 | maxAbs4.365e-14 | abs(Ein−Eout−Stored)/EnergyInJ(IT+CRAH 팬), 무차원<1e-9 |
+| 압력 발산 | max3.462e-08, 수렴 | maxAbsDiv(1/s)/(maxAbsVelocity(m/s)/h(m)), 무차원<1e-5 + 압력 수렴 플래그 |
+| 냉각수 결합 | max7.544e-15 | abs(랙 coolant 제거합W−라디에이터 방출W)/라디에이터 방출W, 무차원<1e-12 |
+| 랙/덕트 공기 결합 | max8.641e-16 | abs(랙 풍량kg/s−덕트 풍량kg/s)/랙 풍량kg/s, 무차원<1e-9 및 양의 풍량 |
+| 타당성 | 수력 수렴·덕트 거절 없음·양의 코일 제거W·흡기288.15~308.15K 내부·펌프 비율 정상 | 기존15~35°C 과도 안전망 및0<펌프 전력W/IT 전력W<0.05 |
+
+첫 Editor 빌드는 새 강조 코드의 지역 변수 이름 중첩(C4456)으로98.92s 실패했다. 종료 후 변수 이름만 고쳐 증분7.22s 성공했다. RoomCeilingMultiSelectionDelete / RoomCeilingSelectionCycle / RoomCeilingSelectionDelete / RoomCeilingHoleSelectionDelete / 확장 RoomCeilingHoleDeleteHistoryPersistence / RoomCeilingHoleMovePreview / RoomCeilingMovePreview 7종 모두 무경고 성공했다. 앞 선택3종은 다중 선택 변경의 영향을 받아 이번 최종 검사에 포함했다. 근거(커밋 제외): Saved/Build_CeilingMultiDelete.log, Saved/Build_CeilingMultiDelete_Fix.log, Saved/Logs/CeilingMultiDelete_Tests.log, Saved/Automation/CeilingMultiDelete/index.json.
+
+신규 실제 Alt/Shift 마우스 조작·화면 강조/OS 포커스는 미확인이다. Tools/천장_선택순환_다중삭제_확인_2026-10-07.md 직접 절차를 따른다. 사용자 정상 보고는 앞 구멍 전체 XY 이동이며 새 다중 조작까지 확인된 것으로 확대하지 않는다. 측정은 균일 CPU/NullRHI 합성 과도 시험이다. 그룹 이동/크기·외부 배기·물리 확장·전체 테스트/FPS는 제외하며, 빌드 중 소스 변경·환경 변화 없는 화면 실패 재시도·변경 없는 성공 검사 반복은 하지 않았다.

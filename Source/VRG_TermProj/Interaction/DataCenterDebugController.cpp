@@ -2101,7 +2101,8 @@ void ADataCenterDebugController::OnSelectLayoutEquipment()
 		if(MouseRay(Eye,Dir,Screen))
 		{
 			const bool bCycle=IsInputKeyDown(EKeys::LeftAlt) || IsInputKeyDown(EKeys::RightAlt);
-			if(bCycle) { if(bRoomCeilingHoleEditing) SelectRoomCeilingHoleAlongRay(Eye,Dir,true); else SelectRoomCeilingAlongRay(Eye,Dir,true); }
+			const bool bToggle=IsInputKeyDown(EKeys::LeftShift) || IsInputKeyDown(EKeys::RightShift);
+			if(bCycle || bToggle) { if(bRoomCeilingHoleEditing) SelectRoomCeilingHoleAlongRay(Eye,Dir,bCycle,false,bToggle); else SelectRoomCeilingAlongRay(Eye,Dir,bCycle,false,bToggle); }
 			else if(bRoomCeilingHoleEditing) BeginRoomCeilingHolePointerDrag(PickRoomCeilingHoleCorner(Screen),Eye,Dir);
 			else { const int32 Corner=PickRoomCeilingCorner(Screen); BeginRoomCeilingPointerDrag(Corner,Eye,Dir); }
 		}
@@ -3009,7 +3010,7 @@ void ADataCenterDebugController::RefreshInteractionInputMode()
 
 bool ADataCenterDebugController::OpenRoomSettings(bool bCeiling, bool bHole)
 {
-	const int32 HoleIndex=GetSelectedRoomCeilingIndex();
+	const int32 HoleIndex=GetSelectedRoomCeilingIndices().Num()==1 ? GetSelectedRoomCeilingIndex() : INDEX_NONE;
 	if (bHole && (bCeiling || HoleIndex==INDEX_NONE || !bRoomCeilingEditing || IsLayoutDragging())) return false;
 	if (bCeiling && (!FindSimActor() || !FindSimActor()->GetRoomAirDomain().bManual)) return false;
 	if (!GetWorld() || !GetWorld()->IsGameWorld() || !FindSimActor() || !IsLayoutMode() || !IsCameraInputAvailable()
@@ -3098,13 +3099,13 @@ void ADataCenterDebugController::GetHelpLines(TArray<FString>& Out) const
 	const bool bLayout = IsLayoutMode();
 	if(bRoomCeilingHoleEditing)
 	{
-		Out.Add(FString::Printf(TEXT("구멍 편집 | Alt+클릭 겹침 순환 / 보라 개방 범위 클릭 / 선택 내부 이동·모서리 XY(5cm) / Delete 한 개 / Ctrl+Z/Y / Esc 구멍 모드 종료 | 선택 구멍 %d"),GetSelectedRoomCeilingHoleIndex()+1));
+		Out.Add(FString::Printf(TEXT("구멍 편집 | Alt+클릭 순환 / Shift+클릭 추가·제거 / 보라 개방 범위 클릭 / 선택 내부 이동·모서리 XY(5cm) / Delete 선택 전체 / Ctrl+Z/Y / Esc 구멍 모드 종료 | 최근 구멍 %d · 선택 %d개"),GetSelectedRoomCeilingHoleIndex()+1,GetSelectedRoomCeilingHoleIndices().Num()));
 		return;
 	}
 	if(bRoomCeilingEditing)
 	{
-		Out.Add(FString::Printf(TEXT("천장 편집 | Alt+클릭 겹침 순환 / 클릭 선택 · 판 내부 이동 / 모서리 XY / 중앙점 높이(5 cm) / Delete 한 장 / Ctrl+Z/Y / Esc 취소·종료 | 선택 %d / 판 %d"),
-			GetSelectedRoomCeilingIndex()+1,FindSimActor()?FindSimActor()->GetRoomCeilingPlates().Num():0));
+		Out.Add(FString::Printf(TEXT("천장 편집 | Alt+클릭 순환 / Shift+클릭 추가·제거 / 클릭 선택 · 판 내부 이동 / 모서리 XY / 중앙점 높이(5 cm) / Delete 선택 전체 / Ctrl+Z/Y / Esc 취소·종료 | 최근 판 %d · 선택 %d개 / 판 %d"),
+			GetSelectedRoomCeilingIndex()+1,GetSelectedRoomCeilingIndices().Num(),FindSimActor()?FindSimActor()->GetRoomCeilingPlates().Num():0));
 		return;
 	}
 	if (bRoomBoundsEditing)

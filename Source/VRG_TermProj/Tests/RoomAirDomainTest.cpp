@@ -958,4 +958,43 @@ bool FRoomCeilingCycleTest::RunTest(const FString& Parameters)
  TestTrue(TEXT("Selection never changes records/actual mask"),C->GetLayoutUndoCount()==0 && C->GetLayoutRedoCount()==0 && F.Air->GetMutableSolver().GetGrid().bSolidCell==Mask);
  AddInfo(TEXT("Selection cycle: nearest ray depth/list index ties, identical plates/holes selectable, explicit duplicate retained by body drag, selection-only and blocked modal/patch/gesture/stale guards. UI pixels not checked.")); return true;
 }
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FRoomCeilingMultiSelectionTest,"VRG.Interaction.Layout.RoomCeilingMultiSelectionDelete",
+ EAutomationTestFlags::EditorContext | EAutomationTestFlags::CommandletContext | EAutomationTestFlags::EngineFilter)
+bool FRoomCeilingMultiSelectionTest::RunTest(const FString& Parameters)
+{
+ FRoomFixture F; FString Message; auto* C=F.World->SpawnActor<ADataCenterDebugController>(); C->bFrameEquipmentOnStart=false;
+ C->Possess(F.World->SpawnActor<ADefaultPawn>()); C->PlayerInput=NewObject<UPlayerInput>(C); C->RefreshInteractionInputMode();
+ FRoomCeilingPlate P; P.MinXYM=FVector2D(-5.25,3); P.MaxXYM=FVector2D(-4.25,4); P.HeightM=2.625;
+ FRoomCeilingHole H; H.LocalMinXYM=FVector2D(.125); H.LocalMaxXYM=FVector2D(.875); P.Holes={H,H}; auto Low=P; Low.HeightM=1.825;
+ const TArray<FRoomCeilingPlate> Before{P,P,Low}; F.Sim->TrySetRoomAirDomain(ManualRoom(),Message); F.Sim->TrySetRoomCeilingPlates(Before,Message);
+ const FVector Eye(-475,350,400),Down(0,0,-1),Blank(0,0,400); const auto Mask=F.Air->GetMutableSolver().GetGrid().bSolidCell;
+ auto SelectTwo=[&]() { C->SetRoomCeilingHoleEditing(false); return C->SetRoomCeilingEditing(true) && C->SelectRoomCeilingAlongRay(Eye,Down)
+  && C->SelectRoomCeilingAlongRay(Eye,Down,true,false,true) && C->GetSelectedRoomCeilingIndices()==TArray<int32>{0,1}; };
+ TestTrue(TEXT("Alt+Shift adds next identical plate"),SelectTwo());
+ TestFalse(TEXT("Malformed Shift click retains group"),C->SelectRoomCeilingAlongRay(Eye,FVector::ZeroVector,false,false,true)); TestEqual(TEXT("Group count"),C->GetSelectedRoomCeilingIndices().Num(),2);
+ TestTrue(TEXT("Plain body click on selected group cannot move or collapse it"),!C->BeginRoomCeilingPointerDrag(INDEX_NONE,Eye,Down) && C->GetSelectedRoomCeilingIndices()==TArray<int32>{0,1} && !C->IsLayoutDragging());
+ TestFalse(TEXT("Multi plate corner blocked even with direct handle"),C->BeginRoomCeilingCornerDrag(0,Eye,Down)); TestFalse(TEXT("Multi plate height blocked"),C->BeginRoomCeilingHeightDrag(Eye,Down));
+ TestFalse(TEXT("Multi parent hole edit/add modal blocked"),C->SetRoomCeilingHoleEditing(true) || C->OpenRoomCeilingHoleSettings());
+ TestTrue(TEXT("Shift removes only pointed first duplicate"),C->SelectRoomCeilingAlongRay(Eye,Down,false,false,true) && C->GetSelectedRoomCeilingIndices()==TArray<int32>{1});
+ TestTrue(TEXT("Single remaining corner works"),C->BeginRoomCeilingCornerDrag(0,Eye,Down)); TestFalse(TEXT("Shift and Delete blocked during gesture"),C->SelectRoomCeilingAlongRay(Eye,Down,false,false,true) || C->TryDeleteRoomCeiling()); C->EndRoomCeilingCornerDrag(false);
+ TestTrue(TEXT("Two plates delete atomically, exact unselected lower plate stays, one record"),SelectTwo() && C->TryDeleteRoomCeiling() && F.Sim->GetRoomCeilingPlates()==TArray<FRoomCeilingPlate>{Low} && C->GetLayoutUndoCount()==1);
+ TestTrue(TEXT("One Undo/Redo restores/removes group incl holes and ordering"),C->TryUndoLayout() && F.Sim->GetRoomCeilingPlates()==Before && C->TryRedoLayout() && F.Sim->GetRoomCeilingPlates()==TArray<FRoomCeilingPlate>{Low}); C->TryUndoLayout();
+ SelectTwo(); TestFalse(TEXT("Blank Shift click clears whole group"),C->SelectRoomCeilingAlongRay(Blank,Down,false,false,true)); TestTrue(TEXT("Empty cannot delete"),C->GetSelectedRoomCeilingIndices().IsEmpty() && !C->TryDeleteRoomCeiling());
+ C->SelectRoomCeilingAlongRay(Eye,Down); C->SetRoomCeilingHoleEditing(true); C->SelectRoomCeilingHoleAlongRay(Eye,Down);
+ TestTrue(TEXT("Hole group stays in one parent"),C->SelectRoomCeilingHoleAlongRay(Eye,Down,true,false,true) && C->GetSelectedRoomCeilingHoleIndices()==TArray<int32>{0,1} && C->GetSelectedRoomCeilingIndices()==TArray<int32>{0});
+ TestTrue(TEXT("Hole group body cannot collapse/start drag"),!C->BeginRoomCeilingHolePointerDrag(INDEX_NONE,Eye,Down) && C->GetSelectedRoomCeilingHoleIndices().Num()==2);
+ TestFalse(TEXT("Multi hole handle/movement blocked"),C->BeginRoomCeilingHoleCornerDrag(0,Eye,Down) || C->BeginRoomCeilingHoleMoveDrag(Eye,Down));
+ TestTrue(TEXT("Shift removes/adds only a pointed hole"),C->SelectRoomCeilingHoleAlongRay(Eye,Down,false,false,true) && C->GetSelectedRoomCeilingHoleIndices()==TArray<int32>{1}
+  && C->SelectRoomCeilingHoleAlongRay(Eye,Down,false,false,true) && C->GetSelectedRoomCeilingHoleIndices()==TArray<int32>{1,0});
+ auto Closed=P; Closed.Holes.Reset(); auto After=Before; After[0]=Closed;
+ TestTrue(TEXT("Delete both duplicates one record, parent/other plates preserved"),C->TryDeleteRoomCeilingHole() && F.Sim->GetRoomCeilingPlates()==After && C->GetLayoutUndoCount()==1 && C->GetLayoutRedoCount()==0 && C->GetSelectedRoomCeilingHoleIndices().IsEmpty());
+ TestTrue(TEXT("Hole group Undo exact"),C->TryUndoLayout() && F.Sim->GetRoomCeilingPlates()==Before);
+ SelectTwo(); C->OpenRoomSettings(); TestFalse(TEXT("Numeric modal blocks group deletion"),C->TryDeleteRoomCeiling()); C->CloseRoomSettings();
+ SelectTwo(); C->SetPatchMapOpen(true); TestFalse(TEXT("Patch blocks selection/deletion"),C->SelectRoomCeilingAlongRay(Eye,Down,true,false,true) || C->TryDeleteRoomCeiling()); C->SetPatchMapOpen(false);
+ SelectTwo(); F.Sim->TrySetRoomCeilingPlates({Low},Message); TestTrue(TEXT("External changed list invalidates all group indices"),C->GetSelectedRoomCeilingIndices().IsEmpty() && !C->TryDeleteRoomCeiling() && F.Sim->GetRoomCeilingPlates()==TArray<FRoomCeilingPlate>{Low});
+ TestTrue(TEXT("All selection/refused edits preserve physical grid"),F.Air->GetMutableSolver().GetGrid().bSolidCell==Mask);
+ F.Sim->TrySetRoomCeilingPlates(Before,Message); SelectTwo(); F.Sim->EnterSimulationMode(); C->RefreshInteractionInputMode(); TestTrue(TEXT("Mode ends group editing"),C->GetSelectedRoomCeilingIndices().IsEmpty() && !C->TryDeleteRoomCeiling());
+ AddInfo(TEXT("Ceiling multi-selection: Alt+Shift duplicates/Shift toggles/blank clears, per-parent holes, group highlights and no group gestures, descending-index atomic Delete/one history, input/stale/mode guards. UI rendering direct-check scope.")); return true;
+}
 #endif
