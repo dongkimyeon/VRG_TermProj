@@ -3871,3 +3871,22 @@ NotifyLayoutBarrierRecreated로 기존 벽 Undo의 ID 기반 기록 재연결을
 입력/미리보기 빌드·검사 결과는 완료 뒤 아래에 기록한다. 실제 핸들 마우스/픽셀 렌더/OS 포커스는 기존 도구 제약이 같아 재시도하지 않으며 직접 확인 절차로 구분한다. 확정/기록/저장 통합 보강은 다음 작은 커밋, 천장 핸들/판·벽 확장·새 물리/전체/FPS는 제외.
 검증: 첫 빌드119.00s는 빌드 중 헤더/구현 변경 시점이 어긋나 bRoomFloorValid를 찾지 못했다. 동기화된 소스를 기준으로 재빌드8.43s 성공. 이후 빌드 중 소스 변경을 중단했다. RoomCornerPreview/RoomSettingsUiInput/CameraInputAndMode/MultiSelectionAndGroupDrag/BarrierGizmoUndoSave 영향5종 무경고 성공(실패0/미실행0/종료0). 네 모서리·(613,573)cm 커서→(6.15,5.75)m 스냅·반대(-5.5,-4.5)m/천장3.1m 불변·기준20683셀 표시, 장비/CRAH/덕트 불포함·축128 초과·모서리 교차·바닥 교점 상실 거절과 Esc/패치/숫자 창 게이트를 확인했다. 배치 시계0s·장비 변환/실제 격자/설정/기록 변경0, 기존 UI 스냅/좌표 비교 기준이며 새 물리 오차 기준 없음. 마지막 확정/저장/재진입 물리는 후속 작은 커밋에서 검사한다.
 근거(커밋 제외): Saved/Build_RoomCornerPreview{,_Repair}.log, Saved/Logs/RoomCornerPreview_Tests.log, Saved/Automation/RoomCornerPreview/index.json. 신규 핸들 실제 픽셀 선택/포커스/표시는 미확인: Tools/방모서리_드래그_확인_2026-10-06.md.
+## 2026-10-06 방 모서리 확정·기록·저장 최종 검증
+
+RoomCornerHistoryPersistence는 기존 RoomSettingsUndoRedo/저장 계열의 합성 NVL72 두 랙/CDU 한 대 fixture를 재사용한다. 현 코드의 방 설정/장비/공기 모델·물성·단위 정책을 바꾸지 않는다. 모서리 확정 한 건→전체 설정 Undo/Redo, 미확정/거절/no-op의 Redo 유지, 드래그 중 설정 변경의 stale 거절, 유효 미리보기 후 새 장비가 생겼을 때 확정 재검증, 새 확정의 Redo 초기화를 검사했다. 기존 저장 v2로 같은/새 월드 반복 Load·두 랙/한 CDU 중복 없음·기록0/0·성공 Load 핸들 종료와 다음 진입의 실제 격자 적용을 검사한다. 외부 모드 변경도 미확정을 확정하지 않는다.
+
+Editor67.49s 성공, 첫 후속3종 중 기존 RoomSettingsPersistence/RoomSettingsUndoRedo2종 성공·신규1종 실패였다. 원인은 성공 Load 이후에도 이전 결합 열 장부를 유지한다는 새 테스트 기대였다. 기존 VrgRackLifecycle::Rebuild→Sim::RebuildCoupling→Bridge.Initialize는 성공 Load 때 결합 장부를 비운다. 제품을 바꾸지 않고 성공 Load의 정지 시각/옛 공기 배열·범위 유지와 장부 초기화를 분리했다. 취소·거절·Undo/Redo에서는 온도/시각/장부/배관 정확 불변 검사를 그대로 유지한다. 테스트만 수정, Editor5.82s 성공 뒤 실패한 신규1종만 재실행해 무경고 성공(종료0). 앞 입력5종+후속3종=고유 영향8종 최종 무경고 성공; 성공 검사 반복/전체/FPS 없음.
+
+| 검사 | 측정/확인 | 기존 기준·정규화/단위 |
+|---|---:|---|
+| 모서리 확정·Undo/Redo·저장 | 저장 XY 차0m·모드/천장 정확 일치 | XY/높이 m; 기존 정확 값 비교, 스냅5cm(UI)·반대 모서리/천장 유지 |
+| 다음 진입의 실제 격자 | 47x41x13=25051셀 | h0.25m, 원점(-5.5,-4.5,0)m; 요청 최대(6.15,5.75)m·천장3.1m를 기존 외향 ceil로 적용 |
+| 미리보기/거절/취소/기록 복원 | 기존 배열/원점/시계/열 장부/배관 변경0 | K / UE cm / s / J / 정수, 정확 불변; 정지0.02s fixture |
+| 성공 반복 Load | 기록0/0·핸들 종료·장비2랙/1CDU 유지 | 개수, 정지 시계/옛 공기 배열·격자 유지; 기존 결합 장부는 초기화 |
+| 재진입 첫 IT 상대 변화 | 0 | abs(첫IT−같은 장비/초기조건 참조IT)/참조W, 무차원 <1e-9 |
+| 재진입 전역 열수지 | abs 1.085e-13 | abs(입력J−유출J−축적J)/EnergyInJ(IT+CRAH 팬), 무차원 <1e-9 |
+| 압력 투영 뒤 발산 | 5.936e-08 | maxAbsDiv(1/s)/(maxAbsVelocity(m/s)/cellSize(m)), 무차원 <1e-5; 수렴 플래그 확인 |
+
+재진입t1.02s에서 수력 수렴·덕트 거절 없음·양의 CRAH 코일 냉각·랙 흡기288.15~308.15K도 기존 타당성 기준으로 확인했다. 짧은 균일 CPU/NullRHI 과도 fixture이며 시설 정확도/정상상태/GPU/옥트리/FPS 검증으로 확대하지 않는다. 새 물리 기준/물성·저장 스키마·레벨 변경 없음. 방 범위의 기존 벽 제외/격자 밖 잘림·원래 치수 고체/덕트·펌프 손실 열 분배 부채 유지.
+근거(커밋 제외): Saved/Build_RoomCornerHistory{,_Repair}.log, Saved/Logs/RoomCornerHistory{,_Repair}_Tests.log, Saved/Automation/RoomCornerHistory{,_Repair}/index.json. 실행은 E:\UE_5.8 Editor Development 뒤 영향 검사 + 묶음 -unattended -NullRHI.
+화면: 기존 방 저장은 사용자 정상 보고, 신규 핸들 픽셀 선택/표시/포커스/실제 조합 입력은 미확인이다. 환경 변화 없는 실패를 반복하지 않고 Tools/방모서리_드래그_확인_2026-10-06.md 절차를 남겼다. 천장 핸들/판·벽 확장·물리 확장·전체 테스트·FPS는 다음 범위이며 미추적 L_Test 에셋은 건드리지 않았다.
