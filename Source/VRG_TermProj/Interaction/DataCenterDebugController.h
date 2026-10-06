@@ -296,6 +296,8 @@ private:
  struct FLayoutTransformCommand
 	{
 		bool bRoomSettings = false;
+		bool bRoomCeilings = false;
+		TArray<FRoomCeilingPlate> CeilingsBefore, CeilingsAfter;
 		TWeakObjectPtr<ADataCenterSimulationActor> RoomSettingsTarget;
 		FRoomAirDomainSettings RoomBefore;
 		FRoomAirDomainSettings RoomAfter;

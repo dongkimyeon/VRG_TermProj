@@ -3959,3 +3959,22 @@ Editor62.51s 성공. 새 RoomCeilingCoupling/CeilingBlocksFlow + 기존 BlocksFl
 배치 중 확정된 판은 청록 요청 사각형과 주황 실제 계산 상자를 DrawDebug 선으로 표시한다. 새 충돌 액터/메시가 없어 장비 픽/카메라 입력에 참여하지 않는다. 숫자 창/패치에서는 기존 월드 입력 차단을 그대로 사용한다. 새 UI/색상은 표현 값이며 물성/새 물리 모델은 없다. 판 저장 미지원 안내를 창에 적었다. 공유 기록/최종 물리 검증은 다음 작은 커밋이다.
 Editor165.89s 성공(기존 컴파일 경고 유지). RoomCeilingUiInput/RoomSettingsUiInput2종 무경고 성공, 실패0/미실행0/종료0. 자동/중복 창 거절·strict draft/미적용·모달 카메라/장비/단축키/모드 차단·거절 이유/계산 범위·한 장 추가·Esc/패치/외부 모드·닫기 뒤 카메라 복귀를 검증했다. 합성2.63m 요청→h0.25m의9셀은 다음 진입에만 적용됐다. 렌더 픽셀/UMG 버튼 실제 클릭/OS 포커스는 별도이며 기존 도구 실패 재시도 없이 Tools/부분천장_UI_Undo_확인_2026-10-06.md 직접 절차를 남겼다. 전체/FPS/저장 확장/판 선택·삭제/핸들/배기 구멍/외부 교환·플레넘 없음.
 근거(커밋 제외): Saved/Build_CeilingUi.log, Saved/Logs/CeilingUi_Tests.log, Saved/Automation/CeilingUi/index.json. 실행 E:\UE_5.8 Editor Development 뒤 위2종 + 묶음 -unattended -NullRHI. 빌드 중 소스 변경 없음.
+## 2026-10-06 부분 천장 공유 Undo/Redo·진입 통합 검증
+
+추가 성공 한 건은 기존 FLayoutTransformCommand에 천장 전체 목록의 Before/After를 저장한다. 복원은 현재 목록/대상 일치와 기존 TrySetRoomCeilingPlates의 방·전체 장비·자동 CRAH·덕트 검증을 다시 수행한다. 실패하면 목록과 두 기록 스택을 유지한다. 기존 공유100개 상한·모드 전환 유지·새 확정 Redo 초기화·성공 Load 초기화를 재사용했다. 숫자 창/패치/시뮬레이션에서는 기록 입력을 차단한다. 판은 ID/별도 액터가 없는 값 목록이며 온도·적분 상태·시계를 기록하지 않는다. 초안 변경 표시도 마지막 계획이 현재 초안의 검증 결과인 것처럼 읽히지 않도록 정리했다.
+
+Editor Development140.13s 성공(기존 컴파일 경고 유지). 신규 RoomCeilingHistory와 기존 RoomSettingsUndoRedo2종 무경고 성공, 실패0/미실행0/종료0. 앞 UI2종을 포함해 이번 고유 영향4종 최종 무경고 성공이다. 성공 검사/전체 테스트 반복 없이 UI/입력과 기록/통합을 각각 검사했다. 한 장 추가/취소/거절, 전체 목록 Undo/Redo, 현재 장비 충돌 재검증, 외부 목록 변경 거절, 방 설정 기록과 교차 복원, 모달/패치/모드 차단,105개 추가 중100개 기록/Undo 후5개 잔존/Redo 복원, 기존 Load 기록0/0과 현 판 유지가 확인됐다.
+
+| 항목 | 측정 | 기존 기준·정규화·단위 |
+|---|---|---|
+| 배치 편집 상태 불변 | 예열0.02s 시계·온도K·입출/축적 장부J·격자 마스크·원점cm·배관 개수 정확 동일 | 추가/Undo/Redo/취소/거절은 메타데이터만 변경; 실제 공기 격자는 다음 진입 |
+| 판 반영 | 다음 진입9셀, 목록 정확 복원 | 합성 요청XY[-5.13,-4.61]×[3.13,3.62]m·높이2.53m, h0.25m 한 Z층; 요청2.63m도 같은9셀 |
+| 첫 IT 상대 변화 | 0 | abs(천장 편집 후 첫IT−동일 장비/초기조건 참조IT)/참조W, 무차원 <1e-9 |
+| 전역 열수지 | signed -3.694e-14, abs3.694e-14 | abs(입력J−유출J−축적J)/EnergyInJ(IT+CRAH 팬), 무차원 <1e-9 |
+| 압력 투영 뒤 발산 | 3.461e-08 | maxAbsDiv(1/s)/(maxAbsVelocity(m/s)/h(m)), 무차원 <1e-5; 압력 수렴 플래그확인 |
+| 기존 결합·타당성 | 수력 수렴/덕트거절 없음/양의 코일 제거W, 흡기288.15~308.15K 내부 확인 | 기존 수력 수렴 목표·과도15~35°C 범위; 새 수치/물성/허용치 없음 |
+
+물리 측정은 t1.02s의 균일 CPU/NullRHI 짧은 과도다. 기존 냉각/압력/열 모델은 바꾸지 않았다. 시설 정상상태/옥트리/GPU/FPS 검증으로 확대하지 않는다. 판 저장은 이번에 연결하지 않았다: 같은 월드 기존 v2 Load는 현 transient 목록을 유지/검증하고 기록만 초기화하며, 새 월드는 판 목록이 없다. 기존 장비/벽/방 저장 필드를 유지한다. 판 선택/삭제·핸들·메시·배기 구멍/유출 경계·외부 열 교환·플레넘은 후속이다.
+
+실제 신규 UMG 창/버튼·선 렌더·OS 포커스는 미확인이다. 기존 화면 도구 실패는 재시도하지 않았으며 Tools/부분천장_UI_Undo_확인_2026-10-06.md에 직접 확인 절차를 남겼다. 기존 방 높이 핸들 직접 정상 보고와 구분한다. UIOnly/닫기 후 입력 복귀는 자동화 경로 검증이며 OS 직접 확인으로 쓰지 않는다.
+근거(커밋 제외): Saved/Build_CeilingHistory.log, Saved/Logs/CeilingHistory_Tests.log, Saved/Automation/CeilingHistory/index.json. 실행 E:\UE_5.8 Editor Development 뒤 Automation RunTests VRG.Interaction.Layout.RoomCeilingHistory+VRG.Interaction.Layout.RoomSettingsUndoRedo -unattended -NullRHI. 빌드 중 소스 변경/전체 테스트/성공 검사 반복 없음. UI 단계 근거는 앞 절.

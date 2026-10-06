@@ -369,4 +369,61 @@ bool FRoomCeilingUiTest::RunTest(const FString& Parameters)
 	AddInfo(TEXT("Ceiling numeric modal: request2.63m -> single0.25m layer9 cells; strict parsing, blocked input/patch/mode, append only on Add and grid delayed. Actual widget render/OS focus are direct-check scope."));
 	return true;
 }
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FRoomCeilingHistoryTest,"VRG.Interaction.Layout.RoomCeilingHistory",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::CommandletContext | EAutomationTestFlags::EngineFilter)
+bool FRoomCeilingHistoryTest::RunTest(const FString& Parameters)
+{
+	FRoomFixture F; auto* C=F.World->SpawnActor<ADataCenterDebugController>(); C->bFrameEquipmentOnStart=false;
+	C->Possess(F.World->SpawnActor<ADefaultPawn>()); C->PlayerInput=NewObject<UPlayerInput>(C); C->RefreshInteractionInputMode();
+	const auto InitialInput=F.Racks[0]->Input; FString Message; const auto Room=ManualRoom(); F.Sim->TrySetRoomAirDomain(Room,Message);
+	F.Sim->EnterSimulationMode(); F.Sim->Tick(.021f); const double ReferenceIt=F.Sim->GetSnapshot().TotalItHeatW; F.Sim->EnterLayoutMode();
+	const auto Warm=F.Sim->GetSnapshot(); const auto Temps=F.Air->GetMutableSolver().GetGrid().TemperatureK;
+	const auto Mask=F.Air->GetMutableSolver().GetGrid().bSolidCell; const auto Origin=F.Air->GetActorLocation(); const int32 Pipes=F.Room->GetMutableNetwork().GetNumPipes();
+	auto Unchanged=[&]() { const auto S=F.Sim->GetSnapshot(); return S.SimTimeS==Warm.SimTimeS && S.EnergyInJ==Warm.EnergyInJ
+		&& S.EnergyOutJ==Warm.EnergyOutJ && S.EnergyStoredJ==Warm.EnergyStoredJ && F.Air->GetMutableSolver().GetGrid().TemperatureK==Temps
+		&& F.Air->GetMutableSolver().GetGrid().bSolidCell==Mask && F.Air->GetActorLocation()==Origin && F.Room->GetMutableNetwork().GetNumPipes()==Pipes; };
+	FRoomCeilingPlate P; P.MinXYM=FVector2D(-5.13,3.13); P.MaxXYM=FVector2D(-4.61,3.62); P.HeightM=2.63; // Synthetic existing fixture.
+	auto Add=[&](const FRoomCeilingPlate& Value) { if(!C->OpenRoomCeilingSettings()) return false; const bool Ok=C->AddRoomCeiling(Value,Message); C->CloseRoomSettings(); return Ok; };
+	C->OpenRoomCeilingSettings(); C->CloseRoomSettings(); TestTrue(TEXT("Canceled empty draft records nothing"),C->GetLayoutUndoCount()==0 && Unchanged());
+	TestTrue(TEXT("One Add one shared record without live rebuild"),Add(P) && C->GetLayoutUndoCount()==1 && Unchanged());
+	TestTrue(TEXT("Whole list Undo/Redo value-only"),C->TryUndoLayout() && F.Sim->GetRoomCeilingPlates().IsEmpty()
+		&& C->TryRedoLayout() && F.Sim->GetRoomCeilingPlates()==TArray<FRoomCeilingPlate>{P} && Unchanged());
+	C->TryUndoLayout(); auto Bad=P; Bad.HeightM=0;
+	TestFalse(TEXT("Rejected Add leaves Redo"),Add(Bad)); TestTrue(TEXT("Failure/cancel preserve stacks/live state"),C->GetLayoutUndoCount()==0 && C->GetLayoutRedoCount()==1 && Unchanged());
+	C->OpenRoomCeilingSettings(); TestFalse(TEXT("Numeric modal blocks history"),C->TryRedoLayout()); C->CloseRoomSettings();
+	const auto Pose=F.Racks[0]->GetActorTransform();
+	F.Racks[0]->SetActorLocation(FVector(-465,340,100*(2.6-F.Racks[0]->RackSizeM.Z)));
+	TestFalse(TEXT("Redo revalidates equipment against quantized plate"),C->TryRedoLayout());
+	TestTrue(TEXT("Refusal keeps empty list/stacks/temperature/ledger"),F.Sim->GetRoomCeilingPlates().IsEmpty() && C->GetLayoutRedoCount()==1 && Unchanged()); F.Racks[0]->SetActorTransform(Pose);
+	auto Other=P; Other.HeightM=2.53; F.Sim->TrySetRoomCeilingPlates({Other},Message);
+	TestFalse(TEXT("Stale history cannot overwrite externally changed list"),C->TryRedoLayout());
+	TestTrue(TEXT("External list and record retained"),F.Sim->GetRoomCeilingPlates()==TArray<FRoomCeilingPlate>{Other} && C->GetLayoutRedoCount()==1);
+	F.Sim->TrySetRoomCeilingPlates({},Message); TestTrue(TEXT("Redo after removing obstruction"),C->TryRedoLayout() && Unchanged());
+	C->TryUndoLayout(); TestTrue(TEXT("New Add clears Redo"),Add(Other) && C->GetLayoutRedoCount()==0);
+	// Interleave with the existing room command and keep BOTH command types in the shared stack.
+	auto Larger=Room; Larger.CeilingHeightM=3.2; C->OpenRoomSettings(); C->ApplyRoomSettings(Larger,Message); C->CloseRoomSettings();
+	TestTrue(TEXT("Interleaved shared room/list reverse and forward"),C->TryUndoLayout() && F.Sim->GetRoomAirDomain()==Room && C->TryUndoLayout()
+		&& F.Sim->GetRoomCeilingPlates().IsEmpty() && C->TryRedoLayout() && C->TryRedoLayout() && F.Sim->GetRoomAirDomain()==Larger && Unchanged());
+	for(auto* Rack:F.Racks) Rack->Input=InitialInput;
+	F.Sim->EnterSimulationMode(); TestFalse(TEXT("Simulation history blocked"),C->TryUndoLayout()); F.Sim->Tick(.021f); const auto First=F.Sim->GetSnapshot();
+	for(int32 I=0;I<25;++I) F.Sim->Tick(.04f);
+	const auto S=F.Sim->GetSnapshot(); const auto AS=F.Air->GetMutableSolver().MakeSnapshot(S.SimTimeS);
+	const double It=FMath::Abs(First.TotalItHeatW-ReferenceIt)/ReferenceIt;
+	TestTrue(TEXT("Next entry integrates current plate and existing physics criteria"),F.Sim->GetNumCeilingCells()==9 && It<1e-9
+		&& FMath::Abs(S.NormalizedEnergyResidual)<1e-9 && S.bAirPressureConverged && AS.bPressureConverged && AS.NormalizedDivergence<1e-5
+		&& S.bHydraulicsConverged && !AS.bDuctsRejected && S.CrahCoilRemovedW>0);
+	for(auto* Rack:F.Racks) for(double K:Rack->Input.SlotAirInletTempK) TestTrue(TEXT("Existing transient15..35C inlet safety"),K>288.15 && K<308.15);
+	F.Sim->EnterLayoutMode(); TestTrue(TEXT("Mode transition preserves shared history"),C->GetLayoutUndoCount()==2);
+	C->SetPatchMapOpen(true); TestFalse(TEXT("Patch blocks history"),C->TryUndoLayout()); C->SetPatchMapOpen(false);
+	const FString File=TEXT("AutomationCeilingHistory"); TestTrue(TEXT("Existing Load retains unsaved plates but clears all history"),VrgLayoutFile::Save(F.World,File,Message)
+		&& VrgLayoutFile::Load(F.World,File,Message) && C->GetLayoutUndoCount()==0 && C->GetLayoutRedoCount()==0 && F.Sim->GetRoomCeilingPlates()==TArray<FRoomCeilingPlate>{Other});
+	F.Sim->TrySetRoomCeilingPlates({},Message);
+	for(int32 I=0;I<105;++I) TestTrue(TEXT("Existing100-command cap with repeated individual Add"),Add(P) && C->GetLayoutUndoCount()<=100);
+	for(int32 I=0;I<100;++I) TestTrue(TEXT("Undo retained ceiling addition"),C->TryUndoLayout());
+	TestTrue(TEXT("Five evicted additions remain"),F.Sim->GetRoomCeilingPlates().Num()==5 && !C->TryUndoLayout() && C->GetLayoutRedoCount()==100);
+	for(int32 I=0;I<100;++I) TestTrue(TEXT("Redo retained ceiling addition"),C->TryRedoLayout());
+	TestEqual(TEXT("All retained additions restored"),F.Sim->GetRoomCeilingPlates().Num(),105);
+	AddInfo(FString::Printf(TEXT("Ceiling history: one record/list exact restoration; cancel/refusal/stale state preserved at0.02s; shared cap100 and Load clears history but retains unsaved list; next-entry9cells IT%.3e energy%.3e pressure%.3e at%.2fs."),It,S.NormalizedEnergyResidual,AS.NormalizedDivergence,S.SimTimeS));
+	return true;
+}
 #endif

@@ -1549,6 +1549,19 @@ bool ADataCenterDebugController::RestoreLayoutTransform(bool bRedo)
 	TArray<FLayoutTransformCommand>& To = bRedo ? LayoutUndo : LayoutRedo;
 	if (From.IsEmpty()) return false;
 	const FLayoutTransformCommand Command = From.Last();
+	if (Command.bRoomCeilings)
+	{
+		auto* Sim=Command.RoomSettingsTarget.Get(); FString Reason;
+		const auto& Expected=bRedo?Command.CeilingsBefore:Command.CeilingsAfter;
+		const auto& Target=bRedo?Command.CeilingsAfter:Command.CeilingsBefore;
+		if (!Sim || Sim!=FindSimActor() || Sim->GetRoomCeilingPlates()!=Expected)
+			Reason=TEXT("천장 기록의 대상이나 현재 목록이 바뀌었습니다.");
+		else if (Sim->TrySetRoomCeilingPlates(Target,Reason))
+		{ From.Pop(); To.Add(Command); return true; }
+		UE_LOG(LogTemp,Display,TEXT("[VrgLayout] 천장 %s 거절: %s"),bRedo?TEXT("Redo"):TEXT("Undo"),*Reason);
+		if(GEngine) GEngine->AddOnScreenDebugMessage(static_cast<uint64>(GetUniqueID())+23,6.0f,FColor::Red,Reason);
+		return false;
+	}
 	if (Command.bRoomSettings)
 	{
 		auto* Sim = Command.RoomSettingsTarget.Get(); FString Reason;

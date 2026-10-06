@@ -104,7 +104,7 @@ void URoomSettingsWidget::OnDraftChanged(const FText& Text)
 {
 	if (bInitializing || !Status) return;
 	Status->SetColorAndOpacity(FLinearColor(1, .8f, .3f));
-	Status->SetText(FText::FromString(TEXT("초안 변경됨 · 아직 미적용. 아래 계획은 마지막 적용 설정입니다.")));
+	Status->SetText(FText::FromString(bCeilingMode ? TEXT("초안 변경됨 · 아직 미추가. 아래 계획은 마지막 검증 결과입니다.") : TEXT("초안 변경됨 · 아직 미적용. 아래 계획은 마지막 적용 설정입니다.")));
 }
 
 void URoomSettingsWidget::OnModeChanged(bool bManual)

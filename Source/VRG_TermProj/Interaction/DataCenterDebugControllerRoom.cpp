@@ -217,8 +217,10 @@ bool ADataCenterDebugController::AddRoomCeiling(const FRoomCeilingPlate& P, FStr
 	if (!bRoomSettingsOpen || !bRoomCeilingOpen || OpenPatchMaps>0 || !IsLayoutMode() || !Sim)
 	{ Message=TEXT("배치 모드의 부분 천장 창에서 추가하세요."); return false; }
 	Message=DescribeRoomCeilingPlan(P);
-	auto Plates=Sim->GetRoomCeilingPlates(); Plates.Add(P); FString Reason;
+	const auto Before=Sim->GetRoomCeilingPlates(); auto Plates=Before; Plates.Add(P); FString Reason;
 	if (!Sim->TrySetRoomCeilingPlates(Plates,Reason)) { Message+=TEXT("\n")+Reason; return false; }
+	FLayoutTransformCommand Command; Command.bRoomCeilings=true; Command.RoomSettingsTarget=Sim;
+	Command.CeilingsBefore=Before; Command.CeilingsAfter=Plates; PushLayoutCommand(MoveTemp(Command));
 	return true;
 }
 
