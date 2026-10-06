@@ -13,7 +13,9 @@ class UWorld;
 // Additive v2 spine capabilities retain native spine provenance/configuration and explicit placed deletions.
 // Optional v2 "barriers" (with "barrierInventory": true) is the complete wall/curtain list (kind, full transform,
 // size = scale in m); files without it leave barriers untouched.
-// Other equipment remains name-matched. Version 1 remains move-only. No solver state or Undo history is saved.
+// Optional v2 settings.roomAirDomain stores authored metres; absence preserves the current room.
+// Room validation projects the final inventory before live changes. Barriers retain their existing v2 path.
+// Version 1 remains move-only. No solver state or Undo history is saved.
 // Files live in Saved/Layouts/<name>.json. Loading switches the simulation to layout mode first (the next simulation
 // entry rebuilds everything from the loaded layout).
 namespace VrgLayoutFile

@@ -29,6 +29,8 @@
 #include "HAL/FileManager.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
+#include "Misc/ScopeExit.h"
+#include "Engine/World.h"
 #include "Serialization/JsonReader.h"
 #include "Serialization/JsonSerializer.h"
 #include "Serialization/JsonWriter.h"
@@ -204,6 +206,13 @@ bool VrgLayoutFile::Save(UWorld* World, const FString& Name, FString& OutSummary
 		Settings->SetNumberField(TEXT("containment"), int32(Sim->Containment));
 		Settings->SetNumberField(TEXT("crahLayout"), int32(Sim->CrahLayout));
 		Settings->SetNumberField(TEXT("coolantRejection"), int32(Sim->CoolantRejection));
+		const auto& Room = Sim->GetRoomAirDomain();
+		TSharedRef<FJsonObject> Domain = MakeShared<FJsonObject>();
+		Domain->SetBoolField(TEXT("manual"), Room.bManual);
+		Domain->SetNumberField(TEXT("minXM"), Room.MinXYM.X); Domain->SetNumberField(TEXT("minYM"), Room.MinXYM.Y);
+		Domain->SetNumberField(TEXT("maxXM"), Room.MaxXYM.X); Domain->SetNumberField(TEXT("maxYM"), Room.MaxXYM.Y);
+		Domain->SetNumberField(TEXT("ceilingHeightM"), Room.CeilingHeightM);
+		Settings->SetObjectField(TEXT("roomAirDomain"), Domain); // Optional v2, authored metres only; no live grid/state.
 	}
 	if (const AAirFieldDebugActor* Air = LayoutFindFirst<AAirFieldDebugActor>(World))
 		Settings->SetNumberField(TEXT("cellSizeM"), Air->GridParams.CellSizeM);
@@ -252,6 +261,63 @@ namespace
 		bool bRuntimeSpine = false;
 		bool bSpawned=false;
 	};
+
+	// Project the FINAL inventory into an unticked world for the EXISTING validator. Rejection cannot
+	// modify live equipment, barriers or history. Deferred native actors carry only consumed geometry;
+	// no construction, visuals, thermal state or solver is needed for room/automatic CRAH/duct validation.
+	bool ValidateLoadedRoom(UWorld* World, ADataCenterSimulationActor* Source, const FRoomAirDomainSettings& Domain,
+		const TSharedPtr<FJsonObject>& Cooling, const TArray<FLoadedEquipment>& Items,
+		const TArray<AActor*>& Current, const TSet<AActor*>& Removed, FAirGridParams& Grid, FBox& Bounds, FString& Reason)
+	{
+		if (!Domain.bManual) return Source->ValidateRoomAirDomain(Domain, Grid, Bounds, Reason);
+		UWorld* Preview = UWorld::CreateWorld(EWorldType::Game, false);
+		if (!Preview) { Reason = TEXT("방 검증 월드 생성 실패"); return false; }
+		GEngine->CreateNewWorldContext(EWorldType::Game).SetCurrentWorld(Preview);
+		ON_SCOPE_EXIT { Preview->DestroyWorld(false); GEngine->DestroyWorldContext(Preview); };
+		FActorSpawnParameters P; P.bDeferConstruction = true;
+		P.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+		auto* Sim = Preview->SpawnActor<ADataCenterSimulationActor>(ADataCenterSimulationActor::StaticClass(), FTransform::Identity, P);
+		if (!Sim) { Reason = TEXT("방 검증 액터 생성 실패"); return false; }
+		Sim->Containment = Source->Containment; Sim->CrahLayout = Source->CrahLayout;
+		Sim->InletSampleDepthM = Source->InletSampleDepthM; Sim->ExhaustDepthM = Source->ExhaustDepthM;
+		Sim->CrahInRowSizeM = Source->CrahInRowSizeM; Sim->CrahPerimeterSizeM = Source->CrahPerimeterSizeM;
+		Sim->CrahPerimeterClearanceM = Source->CrahPerimeterClearanceM;
+		double V;
+		if (Cooling->TryGetNumberField(TEXT("containment"), V)) Sim->Containment = static_cast<EAisleContainment>(FMath::Clamp(int32(V), 0, 2));
+		if (Cooling->TryGetNumberField(TEXT("crahLayout"), V)) Sim->CrahLayout = static_cast<ECrahLayout>(FMath::Clamp(int32(V), 0, 2));
+		for (TActorIterator<AAirFieldDebugActor> It(World); It; ++It)
+		{
+			auto* Air = Preview->SpawnActor<AAirFieldDebugActor>(AAirFieldDebugActor::StaticClass(), FTransform::Identity, P);
+			if (!Air) { Reason = TEXT("방 검증 격자 액터 생성 실패"); return false; }
+			Air->GridParams = It->GridParams;
+			if (Cooling->TryGetNumberField(TEXT("cellSizeM"), V) && V >= .01) Air->GridParams.CellSizeM = V;
+		}
+		auto Project = [&](const FLoadedEquipment& I)
+		{
+			UClass* Kind = I.Rack.IsSet() || Cast<ARackThermalActor>(I.Actor) ? ARackThermalActor::StaticClass()
+				: I.Spine.IsSet() || Cast<ASpineCabinetActor>(I.Actor) ? ASpineCabinetActor::StaticClass()
+				: I.Cdu.IsSet() || Cast<ACoolingDistributionUnitActor>(I.Actor) ? ACoolingDistributionUnitActor::StaticClass() : ACrahUnitActor::StaticClass();
+			AActor* Actor = Preview->SpawnActor<AActor>(Kind, I.Target, P);
+			if (!Actor || !Actor->SetActorTransform(I.Target, false)) return false;
+			if (auto* Rack = Cast<ARackThermalActor>(Actor)) Rack->RackSizeM = I.Rack.IsSet() ? I.Rack->RackSizeM : CastChecked<ARackThermalActor>(I.Actor)->RackSizeM;
+			if (auto* Cdu = Cast<ACoolingDistributionUnitActor>(Actor)) Cdu->SizeM = I.Cdu.IsSet() ? I.Cdu->SizeM : CastChecked<ACoolingDistributionUnitActor>(I.Actor)->SizeM;
+			if (auto* Crah = Cast<ACrahUnitActor>(Actor))
+			{
+				Crah->SizeM = I.Crah.IsSet() ? I.Crah->SizeM : CastChecked<ACrahUnitActor>(I.Actor)->SizeM;
+				Crah->Kind = I.Crah.IsSet() ? I.Crah->Kind : CastChecked<ACrahUnitActor>(I.Actor)->Kind;
+			}
+			return true;
+		};
+		for (const auto& I : Items) if (!Project(I)) { Reason = TEXT("불러올 장비의 방 검증 준비 실패"); return false; }
+		// Old move-only files and omitted placed spines/CDUs/CRAHs retain current geometry.
+		for (auto* Actor : Current) if (!Removed.Contains(Actor) && !Items.ContainsByPredicate([&](const auto& I) { return I.Actor == Actor; }))
+		{
+			FLoadedEquipment I; I.Actor = Actor; I.Target = Actor->GetActorTransform();
+			if (!Project(I)) { Reason = TEXT("유지 장비의 방 검증 준비 실패"); return false; }
+		}
+		// Barriers are intentionally excluded by the existing validator; persistence is untouched.
+		return Sim->ValidateRoomAirDomain(Domain, Grid, Bounds, Reason);
+	}
 }
 
 bool VrgLayoutFile::Load(UWorld* World, const FString& Name, FString& OutSummary)
@@ -474,6 +540,18 @@ bool VrgLayoutFile::Load(UWorld* World, const FString& Name, FString& OutSummary
 		if (Version==2 && (FString(Key)==TEXT("cellSizeM") ? V<0.01 : (V!=FMath::FloorToDouble(V) || V<0 || V>(FString(Key)==TEXT("coolantRejection")?1:2))))
 			return Fail(TEXT("냉각 설정 범위 오류")); // Existing enum and air-cell admissibility bounds, not fitted physics values.
 	}
+	ADataCenterSimulationActor* Sim = LayoutFindFirst<ADataCenterSimulationActor>(World);
+	const bool bRoomStored = Version == 2 && (*SettingsObject)->HasField(TEXT("roomAirDomain"));
+	FRoomAirDomainSettings LoadedRoom = Sim ? Sim->GetRoomAirDomain() : FRoomAirDomainSettings{};
+	if (bRoomStored)
+	{
+		const TSharedPtr<FJsonObject>* Domain = nullptr;
+		if (!Sim || !(*SettingsObject)->TryGetObjectField(TEXT("roomAirDomain"), Domain)
+			|| !(*Domain)->TryGetBoolField(TEXT("manual"), LoadedRoom.bManual)
+			|| !ReadLayoutNumber(*Domain, TEXT("minXM"), LoadedRoom.MinXYM.X) || !ReadLayoutNumber(*Domain, TEXT("minYM"), LoadedRoom.MinXYM.Y)
+			|| !ReadLayoutNumber(*Domain, TEXT("maxXM"), LoadedRoom.MaxXYM.X) || !ReadLayoutNumber(*Domain, TEXT("maxYM"), LoadedRoom.MaxXYM.Y)
+			|| !ReadLayoutNumber(*Domain, TEXT("ceilingHeightM"), LoadedRoom.CeilingHeightM)) return Fail(TEXT("방 설정 객체/유한값 오류 또는 통합 액터 없음"));
+	}
 	// Walls / curtains: validate the whole list before anything changes. Absent flag = barriers stay as they are.
 	bool bBarrierInventory = false;
 	if (Version == 2 && Root->HasField(TEXT("barrierInventory")) && !Root->TryGetBoolField(TEXT("barrierInventory"), bBarrierInventory))
@@ -551,6 +629,15 @@ bool VrgLayoutFile::Load(UWorld* World, const FString& Name, FString& OutSummary
 	{
 		UObject* Occupant=FindObjectFast<UObject>(World->PersistentLevel,FName(*Item.Name));
 		if (Occupant && Occupant!=Item.Actor && !Remove.Contains(Cast<ARackThermalActor>(Occupant)) && !RemoveSpines.Contains(Cast<ASpineCabinetActor>(Occupant)) && !RemoveCdus.Contains(Cast<ACoolingDistributionUnitActor>(Occupant)) && !RemoveCrahs.Contains(Cast<ACrahUnitActor>(Occupant))) return Fail(TEXT("복원 이름이 다른 객체와 충돌"));
+	}
+	FAirGridParams RoomGrid; FBox RoomBounds(ForceInit); FString RoomReason;
+	if (Sim)
+	{
+		TSet<AActor*> Removed;
+		for (auto* A : Remove) Removed.Add(A); for (auto* A : RemoveSpines) Removed.Add(A);
+		for (auto* A : RemoveCdus) Removed.Add(A); for (auto* A : RemoveCrahs) Removed.Add(A);
+		if (!ValidateLoadedRoom(World, Sim, LoadedRoom, *SettingsObject, Items, Current, Removed, RoomGrid, RoomBounds, RoomReason))
+			return Fail(TEXT("불러올 배치의 방 설정 거절: ") + RoomReason); // Before live spawn, transform, removal or history change.
 	}
 	TArray<FTransform> OldTransforms;
 	for (AActor* Actor:Current) OldTransforms.Add(Actor->GetActorTransform());
@@ -732,8 +819,17 @@ bool VrgLayoutFile::Load(UWorld* World, const FString& Name, FString& OutSummary
 		for (const auto& Item : DeletedCduItems) CduState->DeletedPlaced.Add(Item.Id,
 			{Item.Id,FName(*Item.Name),Item.Target,Item.Cdu.GetValue(),false});
 	}
-	ADataCenterSimulationActor* Sim=LayoutFindFirst<ADataCenterSimulationActor>(World);
 	if (Sim && Sim->GetSimMode()==ESimMode::Simulation) Sim->EnterLayoutMode();
+	if (bRoomStored)
+	{
+		// Load alone is a friend: commit validated FINAL geometry after all fallible structural edits.
+		// Never revalidate an intermediate inventory or apply/reset a live grid during Load.
+		Sim->RoomAirDomain = LoadedRoom;
+		Sim->RoomAirDomainMessage = LoadedRoom.bManual
+			? FString::Printf(TEXT("불러온 수동 방: 실제 격자 %dx%dx%d, 원점 %s m, 최대 %s m (시뮬레이션 진입 시 적용)"),
+				RoomGrid.NumCellsX, RoomGrid.NumCellsY, RoomGrid.NumCellsZ, *RoomBounds.Min.ToString(), *RoomBounds.Max.ToString())
+			: TEXT("불러온 자동 방 맞춤 사용");
+	}
 	for (TActorIterator<ADataCenterDebugController> It(World);It;++It) It->ResetLayoutEditsForLoad();
 	for (auto& Item:Items) if (Item.Rack.IsSet())
 	{
@@ -776,6 +872,7 @@ bool VrgLayoutFile::Load(UWorld* World, const FString& Name, FString& OutSummary
 	OutSummary += FString::Printf(TEXT(" | CDU%d 생성/%d 제거"), Items.FilterByPredicate([](const auto& I){return I.bSpawned && I.Cdu.IsSet();}).Num(), RemoveCdus.Num());
 	OutSummary += FString::Printf(TEXT(" | CRAH%d 생성/%d 제거"), Items.FilterByPredicate([](const auto& I){return I.bSpawned && I.Crah.IsSet();}).Num(), RemoveCrahs.Num());
 	if (bBarrierInventory) OutSummary += FString::Printf(TEXT(" | 벽/차단막 %d개 (이전 %d개 교체)"), NewBarriers.Num(), OldBarriers.Num());
+	OutSummary += bRoomStored ? TEXT(" | 방 설정 복원 (격자는 진입 시 적용)") : TEXT(" | 현 방 설정 유지");
 	return true;
 }
 

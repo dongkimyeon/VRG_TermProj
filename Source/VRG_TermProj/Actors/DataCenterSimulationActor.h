@@ -9,6 +9,7 @@
 #include "Simulation/Evaluation/VrgEvaluation.h"
 #include "Interaction/VrgCrahLifecycle.h"
 #include "Simulation/Air/RoomAirDomain.h"
+#include "Interaction/VrgLayoutFile.h"
 #include "DataCenterSimulationActor.generated.h"
 
 class AAirFieldDebugActor;
@@ -292,6 +293,7 @@ public:
 	const FVrgEvaluation& GetEvaluation() const { return Eval; }
 
 private:
+	friend bool VrgLayoutFile::Load(UWorld* World, const FString& Name, FString& OutSummary);
 	UPROPERTY() FRoomAirDomainSettings RoomAirDomain;
 	FString RoomAirDomainMessage;
 	FVrgEvaluation Eval;

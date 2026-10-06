@@ -4,7 +4,7 @@
 #include "Simulation/Air/UniformAirGrid.h"
 #include "RoomAirDomain.generated.h"
 
-// Authored world metres; floor Z=0. No walls, heat exchange, UI or layout-file persistence yet.
+// Authored world metres; floor Z=0. Layout UI/history and optional v2 persistence share this value type.
 USTRUCT()
 struct VRG_TERMPROJ_API FRoomAirDomainSettings
 {

@@ -3833,3 +3833,12 @@ NullRHI 결과이며 실제 마우스 기즈모 조작·화면은 미검증이�
 `View.ScreenPositionScaleBias`로 깊이 UV로 바꾸고 `BufferBilinearUVMinMax`로 자른다. 단축키 줄은 HUD 캔버스에 그려 엔진의
 `DisableAllScreenMessages` 안내가 평소에는 안 뜬다. Editor 빌드 성공, `-RenderOffscreen`에서 `FVrgVolumeRaymarchPS` 컴파일 성공,
 `VRG.Gpu` 4건·`BarrierGizmoUndoSave`·`CameraInputAndMode` 성공. 실제 화면에서 사각형이 사라졌는지는 사용자 확인 필요.
+
+## 2026-10-06 방 설정 저장 v2 연결 (1차)
+
+사용자가 방 설정 UI·Undo/Redo 직접 절차를 정상 확인했다고 보고했다. 해당 입력 절차의 보고이며 새 로그/캡처/FPS 측정은 아니다. 앞 도구 좌표 실패는 반복하지 않았다.
+v2 settings.roomAirDomain은 선택 객체: manual(bool), minXM/minYM/maxXM/maxYM/ceilingHeightM(유한 숫자, m). 바닥0m·비활성 자동 숫자도 보존하며 온도/적분/시계/격자 배열/기록은 저장하지 않는다. 객체 없는 이전v1/v2는 현 설정 유지. 새 barrierInventory/barriers와 기존 장비 저장 유지.
+Load는 최종 장비 기하만 임시 미실행 월드에 구성해 기존 ValidateRoomAirDomain을 호출한다. 파일 h·containment/CRAH 종류, 현 흡기/배기 깊이·자동 CRAH 크기/간격을 재사용한다. 복원/유지할 장비를 포함하고 제거 대상은 제외한다. 지연 생성 액터의 기하만 읽으며 construction/적분/메시 재구축은 없음, 임시 월드는 제거한다. 기존 방 검증의 벽 제외/격자 밖 벽 잘림 정책 유지.
+방 거절은 실제 장비/벽 생성·이동·삭제 전에 반환한다. 구조 적용은 기존 원복을 사용하고, 성공한 뒤 Load만 접근하는 friend로 검증한 방 값을 확정/기록 초기화한다. 격자는 진입 때 적용. 객체 없는 파일도 유지할 수동 방을 최종 장비로 검증한다.
+검증: E:\UE_5.8 Editor113.66s 성공. RoomSettingsPersistence/SaveLoadRoundTrip/BarrierGizmoUndoSave3종 무경고 성공(실패0/미실행0/종료0). 현재 밖의 랙/h0.05 대신 파일 랙/h0.25 사용·자동/수동·반복/새 월드·이전v1/v2·기록0/0·벽 유지/누락 제거 확인. 필드/높이/자원·자동 CRAH/덕트·파일 목적지 오류 거절은 실제 참조/변환·설정/양쪽 기록·온도 배열 변경0. 합성 요청10.6x9.1x3.1m(시설 치수/물성 아님), 실제43x37x13=20683셀·원점(-5.5,-4.5,0)m 정확 일치. 새 기준/물성 없음. 따뜻한 생성 실패·냉각 최종 보강은 후속.
+근거(커밋 제외): Saved/Build_RoomPersistence.log, Saved/Logs/RoomPersistence_Tests.log, Saved/Automation/RoomPersistence/index.json. 저장/Load UI·새 실행 화면 미확인. 전체/FPS/핸들/물리 확장 제외.
