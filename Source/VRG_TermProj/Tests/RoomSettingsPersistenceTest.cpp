@@ -261,6 +261,74 @@ bool FRoomCeilingFileCouplingTest::RunTest(const FString& Parameters)
 	for(const auto& Name:{File,BadFile,FailureFile}) IFileManager::Get().Delete(*VrgLayoutFile::PathFor(Name)); return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FRoomCeilingDeleteCouplingTest,"VRG.Interaction.Layout.RoomCeilingDeletePersistenceCoupling",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::CommandletContext | EAutomationTestFlags::EngineFilter)
+bool FRoomCeilingDeleteCouplingTest::RunTest(const FString& Parameters)
+{
+	FRoomFileFixture F; FString Message; const auto Manual=RoomFileDomain(); const auto InitialInput=F.Racks[0]->Input;
+	const FString File=TEXT("AutomationCeilingDeleted"), Empty=File+TEXT("Empty"), BadFile=File+TEXT("Bad");
+	TestTrue(TEXT("Manual room"),F.Sim->TrySetRoomAirDomain(Manual,Message));
+	// Synthetic existing corner geometry, separated plate and curtain; no new physical defaults.
+	FRoomCeilingPlate P; P.MinXYM=FVector2D(-5.13,3.13); P.MaxXYM=FVector2D(-4.61,3.62); P.HeightM=2.63;
+	auto Second=P; Second.MinXYM.X+=3; Second.MaxXYM.X+=3; const TArray<FRoomCeilingPlate> Before{P,Second},After{Second};
+	const FLayoutBarrierRecord Wall{TEXT("ceiling-delete-wall"),TEXT("CeilingDeleteWall"),FTransform(FRotator::ZeroRotator,FVector(-480,200,0),FVector(.2,1,2)),EBarrierKind::Curtain};
+	TestNotNull(TEXT("Barrier"),VrgBarrierLifecycle::Spawn(F.W,Wall)); TestTrue(TEXT("Initial plates"),F.Sim->TrySetRoomCeilingPlates(Before,Message));
+	F.Sim->EnterSimulationMode(); F.Sim->Tick(.021f); const double ReferenceIt=F.Sim->GetSnapshot().TotalItHeatW;
+	for(int32 I=0;I<25;++I) F.Sim->Tick(.04f); F.Sim->EnterLayoutMode(); const auto Warm=F.Sim->GetSnapshot();
+	const auto Temps=F.Air->GetMutableSolver().GetGrid().TemperatureK; const auto Mask=F.Air->GetMutableSolver().GetGrid().bSolidCell;
+	const auto Origin=F.Air->GetActorLocation(); const int32 Pipes=F.Room->GetMutableNetwork().GetNumPipes(); const auto Pose=F.Racks[0]->GetActorTransform();
+	auto Frozen=[&]() { const auto S=F.Sim->GetSnapshot(); return S.SimTimeS==Warm.SimTimeS && S.EnergyInJ==Warm.EnergyInJ
+		&& S.EnergyOutJ==Warm.EnergyOutJ && S.EnergyStoredJ==Warm.EnergyStoredJ && F.Air->GetMutableSolver().GetGrid().TemperatureK==Temps
+		&& F.Air->GetMutableSolver().GetGrid().bSolidCell==Mask && F.Air->GetActorLocation()==Origin && F.Room->GetMutableNetwork().GetNumPipes()==Pipes; };
+	const FVector Eye(-520,340,400),SecondEye(-185,340,400),Down(0,0,-1);
+	F.C->SetRoomCeilingEditing(true); F.C->SelectRoomCeilingAlongRay(Eye,Down);
+	F.Racks[0]->SetActorLocation(FVector(-185,340,100*(2.6-F.Racks[0]->RackSizeM.Z)));
+	TestTrue(TEXT("Invalid remaining plate rejects deletion without changing selection/history/grid"),!F.C->TryDeleteRoomCeiling()
+		&& F.Sim->GetRoomCeilingPlates()==Before && F.C->GetSelectedRoomCeilingIndex()==0 && F.C->GetLayoutUndoCount()==0 && Frozen()); F.Racks[0]->SetActorTransform(Pose);
+	TestTrue(TEXT("Delete one changes metadata only at warm1.02s"),F.C->TryDeleteRoomCeiling() && F.Sim->GetRoomCeilingPlates()==After && F.C->GetLayoutUndoCount()==1 && Frozen());
+	F.C->SetRoomCeilingEditing(false); TestTrue(TEXT("Cancel mode records nothing and keeps warm state"),!F.C->TryDeleteRoomCeiling() && F.C->GetLayoutUndoCount()==1 && Frozen());
+	F.C->SetRoomCeilingEditing(true); F.C->SelectRoomCeilingAlongRay(SecondEye,Down);
+	F.Racks[0]->SetActorLocation(FVector(-485,340,100*(2.6-F.Racks[0]->RackSizeM.Z)));
+	TestTrue(TEXT("Undo revalidates deleted plate and preserves selection/BOTH stacks on obstruction"),!F.C->TryUndoLayout()
+		&& F.Sim->GetRoomCeilingPlates()==After && F.C->GetSelectedRoomCeilingIndex()==0 && F.C->GetLayoutUndoCount()==1 && F.C->GetLayoutRedoCount()==0 && Frozen()); F.Racks[0]->SetActorTransform(Pose);
+	TestTrue(TEXT("Remove obstruction then exact Undo/Redo clears old selection"),F.C->TryUndoLayout() && F.Sim->GetRoomCeilingPlates()==Before
+		&& F.C->GetSelectedRoomCeilingIndex()==INDEX_NONE && F.C->TryRedoLayout() && F.Sim->GetRoomCeilingPlates()==After && Frozen());
+	F.C->SelectRoomCeilingAlongRay(SecondEye,Down); TestTrue(TEXT("Save deleted inventory"),VrgLayoutFile::Save(F.W,File,Message));
+	auto Bad=ReadRoomFile(File); Bad->GetObjectField(TEXT("settings"))->GetArrayField(TEXT("roomCeilingPlates"))[0]->AsObject()->SetNumberField(TEXT("heightM"),0); WriteRoomFile(BadFile,Bad);
+	auto* BarrierBefore=VrgBarrierLifecycle::Find(F.W,Wall.Id);
+	TestTrue(TEXT("Failed Load keeps ceiling mode/selection/state/history and live barrier"),!VrgLayoutFile::Load(F.W,BadFile,Message)
+		&& F.C->IsRoomCeilingEditing() && F.C->GetSelectedRoomCeilingIndex()==0 && F.C->GetLayoutUndoCount()==1 && Frozen()
+		&& F.Sim->GetRoomCeilingPlates()==After && VrgBarrierLifecycle::Find(F.W,Wall.Id)==BarrierBefore);
+	for(int32 I=0;I<2;++I) TestTrue(TEXT("Success Load restores deletion, clears editing/selection/history without stale delete"),VrgLayoutFile::Load(F.W,File,Message)
+		&& F.Sim->GetRoomCeilingPlates()==After && !F.C->IsRoomCeilingEditing() && F.C->GetSelectedRoomCeilingIndex()==INDEX_NONE
+		&& !F.C->TryDeleteRoomCeiling() && F.C->GetLayoutUndoCount()==0 && F.C->GetLayoutRedoCount()==0);
+	TestTrue(TEXT("Successful Load keeps old18-cell mask/temperatures until next entry"),F.Air->GetMutableSolver().GetGrid().TemperatureK==Temps
+		&& F.Air->GetMutableSolver().GetGrid().bSolidCell==Mask && F.Sim->GetSnapshot().SimTimeS==Warm.SimTimeS);
+	double MaxIt=0,MaxEnergy=0,MaxDiv=0;
+	auto Run=[&](FRoomFileFixture& Case,int32 Cells)
+	{
+		for(auto* Rack:Case.Racks) Rack->Input=InitialInput;
+		Case.Sim->EnterSimulationMode(); Case.Sim->Tick(.021f); const auto First=Case.Sim->GetSnapshot();
+		for(int32 I=0;I<25;++I) Case.Sim->Tick(.04f);
+		const auto S=Case.Sim->GetSnapshot(); const auto A=Case.Air->GetMutableSolver().MakeSnapshot(S.SimTimeS); const double It=FMath::Abs(First.TotalItHeatW-ReferenceIt)/ReferenceIt;
+		MaxIt=FMath::Max(MaxIt,It); MaxEnergy=FMath::Max(MaxEnergy,FMath::Abs(S.NormalizedEnergyResidual)); MaxDiv=FMath::Max(MaxDiv,A.NormalizedDivergence);
+		TestTrue(TEXT("Deletion reflected in cells with room/wall/cooling and existing conservation/plausibility"),Case.Sim->GetNumCeilingCells()==Cells
+			&& Case.Sim->GetNumBarrierCells()>0 && Case.Sim->GetRoomAirDomain()==Manual && Case.Air->GridParams.NumCellsX==43 && Case.Air->GridParams.NumCellsY==37 && Case.Air->GridParams.NumCellsZ==13
+			&& It<1e-9 && FMath::Abs(S.NormalizedEnergyResidual)<1e-9 && S.bAirPressureConverged && A.bPressureConverged && A.NormalizedDivergence<1e-5
+			&& S.bHydraulicsConverged && !A.bDuctsRejected && S.CrahCoilRemovedW>0);
+		for(auto* Rack:Case.Racks) for(double K:Rack->Input.SlotAirInletTempK) TestTrue(TEXT("Existing15..35C transient inlet safety"),K>288.15 && K<308.15);
+	};
+	Run(F,9);
+	{ FRoomFileFixture New; TestTrue(TEXT("Fresh world repeated Load preserves one-plate deletion"),VrgLayoutFile::Load(New.W,File,Message) && VrgLayoutFile::Load(New.W,File,Message) && New.Sim->GetRoomCeilingPlates()==After); Run(New,9); }
+	F.Sim->EnterLayoutMode(); F.C->SetRoomCeilingEditing(true); F.C->SelectRoomCeilingAlongRay(SecondEye,Down);
+	TestTrue(TEXT("Last plate delete/Undo/Redo and empty list save"),F.C->TryDeleteRoomCeiling() && F.Sim->GetRoomCeilingPlates().IsEmpty()
+		&& F.C->TryUndoLayout() && F.Sim->GetRoomCeilingPlates()==After && F.C->TryRedoLayout() && F.Sim->GetRoomCeilingPlates().IsEmpty() && VrgLayoutFile::Save(F.W,Empty,Message));
+	Run(F,0);
+	{ FRoomFileFixture New; TestTrue(TEXT("Fresh world loads explicit empty deletion"),VrgLayoutFile::Load(New.W,Empty,Message) && New.Sim->GetRoomCeilingPlates().IsEmpty()); Run(New,0); }
+	AddInfo(FString::Printf(TEXT("Ceiling delete warm%.2fs frozen; rejected delete/Undo/Load keep state/selection/history; successful Load clears stale selection; same/new-world plates18->9->0 at43x37x13, IT%.3e globalAbs%.3e pressure%.3e at1.02s."),Warm.SimTimeS,MaxIt,MaxEnergy,MaxDiv));
+	for(const auto& Name:{File,Empty,BadFile}) IFileManager::Get().Delete(*VrgLayoutFile::PathFor(Name)); return true;
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FRoomFileCouplingTest, "VRG.Interaction.Layout.RoomPersistenceRollbackCoupling",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::CommandletContext | EAutomationTestFlags::EngineFilter)
 bool FRoomFileCouplingTest::RunTest(const FString& Parameters)

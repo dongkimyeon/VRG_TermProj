@@ -4015,3 +4015,20 @@ Delete는 선택 인덱스를 RemoveAt으로 한 장만 제거하고 기존 전�
 
 Editor120.80s 성공(기존 컴파일 경고 유지). 신규 RoomCeilingSelectionDelete+기존 RoomCeilingUiInput/RoomSettingsUiInput3종 무경고 성공, 실패0/미실행0/종료0. 자동 방 거절·일반 장비 선택 유지·실제 확장된 상자/앞·뒤 ray/가장 가까운 판/동일 판 tie·잘못된 ray 선택 유지·중복3개 중 한 장 삭제/기록 한 건/Undo·Redo·오래된 인덱스 거절·숫자/방 핸들/패치/Esc/모드 게이트·카메라/장비 복귀 경로를 확인했다. 새 값은 UI 선 두께/색상이고 tolerance는 기존 픽 정책을 재사용한다. 목록/변환은 정확 비교이며 새 물리 오차 허용치는 없다. 복원 충돌·따뜻한 상태·저장/다음 진입 물리 통합은 다음 작은 검증 커밋이다.
 근거(커밋 제외): Saved/Build_CeilingSelection.log, Saved/Logs/CeilingSelection_Tests.log, Saved/Automation/CeilingSelection/index.json. 실행 E:\UE_5.8 Editor Development 뒤 위3종 + 묶음 Automation RunTests -unattended -NullRHI. 실제 신규 버튼/선 렌더/OS 입력은 미확인이며 Tools/부분천장_선택삭제_확인_2026-10-06.md에 직접 절차를 남겼다. 기존 저장 직접 정상 사용자 보고와 구분한다. 빌드 중 소스 변경·성공 검사 반복·전체/FPS/화면 도구 재시도 없음.
+## 2026-10-06 부분 천장 삭제 기록·저장·냉각 통합 검증
+
+기존 RoomFileFixture·천장 값 검증/공유 기록/저장 v2/진입 재구축을 그대로 사용했다. 새 RoomCeilingDeletePersistenceCoupling은 남은 판을 막는 장비가 있으면 삭제를 거절하고, 삭제한 판의 복원 위치를 막으면 Undo를 거절하는지 확인한다. 거절 시 목록/선택/기록과 따뜻한 공기 상태는 유지된다. 장애물을 제거하면 같은 기록을 Undo/Redo할 수 있다. 실패 Load는 천장 편집·선택을 유지하고 성공 Load는 편집·선택/두 기록 스택을 초기화해 옛 선택으로 다른 판을 지우지 못한다. 같은/새 월드의 반복 Load와 마지막 판까지 삭제한 빈 목록을 검사했다. 제품 수정은 앞 선택/삭제 커밋 그대로이며 물리/저장 형식은 확장하지 않았다.
+
+Editor57.34s 성공. 신규 RoomCeilingDeletePersistenceCoupling+직접 영향 RoomCeilingHistory/RoomCeilingPersistenceRollbackCoupling3종 무경고 성공, 실패0/미실행0/종료0. 앞 선택/숫자 입력3종과 합해 이번 **고유 영향6종 최종 무경고 성공**이다. 저장/기존 추가 UI의 직접 정상 보고는 앞 사용자 보고 절만 따른다. 신규 선택/삭제 실제 버튼·강조 픽셀·OS 입력은 미확인이며 Tools/부분천장_선택삭제_확인_2026-10-06.md에 절차를 남겼다. 빌드 중 소스 변경·영향 없는 성공 검사 반복·전체 VRG/FPS·기존 화면 도구 실패 재시도는 없다.
+
+| 항목 | 측정 | 기존 기준·정규화·단위 |
+|---|---|---|
+| 배치 편집/거절 상태 | 예열1.02s 온도K·시계s·입출/축적 장부J·마스크·원점cm·배관 수 정확 유지 | 삭제/취소/Undo·Redo는 목록만 교체; 삭제/복원/Load 거절은 목록·선택·기록도 유지 |
+| 판 삭제 셀 | 다음 진입18→9→0셀, 같은/새 월드 일치 | 합성 판2개→1개→빈 목록, h0.25m 한 Z층; 방43×37×13=20683셀/기존 벽 유지; 정확 비교 |
+| 첫 IT 상대 변화 | 같은/새 월드 및 빈 목록 최대0 | abs(삭제 후 첫IT−동일 장비/초기조건 참조IT)/참조W, 무차원 <1e-9 |
+| 전역 열수지 | 같은/새 월드 및 빈 목록 최대abs5.121e-14 | abs(입력J−유출J−축적J)/EnergyInJ(IT+CRAH 팬), 무차원 <1e-9 |
+| 압력 투영 뒤 발산 | 같은/새 월드 및 빈 목록 최대3.460e-08 | maxAbsDiv(1/s)/(maxAbsVelocity(m/s)/h(m)), 무차원 <1e-5; 압력 수렴 플래그 확인 |
+| 기존 냉각·타당성 | 수력 수렴/덕트 거절 없음/양의 코일 제거W·흡기288.15~308.15K 내부 확인 | 기존 수력 수렴 목표·과도15~35°C 기준; 새 물성/수치/허용치 없음 |
+
+성공 Load의 기존 결합 장부 초기화는 실패/취소 상태 불변과 구분한다. Load/삭제는 실제 공기 고체를 곧바로 적용하지 않으며 다음 진입에만 현재 목록으로 재구축한다. 측정은 t1.02s 균일 CPU/NullRHI 짧은 과도이며 시설 전체/정상상태/GPU/옥트리/FPS 검증으로 확대하지 않는다. 중첩 판 순환 선택·다중 삭제·이동/크기/높이 핸들·배기 구멍/유출 경계·외부 교환·플레넘은 후속이다.
+근거(커밋 제외): Saved/Build_CeilingDeleteCoupling.log, Saved/Logs/CeilingDeleteCoupling_Tests.log, Saved/Automation/CeilingDeleteCoupling/index.json. 실행 E:\UE_5.8 Editor Development 뒤 위3종 + 묶음 Automation RunTests -unattended -NullRHI. 첫 선택 단계 근거는 앞 절을 따른다.
