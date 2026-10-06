@@ -4161,3 +4161,21 @@ Editor Development211.03s 성공(기존 FloorCm/Name shadow 경고 유지). Room
 
 신규 실제 버튼/입력/선 픽셀·OS 포커스는 미확인이다. 기존 도구 실패를 재시도하지 않았고 Tools/부분천장_구멍UI_확인_2026-10-06.md에 구체적 좌표·거절/취소·Undo/저장 절차를 남겼다. 구멍 선택/삭제·드래그 핸들·외부 배기/물리 확장·전체 Automation/FPS는 제외했다.
 근거(커밋 제외): Saved/Build_CeilingHoleUi.log, Saved/Logs/CeilingHoleUi_Tests.log, Saved/Automation/CeilingHoleUi/index.json. E:\UE_5.8 Editor Development 후 위3종 Automation RunTests -unattended -NullRHI; 빌드 중 소스 변경 없음.
+
+## 2026-10-06 구멍 UI 확정·기록·저장 통합
+
+RoomCeilingHoleUiHistoryPersistence는 기존 두 NVL72/한 CDU fixture에서 실제 선택 판 숫자 모달의 AddRoomCeilingHole 경로를 사용한다. 한 구멍 한 전체 목록 명령·Undo/Redo 정확 복원·취소/0셀 거절의 Redo 유지·새 유효 확정의 Redo 초기화를 확인했다. 예열1.02s 편집/거절/취소 동안 온도K·시계s·장부J·마스크·장비 변환·배관은 유지한다. 열린 창에서도 저장에는 확정 구멍만 들어간다. 실패 Load는 창/선택/방/판/기록/따뜻한 물리 상태를 유지하며 성공 Load만 창/선택/기록을 초기화한다. 성공 Load의 기존 결합 장부 초기화는 실패 상태 불변과 구분한다. 기존 v2를 변경하지 않고 반복/새 월드에서 목록을 교체하며 다음 진입에서만 실제 셀을 갱신한다.
+
+Editor Development104.85s 성공(기존 컴파일 경고 유지). 신규 RoomCeilingHoleUiHistoryPersistence + 기존 RoomCeilingHoleHistoryPersistence2종 무경고 성공, 실패0/미실행0/종료0. 앞 UI 입력3종 포함 이번 고유 영향5종 최종 모두 성공이다. 이전 구멍 기반의 벽/지붕 고체 보존·이전 파일·수력/냉각수/덕트 검사도 기존 검사로 확인했고 같은 기준을 유지했다. 새 물성/솔버/저장 형식 변경·검사 실패/허용치 변경은 없다.
+
+| 신규 UI 확정 항목 | 측정 | 기준·정규화·단위 |
+|---|---|---|
+| 편집·기록·v2 | 초기/확정 목록 정확 복원, 한 Add 한 기록, 반복/새 월드 덧붙임0·성공 기록0/0 | 로컬 m 값/전체 목록·기록 정수 정확 비교. 취소/거절/실패의 따뜻한 K/s/J/마스크·장비·배관 변화0 |
+| 다음 진입 셀 |16→7 판 고체셀,9셀 개방·43×37×13=20683셀 | h0.25m. 판XY[-5.25,-4.25]×[3,4]m·높이2.625m에 새 로컬[0,0.75]^2m; 실제 개방XY[-5.25,-4.5]×[3,3.75]m·Z[2.5,2.75]m의3×3셀. 이전 미리보기/목록 변경 동안 실제 마스크 유지 |
+| 첫 IT 상대 변화 | 같은/새 월드max0 | abs(첫IT−동일 초기조건 참조IT)/참조W, 무차원<1e-9 |
+| 전역 열수지 | 같은/새 월드maxAbs1.390e-14 | abs(Ein−Eout−Stored)/EnergyInJ(IT+CRAH 팬), 무차원<1e-9 |
+| 압력 발산 | 같은/새 월드max3.461e-08 | maxAbsDiv(1/s)/(maxAbsVelocity(m/s)/h(m)), 무차원<1e-5 및 수렴 플래그 |
+| 냉각·타당성 | 수력 수렴·덕트 거절 없음·양의 CRAH 코일 제거W·흡기288.15~308.15K 내부 | 기존15~35°C 과도 안전망/기존 냉각 기준; 새 허용치 없음 |
+
+측정은 합성 기하·균일 CPU/NullRHI·t1.02s 결과다. 시설 정확도/정상상태/GPU/옥트리/FPS 검증으로 확대하지 않는다. 실제 숫자 창/버튼/윤곽 픽셀·OS 포커스는 여전히 직접 미확인이고 상세 절차 문서를 따른다. 구멍 선택/삭제·핸들·외부 배기/열교환·다중 편집·전체 Automation/FPS는 제외했다.
+근거(커밋 제외): Saved/Build_CeilingHoleUiHistory.log, Saved/Logs/CeilingHoleUiHistory_Tests.log, Saved/Automation/CeilingHoleUiHistory/index.json. E:\UE_5.8 Editor Development 후 위2종 Automation RunTests -unattended -NullRHI. 빌드 중 소스 변경·앞 성공 UI 검사 반복·기존 화면 도구 실패 재시도 없음.
