@@ -878,4 +878,50 @@ bool FRoomCeilingHoleCornerPreviewTest::RunTest(const FString& Parameters)
  TestTrue(TEXT("Mode transition cancels pending hole edit"),!C->IsLayoutDragging() && !C->IsRoomCeilingHoleEditing() && C->GetLayoutUndoCount()==0);
  AddInfo(TEXT("Hole corner preview: existing world5cm snap/grab offset -> plate-local m, four opposite corners/parent/duplicates fixed; full-list outside/inversion/zero-cell/parallel refusal; shared modal/patch/mode/focus-cancel route and input gates. Actual focus/mouse pixels not measured.")); return true;
 }
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FRoomCeilingHoleMovePreviewTest,"VRG.Interaction.Layout.RoomCeilingHoleMovePreview",
+ EAutomationTestFlags::EditorContext | EAutomationTestFlags::CommandletContext | EAutomationTestFlags::EngineFilter)
+bool FRoomCeilingHoleMovePreviewTest::RunTest(const FString& Parameters)
+{
+ FRoomFixture F; auto* C=F.World->SpawnActor<ADataCenterDebugController>(); C->bFrameEquipmentOnStart=false;
+ auto* Pawn=F.World->SpawnActor<ADefaultPawn>(); C->Possess(Pawn); C->PlayerInput=NewObject<UPlayerInput>(C); C->RefreshInteractionInputMode();
+ FString Message; F.Sim->TrySetRoomAirDomain(ManualRoom(),Message);
+ FRoomCeilingPlate P; P.MinXYM=FVector2D(-5.25,3); P.MaxXYM=FVector2D(-4.25,4); P.HeightM=2.625;
+ FRoomCeilingHole H; H.LocalMinXYM=FVector2D(.125); H.LocalMaxXYM=FVector2D(.875); P.Holes={H,H}; // Existing synthetic metre fixture.
+ F.Sim->TrySetRoomCeilingPlates({P},Message); F.Sim->EnterSimulationMode(); F.Sim->Tick(.021f); F.Sim->EnterLayoutMode();
+ const auto Mask=F.Air->GetMutableSolver().GetGrid().bSolidCell; const auto Temps=F.Air->GetMutableSolver().GetGrid().TemperatureK; const auto Clock=F.Sim->GetSnapshot().SimTimeS;
+ const auto Pose=F.Racks[0]->GetActorTransform(),Camera=Pawn->GetActorTransform();
+ auto Frozen=[&]() { return F.Sim->GetRoomCeilingPlates()==TArray<FRoomCeilingPlate>{P} && F.Air->GetMutableSolver().GetGrid().bSolidCell==Mask && F.Air->GetMutableSolver().GetGrid().TemperatureK==Temps
+  && F.Sim->GetSnapshot().SimTimeS==Clock && F.Racks[0]->GetActorTransform().Equals(Pose,0) && C->GetLayoutUndoCount()==0; };
+ const FVector Eye(-475,350,400),Down(0,0,-1);
+ auto Select=[&]() { return C->SetRoomCeilingEditing(true) && C->SelectRoomCeilingAlongRay(Eye,Down) && C->SetRoomCeilingHoleEditing(true) && C->SelectRoomCeilingHoleAlongRay(Eye,Down); };
+ TestFalse(TEXT("No mode/selection blocks hole body drag"),C->BeginRoomCeilingHoleMoveDrag(Eye,Down)); TestTrue(TEXT("Select first duplicate"),Select());
+ TestTrue(TEXT("Picked corner owns press even invalid ray, no fallback body drag"),!C->BeginRoomCeilingHolePointerDrag(0,Eye,FVector(1,0,0)) && !C->IsLayoutDragging() && C->GetSelectedRoomCeilingHoleIndex()==0);
+ TestTrue(TEXT("Handle takes precedence over body translation"),C->BeginRoomCeilingHolePointerDrag(3,Eye,Down)); C->UpdateRoomCeilingCornerDrag(Eye+FVector(10,0,0),Down);
+ FRoomCeilingPlate Preview; bool Valid=false; C->GetRoomCeilingPreview(Preview,Valid);
+ TestTrue(TEXT("Corner changes max only"),Preview.Holes[0].LocalMinXYM==H.LocalMinXYM && Preview.Holes[0].LocalMaxXYM!=H.LocalMaxXYM); C->EndRoomCeilingCornerDrag(false);
+ TestTrue(TEXT("Body click starts move on selected duplicate"),C->BeginRoomCeilingHolePointerDrag(INDEX_NONE,Eye,Down)); C->UpdateRoomCeilingCornerDrag(Eye+FVector(12,8,0),Down); C->GetRoomCeilingPreview(Preview,Valid);
+ const auto& Result=Preview.Holes[0]; const auto Size=Result.LocalMaxXYM-Result.LocalMinXYM,OriginalSize=H.LocalMaxXYM-H.LocalMinXYM;
+ TestTrue(TEXT("Grab offset/world5cm snap/local m and size/parent/duplicate preserved"),Valid && Result.LocalMinXYM.Equals(FVector2D(.25,.2),1e-12) && Size.Equals(OriginalSize,1e-12)
+  && Preview.MinXYM==P.MinXYM && Preview.MaxXYM==P.MaxXYM && Preview.HeightM==P.HeightM && Preview.Holes[1]==H && Frozen());
+ TestTrue(TEXT("Request/calculation readout"),C->GetRoomCeilingEditMessage().Contains(TEXT("요청 월드")) && C->GetRoomCeilingEditMessage().Contains(TEXT("개방 계산")));
+ C->ApplyLayoutCameraInput(1,FVector(1,1,1),1,true); C->BeginRackAddition();
+ TestTrue(TEXT("Input gates during shared body gesture"),Pawn->GetActorTransform().Equals(Camera,0) && !C->IsAddingRack() && !C->TryDeleteRoomCeilingHole() && !C->TryUndoLayout() && !C->TryRedoLayout() && !C->BeginRoomCeilingMoveDrag(Eye,Down));
+ FInputKeyEventArgs Esc; Esc.Key=EKeys::Escape; Esc.Event=IE_Pressed; C->InputKey(Esc);
+ TestTrue(TEXT("Esc cancels body only"),!C->IsLayoutDragging() && C->IsRoomCeilingHoleEditing() && C->GetSelectedRoomCeilingHoleIndex()==0 && Frozen());
+ for(const FVector Delta:{FVector(100,0,0),FVector(-100,0,0)})
+ { C->BeginRoomCeilingHoleMoveDrag(Eye,Down); C->UpdateRoomCeilingCornerDrag(Eye+Delta,Down); C->GetRoomCeilingPreview(Preview,Valid); TestTrue(TEXT("Outside rejects with state/history unchanged"),!Valid && !C->EndRoomCeilingCornerDrag(true) && Frozen()); }
+ C->BeginRoomCeilingHoleMoveDrag(Eye,Down); C->UpdateRoomCeilingCornerDrag(Eye+FVector(12,8,0),Down); C->UpdateRoomCeilingCornerDrag(Eye,FVector(1,0,0)); C->GetRoomCeilingPreview(Preview,Valid);
+ TestTrue(TEXT("Failed intersection refuses previous valid destination"),!Valid && !C->EndRoomCeilingCornerDrag(true) && Frozen());
+ C->BeginRoomCeilingHoleMoveDrag(Eye,Down); TestTrue(TEXT("Click without movement doesn't snap/record"),!C->EndRoomCeilingCornerDrag(true) && Frozen());
+ C->BeginRoomCeilingHoleMoveDrag(Eye,Down); TestTrue(TEXT("Numeric window cancels movement"),C->OpenRoomSettings() && !C->IsLayoutDragging() && Frozen()); C->CloseRoomSettings(); Select();
+ C->BeginRoomCeilingHoleMoveDrag(Eye,Down); C->SetPatchMapOpen(true); TestTrue(TEXT("Patch cancels movement"),!C->IsLayoutDragging() && Frozen()); C->SetPatchMapOpen(false); Select();
+ C->BeginRoomCeilingHoleMoveDrag(Eye,Down); C->EndLayoutDrag(false); TestTrue(TEXT("Shared focus/input cancellation route"),!C->IsLayoutDragging() && Frozen());
+ C->BeginRoomCeilingHoleMoveDrag(Eye,Down); auto External=P; External.Holes.RemoveAt(0); F.Sim->TrySetRoomCeilingPlates({External},Message); C->RefreshInteractionInputMode();
+ TestTrue(TEXT("Stale list cannot move another hole"),!C->IsLayoutDragging() && C->GetSelectedRoomCeilingHoleIndex()==INDEX_NONE && !C->EndRoomCeilingCornerDrag(true) && F.Sim->GetRoomCeilingPlates()==TArray<FRoomCeilingPlate>{External});
+ F.Sim->TrySetRoomCeilingPlates({P},Message); Select();
+ TestTrue(TEXT("Blank click deselects without gesture"),!C->BeginRoomCeilingHolePointerDrag(INDEX_NONE,FVector(-525,300,400),Down) && C->GetSelectedRoomCeilingHoleIndex()==INDEX_NONE && !C->IsLayoutDragging());
+ C->SelectRoomCeilingHoleAlongRay(Eye,Down); C->BeginRoomCeilingHoleMoveDrag(Eye,Down); F.Sim->EnterSimulationMode(); C->RefreshInteractionInputMode(); TestTrue(TEXT("Mode cancels movement"),!C->IsLayoutDragging() && !C->IsRoomCeilingHoleEditing());
+ AddInfo(TEXT("Hole body move: handle precedence, existing minimum-anchor/grab offset and world5cm snap to local m; size/parent/duplicate fixed; preview-only, invalid ray/outside/no-op/Esc/modal/patch/mode/stale guards. No actual UI/focus measured.")); return true;
+}
 #endif

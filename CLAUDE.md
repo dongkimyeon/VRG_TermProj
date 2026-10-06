@@ -4237,3 +4237,10 @@ Editor Development160.10s 성공. RoomCeilingHoleCornerPreview / 기존 RoomCeil
 Editor Development86.79s 성공. 신규 RoomCeilingHoleCornerHistoryPersistence / 기존 RoomCeilingHoleHistoryPersistence 2종 무경고 성공. 기존 검사는 이전 파일·다른 판/벽/장비/콜드아일 지붕 고체 보존을 재사용해 확인하며 전역maxAbs5.999e-14·발산2.793e-08 등 기존 기준 충족. 앞 입력3종 포함 고유 영향5종 최종 모두 성공. 근거(커밋 제외): Saved/Build_CeilingHoleCornerHistory.log, Saved/Logs/CeilingHoleCornerHistory_Tests.log, Saved/Automation/CeilingHoleCornerHistory/index.json. 실제 셀은 다음 진입 때 적용하며 외부 배기/열 제거는 없다.
 
 새 핸들 UI 픽셀·실제 마우스/OS 포커스는 미확인이고 Tools/부분천장_구멍XY핸들_확인_2026-10-07.md 상세 절차를 따른다. 사용자 직접 정상 확인된 것은 앞 구멍 선택·삭제다. 측정은 균일 CPU/NullRHI 합성 시험이고 시설 정확도·정상상태·GPU/옥트리·FPS로 확대하지 않는다. 구멍 전체 이동·다중 편집·외부 배기·물리 확장·전체 Automation/FPS는 제외했다. 빌드 중 소스 변경·기존 화면 실패 재시도·변경 없는 성공 검사 반복 없음.
+
+
+### 2026-10-07 선택 구멍 전체 XY 이동/미리보기
+
+구멍 XY 모서리 핸들은 사용자 직접 확인 정상 보고다. 모서리 픽킹을 먼저 처리하고 기존 계산 개방 상자 내부 클릭으로 구멍을 선택해 전체 이동을 시작한다. 기존 최소점 잡기 오프셋/월드5cm 스냅을 판 로컬 m 좌표의 동일 변위로 변환해 양 끝점에 적용한다. 구멍 크기·판 XY/높이·다른 중복 구멍은 유지한다. 모서리 입력 실패는 내부 이동/다른 항목 선택으로 내려가지 않는다. 기존 판/구멍의 미리보기·전체 목록 검증·4px 커서 임계·확정/기록·취소를 재사용하고 실제 목록/격자는 놓기 전 유지한다.
+
+선택/빈 곳 해제·요청/계산 표시·범위/교점 실패/no-op·Esc/숫자 창/패치/모드/stale 목록·공유 포커스 취소 경로와 장비/카메라/Delete/Undo 입력 차단을 검사했다. Editor Development154.20s 성공, RoomCeilingHoleMovePreview / 기존 RoomCeilingHoleCornerPreview / RoomCeilingMovePreview 3종 무경고 성공. 근거(커밋 제외): Saved/Build_CeilingHoleMove.log, Saved/Logs/CeilingHoleMove_Tests.log, Saved/Automation/CeilingHoleMove/index.json. 전체 이동/혼합 기록·저장·물리 통합은 다음 작은 커밋이다. 새 물성/허용치 없음. 신규 화면/실제 포커스는 미확인, Tools/부분천장_구멍전체이동_확인_2026-10-07.md 상세 직접 절차. 다중 편집·외부 배기·물리 확장·전체/FPS/기존 화면 도구 실패 재시도 제외.

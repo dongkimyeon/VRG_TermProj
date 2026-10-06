@@ -474,7 +474,13 @@ int32 ADataCenterDebugController::PickRoomCeilingHoleCorner(const FVector2D& Scr
 bool ADataCenterDebugController::BeginRoomCeilingHolePointerDrag(int32 PickedHandle, const FVector& EyeCm, const FVector& Direction)
 {
 	// A picked hole handle owns an invalid ray too; never reselect a duplicate or move the parent.
-	return PickedHandle!=INDEX_NONE ? BeginRoomCeilingHoleCornerDrag(PickedHandle,EyeCm,Direction) : SelectRoomCeilingHoleAlongRay(EyeCm,Direction);
+	if(PickedHandle!=INDEX_NONE) return BeginRoomCeilingHoleCornerDrag(PickedHandle,EyeCm,Direction);
+	return SelectRoomCeilingHoleAlongRay(EyeCm,Direction) && BeginRoomCeilingHoleMoveDrag(EyeCm,Direction);
+}
+
+bool ADataCenterDebugController::BeginRoomCeilingHoleMoveDrag(const FVector& EyeCm, const FVector& Direction)
+{
+	return GetSelectedRoomCeilingHoleIndex()!=INDEX_NONE && BeginRoomCeilingDrag(CeilingMoveHandle,true,EyeCm,Direction);
 }
 
 bool ADataCenterDebugController::BeginRoomCeilingHoleCornerDrag(int32 Corner, const FVector& EyeCm, const FVector& Direction)
@@ -558,8 +564,17 @@ void ADataCenterDebugController::UpdateRoomCeilingCornerDrag(const FVector& EyeC
 	if(CeilingDragHole!=INDEX_NONE)
 	{
 		auto& H=Candidate.Holes[CeilingDragHole];
-		(CeilingDragCorner&1 ? H.LocalMaxXYM.X : H.LocalMinXYM.X)=Target.X-Candidate.MinXYM.X;
-		(CeilingDragCorner&2 ? H.LocalMaxXYM.Y : H.LocalMinXYM.Y)=Target.Y-Candidate.MinXYM.Y;
+		if(bMove)
+		{
+			// Same minimum-anchor/grab-offset snap as plate movement; translate only this local hole.
+			const FVector2D Delta=FVector2D(Target.X,Target.Y)-Candidate.MinXYM-H.LocalMinXYM;
+			H.LocalMinXYM+=Delta; H.LocalMaxXYM+=Delta;
+		}
+		else
+		{
+			(CeilingDragCorner&1 ? H.LocalMaxXYM.X : H.LocalMinXYM.X)=Target.X-Candidate.MinXYM.X;
+			(CeilingDragCorner&2 ? H.LocalMaxXYM.Y : H.LocalMinXYM.Y)=Target.Y-Candidate.MinXYM.Y;
+		}
 	}
 	else if(bMove)
 	{

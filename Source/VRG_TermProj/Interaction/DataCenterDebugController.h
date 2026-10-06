@@ -93,6 +93,7 @@ public:
 	bool TryDeleteRoomCeilingHole();
 	int32 PickRoomCeilingHoleCorner(const FVector2D& Screen) const;
 	bool BeginRoomCeilingHoleCornerDrag(int32 Corner, const FVector& EyeCm, const FVector& Direction);
+	bool BeginRoomCeilingHoleMoveDrag(const FVector& EyeCm, const FVector& Direction);
 	bool BeginRoomCeilingHolePointerDrag(int32 PickedHandle, const FVector& EyeCm, const FVector& Direction);
 	int32 PickRoomCeilingCorner(const FVector2D& Screen) const;
 	bool BeginRoomCeilingCornerDrag(int32 Corner, const FVector& EyeCm, const FVector& Direction);
