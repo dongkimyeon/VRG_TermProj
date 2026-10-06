@@ -3768,3 +3768,27 @@ RoomAirDomainCoupling은 GB200 NVL72 두 마주 보는 줄·CDU 하나의 같은
 
 검증: 첫 Editor124.74s 실패는 TObjectPtr 배열에 auto*를 사용한 위젯 컴파일 오류였다. const auto&로 수정, 키 정리/스크롤/위젯 수명 보강 후 Editor86.94s 성공. 신규 RoomSettingsUiInput과 기존 CameraInputAndMode/RoomAirDomainFoundation/RoomAirDomainCoupling 4종 무경고 성공(실패0/미실행0/종료0). 숫자/초안/적용·20683셀 표시·거절·지연 격자·장비/카메라 입력 차단·닫은 뒤 합성 카메라 입력 복귀·패치/외부 모드 종료를 검사했다. 입력 중 장비 변환/시계/기존 격자 변경0(cm/°/s/셀); 비교는 정확 불변 및 기존 변환 Equals 기준. 기존 물리/오차 기준 유지. OS/Slate 실제 포커스·렌더는 이 합성 검사로 완료하지 않는다. 실제 화면과 방 Undo/Redo는 후속 커밋에서 정리한다.
 실행: E:\UE_5.8 Editor Development 후 위4종 + 묶음 -unattended -NullRHI. 근거(커밋 제외): Saved/Build_RoomSettingsUi{,_Repair}.log, Saved/Logs/RoomSettingsUi_Tests.log, Saved/Automation/RoomSettingsUi/index.json.
+
+## 2026-10-06 방 설정 공유 Undo/Redo·최종 검증
+
+방 창에서 성공한 값 변경만 기존 FLayoutTransformCommand/PushLayoutCommand에 이전/다음 설정과 대상 통합 액터의 약한 참조를 기록한다. 자동 적용은 비활성 숫자를 변경하지 않으며 같은 값 적용·취소·거절은 기록/Redo를 건드리지 않는다. Undo/Redo는 현재 값이 기록의 예상 값과 일치하는지 확인하고 기존 TrySetRoomAirDomain으로 현재 장비/자동 CRAH/덕트·자원 검증을 다시 수행한다. 거절 이유를 화면/로그로 표시하고 두 스택과 설정을 유지한다. 성공도 설정만 복원하며 실제 공기 격자/열모델 재구축은 기존 시뮬레이션 진입 경로에서 수행한다.
+
+기록 상한100개·모드 전환 유지·새 편집 Redo 초기화·기존 Load 초기화를 공유한다. 이동→방 설정→R을 같은 스택으로 전부 역/정방향 재생하며 장비 변환과 방 모드를 복원했다. 별도 물성/치수/저장 스키마를 추가하지 않았다. 새 테스트의 방 좌표/천장 값은 기존 방 결합 fixture 계열의 합성 입력이며 실제 시설 치수나 추정 물성 자료가 아니다.
+
+| 검사 | 측정/확인 | 기존 기준·정규화/단위 |
+|---|---:|---|
+| 설정 Undo/Redo·이동/R 교차 | 이전/다음 설정 정확 일치·장비 전체 변환 복원 | XY/천장 m·모드 정확 비교; 장비는 기존 FTransform::Equals, 액터 cm·방향 쿼터니언·스케일 무차원 |
+| 따뜻한 적용/거절/Undo/Redo | 온도 배열·원점·시계·열장부·배관 수 변경0 | K / 액터 cm / s / J / 정수; 정확 불변, 장비 포함 실패·외부 설정 변경 거절도 검사 |
+| 공유 기록·Load | 105개 변경 중100개 보존·반복 Load0/0 | 기록 개수; 모드 전환 유지, no-op/거절/닫기 후 Redo 유지, 새 확정만 초기화 |
+| 시뮬레이션 진입 실제 격자 | 55×45×15 | 셀 정수; 합성 요청13.6×11.1×3.6m, h0.25m의 외향 ceil |
+| 첫 IT 상대 변화 | 0 | abs(재진입 첫IT−같은 장비/초기조건 참조IT)/참조W, 무차원 <1e-9 |
+| 전역 열수지 | 8.535e-15 | abs(입력J−유출J−축적J)/EnergyInJ(IT+CRAH 팬), 무차원 <1e-9 |
+| 압력 투영 뒤 발산 | 2.976e-08 | maxAbsDiv(1/s)/(maxAbsVelocity(m/s)/cellSize(m)), 무차원 <1e-5; 수렴 플래그 확인 |
+
+최종 새 실행 t1.02s에서 기존 수력 수렴·덕트 거절 없음·양의 CRAH 코일 냉각과 랙 흡기288.15~308.15K 타당성 안전망도 검사했다. 새 허용치/물성/솔버 식/레벨 에셋 변경 없음. 균일 CPU/NullRHI의 짧은 과도 fixture이며 장시간 정상상태·GPU/옥트리·시설 전체 정확도/FPS를 보장하지 않는다. 기존 냉각/공기 모델 부채는 유지한다.
+
+검증: Editor106.47s 성공 뒤 신규 RoomSettingsUndoRedo와 기존 SaveLoadRoundTrip/SingleMoveUndoRedo/SingleRotationUndoRedo4종 무경고 성공(실패0/미실행0/종료0). 앞 UI 입력/카메라/방 기반/결합4종과 합쳐 고유 영향8종 성공. 기존 성공 검사·전체 테스트 반복 없음. 실행은 Editor Development 후 위4종을 Automation RunTests의 +로 묶고 -unattended -NullRHI. 근거(커밋 제외): Saved/Build_RoomSettingsUndo.log, Saved/Logs/RoomSettingsUndo_Tests.log, Saved/Automation/RoomSettingsUndo/index.json.
+
+실제 화면: L_Test 게임 창을 실행했다. 드라이버 안내의 아니오를 Tab으로 선택하고 Alt+Print Screen PNG로 선택 테두리를 확인한 뒤 Return으로 진행했다. 같은 방법으로 로딩 완료된 랙 배치와 기존 버튼 위 방 설정(m) 버튼 표시를 확인했다. 네이티브 안내 클릭은 컴퓨터 사용 도구의 coordinate input geometry is unavailable로 실패했다. 반복 클릭/기존 캡처 API를 재시도하지 않았으며 창 조작을 자동화 통과로 대체해 확인했다고 쓰지 않는다. 클립보드 저장용 -File 호출은 로컬 실행 정책에 막혀 같은 읽기/PNG 저장을 인라인으로 실행했다. 실행 정책/보안 설정 변경 없음. 확인용 게임은 Alt+F4로 종료했고 레벨 저장 없음.
+
+미검증: 실제 방 창 열기/숫자 입력/적용·거절/계획 렌더·Esc/닫기 뒤 OS 포커스·Ctrl+Z/Y 조합 입력. 직접 절차 Tools/방설정_UI_Undo_확인_2026-10-06.md. 로컬 근거(커밋 제외): Saved/RoomSettings_UI_{Driver,Start,Loaded}.png, Saved/Logs/RoomSettings_UI.log; Start는 로딩 화면이며 Loaded가 배치/버튼 확인 근거다. 방 설정 저장 확장·핸들·벽/천장 판·물리 모델/전체/FPS는 제외했다. 현재 v1/v2 Load는 방 값을 유지하고 모든 기록을 비우며 새 실행은 자동 맞춤이다.

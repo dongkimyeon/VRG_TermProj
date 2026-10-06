@@ -18,6 +18,7 @@ class UInputAction;
 class UInputMappingContext;
 class ULayoutRackPalette;
 class URoomSettingsWidget;
+class ADataCenterSimulationActor;
 
 // 런타임에 시뮬레이션 파라미터를 돌려 보기 위한 디버그 입력.
 //
@@ -242,6 +243,10 @@ private:
  struct FLayoutCrahMember { FCrahLayoutRecord Record; TArray<FLayoutCrahContact> ExistingContacts; };
  struct FLayoutTransformCommand
 	{
+		bool bRoomSettings = false;
+		TWeakObjectPtr<ADataCenterSimulationActor> RoomSettingsTarget;
+		FRoomAirDomainSettings RoomBefore;
+		FRoomAirDomainSettings RoomAfter;
 		TArray<FLayoutTransformMember> Members;
 		bool bRackPresence = false;
 		bool bBeforePresent = false;

@@ -1377,6 +1377,22 @@ bool ADataCenterDebugController::RestoreLayoutTransform(bool bRedo)
 	TArray<FLayoutTransformCommand>& To = bRedo ? LayoutUndo : LayoutRedo;
 	if (From.IsEmpty()) return false;
 	const FLayoutTransformCommand Command = From.Last();
+	if (Command.bRoomSettings)
+	{
+		auto* Sim = Command.RoomSettingsTarget.Get(); FString Reason;
+		const auto& Expected = bRedo ? Command.RoomBefore : Command.RoomAfter;
+		const auto& Target = bRedo ? Command.RoomAfter : Command.RoomBefore;
+		if (!Sim || Sim != FindSimActor() || !(Sim->GetRoomAirDomain() == Expected))
+			Reason = TEXT("방 기록의 대상이나 현재 설정이 바뀌었습니다.");
+		else if (Sim->TrySetRoomAirDomain(Target, Reason))
+		{
+			From.Pop(); To.Add(Command);
+			return true; // Settings only; live grid/models are reset at simulation entry, never here.
+		}
+		UE_LOG(LogTemp, Display, TEXT("[VrgLayout] 방 %s 거절: %s"), bRedo ? TEXT("Redo") : TEXT("Undo"), *Reason);
+		if (GEngine) GEngine->AddOnScreenDebugMessage(static_cast<uint64>(GetUniqueID()) + 23, 6.0f, FColor::Red, Reason);
+		return false; // Neither stack nor world state changes on invalid restoration.
+	}
 	if (!Command.Crahs.IsEmpty())
  {
   if(!RestoreCrahPresence(Command,bRedo)) return false;
@@ -2763,9 +2779,16 @@ bool ADataCenterDebugController::ApplyRoomSettings(const FRoomAirDomainSettings&
 	auto* Sim = FindSimActor();
 	if (!bRoomSettingsOpen || OpenPatchMaps > 0 || !IsLayoutMode() || !Sim)
 	{ Message = TEXT("배치 모드의 방 설정 창에서 적용하세요."); return false; }
-	auto Candidate = Settings.bManual ? Settings : Sim->GetRoomAirDomain();
+	const auto Before = Sim->GetRoomAirDomain();
+	auto Candidate = Settings.bManual ? Settings : Before;
 	Candidate.bManual = Settings.bManual; // Disabled draft numbers cannot edit inactive automatic settings.
 	if (!Sim->TrySetRoomAirDomain(Candidate, Message)) return false;
+	if (!(Candidate == Before))
+	{
+		FLayoutTransformCommand Command; Command.bRoomSettings = true;
+		Command.RoomSettingsTarget = Sim; Command.RoomBefore = Before; Command.RoomAfter = Candidate;
+		PushLayoutCommand(MoveTemp(Command));
+	}
 	Message = DescribeRoomSettingsPlan(Candidate);
 	return true;
 }
