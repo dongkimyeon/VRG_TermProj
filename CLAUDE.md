@@ -4369,3 +4369,9 @@ Alt+Print Screen PNG로 실제 배치/온도 볼륨 화면을 확인했다. -una
 Editor61.19s 성공 후 수정한5종만4무경고+1경고 동반 성공(실패0/미실행0/종료0). 기존 성공217종은 반복하지 않았으며 최종 고유222종 성공(213무경고+9경고 동반)이다. 경고는 기존 부정 사례의 밀폐 덕트/없는 CDU·랙/기울어진 랙과 엔진 HTTP 타임아웃이며 정상 L_Test 압력 성공과 구분한다. 기존 MixedHistoryPersistenceCoupling 및 방/천장/구멍 통합을 재사용해 상태/기록/참조·성공/실패 Load·고체 합집합을 확인했다. 상세 조건/근거 Tools/S7_마무리_2026-10-07.md.
 
 재검사 스파인 t1.02s 합성 최대:IT 상대1.511e-15(차W/독립 스파인 참조W<1e-9), 전역abs1.713e-13(잔차J/IT+CRAH팬 입력J<1e-9), 덕트2.140e-15(질량유량차kg/s/랙kg/s<1e-9), 압력3.564e-08(maxAbsDiv/(maxAbsVel/h)<1e-5), 수렴/기존 타당성 유지. 시설 정확도/FPS 검증으로 확대하지 않는다. 근거 Saved/Automation/S7Final_All 및 S7Final_SpineFixture, 로그/증분빌드 파일은 커밋 제외. 이후 소스를 변경하지 않고 최신 패키징을 진행한다.
+
+## 2026-10-07 게임 패키징 CRAH 외형 갱신 수정
+
+첫 BuildCookRun은 게임 타깃에서 AActor의 에디터 전용 RerunConstructionScripts를 찾지 못해 C2039/Exit6으로 실패했다. SpawnCrahActorsFromLayout의 한 호출을 기존 ACrahUnitActor::RefreshVisuals로 교체했다. 종류/SizeM로 네이티브 Body/화살표를 갱신하는 기존 함수이며 생성/냉각/물리 값·판정은 유지한다. 실제 런타임 추가 생명주기나 레벨 에셋을 바꾸지 않았다.
+
+Editor51.49s 성공, 영향 CRAH 결합/인로우/벽면 추가3종 무경고 성공(실패0/미실행0/종료0). 성공한 전체 검사는 반복하지 않았다. 이3종은 기존 냉각/추가 회귀이며 해당 CallInEditor 버튼의 실제 클릭까지 확인했다고 쓰지 않는다. 수정된 게임 타깃 컴파일/패키징/독립 실행은 다음 결과에 기록한다. 근거 Saved/Package_S7Final.log·Build_S7Final_RuntimeFix.log·Automation/S7Final_RuntimeFix(커밋 제외). 새 물성/허용치 없음.

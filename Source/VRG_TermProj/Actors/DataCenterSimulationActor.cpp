@@ -1396,7 +1396,8 @@ void ADataCenterSimulationActor::SpawnCrahActorsFromLayout()
 		if (Unit == nullptr) continue;
 		Unit->Kind = P.bTopIntake ? ECrahUnitKind::Perimeter : ECrahUnitKind::InRow;
 		Unit->SizeM = P.SizeM;
-		Unit->RerunConstructionScripts();
+		// Refresh the native visual components in editor and packaged runtime alike.
+		Unit->RefreshVisuals();
 		++Spawned;
 	}
 	CrahPlacements.Reset();
