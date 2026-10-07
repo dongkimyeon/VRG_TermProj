@@ -983,8 +983,8 @@ bool FRoomCeilingMultiSelectionTest::RunTest(const FString& Parameters)
  SelectTwo(); TestFalse(TEXT("Blank Shift click clears whole group"),C->SelectRoomCeilingAlongRay(Blank,Down,false,false,true)); TestTrue(TEXT("Empty cannot delete"),C->GetSelectedRoomCeilingIndices().IsEmpty() && !C->TryDeleteRoomCeiling());
  C->SelectRoomCeilingAlongRay(Eye,Down); C->SetRoomCeilingHoleEditing(true); C->SelectRoomCeilingHoleAlongRay(Eye,Down);
  TestTrue(TEXT("Hole group stays in one parent"),C->SelectRoomCeilingHoleAlongRay(Eye,Down,true,false,true) && C->GetSelectedRoomCeilingHoleIndices()==TArray<int32>{0,1} && C->GetSelectedRoomCeilingIndices()==TArray<int32>{0});
- TestTrue(TEXT("Hole group body cannot collapse/start drag"),!C->BeginRoomCeilingHolePointerDrag(INDEX_NONE,Eye,Down) && C->GetSelectedRoomCeilingHoleIndices().Num()==2);
- TestFalse(TEXT("Multi hole handle/movement blocked"),C->BeginRoomCeilingHoleCornerDrag(0,Eye,Down) || C->BeginRoomCeilingHoleMoveDrag(Eye,Down));
+ TestTrue(TEXT("Hole group body begins without collapsing selection"),C->BeginRoomCeilingHolePointerDrag(INDEX_NONE,Eye,Down) && C->GetSelectedRoomCeilingHoleIndices().Num()==2); C->EndRoomCeilingCornerDrag(false);
+ TestFalse(TEXT("Multi hole size handle remains blocked"),C->BeginRoomCeilingHoleCornerDrag(0,Eye,Down));
  TestTrue(TEXT("Shift removes/adds only a pointed hole"),C->SelectRoomCeilingHoleAlongRay(Eye,Down,false,false,true) && C->GetSelectedRoomCeilingHoleIndices()==TArray<int32>{1}
   && C->SelectRoomCeilingHoleAlongRay(Eye,Down,false,false,true) && C->GetSelectedRoomCeilingHoleIndices()==TArray<int32>{1,0});
  auto Closed=P; Closed.Holes.Reset(); auto After=Before; After[0]=Closed;
@@ -1034,5 +1034,45 @@ bool FRoomCeilingGroupMoveTest::RunTest(const FString& Parameters)
  Select(); C->BeginRoomCeilingPointerDrag(INDEX_NONE,Eye,Down); auto External=Before; External.RemoveAt(0); F.Sim->TrySetRoomCeilingPlates(External,Message); C->RefreshInteractionInputMode();
  TestTrue(TEXT("Stale whole list cannot commit a different group"),!C->IsLayoutDragging() && !C->EndRoomCeilingCornerDrag(true) && F.Sim->GetRoomCeilingPlates()==External);
  AddInfo(TEXT("Plate group move: clicked anchor/world5cm/grab offset, duplicate indices and different height/size preserved, one list preview/atomic history, ray/outside/no-op/Esc/window/patch/stale guards. Actual UI/focus direct-check.")); return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FRoomCeilingHoleGroupMoveTest,"VRG.Interaction.Layout.RoomCeilingHoleGroupMovePreview",
+ EAutomationTestFlags::EditorContext | EAutomationTestFlags::CommandletContext | EAutomationTestFlags::EngineFilter)
+bool FRoomCeilingHoleGroupMoveTest::RunTest(const FString& Parameters)
+{
+ FRoomFixture F; FString Message; auto* C=F.World->SpawnActor<ADataCenterDebugController>(); C->bFrameEquipmentOnStart=false;
+ C->Possess(F.World->SpawnActor<ADefaultPawn>()); C->PlayerInput=NewObject<UPlayerInput>(C); C->RefreshInteractionInputMode();
+ FRoomCeilingPlate P; P.MinXYM=FVector2D(-5.25,2.5); P.MaxXYM=FVector2D(-3.25,4.5); P.HeightM=2.625; // Synthetic roomy extension of existing test plate, not hardware data.
+ FRoomCeilingHole H,Far,Keep; H.LocalMinXYM=FVector2D(.125); H.LocalMaxXYM=FVector2D(.875);
+ Far.LocalMinXYM=FVector2D(1.125); Far.LocalMaxXYM=FVector2D(1.875); Keep=H; Keep.LocalMinXYM.X=1; Keep.LocalMaxXYM.X=1.75; P.Holes={H,H,Far,Keep};
+ const TArray<FRoomCeilingPlate> Before{P,P}; F.Sim->TrySetRoomAirDomain(ManualRoom(),Message); TestTrue(TEXT("Hole group fixture"),F.Sim->TrySetRoomCeilingPlates(Before,Message));
+ const FVector Eye(-475,300,400),FarEye(-375,400,400),Down(0,0,-1); const auto Mask=F.Air->GetMutableSolver().GetGrid().bSolidCell;
+ auto Select=[&]() { C->SetRoomCeilingHoleEditing(false); return C->SetRoomCeilingEditing(true) && C->SelectRoomCeilingAlongRay(Eye,Down) && C->SetRoomCeilingHoleEditing(true)
+  && C->SelectRoomCeilingHoleAlongRay(Eye,Down) && C->SelectRoomCeilingHoleAlongRay(Eye,Down,true,false,true) && C->SelectRoomCeilingHoleAlongRay(FarEye,Down,false,false,true)
+  && C->GetSelectedRoomCeilingHoleIndices()==TArray<int32>{0,1,2}; };
+ TestTrue(TEXT("Clicked hole anchors instead of last selected Far hole"),Select() && C->GetSelectedRoomCeilingHoleIndex()==2 && C->BeginRoomCeilingHolePointerDrag(INDEX_NONE,Eye,Down) && C->GetSelectedRoomCeilingHoleIndex()==0);
+ C->UpdateRoomCeilingCornerDrag(Eye+FVector(12,8,0),Down); TArray<FRoomCeilingPlate> After; bool Valid=false; C->GetRoomCeilingListPreview(After,Valid); const auto Delta=After[0].Holes[0].LocalMinXYM-H.LocalMinXYM;
+ TestTrue(TEXT("Off-grid local minimum snapped in WORLD then converted to local"),Valid && (P.MinXYM+After[0].Holes[0].LocalMinXYM).Equals(FVector2D(-5,2.7),1e-12));
+ for(int32 I=0;I<3;++I) TestTrue(TEXT("Each selected hole receives identical delta/size maintained"),(After[0].Holes[I].LocalMinXYM-P.Holes[I].LocalMinXYM).Equals(Delta,1e-12)
+  && (After[0].Holes[I].LocalMaxXYM-P.Holes[I].LocalMaxXYM).Equals(Delta,1e-12));
+ TestTrue(TEXT("Parent/other hole/other duplicate parent fixed, live list/grid unchanged"),After[0].MinXYM==P.MinXYM && After[0].MaxXYM==P.MaxXYM && After[0].HeightM==P.HeightM
+  && After[0].Holes[3]==Keep && After[1]==P && F.Sim->GetRoomCeilingPlates()==Before && F.Air->GetMutableSolver().GetGrid().bSolidCell==Mask);
+ TestFalse(TEXT("Delete/history/selection blocked during group preview"),C->TryDeleteRoomCeilingHole() || C->TryUndoLayout() || C->SelectRoomCeilingHoleAlongRay(Eye,Down,true));
+ TestTrue(TEXT("One commit/Undo/Redo restores whole group exact"),C->EndRoomCeilingCornerDrag(true) && C->GetLayoutUndoCount()==1 && F.Sim->GetRoomCeilingPlates()==After
+  && C->TryUndoLayout() && F.Sim->GetRoomCeilingPlates()==Before && C->TryRedoLayout() && F.Sim->GetRoomCeilingPlates()==After); C->TryUndoLayout();
+ Select(); C->BeginRoomCeilingHoleMoveDrag(Eye,Down); TestFalse(TEXT("No-op preserves record/Redo"),C->EndRoomCeilingCornerDrag(true));
+ Select(); C->BeginRoomCeilingHolePointerDrag(INDEX_NONE,Eye,Down); C->UpdateRoomCeilingCornerDrag(Eye+FVector(20,0,0),Down); C->GetRoomCeilingListPreview(After,Valid);
+ TestTrue(TEXT("Only far member outside rejects whole group"),!Valid && After[0].Holes[0].LocalMaxXYM.X<2 && After[0].Holes[2].LocalMaxXYM.X>2
+  && !C->EndRoomCeilingCornerDrag(true) && F.Sim->GetRoomCeilingPlates()==Before && C->GetLayoutUndoCount()==0 && C->GetLayoutRedoCount()==1);
+ Select(); C->BeginRoomCeilingHolePointerDrag(INDEX_NONE,Eye,Down); C->UpdateRoomCeilingCornerDrag(Eye+FVector(12,8,0),Down); C->UpdateRoomCeilingCornerDrag(Eye,FVector::ZeroVector);
+ TestTrue(TEXT("Lost ray after valid preview rejects all"),!C->EndRoomCeilingCornerDrag(true) && F.Sim->GetRoomCeilingPlates()==Before);
+ Select(); C->BeginRoomCeilingHolePointerDrag(INDEX_NONE,Eye,Down); C->UpdateRoomCeilingCornerDrag(Eye+FVector(12,8,0),Down); FInputKeyEventArgs Esc; Esc.Key=EKeys::Escape; Esc.Event=IE_Pressed; C->InputKey(Esc);
+ TestTrue(TEXT("Esc cancels only group drag, membership/history kept"),!C->IsLayoutDragging() && C->GetSelectedRoomCeilingHoleIndices().Num()==3 && C->GetLayoutRedoCount()==1);
+ C->BeginRoomCeilingHolePointerDrag(INDEX_NONE,Eye,Down); C->OpenRoomSettings(); TestTrue(TEXT("Numeric window cancels hole group"),!C->IsLayoutDragging()); C->CloseRoomSettings();
+ Select(); C->BeginRoomCeilingHolePointerDrag(INDEX_NONE,Eye,Down); C->SetPatchMapOpen(true); TestTrue(TEXT("Patch cancels group"),!C->IsLayoutDragging()); C->SetPatchMapOpen(false);
+ Select(); C->BeginRoomCeilingHolePointerDrag(INDEX_NONE,Eye,Down); auto External=Before; External[0].Holes.RemoveAt(0); F.Sim->TrySetRoomCeilingPlates(External,Message); C->RefreshInteractionInputMode();
+ TestTrue(TEXT("External inventory cannot shift another group's indices"),!C->IsLayoutDragging() && !C->EndRoomCeilingCornerDrag(true) && F.Sim->GetRoomCeilingPlates()==External);
+ F.Sim->TrySetRoomCeilingPlates(Before,Message); Select(); C->BeginRoomCeilingHolePointerDrag(INDEX_NONE,Eye,Down); F.Sim->EnterSimulationMode(); C->RefreshInteractionInputMode(); TestTrue(TEXT("Mode transition cancels group"),!C->IsLayoutDragging() && !C->IsRoomCeilingHoleEditing());
+ AddInfo(TEXT("Hole group move: clicked anchor/world snap->local common delta, parent/height/size/other items preserved including duplicate parent, atomic record/invalid member/ray/no-op/Esc/window/patch/stale/mode guards. Actual UI/focus not tested.")); return true;
 }
 #endif

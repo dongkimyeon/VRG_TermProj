@@ -821,7 +821,39 @@ bool FRoomCeilingHolePersistenceTest::RunTest(const FString& Parameters)
  { FRoomFileFixture New; TestTrue(TEXT("Fresh group repeated Load no duplicate/records"),VrgLayoutFile::Load(New.W,GroupFile,Message) && VrgLayoutFile::Load(New.W,GroupFile,Message)
   && New.Sim->GetRoomCeilingPlates()==GroupAfter && New.C->GetLayoutUndoCount()==0); Run(New,GroupAfter,false); }
  AddInfo(FString::Printf(TEXT("Plate group3 includes duplicates/different height: one record, full pending atomic Load, same/fresh shifted mask and other solids; max IT%.3e globalAbs%.3e pressure%.3e water%.3e duct%.3e at1.02s."),MaxIt,MaxEnergy,MaxDiv,MaxWater,MaxDuct));
-	for(const auto& Name:{File,BadFile,OldFile,MixedFile,MiddleFile,GroupFile}) IFileManager::Get().Delete(*VrgLayoutFile::PathFor(Name)); return true;
+ const FString HoleGroupFile=File+TEXT("HoleGroupMove"); F.Sim->EnterLayoutMode();
+ auto HoleGroupBefore=GroupAfter; HoleGroupBefore[1].HeightM+=.25; // Separate layer exposes moved openings while retaining another plate.
+ FRoomCeilingHole HoleGroupExtra; HoleGroupExtra.LocalMinXYM=FVector2D(0); HoleGroupExtra.LocalMaxXYM=FVector2D(.5); HoleGroupBefore[0].Holes.Add(HoleGroupExtra);
+ TestTrue(TEXT("Hole group with unselected third/duplicate other parent"),F.Sim->TrySetRoomCeilingPlates(HoleGroupBefore,Message)); F.Sim->EnterSimulationMode(); F.Sim->Tick(.021f); F.Sim->EnterLayoutMode();
+ const auto HWarm=F.Sim->GetSnapshot(); const auto HMask=F.Air->GetMutableSolver().GetGrid().bSolidCell;
+ TestTrue(TEXT("Group destination cell initially solid"),F.Air->GetMutableSolver().GetGrid().IsSolidCell(5,32,10));
+ const auto HTemps=F.Air->GetMutableSolver().GetGrid().TemperatureK;
+ auto HFrozen=[&]() { const auto S=F.Sim->GetSnapshot(); return S.SimTimeS==HWarm.SimTimeS && S.EnergyInJ==HWarm.EnergyInJ && S.EnergyOutJ==HWarm.EnergyOutJ && S.EnergyStoredJ==HWarm.EnergyStoredJ
+  && F.Air->GetMutableSolver().GetGrid().bSolidCell==HMask && F.Air->GetMutableSolver().GetGrid().TemperatureK==HTemps; };
+ const FVector HoleGroupEye=Eye+FVector(25,25,0); F.C->SetRoomCeilingEditing(true); F.C->SelectRoomCeilingAlongRay(HoleGroupEye,Down); F.C->SelectRoomCeilingAlongRay(HoleGroupEye,Down,true); TestEqual(TEXT("Explicitly cycle from upper to lower parent"),F.C->GetSelectedRoomCeilingIndex(),0); F.C->SetRoomCeilingHoleEditing(true);
+ F.C->SelectRoomCeilingHoleAlongRay(HoleGroupEye,Down); F.C->SelectRoomCeilingHoleAlongRay(HoleGroupEye,Down,true,false,true);
+ TestTrue(TEXT("Begin selected duplicate hole group"),F.C->BeginRoomCeilingHolePointerDrag(INDEX_NONE,HoleGroupEye,Down)); F.C->UpdateRoomCeilingCornerDrag(HoleGroupEye+FVector(12,8,0),Down);
+ TArray<FRoomCeilingPlate> HoleGroupAfter; bool HValid=false; F.C->GetRoomCeilingListPreview(HoleGroupAfter,HValid);
+ const auto HDelta=HoleGroupAfter[0].Holes[0].LocalMinXYM-HoleGroupBefore[0].Holes[0].LocalMinXYM;
+ TestTrue(TEXT("Only selected holes translate, unchanged parent/extra/all other parents"),HValid && HDelta.Equals(FVector2D(.125,.075),1e-12) && HoleGroupAfter[0].MinXYM==HoleGroupBefore[0].MinXYM
+  && HoleGroupAfter[0].MaxXYM==HoleGroupBefore[0].MaxXYM && HoleGroupAfter[0].HeightM==HoleGroupBefore[0].HeightM && HoleGroupAfter[0].Holes[2]==HoleGroupExtra
+  && HoleGroupAfter[1]==HoleGroupBefore[1] && HoleGroupAfter[2]==HoleGroupBefore[2] && HFrozen());
+ for(int32 I=0;I<2;++I) TestTrue(TEXT("Group relative delta and size remain"),(HoleGroupAfter[0].Holes[I].LocalMinXYM-HoleGroupBefore[0].Holes[I].LocalMinXYM).Equals(HDelta,1e-12)
+  && (HoleGroupAfter[0].Holes[I].LocalMaxXYM-HoleGroupBefore[0].Holes[I].LocalMaxXYM).Equals(HDelta,1e-12));
+ TestTrue(TEXT("Hole group one command/exact Undo/Redo and thermal state unchanged"),F.C->EndRoomCeilingCornerDrag(true) && F.C->GetLayoutUndoCount()==1
+  && F.C->TryUndoLayout() && F.Sim->GetRoomCeilingPlates()==HoleGroupBefore && F.C->TryRedoLayout() && F.Sim->GetRoomCeilingPlates()==HoleGroupAfter && HFrozen());
+ TestTrue(TEXT("Save only confirmed whole hole group"),VrgLayoutFile::Save(F.W,HoleGroupFile,Message)); auto HoleGroupBad=ReadRoomFile(HoleGroupFile);
+ HoleGroupBad->GetObjectField(TEXT("settings"))->GetArrayField(TEXT("roomCeilingPlates"))[0]->AsObject()->GetArrayField(TEXT("holes"))[0]->AsObject()->SetNumberField(TEXT("maxXM"),1.01); WriteRoomFile(BadFile,HoleGroupBad);
+ const FVector HNewEye=HoleGroupEye+FVector(10,0,0); F.C->SetRoomCeilingEditing(true); F.C->SelectRoomCeilingAlongRay(HNewEye,Down); F.C->SelectRoomCeilingAlongRay(HNewEye,Down,true); F.C->SetRoomCeilingHoleEditing(true);
+ F.C->SelectRoomCeilingHoleAlongRay(HNewEye,Down); F.C->SelectRoomCeilingHoleAlongRay(HNewEye,Down,true,false,true); F.C->BeginRoomCeilingHolePointerDrag(INDEX_NONE,HNewEye,Down);
+ F.C->UpdateRoomCeilingCornerDrag(HNewEye+FVector(-5,0,0),Down); TArray<FRoomCeilingPlate> HPending; F.C->GetRoomCeilingListPreview(HPending,HValid);
+ TestTrue(TEXT("Failed Load preserves whole hole-group preview/membership/history/physical state"),!VrgLayoutFile::Load(F.W,BadFile,Message) && F.C->IsLayoutDragging() && F.C->GetSelectedRoomCeilingHoleIndices().Num()==2 && F.C->GetLayoutUndoCount()==1 && HFrozen());
+ TArray<FRoomCeilingPlate> HStill; F.C->GetRoomCeilingListPreview(HStill,HValid); TestTrue(TEXT("Pending hole group unchanged"),HStill==HPending);
+ TestTrue(TEXT("Repeated Load cancels all pending and resets selection/history without duplicates"),VrgLayoutFile::Load(F.W,HoleGroupFile,Message) && VrgLayoutFile::Load(F.W,HoleGroupFile,Message)
+  && !F.C->IsLayoutDragging() && F.C->GetSelectedRoomCeilingHoleIndices().IsEmpty() && F.C->GetLayoutUndoCount()==0 && F.C->GetLayoutRedoCount()==0 && F.Sim->GetRoomCeilingPlates()==HoleGroupAfter); Run(F,HoleGroupAfter,false); TestFalse(TEXT("Moved hole group opens new cell at own layer, another plate preserved above"),F.Air->GetMutableSolver().GetGrid().IsSolidCell(5,32,10));
+ { FRoomFileFixture New; TestTrue(TEXT("Fresh repeated hole group Load exact list"),VrgLayoutFile::Load(New.W,HoleGroupFile,Message) && VrgLayoutFile::Load(New.W,HoleGroupFile,Message) && New.Sim->GetRoomCeilingPlates()==HoleGroupAfter && New.C->GetLayoutUndoCount()==0); Run(New,HoleGroupAfter,false); TestFalse(TEXT("Fresh Load applies moved group opening"),New.Air->GetMutableSolver().GetGrid().IsSolidCell(5,32,10)); }
+ AddInfo(FString::Printf(TEXT("Hole group2 duplicate move keeps parent/third/other plates: one exact record, pending failure Load retained/success cancelled, same/fresh actual union/other solids; max IT%.3e globalAbs%.3e pressure%.3e water%.3e duct%.3e at1.02s."),MaxIt,MaxEnergy,MaxDiv,MaxWater,MaxDuct));
+	for(const auto& Name:{File,BadFile,OldFile,MixedFile,MiddleFile,GroupFile,HoleGroupFile}) IFileManager::Get().Delete(*VrgLayoutFile::PathFor(Name)); return true;
 }
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FRoomCeilingHoleUiHistoryTest,"VRG.Interaction.Layout.RoomCeilingHoleUiHistoryPersistence",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::CommandletContext | EAutomationTestFlags::EngineFilter)
@@ -1109,6 +1141,12 @@ bool FRoomCeilingHoleMoveValidationTest::RunTest(const FString& Parameters)
  F.C->BeginRoomCeilingHoleMoveDrag(CduEye,Down); F.C->UpdateRoomCeilingCornerDrag(CduEye+FVector(25,25,0),Down); F.C->GetRoomCeilingPreview(Preview,Valid);
  TestTrue(TEXT("In-bounds destination restores solid through native CDU: state/history retained"),!Valid && !F.C->EndRoomCeilingCornerDrag(true) && F.Sim->GetRoomCeilingPlates()==TArray<FRoomCeilingPlate>{P}
   && F.C->GetLayoutUndoCount()==0 && F.C->GetLayoutRedoCount()==0 && F.Air->GetMutableSolver().GetGrid().bSolidCell==Mask && F.Air->GetMutableSolver().GetGrid().TemperatureK==Temps && F.Sim->GetSnapshot().SimTimeS==Clock);
+ P.Holes={H,H}; TestTrue(TEXT("Native duplicate passage group"),F.Sim->TrySetRoomCeilingPlates({P},Message)); F.C->SetRoomCeilingHoleEditing(false); F.C->SetRoomCeilingEditing(true);
+ F.C->SelectRoomCeilingAlongRay(CduEye,Down); F.C->SetRoomCeilingHoleEditing(true); F.C->SelectRoomCeilingHoleAlongRay(CduEye,Down); F.C->SelectRoomCeilingHoleAlongRay(CduEye,Down,true,false,true);
+ TestTrue(TEXT("Group duplicate passage movement begins"),F.C->BeginRoomCeilingHolePointerDrag(INDEX_NONE,CduEye,Down)); F.C->UpdateRoomCeilingCornerDrag(CduEye+FVector(25,25,0),Down);
+ F.C->GetRoomCeilingPreview(Preview,Valid); const auto Selected=F.C->GetSelectedRoomCeilingHoleIndices();
+ TestTrue(TEXT("Closing native CDU passage rejects all selected holes/history/warm state"),!Valid && !F.C->EndRoomCeilingCornerDrag(true) && F.Sim->GetRoomCeilingPlates()==TArray<FRoomCeilingPlate>{P}
+  && F.C->GetSelectedRoomCeilingHoleIndices()==Selected && F.C->GetLayoutUndoCount()==0 && F.C->GetLayoutRedoCount()==0 && F.Air->GetMutableSolver().GetGrid().bSolidCell==Mask && F.Air->GetMutableSolver().GetGrid().TemperatureK==Temps && F.Sim->GetSnapshot().SimTimeS==Clock);
  AddInfo(TEXT("Hole body validation: unchanged0.3m size aligned1cell -> shifted5cm0cells refusal; native CDU in-bounds moved1m passage refills exterior cells and refuses without warm/grid/history mutation; no new physical defaults.")); return true;
 }
 #endif

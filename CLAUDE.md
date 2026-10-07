@@ -4316,3 +4316,26 @@ Delete는 인덱스를 역순으로 제거한 후보 전체를 기존 TrySetRoom
 첫 빌드295.81s는 통합 시험 변수 참조명 오류로 실패했고 종료 후 기존 MixedP를 참조하도록 수정해 증분14.81s 성공했다. 영향4종 중 통합1종의 위 기하 전제 실패를 수정해 증분39.98s 성공 후 실패 검사만 재실행했다. 최종 고유4종(RoomCeilingGroupMovePreview / RoomCeilingMultiSelectionDelete / RoomCeilingMovePreview / RoomCeilingHoleHistoryPersistence) 모두 무경고 성공. 근거(커밋 제외): Saved/Build_CeilingGroupMove*.log, Saved/Logs/CeilingGroupMove_Tests.log, Saved/Logs/CeilingGroupMove_TestFix.log, Saved/Automation/CeilingGroupMove 및 CeilingGroupMove_TestFix. 성공 입력3종은 변경이 없는 상태에서 반복하지 않았다.
 
 신규 판 그룹 실제 조작/픽셀·OS 포커스는 미확인이다. 직접 절차 Tools/천장_그룹XY이동_확인_2026-10-07.md를 따른다. 구멍 그룹 이동은 다음 작은 커밋이다. 그룹 크기/높이/회전·외부 배기·물리 확장·전체/FPS 제외, 빌드 중 소스 변경·기존 화면 실패 재시도 없음. 균일 CPU/NullRHI 합성 과도 결과를 시설 정확도/정상상태/GPU로 확대하지 않는다.
+
+
+### 2026-10-07 천장 구멍 그룹 XY 이동·통합 검증 완료
+
+선택한 한 부모 판의 구멍 내부를 잡으면 실제 잡은 선택 항목의 최소점/최초 오프셋/월드5cm 스냅으로 공통 XY 변위를 계산해 선택한 로컬 m 범위에만 적용한다. 부모 기하/높이·구멍 크기/상대 위치·비선택 구멍/다른 판을 유지하고 중복 기하도 인덱스로 구별한다. 다중 크기 핸들은 막고 단일 편집을 유지한다. 기존 전체 목록 미리보기/검증/한 공유 기록/v2·다음 진입 셀 반영을 공유하며 모든 선택 목적지의 요청 윤곽/계산 상자를 주황/빨강으로 표시한다. 교점 실패·취소·거절·no-op은 기록하지 않는다. 기존 입력 차단·Esc/포커스/숫자/패치/모드/성공 Load 취소·외부 목록 스냅샷 보호를 그대로 사용한다. 물성·솔버·저장 스키마 변경 없음.
+
+신규 RoomCeilingHoleGroupMovePreview는 중복 두 구멍+다른 위치 구멍의 앵커 전환·동일 변위·스냅·부모/비선택 유지·입력 차단·전체 확정/거절/취소/기록을 검사한다. 기존 RoomCeilingHoleMoveValidation에 CDU의 기존 SizeM 기반 통로 구멍 두 개를 함께 이동하면 전체 거절되는 조건을 추가했다. 기존 RoomCeilingHoleHistoryPersistence의 실제 벽/콜드아일 지붕·냉각 함수를 확장해 중복 구멍 두 개 이동·한 기록 Undo/Redo·실패 Load 미확정/기록 유지·성공 Load 취소/초기화·반복/새 월드 복원을 확인했다. 다른 판을 한 층 높여 새 구멍 셀(X5,Y32,Z10)이 이동 전 고체→다음 진입 유체로 바뀌는 양의 개방 조건도 확인했다. 다른 판·벽·지붕을 포함한 전체 마스크 합집합은 정확히 일치한다. 배치 단계 .02s 예열 온도/시계/장부/마스크는 그대로다.
+
+| 검사 | 측정(같은/새 월드, t1.02s) | 정규화·단위·기존 기준 |
+|---|---|---|
+| 격자/고체 | h0.25m,43×37×16=25456셀; 구멍 그룹 이동 후 새 판 고체29셀; 지정 셀 개방 | 합성 기하. 계획별 개방 합의 타 고체2/유체15는 중복을 포함하므로 실제 합집합 개수가 아니다. 전체 마스크 정확 일치 |
+| 랙 IT 불변 | max 상대0 | abs(첫IT−동일 프리셋/부하/초기조건 참조IT)/참조IT(W), 무차원<1e-9 |
+| 전역 열수지 | 구멍 그룹abs2.512e-14; 혼합+판/구멍 그룹maxAbs3.877e-14 | abs(Ein−Eout−Stored)/EnergyInJ(IT+CRAH 팬), 무차원<1e-9 |
+| 압력 발산 | 구멍 그룹2.793e-08; 혼합+그룹max2.795e-08, 수렴 | maxAbsDiv(1/s)/(maxAbsVelocity(m/s)/h(m)), 무차원<1e-5 + 압력 수렴 플래그 |
+| 냉각수 결합 | 혼합+그룹max4.765e-15 | abs(랙 coolant 제거합W−라디에이터 방출W)/라디에이터 방출W, 무차원<1e-12 |
+| 랙/덕트 공기 결합 | 혼합+그룹max8.641e-16 | abs(랙 풍량kg/s−덕트 풍량kg/s)/랙 풍량kg/s, 무차원<1e-9 및 양의 풍량 |
+| 타당성 | 수력/압력 수렴·덕트 거절 없음·양의 코일 제거W·흡기288.15~308.15K 내부·펌프 비율 정상 | 기존15~35°C 과도 안전망 및0<펌프 전력W/IT 전력W<0.05 |
+
+위 혼합+그룹 최대값은 해당 시나리오 집계다. 같은 검사 안의 기존 단일 회귀도 통과했으며 열수지abs5.999e-14다. 시설 정확도/정상상태/GPU/FPS 측정이 아니라 균일 CPU/NullRHI 합성 과도 시험이며 새 수치/허용치를 도입하지 않았다.
+
+첫 구멍 그룹 빌드168.88s는 시험 지역 이름 Extra 중첩으로 실패해 종료 후 HoleGroupExtra로 고쳐11.07s 성공했다. 영향5종(RoomCeilingHoleGroupMovePreview / RoomCeilingMultiSelectionDelete / RoomCeilingHoleMovePreview / RoomCeilingHoleMoveValidation / RoomCeilingHoleHistoryPersistence) 모두 무경고 성공했다. 양의 개방 조건을 보강해35.42s 빌드 후 통합 검사에서 일반 ray가 가까운 상층 판을 고르는 정상 동작을 확인했다. 시험을 기존 Alt 순환으로 의도한 하층 부모를 명시하도록 수정해43.22s 빌드 성공 후 바뀐 통합1종만 무경고 재통과했다. 제품 선택 규칙이나 물리 기준을 완화하지 않았다. 판 단계 포함 고유 영향7종 최종 모두 성공이며 변경 없는 성공 검사를 반복하지 않았다.
+
+근거(커밋 제외): Saved/Build_CeilingHoleGroupMove*.log, Saved/Logs/CeilingHoleGroupMove_Tests.log, Saved/Logs/CeilingHoleGroupMove_Positive.log, Saved/Logs/CeilingHoleGroupMove_ParentFix.log, Saved/Automation/CeilingHoleGroupMove 및 CeilingHoleGroupMove_ParentFix. 신규 판/구멍 그룹의 실제 마우스·픽셀/OS 포커스는 미확인이고 Tools/천장_그룹XY이동_확인_2026-10-07.md 직접 절차를 남겼다. 앞 선택 순환·다중 삭제 정상은 사용자 보고다. 그룹 크기/높이/회전·외부 배기·물리 확장·전체/FPS 제외. 빌드 중 소스 변경·기존 화면 실패 재시도 없음.
