@@ -4339,3 +4339,9 @@ Delete는 인덱스를 역순으로 제거한 후보 전체를 기존 TrySetRoom
 첫 구멍 그룹 빌드168.88s는 시험 지역 이름 Extra 중첩으로 실패해 종료 후 HoleGroupExtra로 고쳐11.07s 성공했다. 영향5종(RoomCeilingHoleGroupMovePreview / RoomCeilingMultiSelectionDelete / RoomCeilingHoleMovePreview / RoomCeilingHoleMoveValidation / RoomCeilingHoleHistoryPersistence) 모두 무경고 성공했다. 양의 개방 조건을 보강해35.42s 빌드 후 통합 검사에서 일반 ray가 가까운 상층 판을 고르는 정상 동작을 확인했다. 시험을 기존 Alt 순환으로 의도한 하층 부모를 명시하도록 수정해43.22s 빌드 성공 후 바뀐 통합1종만 무경고 재통과했다. 제품 선택 규칙이나 물리 기준을 완화하지 않았다. 판 단계 포함 고유 영향7종 최종 모두 성공이며 변경 없는 성공 검사를 반복하지 않았다.
 
 근거(커밋 제외): Saved/Build_CeilingHoleGroupMove*.log, Saved/Logs/CeilingHoleGroupMove_Tests.log, Saved/Logs/CeilingHoleGroupMove_Positive.log, Saved/Logs/CeilingHoleGroupMove_ParentFix.log, Saved/Automation/CeilingHoleGroupMove 및 CeilingHoleGroupMove_ParentFix. 신규 판/구멍 그룹의 실제 마우스·픽셀/OS 포커스는 미확인이고 Tools/천장_그룹XY이동_확인_2026-10-07.md 직접 절차를 남겼다. 앞 선택 순환·다중 삭제 정상은 사용자 보고다. 그룹 크기/높이/회전·외부 배기·물리 확장·전체/FPS 제외. 빌드 중 소스 변경·기존 화면 실패 재시도 없음.
+
+## 2026-10-07 S7 마무리 착수·사용자 그룹 이동 확인
+
+사용자가 판·구멍 그룹 XY 이동 직접 확인을 정상으로 보고했다. Tools/천장_그룹XY이동_확인_2026-10-07.md 절차 범위로 반영하며 AI의 새 화면/로그/물리/FPS 확인으로 확대하지 않는다. 앞 절의 당시 미확인 기록은 이 사용자 보고로 보완된다.
+
+이번 범위는 최신 구성의 배치·방·천장 통합 정리, 현재 PC 렌더/솔버 계측, Win64 Development 패키징 및 에디터 없는 실행이다. 기존 구현/검사를 재사용하며 물리 모델·D1~D10·허용치를 바꾸지 않는다. 웹 대시보드는 미착수 후속이다. 천장 리턴/외부 배기·플레넘·S2b·실측 보정·외부 배포는 제외한다. 자동화·사용자 확인·AI 화면 확인·미검증을 구분해 후속 결과에 기록한다.
