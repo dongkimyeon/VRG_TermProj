@@ -4407,3 +4407,18 @@ DX12 패키지가 배치 표시/Save 후 글로벌 컴퓨트 PSO 사전 준비�
 h0.25m·dt0.02s, 수동 방 요청16×14×4.5m 전부 적용. 기본 IT3,755,227.502W/CRAH팬16,720.419W/펌프20,535.715W, Editor 같은30s IT 상대 차 약1.24e-16. 수동은 다른 시간 창의 합성 과도이므로 두 시나리오 IT 불변 비교/시설 정상상태로 확대하지 않는다. 물성·허용치·기존 부분PUE/펌프 열 분배 부채 유지.
 
 최종 Editor 확인 빌드1.91s 성공, 최종 글로벌 준비0의 실제 GPU StepMatchesCpu1종 무경고 성공/Exit0. 앞222종 전체1회+실패 fixture5종 수정 및 변경 영향 검사 근거를 유지하며 전체 재실행 없음. 상세 근거/재현/미확인 직접 절차 Tools/S7_마무리_2026-10-07.md, 자료 검증 Tools/verify_s7_package.ps1. 출력/로그/PNG/리포트는 커밋 제외. 웹 미착수, 현재 PC60FPS 목표·VR/최악 배치 보장 미달성/미측정은 후속으로 남긴다.
+
+## 2026-10-07 자동 방 벽·천장 (표시)
+
+사용자 요청: 방(벽4·천장)이 자동으로 만들어지게 하되, 천장 구멍으로 공기가 빠지는 것은 아직 구현하지 않는다.
+`ADataCenterSimulationActor`가 매 틱 공기 도메인의 바깥 면에 벽4장·천장1장(엔진 큐브, 두께 `RoomShellThicknessM` 0.2 m, 표시값)을 둔다.
+범위: 배치 모드 자동 방 = `AAirFieldDebugActor::PlanFitToRacks`(FitToRacks를 값 계획/적용으로 나눔, 적용 결과 불변)의 다음 진입 격자,
+배치 모드 수동 방 = `VrgRoomAirDomain::BuildGrid` 실제(셀 올림) 경계, 시뮬레이션 = 현재 격자. 랙을 옮기면 벽이 따라간다.
+**물리는 바뀌지 않는다.** 격자 경계가 이미 불투과·단열 벽/천장이므로 셸은 고체 셀·열용량·누설을 추가하지 않고 도메인 밖에 놓인다
+(보이는 것 = 계산하는 것). 사용자 천장 판/구멍(내부 한 층)은 그대로 별개이며 외부 배기는 없다.
+잘라보기(`bRoomShellCutaway`, 기본 켬): 카메라가 바깥쪽에 있는 벽과 카메라 아래 천장을 숨겨 밖에서 들여다볼 수 있게 한다.
+콘솔 `vrg.Room.Shell 0|1 [잘라보기 0|1]`. 충돌 없음(장비 픽·카메라에 참여 안 함), 저장 대상 아님(매번 도메인에서 다시 만든다).
+검증: Editor 빌드 성공(기존 C4457/C4701 경고만). 신규 `VRG.Interaction.Layout.RoomShellAuto`(계획 경계 일치 1e-12 m, 라이브 격자 불변,
+5조각 모두 도메인 밖·면 접촉, 랙 이동 추종, 수동 방 43x37x13 실제 경계, 시뮬레이션 격자 일치, 켬/끔 고체 마스크 불변, 잘라보기 규칙)과
+FitToRacks 리팩터 영향 RoomAirDomainFoundation/RoomAirDomainCoupling/FanDuctsFromRackActors/LayoutThenSimulate 5종 성공(NullRHI).
+L_Test 실제 화면(벽 색·잘라보기·볼륨과의 겹침)은 미확인. 근거 Saved/Build_RoomShell.log, Saved/Logs/RoomShell_Tests.log(커밋 제외).

@@ -32,6 +32,10 @@
 #include "EngineUtils.h"
 #include "HAL/IConsoleManager.h"
 #include "UObject/ConstructorHelpers.h"
+#include "Camera/PlayerCameraManager.h"
+#include "GameFramework/PlayerController.h"
+#include "Materials/MaterialInstanceDynamic.h"
+#include "Materials/MaterialInterface.h"
 
 ADataCenterSimulationActor::ADataCenterSimulationActor()
 {
@@ -40,7 +44,29 @@ ADataCenterSimulationActor::ADataCenterSimulationActor()
 	// Referenced from the CDO so the cooker packages it (a runtime LoadObject would not be found in a build).
 	static ConstructorHelpers::FObjectFinder<UStaticMesh> Cube(TEXT("/Engine/BasicShapes/Cube.Cube"));
 	CrahMesh = Cube.Object;
+	static ConstructorHelpers::FObjectFinder<UMaterialInterface> ShellMaterial(TEXT("/Engine/BasicShapes/BasicShapeMaterial.BasicShapeMaterial"));
+	RoomShellMaterial = ShellMaterial.Object;
 }
+
+// Shows or hides the automatic room shell of every running integrated actor (display only).
+static FAutoConsoleCommand GVrgRoomShellCommand(
+	TEXT("vrg.Room.Shell"),
+	TEXT("자동 방 벽·천장 표시. 표시 전용이며 계산은 바뀌지 않는다. vrg.Room.Shell <0|1> [잘라보기 0|1]"),
+	FConsoleCommandWithArgsDelegate::CreateLambda([](const TArray<FString>& Args)
+	{
+		if (Args.Num() == 0 || GEngine == nullptr) return;
+		for (const FWorldContext& Context : GEngine->GetWorldContexts())
+		{
+			UWorld* World = Context.World();
+			if (World == nullptr || !World->IsGameWorld()) continue;
+			for (TActorIterator<ADataCenterSimulationActor> It(World); It; ++It)
+			{
+				It->bAutoRoomShell = FCString::Atoi(*Args[0]) != 0;
+				if (Args.Num() > 1) It->bRoomShellCutaway = FCString::Atoi(*Args[1]) != 0;
+				It->UpdateRoomShell();
+			}
+		}
+	}));
 
 // Switches the air cooling of every running integrated actor and rebuilds it (the clock restarts at 0).
 static FAutoConsoleCommand GVrgSimCrahLayoutCommand(
@@ -1170,6 +1196,125 @@ void ADataCenterSimulationActor::UpdateContainmentMeshes()
 		}
 }
 
+bool ADataCenterSimulationActor::GetRoomShellBoundsM(FBox& OutBoundsM) const
+{
+	const AAirFieldDebugActor* Field = AirField;
+	if (Field == nullptr && GetWorld() != nullptr)
+	{
+		for (TActorIterator<AAirFieldDebugActor> It(GetWorld()); It; ++It) { Field = *It; break; }
+	}
+	if (Field == nullptr) return false;
+	// Simulation: the live grid. Layout: the grid the next simulation entry will build.
+	if (Mode == ESimMode::Layout)
+	{
+		if (RoomAirDomain.bManual)
+		{
+			FAirGridParams Grid; FBox Actual(ForceInit); FString Reason;
+			if (VrgRoomAirDomain::BuildGrid(RoomAirDomain, Field->GridParams, Grid, Actual, Reason))
+			{
+				OutBoundsM = Actual;
+				return true;
+			}
+		}
+		else if (Field->bAutoFitToRacks)
+		{
+			FAirGridParams Grid; FVector OriginM;
+			if (!Field->PlanFitToRacks(Grid, OriginM)) return false;  // nothing to enclose yet
+			OutBoundsM = FBox(OriginM, OriginM + FVector(Grid.NumCellsX, Grid.NumCellsY, Grid.NumCellsZ) * Grid.CellSizeM);
+			return true;
+		}
+	}
+	OutBoundsM = Field->GetDomainBoundsM();
+	return OutBoundsM.IsValid != 0;
+}
+
+void ADataCenterSimulationActor::ComputeRoomShellVisibility(const FBox& B, const FVector& C, bool bCutaway, bool OutVisible[NumRoomShellPieces])
+{
+	// A wall is cut away when the camera is on its outer side; the ceiling when the camera is above it.
+	OutVisible[0] = !bCutaway || C.X >= B.Min.X;
+	OutVisible[1] = !bCutaway || C.X <= B.Max.X;
+	OutVisible[2] = !bCutaway || C.Y >= B.Min.Y;
+	OutVisible[3] = !bCutaway || C.Y <= B.Max.Y;
+	OutVisible[4] = !bCutaway || C.Z <= B.Max.Z;
+}
+
+int32 ADataCenterSimulationActor::GetNumVisibleRoomShellPieces() const
+{
+	int32 N = 0;
+	for (const UStaticMeshComponent* Mesh : RoomShellMeshes) if (Mesh && Mesh->IsVisible()) ++N;
+	return N;
+}
+
+void ADataCenterSimulationActor::UpdateRoomShell()
+{
+	FBox BoundsM(ForceInit);
+	if (!bAutoRoomShell || CrahMesh == nullptr || !GetRoomShellBoundsM(BoundsM))
+	{
+		for (UStaticMeshComponent* Mesh : RoomShellMeshes) if (Mesh) Mesh->DestroyComponent();
+		RoomShellMeshes.Reset();
+		RoomShellBoundsM = FBox(ForceInit);
+		return;
+	}
+	if (RoomShellMeshes.Num() != NumRoomShellPieces)
+	{
+		for (UStaticMeshComponent* Mesh : RoomShellMeshes) if (Mesh) Mesh->DestroyComponent();
+		RoomShellMeshes.Reset();
+		for (int32 I = 0; I < NumRoomShellPieces; ++I)
+		{
+			UStaticMeshComponent* Mesh = NewObject<UStaticMeshComponent>(this);
+			Mesh->SetStaticMesh(CrahMesh);
+			Mesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+			Mesh->SetMobility(EComponentMobility::Movable);
+			Mesh->SetupAttachment(RootComponent);
+			Mesh->RegisterComponent();
+			if (RoomShellMaterial)
+			{
+				Mesh->SetMaterial(0, RoomShellMaterial);
+				if (UMaterialInstanceDynamic* Mid = Mesh->CreateDynamicMaterialInstance(0))
+				{
+					// Display colours only: pale walls, slightly darker ceiling.
+					Mid->SetVectorParameterValue(TEXT("Color"), I == 4 ? FLinearColor(.62f, .63f, .65f) : FLinearColor(.78f, .78f, .76f));
+				}
+			}
+			RoomShellMeshes.Add(Mesh);
+		}
+		RoomShellBoundsM = FBox(ForceInit);
+	}
+	const double T = FMath::Max(RoomShellThicknessM, .01);
+	if (!(RoomShellBoundsM.IsValid && RoomShellBoundsM.Equals(BoundsM, 1e-9)) || RoomShellBuiltThicknessM != T)
+	{
+		// Every piece lies outside the domain; the X walls and the ceiling overlap the corners so they close.
+		const FVector Mid = BoundsM.GetCenter(), Size = BoundsM.GetSize();
+		const double ZMid = BoundsM.Min.Z + .5 * Size.Z;
+		const FVector Centres[NumRoomShellPieces] = {
+			FVector(BoundsM.Min.X - .5 * T, Mid.Y, ZMid), FVector(BoundsM.Max.X + .5 * T, Mid.Y, ZMid),
+			FVector(Mid.X, BoundsM.Min.Y - .5 * T, ZMid), FVector(Mid.X, BoundsM.Max.Y + .5 * T, ZMid),
+			FVector(Mid.X, Mid.Y, BoundsM.Max.Z + .5 * T)};
+		const FVector Sizes[NumRoomShellPieces] = {
+			FVector(T, Size.Y + 2 * T, Size.Z), FVector(T, Size.Y + 2 * T, Size.Z),
+			FVector(Size.X, T, Size.Z), FVector(Size.X, T, Size.Z),
+			FVector(Size.X + 2 * T, Size.Y + 2 * T, T)};
+		for (int32 I = 0; I < NumRoomShellPieces; ++I)
+		{
+			// m -> cm only here (rule 1). The engine cube is 100 cm, so the scale is the size in metres.
+			RoomShellMeshes[I]->SetWorldLocationAndRotation(SimUnits::MetersToUnreal(Centres[I]), FRotator::ZeroRotator);
+			RoomShellMeshes[I]->SetWorldScale3D(Sizes[I]);
+		}
+		RoomShellBoundsM = BoundsM;
+		RoomShellBuiltThicknessM = T;
+	}
+	bool Visible[NumRoomShellPieces] = {true, true, true, true, true};
+	const APlayerController* PC = GetWorld() ? GetWorld()->GetFirstPlayerController() : nullptr;
+	if (PC && PC->PlayerCameraManager)
+	{
+		ComputeRoomShellVisibility(BoundsM, SimUnits::UnrealToMeters(PC->PlayerCameraManager->GetCameraLocation()), bRoomShellCutaway, Visible);
+	}
+	for (int32 I = 0; I < NumRoomShellPieces; ++I)
+	{
+		if (RoomShellMeshes[I]->IsVisible() != Visible[I]) RoomShellMeshes[I]->SetVisibility(Visible[I]);
+	}
+}
+
 void ADataCenterSimulationActor::PlanAutoCrahUnits()
 {
 	auto Place = [&](const FVector& BaseM, const FVector& Forward, const FVector& SizeM, bool bTopIntake)
@@ -1436,6 +1581,7 @@ void ADataCenterSimulationActor::UpdateCrahMeshes()
 void ADataCenterSimulationActor::Tick(float DeltaTime)
 {
 	Super::Tick(DeltaTime);
+	UpdateRoomShell();
 
 	if (Mode == ESimMode::Layout)
 	{

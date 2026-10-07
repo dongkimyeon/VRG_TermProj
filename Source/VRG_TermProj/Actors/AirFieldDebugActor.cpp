@@ -518,17 +518,13 @@ void AAirFieldDebugActor::ApplyRoomAirGrid(const FAirGridParams& Params, const F
 	bNeedsReset = true;
 }
 
-void AAirFieldDebugActor::FitToRacks()
+bool AAirFieldDebugActor::PlanFitToRacks(FAirGridParams& OutParams, FVector& OutOriginM, FVector* OutSpanM, int32* OutNumRacks) const
 {
 	const TArray<ARackThermalActor*> Racks = GatherRacks(GetWorld());
 	if (Racks.Num() == 0)
 	{
-		UE_LOG(LogTemp, Warning, TEXT("AirFieldDebugActor: 레벨에서 랙을 찾지 못했습니다."));
-		return;
+		return false;
 	}
-
-	// Editor button: record the change so the level is marked dirty (and saved) and it can be undone.
-	Modify();
 
 	FBox BoundsM(ForceInit);
 	for (const ARackThermalActor* Rack : Racks)
@@ -553,9 +549,9 @@ void AAirFieldDebugActor::FitToRacks()
 	for (TActorIterator<ACrahUnitActor> It(GetWorld()); It; ++It)
 	{
 		// Converting the virtual boxes alone must not change the physical domain/cell rasterisation.
-  // A new or moved/resized cooler still expands the grid through the existing policy.
-  if (It->PreservesAutomaticAirBounds()) continue;
-  const FVector M = SimUnits::UnrealToMeters(It->GetActorLocation());
+		// A new or moved/resized cooler still expands the grid through the existing policy.
+		if (It->PreservesAutomaticAirBounds()) continue;
+		const FVector M = SimUnits::UnrealToMeters(It->GetActorLocation());
 		const double Half = .5 * FMath::Max(It->SizeM.X, It->SizeM.Y);
 		BoundsM += FBox(M - FVector(Half, Half, 0), M + FVector(Half, Half, It->SizeM.Z));
 	}
@@ -567,9 +563,7 @@ void AAirFieldDebugActor::FitToRacks()
 	BoundsM.Max.Z = FMath::Max(BoundsM.Max.Z, ExhaustTopZM + 1.0);
 
 	const double CellSizeM = FMath::Max(GridParams.CellSizeM, VrgRoomAirDomain::MinFitCellSizeM);
-
-	// 도메인 원점은 격자 (0,0,0) 셀의 바깥 모서리다. 액터를 거기에 둔다.
-	SetActorLocation(SimUnits::MetersToUnreal(BoundsM.Min));
+	OutParams = GridParams;
 
 	FVector SpanM = BoundsM.GetSize();
 	if (GVrgFitSpanQuantumM > 0.0)
@@ -577,25 +571,55 @@ void AAirFieldDebugActor::FitToRacks()
 		// Same room at every resolution (vrg.Air.CellSize); the tolerance keeps 13.5 / (0.25 / 3) from rounding up to 163.
 		const double Q = GVrgFitSpanQuantumM;
 		SpanM = FVector(FMath::CeilToDouble(SpanM.X / Q - 1e-9), FMath::CeilToDouble(SpanM.Y / Q - 1e-9), FMath::CeilToDouble(SpanM.Z / Q - 1e-9)) * Q;
-		GridParams.NumCellsX = FMath::Clamp(FMath::CeilToInt32(SpanM.X / CellSizeM - 1e-9), 1, VrgRoomAirDomain::MaxFitCellsPerAxis);
-		GridParams.NumCellsY = FMath::Clamp(FMath::CeilToInt32(SpanM.Y / CellSizeM - 1e-9), 1, VrgRoomAirDomain::MaxFitCellsPerAxis);
-		GridParams.NumCellsZ = FMath::Clamp(FMath::CeilToInt32(SpanM.Z / CellSizeM - 1e-9), 1, VrgRoomAirDomain::MaxFitCellsPerAxis);
+		OutParams.NumCellsX = FMath::Clamp(FMath::CeilToInt32(SpanM.X / CellSizeM - 1e-9), 1, VrgRoomAirDomain::MaxFitCellsPerAxis);
+		OutParams.NumCellsY = FMath::Clamp(FMath::CeilToInt32(SpanM.Y / CellSizeM - 1e-9), 1, VrgRoomAirDomain::MaxFitCellsPerAxis);
+		OutParams.NumCellsZ = FMath::Clamp(FMath::CeilToInt32(SpanM.Z / CellSizeM - 1e-9), 1, VrgRoomAirDomain::MaxFitCellsPerAxis);
 	}
 	else
 	{
-		GridParams.NumCellsX = FMath::Clamp(FMath::CeilToInt32(SpanM.X / CellSizeM), 1, VrgRoomAirDomain::MaxFitCellsPerAxis);
-		GridParams.NumCellsY = FMath::Clamp(FMath::CeilToInt32(SpanM.Y / CellSizeM), 1, VrgRoomAirDomain::MaxFitCellsPerAxis);
-		GridParams.NumCellsZ = FMath::Clamp(FMath::CeilToInt32(SpanM.Z / CellSizeM), 1, VrgRoomAirDomain::MaxFitCellsPerAxis);
+		OutParams.NumCellsX = FMath::Clamp(FMath::CeilToInt32(SpanM.X / CellSizeM), 1, VrgRoomAirDomain::MaxFitCellsPerAxis);
+		OutParams.NumCellsY = FMath::Clamp(FMath::CeilToInt32(SpanM.Y / CellSizeM), 1, VrgRoomAirDomain::MaxFitCellsPerAxis);
+		OutParams.NumCellsZ = FMath::Clamp(FMath::CeilToInt32(SpanM.Z / CellSizeM), 1, VrgRoomAirDomain::MaxFitCellsPerAxis);
 	}
+	// 도메인 원점은 격자 (0,0,0) 셀의 바깥 모서리다.
+	OutOriginM = BoundsM.Min;
+	if (OutSpanM) *OutSpanM = SpanM;
+	if (OutNumRacks) *OutNumRacks = Racks.Num();
+	return true;
+}
+
+void AAirFieldDebugActor::FitToRacks()
+{
+	FAirGridParams Planned;
+	FVector OriginM, SpanM;
+	int32 NumRacks = 0;
+	if (!PlanFitToRacks(Planned, OriginM, &SpanM, &NumRacks))
+	{
+		UE_LOG(LogTemp, Warning, TEXT("AirFieldDebugActor: 레벨에서 랙을 찾지 못했습니다."));
+		return;
+	}
+
+	// Editor button: record the change so the level is marked dirty (and saved) and it can be undone.
+	Modify();
+
+	// 도메인 원점은 격자 (0,0,0) 셀의 바깥 모서리다. 액터를 거기에 둔다.
+	SetActorLocation(SimUnits::MetersToUnreal(OriginM));
+	GridParams = Planned;
 
 	UE_LOG(LogTemp, Log,
 		TEXT("AirFieldDebugActor: 랙 %d대에 맞췄습니다. %.2f x %.2f x %.2f m -> 격자 %dx%dx%d (셀 %d개)."),
-		Racks.Num(), SpanM.X, SpanM.Y, SpanM.Z,
+		NumRacks, SpanM.X, SpanM.Y, SpanM.Z,
 		GridParams.NumCellsX, GridParams.NumCellsY, GridParams.NumCellsZ,
 		GridParams.NumCellsX * GridParams.NumCellsY * GridParams.NumCellsZ);
 
 	UpdateDomainBounds();
 	bNeedsReset = true;
+}
+
+FBox AAirFieldDebugActor::GetDomainBoundsM() const
+{
+	const FVector MinM = SimUnits::UnrealToMeters(GetActorLocation());
+	return FBox(MinM, MinM + FVector(GridParams.NumCellsX, GridParams.NumCellsY, GridParams.NumCellsZ) * GridParams.CellSizeM);
 }
 
 void AAirFieldDebugActor::PlaceHeatSourcesFromRacks()

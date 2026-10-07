@@ -18,6 +18,7 @@ class ARackThermalActor;
 class ASpineCabinetActor;
 class UStaticMesh;
 class UStaticMeshComponent;
+class UMaterialInterface;
 
 // Layout vs simulation (2026-09-27). Layout: nothing is integrated, cabinets can be moved freely. Simulation: the
 // coupling is built from the current layout in one go and the clock starts at 0.
@@ -275,6 +276,35 @@ public:
 	int32 GetNumBarrierCellsKeptOpen() const { return BarrierCellsKeptOpen; }
 	int32 GetNumSplitDucts() const { return SplitDucts; }
 
+	// ---- Automatic room shell (2026-10-07) ----
+	// Four walls and a ceiling drawn on the faces of the air domain, every frame in both modes: the planned
+	// auto-fit (layout, auto room), the manual room's actual grid bounds (layout, manual room) or the live grid
+	// (simulation). Display only. The air grid boundary already is an impermeable, adiabatic wall and ceiling,
+	// so the shell adds no solid cells, heat capacity or leakage (what is shown is what is computed).
+	// Ceiling holes / exhaust through the ceiling are not modelled.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Visualization|Room")
+	bool bAutoRoomShell = true;
+
+	// Shell thickness [m], laid outside the domain so it never covers an air cell. Display value.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Visualization|Room", meta = (ClampMin = "0.01"))
+	double RoomShellThicknessM = 0.2;
+
+	// Hide the walls the camera is outside of and the ceiling when the camera is above it, so the room can be
+	// looked into from outside.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Visualization|Room")
+	bool bRoomShellCutaway = true;
+
+	// Box [m] the shell currently encloses; false when there is nothing to enclose (no air actor / no racks).
+	bool GetRoomShellBoundsM(FBox& OutBoundsM) const;
+	// Shell piece order: -X, +X, -Y, +Y walls, ceiling.
+	static constexpr int32 NumRoomShellPieces = 5;
+	// Which pieces stay visible for a camera at CameraM [m] (cutaway rule), in the order above.
+	static void ComputeRoomShellVisibility(const FBox& BoundsM, const FVector& CameraM, bool bCutaway, bool OutVisible[NumRoomShellPieces]);
+	// Visible shell pieces after the last update (0 when off).
+	int32 GetNumVisibleRoomShellPieces() const;
+	const FBox& GetDisplayedRoomShellBoundsM() const { return RoomShellBoundsM; }
+	void UpdateRoomShell();
+
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Visualization")
 	bool bShowSummary = true;
 
@@ -440,4 +470,11 @@ private:
 	void UpdateContainmentMeshes();
 
 	void DrawSummary() const;
+
+	UPROPERTY()
+	TObjectPtr<UMaterialInterface> RoomShellMaterial;
+	UPROPERTY(Transient)
+	TArray<TObjectPtr<UStaticMeshComponent>> RoomShellMeshes;
+	FBox RoomShellBoundsM = FBox(ForceInit);
+	double RoomShellBuiltThicknessM = -1.0;
 };
