@@ -17,7 +17,7 @@
 // 게임 스레드에서 부른다. 렌더 명령을 밀고 끝날 때까지 기다린다. 솔버 자료구조·액터를 렌더 스레드가 직접 보지 않는다.
 namespace VrgAirGpu
 {
-	// 실제 GPU(NullRHI 아님, SM5 이상)가 있는가. 자동화 테스트는 -NullRHI로 돌므로 그때는 false다.
+	// 실제 GPU(NullRHI 아님, FP64 커널을 컴파일하는 SM6 이상)가 있는가. 자동화 테스트는 -NullRHI로 돌므로 그때는 false다.
 	VRGRENDER_API bool IsAvailable();
 
 	// 4a: FP64 연산이 셰이더에서 CPU와 같은 결과를 내는지 확인한다. Out[i] = frac_trunc((A[i]*B[i] + C) / D).

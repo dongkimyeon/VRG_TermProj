@@ -11,6 +11,7 @@
 
 namespace
 {
+	// FP64 air kernels require the SM6 compiler; SM5/FXC permutations fail during cook.
 	constexpr int32 VrgAirThreads = 64;
 
 	class FVrgAirProbeCS : public FGlobalShader
@@ -29,7 +30,7 @@ namespace
 
 		static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
 		{
-			return IsFeatureLevelSupported(Parameters.Platform, ERHIFeatureLevel::SM5);
+			return IsFeatureLevelSupported(Parameters.Platform, ERHIFeatureLevel::SM6);
 		}
 	};
 
@@ -38,7 +39,7 @@ namespace
 
 bool VrgAirGpu::IsAvailable()
 {
-	return GIsRHIInitialized && !GUsingNullRHI && GMaxRHIFeatureLevel >= ERHIFeatureLevel::SM5;
+	return GIsRHIInitialized && !GUsingNullRHI && GMaxRHIFeatureLevel >= ERHIFeatureLevel::SM6;
 }
 
 bool VrgAirGpu::ProbeDoubleArithmetic(const TArray<double>& A, const TArray<double>& B, double C, double D,
@@ -120,7 +121,7 @@ namespace
 		SHADER_USE_PARAMETER_STRUCT(ClassName, FGlobalShader); \
 		static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters) \
 		{ \
-			return IsFeatureLevelSupported(Parameters.Platform, ERHIFeatureLevel::SM5); \
+			return IsFeatureLevelSupported(Parameters.Platform, ERHIFeatureLevel::SM6); \
 		} \
 	}; \
 	IMPLEMENT_GLOBAL_SHADER(ClassName, "/Vrg/Private/VrgAirMg.usf", Entry, SF_Compute);
@@ -618,7 +619,7 @@ namespace
 		SHADER_USE_PARAMETER_STRUCT(ClassName, FGlobalShader); \
 		static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters) \
 		{ \
-			return IsFeatureLevelSupported(Parameters.Platform, ERHIFeatureLevel::SM5); \
+			return IsFeatureLevelSupported(Parameters.Platform, ERHIFeatureLevel::SM6); \
 		} \
 	}; \
 	IMPLEMENT_GLOBAL_SHADER(ClassName, "/Vrg/Private/VrgAirStep.usf", Entry, SF_Compute);

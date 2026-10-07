@@ -4375,3 +4375,9 @@ Editor61.19s 성공 후 수정한5종만4무경고+1경고 동반 성공(실패0
 첫 BuildCookRun은 게임 타깃에서 AActor의 에디터 전용 RerunConstructionScripts를 찾지 못해 C2039/Exit6으로 실패했다. SpawnCrahActorsFromLayout의 한 호출을 기존 ACrahUnitActor::RefreshVisuals로 교체했다. 종류/SizeM로 네이티브 Body/화살표를 갱신하는 기존 함수이며 생성/냉각/물리 값·판정은 유지한다. 실제 런타임 추가 생명주기나 레벨 에셋을 바꾸지 않았다.
 
 Editor51.49s 성공, 영향 CRAH 결합/인로우/벽면 추가3종 무경고 성공(실패0/미실행0/종료0). 성공한 전체 검사는 반복하지 않았다. 이3종은 기존 냉각/추가 회귀이며 해당 CallInEditor 버튼의 실제 클릭까지 확인했다고 쓰지 않는다. 수정된 게임 타깃 컴파일/패키징/독립 실행은 다음 결과에 기록한다. 근거 Saved/Package_S7Final.log·Build_S7Final_RuntimeFix.log·Automation/S7Final_RuntimeFix(커밋 제외). 새 물성/허용치 없음.
+
+## 2026-10-07 패키지 Cook FP64 공기 셰이더 대상 수정
+
+게임 빌드는 통과했으나 SM5/FXC가 FP64 공기 커널을 컴파일해 Cook Exit25로 실패했다. VrgAirGpu의 네 컴파일/실행 조건을 SM6로 일치시켰다. FP64 식/정밀도·물리/허용치·기존 CPU 대체 및 FP32 압력/볼륨의 SM5 지원은 유지한다. DX11 실제 실행은 아직 미확인이다.
+
+Editor111.07s 성공, 실제 DX12 GPU 정확성3종 모두 무경고 성공(NullRHI 아님): 4096값 CPU FMA 비교 차이0, 압력 상대 해 차 max1.921e-15(최대 CPU 해 정규화), 상대 잔차 기존 목표1e-10/1e-6 이내. CPU/GPU150스텝 온도 차 max2.842e-13K·속도4.880e-15m/s, 교대 실행 온도3.771e-9K·속도1.224e-10m/s, 열수지abs max5.699e-14(IT+팬 입력J 정규화). 기존 오차 기준 유지, FPS 결과 아님. 세부/재개 Tools/S7_마무리_2026-10-07.md; 최종 패키징/독립 실행은 완료 후 기록한다.
