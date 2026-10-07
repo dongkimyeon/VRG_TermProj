@@ -106,6 +106,7 @@ public:
 	void UpdateRoomCeilingCornerDrag(const FVector& EyeCm, const FVector& Direction);
 	bool EndRoomCeilingCornerDrag(bool bCommit);
 	bool GetRoomCeilingPreview(FRoomCeilingPlate& Out, bool& bValid) const;
+	bool GetRoomCeilingListPreview(TArray<FRoomCeilingPlate>& Out, bool& bValid) const;
 	FString GetRoomCeilingEditMessage() const { return CeilingEditMessage; }
 	void CloseRoomSettings(URoomSettingsWidget* ExpectedWidget = nullptr);
 	bool IsRoomSettingsOpen() const { return bRoomSettingsOpen; }
@@ -373,6 +374,8 @@ private:
 	int32 CeilingDragHole = INDEX_NONE; // Selected hole in the captured parent list; same gesture/history as plate editing.
 	bool BeginRoomCeilingDrag(int32 Corner, bool bHole, const FVector& EyeCm, const FVector& Direction);
 	FRoomCeilingPlate CeilingDragPreview;
+	TArray<FRoomCeilingPlate> CeilingDragPlatesPreview;
+	TArray<int32> CeilingDragItems; // Captured plate or hole indices; one atomic whole-list command.
 	FRoomAirDomainSettings CeilingDragRoom;
 	FVector CeilingDragStartCm = FVector::ZeroVector;
 	double CeilingDragStartHeightCm = 0;

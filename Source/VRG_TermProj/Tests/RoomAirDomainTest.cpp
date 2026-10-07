@@ -973,7 +973,7 @@ bool FRoomCeilingMultiSelectionTest::RunTest(const FString& Parameters)
   && C->SelectRoomCeilingAlongRay(Eye,Down,true,false,true) && C->GetSelectedRoomCeilingIndices()==TArray<int32>{0,1}; };
  TestTrue(TEXT("Alt+Shift adds next identical plate"),SelectTwo());
  TestFalse(TEXT("Malformed Shift click retains group"),C->SelectRoomCeilingAlongRay(Eye,FVector::ZeroVector,false,false,true)); TestEqual(TEXT("Group count"),C->GetSelectedRoomCeilingIndices().Num(),2);
- TestTrue(TEXT("Plain body click on selected group cannot move or collapse it"),!C->BeginRoomCeilingPointerDrag(INDEX_NONE,Eye,Down) && C->GetSelectedRoomCeilingIndices()==TArray<int32>{0,1} && !C->IsLayoutDragging());
+ TestTrue(TEXT("Plain body click starts group move without collapsing it"),C->BeginRoomCeilingPointerDrag(INDEX_NONE,Eye,Down) && C->GetSelectedRoomCeilingIndices()==TArray<int32>{0,1} && C->IsLayoutDragging()); C->EndRoomCeilingCornerDrag(false);
  TestFalse(TEXT("Multi plate corner blocked even with direct handle"),C->BeginRoomCeilingCornerDrag(0,Eye,Down)); TestFalse(TEXT("Multi plate height blocked"),C->BeginRoomCeilingHeightDrag(Eye,Down));
  TestFalse(TEXT("Multi parent hole edit/add modal blocked"),C->SetRoomCeilingHoleEditing(true) || C->OpenRoomCeilingHoleSettings());
  TestTrue(TEXT("Shift removes only pointed first duplicate"),C->SelectRoomCeilingAlongRay(Eye,Down,false,false,true) && C->GetSelectedRoomCeilingIndices()==TArray<int32>{1});
@@ -996,5 +996,43 @@ bool FRoomCeilingMultiSelectionTest::RunTest(const FString& Parameters)
  TestTrue(TEXT("All selection/refused edits preserve physical grid"),F.Air->GetMutableSolver().GetGrid().bSolidCell==Mask);
  F.Sim->TrySetRoomCeilingPlates(Before,Message); SelectTwo(); F.Sim->EnterSimulationMode(); C->RefreshInteractionInputMode(); TestTrue(TEXT("Mode ends group editing"),C->GetSelectedRoomCeilingIndices().IsEmpty() && !C->TryDeleteRoomCeiling());
  AddInfo(TEXT("Ceiling multi-selection: Alt+Shift duplicates/Shift toggles/blank clears, per-parent holes, group highlights and no group gestures, descending-index atomic Delete/one history, input/stale/mode guards. UI rendering direct-check scope.")); return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FRoomCeilingGroupMoveTest,"VRG.Interaction.Layout.RoomCeilingGroupMovePreview",
+ EAutomationTestFlags::EditorContext | EAutomationTestFlags::CommandletContext | EAutomationTestFlags::EngineFilter)
+bool FRoomCeilingGroupMoveTest::RunTest(const FString& Parameters)
+{
+ FRoomFixture F; FString Message; auto* C=F.World->SpawnActor<ADataCenterDebugController>(); C->bFrameEquipmentOnStart=false;
+ auto* Pawn=F.World->SpawnActor<ADefaultPawn>(); C->Possess(Pawn); C->PlayerInput=NewObject<UPlayerInput>(C); C->RefreshInteractionInputMode();
+ FRoomCeilingPlate P; P.MinXYM=FVector2D(-5.25,3); P.MaxXYM=FVector2D(-4.25,4); P.HeightM=2.625;
+ FRoomCeilingHole H; H.LocalMinXYM=FVector2D(.125); H.LocalMaxXYM=FVector2D(.875); P.Holes={H,H};
+ auto Other=P; Other.MinXYM=FVector2D(-3.5,3); Other.MaxXYM=FVector2D(-2.5,3.75); Other.HeightM=1.825; Other.Holes.Reset(); auto Untouched=P; Untouched.HeightM=.825;
+ const TArray<FRoomCeilingPlate> Before{P,P,Other,Untouched}; F.Sim->TrySetRoomAirDomain(ManualRoom(),Message); TestTrue(TEXT("Group fixture"),F.Sim->TrySetRoomCeilingPlates(Before,Message));
+ const FVector Eye(-475,350,400),OtherEye(-300,340,400),Down(0,0,-1); const auto Mask=F.Air->GetMutableSolver().GetGrid().bSolidCell;
+ auto Select=[&]() { return C->SetRoomCeilingEditing(true) && C->SelectRoomCeilingAlongRay(Eye,Down) && C->SelectRoomCeilingAlongRay(Eye,Down,true,false,true)
+  && C->SelectRoomCeilingAlongRay(OtherEye,Down,false,false,true) && C->GetSelectedRoomCeilingIndices()==TArray<int32>{0,1,2}; };
+ TestTrue(TEXT("Body hit changes anchor to clicked selected plate without changing membership"),Select() && C->GetSelectedRoomCeilingIndex()==2 && C->BeginRoomCeilingPointerDrag(INDEX_NONE,Eye,Down) && C->GetSelectedRoomCeilingIndex()==0);
+ C->UpdateRoomCeilingCornerDrag(Eye+FVector(12,8,0),Down); TArray<FRoomCeilingPlate> After; bool Valid=false; C->GetRoomCeilingListPreview(After,Valid);
+ const FVector2D Delta=After[0].MinXYM-P.MinXYM;
+ TestTrue(TEXT("First grabbed minimum snaps in world5cm with original offset"),Valid && After[0].MinXYM.Equals(FVector2D(-5.15,3.1),1e-12));
+ for(int32 I=0;I<3;++I) TestTrue(TEXT("Every selected plate same delta, own size/height/local holes exact"),(After[I].MinXYM-Before[I].MinXYM).Equals(Delta,1e-12)
+  && (After[I].MaxXYM-Before[I].MaxXYM).Equals(Delta,1e-12) && After[I].HeightM==Before[I].HeightM && After[I].Holes==Before[I].Holes);
+ TestTrue(TEXT("Unselected identical projection entry and live list/mask unchanged"),After[3]==Before[3] && F.Sim->GetRoomCeilingPlates()==Before && F.Air->GetMutableSolver().GetGrid().bSolidCell==Mask);
+ TestFalse(TEXT("Delete/Undo/selection gated while group moving"),C->TryDeleteRoomCeiling() || C->TryUndoLayout() || C->SelectRoomCeilingAlongRay(Eye,Down,true));
+ const auto Camera=Pawn->GetActorLocation(); C->ApplyLayoutCameraInput(1,FVector(1,0,0),0,true); TestTrue(TEXT("Camera gated during group preview"),Pawn->GetActorLocation()==Camera);
+ TestTrue(TEXT("One atomic commit and whole-list Undo/Redo"),C->EndRoomCeilingCornerDrag(true) && C->GetLayoutUndoCount()==1 && F.Sim->GetRoomCeilingPlates()==After
+  && C->TryUndoLayout() && F.Sim->GetRoomCeilingPlates()==Before && C->TryRedoLayout() && F.Sim->GetRoomCeilingPlates()==After); C->TryUndoLayout();
+ Select(); C->BeginRoomCeilingMoveDrag(Eye,Down); TestFalse(TEXT("No-op preserves Redo"),C->EndRoomCeilingCornerDrag(true));
+ Select(); C->BeginRoomCeilingPointerDrag(INDEX_NONE,Eye,Down); C->UpdateRoomCeilingCornerDrag(Eye+FVector(12,8,0),Down); C->UpdateRoomCeilingCornerDrag(Eye,FVector::ZeroVector);
+ TestTrue(TEXT("Invalid ray after valid target refuses ALL and retains history"),!C->EndRoomCeilingCornerDrag(true) && F.Sim->GetRoomCeilingPlates()==Before && C->GetLayoutUndoCount()==0 && C->GetLayoutRedoCount()==1);
+ Select(); C->BeginRoomCeilingPointerDrag(INDEX_NONE,Eye,Down); C->UpdateRoomCeilingCornerDrag(Eye+FVector(0,100,0),Down); C->GetRoomCeilingListPreview(After,Valid);
+ TestTrue(TEXT("One outside plate invalidates whole candidate"),!Valid && !C->EndRoomCeilingCornerDrag(true) && F.Sim->GetRoomCeilingPlates()==Before);
+ Select(); C->BeginRoomCeilingPointerDrag(INDEX_NONE,Eye,Down); C->UpdateRoomCeilingCornerDrag(Eye+FVector(12,8,0),Down);
+ FInputKeyEventArgs Esc; Esc.Key=EKeys::Escape; Esc.Event=IE_Pressed; C->InputKey(Esc); TestTrue(TEXT("Esc cancels group, preserves Redo/selection"),!C->IsLayoutDragging() && C->GetSelectedRoomCeilingIndices().Num()==3 && C->GetLayoutRedoCount()==1);
+ C->BeginRoomCeilingPointerDrag(INDEX_NONE,Eye,Down); C->OpenRoomSettings(); TestTrue(TEXT("Numeric window cancels group"),!C->IsLayoutDragging()); C->CloseRoomSettings();
+ Select(); C->BeginRoomCeilingPointerDrag(INDEX_NONE,Eye,Down); C->SetPatchMapOpen(true); TestTrue(TEXT("Patch cancels group"),!C->IsLayoutDragging()); C->SetPatchMapOpen(false);
+ Select(); C->BeginRoomCeilingPointerDrag(INDEX_NONE,Eye,Down); auto External=Before; External.RemoveAt(0); F.Sim->TrySetRoomCeilingPlates(External,Message); C->RefreshInteractionInputMode();
+ TestTrue(TEXT("Stale whole list cannot commit a different group"),!C->IsLayoutDragging() && !C->EndRoomCeilingCornerDrag(true) && F.Sim->GetRoomCeilingPlates()==External);
+ AddInfo(TEXT("Plate group move: clicked anchor/world5cm/grab offset, duplicate indices and different height/size preserved, one list preview/atomic history, ray/outside/no-op/Esc/window/patch/stale guards. Actual UI/focus direct-check.")); return true;
 }
 #endif

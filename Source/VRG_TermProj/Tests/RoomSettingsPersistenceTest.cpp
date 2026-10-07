@@ -705,7 +705,7 @@ bool FRoomCeilingHolePersistenceTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("Stored old plates missing holes restore closed plates"),VrgLayoutFile::Load(F.W,OldFile,Message) && F.Sim->GetRoomCeilingPlates()==Closed);
 	TestTrue(TEXT("Restore holes after compatibility case"),VrgLayoutFile::Load(F.W,File,Message));
 	double MaxIt=0,MaxEnergy=0,MaxDiv=0,MaxWater=0,MaxDuct=0;
-	auto Run=[&](FRoomFileFixture& Case,const TArray<FRoomCeilingPlate>& ExpectedPlates)
+	auto Run=[&](FRoomFileFixture& Case,const TArray<FRoomCeilingPlate>& ExpectedPlates,bool bRequireOverlappedOpening=true)
 	{
 		for(auto* Rack:Case.Racks) Rack->Input=InitialInput;
 		Case.Sim->EnterSimulationMode(); Case.Sim->Tick(.021f); const auto First=Case.Sim->GetSnapshot();
@@ -719,7 +719,7 @@ bool FRoomCeilingHolePersistenceTest::RunTest(const FString& Parameters)
 			if(!Expected[I]) { Expected[I]=true; ++Added; }
 		}
 		TestTrue(TEXT("Exact union: actual wall/roof/equipment preserved and clear holes fluid"),G.bSolidCell==Expected && Case.Sim->GetNumCeilingCells()==Added
-			&& PreservedOpen>0 && FluidOpen>0 && Case.Sim->GetNumContainmentCells()==RoofCells && Case.Sim->GetNumBarrierCells()==WallCells);
+			&& (!bRequireOverlappedOpening || PreservedOpen>0) && FluidOpen>0 && Case.Sim->GetNumContainmentCells()==RoofCells && Case.Sim->GetNumBarrierCells()==WallCells);
 		for(int32 I=0;I<25;++I) Case.Sim->Tick(.04f); const auto S=Case.Sim->GetSnapshot(); const auto A=Case.Air->GetMutableSolver().MakeSnapshot(S.SimTimeS);
 		const double It=FMath::Abs(First.TotalItHeatW-ReferenceIt)/ReferenceIt;
 		double Removed=0,Duct=0; for(auto* Rack:Case.Racks) { Removed+=Rack->GetMutableModel().GetLastHeatRemovedByCoolantW(); TestTrue(TEXT("Positive coolant flow"),Rack->Input.CoolantMassFlowKgs>0);
@@ -794,7 +794,34 @@ bool FRoomCeilingHolePersistenceTest::RunTest(const FString& Parameters)
    && New.Sim->GetRoomCeilingPlates()==MixedAfter && New.Sim->GetRoomAirDomain()==Manual && VrgBarrierLifecycle::Find(New.W,Wall.Id) && New.C->GetLayoutUndoCount()==0 && New.C->GetLayoutRedoCount()==0); Run(New,MixedAfter);
  }
  AddInfo(FString::Printf(TEXT("Mixed plate/hole edits6 (move,height,Add,resize,body move,Delete) exact all Undo/Redo; duplicate/local/world/height preserved; warm%.2fs unchanged; pending failure Load retained/success cancelled; same/fresh final and moved midpoint exact union/other wall+roof; IT%.3e globalAbs%.3e pressure%.3e water%.3e duct%.3e at1.02s."),MixedWarm.SimTimeS,MaxIt,MaxEnergy,MaxDiv,MaxWater,MaxDuct));
-	for(const auto& Name:{File,BadFile,OldFile,MixedFile,MiddleFile}) IFileManager::Get().Delete(*VrgLayoutFile::PathFor(Name)); return true;
+ // Group movement reuses this fixture's actual wall/roof baseline, Save/Load and coupled mask/physics Run.
+ const FString GroupFile=File+TEXT("GroupMove"); F.Sim->EnterLayoutMode();
+ auto Other=MixedP; Other.MinXYM=FVector2D(-3.5,3); Other.MaxXYM=FVector2D(-2.5,4); Other.HeightM=2.15;
+ const TArray<FRoomCeilingPlate> GroupBefore{MixedP,MixedP,Other}; TestTrue(TEXT("Group plate fixture includes duplicate and separate height"),F.Sim->TrySetRoomCeilingPlates(GroupBefore,Message));
+ F.Sim->EnterSimulationMode(); F.Sim->Tick(.021f); F.Sim->EnterLayoutMode(); const auto GWarm=F.Sim->GetSnapshot();
+ const auto GMask=F.Air->GetMutableSolver().GetGrid().bSolidCell; const auto GTemps=F.Air->GetMutableSolver().GetGrid().TemperatureK;
+ auto GFrozen=[&]() { const auto S=F.Sim->GetSnapshot(); return S.SimTimeS==GWarm.SimTimeS && S.EnergyInJ==GWarm.EnergyInJ && S.EnergyOutJ==GWarm.EnergyOutJ && S.EnergyStoredJ==GWarm.EnergyStoredJ
+  && F.Air->GetMutableSolver().GetGrid().bSolidCell==GMask && F.Air->GetMutableSolver().GetGrid().TemperatureK==GTemps; };
+ F.C->SetRoomCeilingEditing(true); F.C->SelectRoomCeilingAlongRay(Eye,Down); F.C->SelectRoomCeilingAlongRay(Eye,Down,true,false,true); F.C->SelectRoomCeilingAlongRay(FVector(-300,350,400),Down,false,false,true);
+ TestTrue(TEXT("Begin selected first plate despite last selected third"),F.C->BeginRoomCeilingPointerDrag(INDEX_NONE,Eye,Down) && F.C->GetSelectedRoomCeilingIndex()==0);
+ F.C->UpdateRoomCeilingCornerDrag(Eye+FVector(25,25,0),Down); TArray<FRoomCeilingPlate> GroupAfter; bool GValid=false; F.C->GetRoomCeilingListPreview(GroupAfter,GValid);
+ TestTrue(TEXT("Whole group preview does not mutate warm state"),GValid && F.Sim->GetRoomCeilingPlates()==GroupBefore && GFrozen());
+ for(int32 I=0;I<3;++I) TestTrue(TEXT("Group preserves local holes/height and common25cm translation"),GroupAfter[I].MinXYM==GroupBefore[I].MinXYM+FVector2D(.25)
+  && GroupAfter[I].MaxXYM==GroupBefore[I].MaxXYM+FVector2D(.25) && GroupAfter[I].Holes==GroupBefore[I].Holes && GroupAfter[I].HeightM==GroupBefore[I].HeightM);
+ TestTrue(TEXT("Group one commit one exact whole-list Undo/Redo"),F.C->EndRoomCeilingCornerDrag(true) && F.C->GetLayoutUndoCount()==1 && F.C->TryUndoLayout() && F.Sim->GetRoomCeilingPlates()==GroupBefore
+  && F.C->TryRedoLayout() && F.Sim->GetRoomCeilingPlates()==GroupAfter && GFrozen());
+ TestTrue(TEXT("Save confirmed group including wall/roof"),VrgLayoutFile::Save(F.W,GroupFile,Message));
+ auto GroupBad=ReadRoomFile(GroupFile); GroupBad->GetObjectField(TEXT("settings"))->GetArrayField(TEXT("roomCeilingPlates"))[0]->AsObject()->GetArrayField(TEXT("holes"))[0]->AsObject()->SetNumberField(TEXT("maxXM"),1.01); WriteRoomFile(BadFile,GroupBad);
+ F.C->SetRoomCeilingEditing(true); F.C->SelectRoomCeilingAlongRay(Eye+FVector(25,25,0),Down); F.C->SelectRoomCeilingAlongRay(Eye+FVector(25,25,0),Down,true,false,true);
+ F.C->BeginRoomCeilingPointerDrag(INDEX_NONE,Eye+FVector(25,25,0),Down); F.C->UpdateRoomCeilingCornerDrag(Eye+FVector(30,25,0),Down); TArray<FRoomCeilingPlate> GPending; F.C->GetRoomCeilingListPreview(GPending,GValid);
+ TestTrue(TEXT("Failed Load preserves full group pending/selection/records/warm state"),!VrgLayoutFile::Load(F.W,BadFile,Message) && F.C->IsLayoutDragging() && F.C->GetSelectedRoomCeilingIndices().Num()==2 && F.C->GetLayoutUndoCount()==1 && GFrozen());
+ TArray<FRoomCeilingPlate> GStill; F.C->GetRoomCeilingListPreview(GStill,GValid); TestTrue(TEXT("Pending group unchanged"),GStill==GPending);
+ TestTrue(TEXT("Successful repeated group Load cancels and resets records/selection"),VrgLayoutFile::Load(F.W,GroupFile,Message) && VrgLayoutFile::Load(F.W,GroupFile,Message)
+  && !F.C->IsLayoutDragging() && F.C->GetSelectedRoomCeilingIndices().IsEmpty() && F.C->GetLayoutUndoCount()==0 && F.C->GetLayoutRedoCount()==0 && F.Sim->GetRoomCeilingPlates()==GroupAfter); Run(F,GroupAfter,false);
+ { FRoomFileFixture New; TestTrue(TEXT("Fresh group repeated Load no duplicate/records"),VrgLayoutFile::Load(New.W,GroupFile,Message) && VrgLayoutFile::Load(New.W,GroupFile,Message)
+  && New.Sim->GetRoomCeilingPlates()==GroupAfter && New.C->GetLayoutUndoCount()==0); Run(New,GroupAfter,false); }
+ AddInfo(FString::Printf(TEXT("Plate group3 includes duplicates/different height: one record, full pending atomic Load, same/fresh shifted mask and other solids; max IT%.3e globalAbs%.3e pressure%.3e water%.3e duct%.3e at1.02s."),MaxIt,MaxEnergy,MaxDiv,MaxWater,MaxDuct));
+	for(const auto& Name:{File,BadFile,OldFile,MixedFile,MiddleFile,GroupFile}) IFileManager::Get().Delete(*VrgLayoutFile::PathFor(Name)); return true;
 }
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FRoomCeilingHoleUiHistoryTest,"VRG.Interaction.Layout.RoomCeilingHoleUiHistoryPersistence",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::CommandletContext | EAutomationTestFlags::EngineFilter)

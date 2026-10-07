@@ -370,6 +370,7 @@ bool ADataCenterDebugController::SelectRoomCeilingAlongRay(const FVector& EyeCm,
 	if(!bToggle || GetSelectedRoomCeilingIndex()==INDEX_NONE) ClearRoomCeilingSelection();
 	if(Best==INDEX_NONE) { ClearRoomCeilingSelection(); return false; }
 	if(!bKeepSelected || !SelectedRoomCeilings.Contains(Best)) SetCeilingSelection(SelectedRoomCeilings,Best,bKeepSelected?false:bToggle,SelectedRoomCeiling);
+	else SelectedRoomCeiling=Best; // The clicked selected item anchors a group without changing its membership.
 	SelectedCeilingTarget=Sim; SelectedCeilingList=Sim->GetRoomCeilingPlates(); bCeilingPreviewValid=true;
 	CeilingEditMessage=FString::Printf(TEXT("판 #%d 클릭 · 겹침 순서 %d/%d · 선택 %d개 · Alt 순환 / Shift 추가·제거"),Best+1,Hits.Find(Best)+1,Hits.Num(),SelectedRoomCeilings.Num()); return true;
 }
@@ -469,6 +470,13 @@ bool ADataCenterDebugController::GetRoomCeilingPreview(FRoomCeilingPlate& Out, b
 	bValid=bCeilingPreviewValid; return true;
 }
 
+bool ADataCenterDebugController::GetRoomCeilingListPreview(TArray<FRoomCeilingPlate>& Out,bool& bValid) const
+{
+	if(GetSelectedRoomCeilingIndex()==INDEX_NONE) return false;
+	Out=CeilingDragCorner==INDEX_NONE ? SelectedCeilingList : CeilingDragPlatesPreview;
+	bValid=bCeilingPreviewValid; return true;
+}
+
 int32 ADataCenterDebugController::PickRoomCeilingCorner(const FVector2D& Screen) const
 {
 	if(bRoomCeilingHoleEditing || GetSelectedRoomCeilingIndices().Num()!=1) return INDEX_NONE;
@@ -525,7 +533,7 @@ bool ADataCenterDebugController::BeginRoomCeilingCornerDrag(int32 Corner, const 
 bool ADataCenterDebugController::BeginRoomCeilingDrag(int32 Corner, bool bHole, const FVector& EyeCm, const FVector& Direction)
 {
 	const int32 Index=GetSelectedRoomCeilingIndex(); FVector Point=FVector::ZeroVector;
-	if(Index==INDEX_NONE || GetSelectedRoomCeilingIndices().Num()!=1 || (bHole && GetSelectedRoomCeilingHoleIndices().Num()!=1) || Corner<0 || Corner>CeilingMoveHandle || !IsCameraInputAvailable() || IsLayoutDragging()
+	if(Index==INDEX_NONE || (GetSelectedRoomCeilingIndices().Num()!=1 && (bHole || Corner!=CeilingMoveHandle)) || (bHole && GetSelectedRoomCeilingHoleIndices().Num()!=1) || Corner<0 || Corner>CeilingMoveHandle || !IsCameraInputAvailable() || IsLayoutDragging()
 		|| EyeCm.ContainsNaN() || Direction.ContainsNaN() || Direction.IsNearlyZero()
 		|| bAddingRack || bMarqueeActive || Grabbed.IsValid() || IsInputKeyDown(EKeys::RightMouseButton)) return false;
 	if(Corner==RoomHeightHandle)
@@ -534,6 +542,7 @@ bool ADataCenterDebugController::BeginRoomCeilingDrag(int32 Corner, bool bHole, 
 		{ CeilingEditMessage=TEXT("높이 축과 시선이 거의 평행하거나 교점이 시선 뒤에 있어 높이를 정할 수 없습니다. 카메라 각도를 바꾸세요."); return false; }
 	}
 	else if(!FloorPointSnapped(EyeCm,Direction.GetSafeNormal(),SimUnits::MetersToCentimeters(SelectedCeilingList[Index].HeightM),0,Point)) return false;
+	CeilingDragPlatesPreview=SelectedCeilingList; CeilingDragItems=bHole ? GetSelectedRoomCeilingHoleIndices() : GetSelectedRoomCeilingIndices();
 	CeilingDragPreview=SelectedCeilingList[Index]; CeilingDragRoom=FindSimActor()->GetRoomAirDomain();
 	CeilingDragHole=bHole ? GetSelectedRoomCeilingHoleIndex() : INDEX_NONE;
 	CeilingDragCorner=Corner; if(Corner!=RoomHeightHandle) CeilingDragStartCm=Point; bCeilingMouseThresholdPassed=false;
@@ -547,17 +556,22 @@ bool ADataCenterDebugController::BeginRoomCeilingPointerDrag(int32 PickedHandle,
 	if(PickedHandle!=INDEX_NONE) return BeginRoomCeilingCornerDrag(PickedHandle,EyeCm,Direction);
 	const bool bMultiple=GetSelectedRoomCeilingIndices().Num()>1;
 	if(!SelectRoomCeilingAlongRay(EyeCm,Direction,false,true,bMultiple)) return false;
-	return !bMultiple && BeginRoomCeilingMoveDrag(EyeCm,Direction);
+	return BeginRoomCeilingMoveDrag(EyeCm,Direction);
 }
 
 void ADataCenterDebugController::ValidateRoomCeilingPreview()
 {
 	auto* Sim=FindSimActor(); const int32 Index=GetSelectedRoomCeilingIndex();
 	if(!Sim || Index==INDEX_NONE) { bCeilingPreviewValid=false; return; }
-	auto Plates=SelectedCeilingList; Plates[Index]=CeilingDragPreview;
+	const auto& Plates=CeilingDragPlatesPreview;
 	FAirGridParams Grid; FBox Bounds(ForceInit); FString Reason;
 	bCeilingPreviewValid=Sim->ValidateRoomAirDomain(Sim->GetRoomAirDomain(),Grid,Bounds,Reason,&Plates);
 	CeilingEditMessage=DescribeRoomCeilingCandidate(CeilingDragPreview,Plates);
+	if(CeilingDragItems.Num()>1 && CeilingDragHole==INDEX_NONE)
+	{
+		CeilingEditMessage=FString::Printf(TEXT("판 그룹 %d개 · 기준 판 #%d · 다음은 기준 판 계산 범위\n"),CeilingDragItems.Num(),Index+1)+CeilingEditMessage;
+		for(int32 I:CeilingDragItems) { const auto& P=Plates[I]; CeilingEditMessage+=FString::Printf(TEXT("\n판 #%d 요청 XY %s ~ %s m · 높이 %.6g m"),I+1,*P.MinXYM.ToString(),*P.MaxXYM.ToString(),P.HeightM); }
+	}
 	if(CeilingDragHole!=INDEX_NONE)
 	{
 		const auto& H=CeilingDragPreview.Holes[CeilingDragHole];
@@ -580,6 +594,7 @@ void ADataCenterDebugController::UpdateRoomCeilingCornerDrag(const FVector& EyeC
 		{ bCeilingPreviewValid=false; CeilingEditMessage=TEXT("시선으로 높이를 정할 수 없어 확정할 수 없습니다. 카메라 각도를 바꾸세요."); return; }
 		auto Candidate=SelectedCeilingList[Index];
 		Candidate.HeightM=HeightTargetM(Candidate.HeightM,HeightCm,CeilingDragStartHeightCm,PlaceSnapM);
+		CeilingDragPlatesPreview=SelectedCeilingList; CeilingDragPlatesPreview[Index]=Candidate;
 		CeilingDragPreview=Candidate; ValidateRoomCeilingPreview(); return; // XY exact; reuse all list/commit/cancel gates.
 	}
 	FVector Point;
@@ -617,8 +632,16 @@ void ADataCenterDebugController::UpdateRoomCeilingCornerDrag(const FVector& EyeC
 		(CeilingDragCorner&1 ? Candidate.MaxXYM.X : Candidate.MinXYM.X)=Target.X;
 		(CeilingDragCorner&2 ? Candidate.MaxXYM.Y : Candidate.MinXYM.Y)=Target.Y;
 	}
+	// One anchor snap, identical delta for every selected plate; preserve each height/size/local holes.
+	CeilingDragPlatesPreview=SelectedCeilingList;
+	if(bMove && CeilingDragHole==INDEX_NONE)
+	{
+		const FVector2D Delta=Candidate.MinXYM-Original.MinXYM;
+		for(int32 I:CeilingDragItems) { CeilingDragPlatesPreview[I].MinXYM+=Delta; CeilingDragPlatesPreview[I].MaxXYM+=Delta; }
+	}
+	else CeilingDragPlatesPreview[Index]=Candidate;
 	// Validate again while stationary: equipment may have moved externally without changing the list.
-	CeilingDragPreview=Candidate; ValidateRoomCeilingPreview();
+	CeilingDragPreview=CeilingDragPlatesPreview[Index]; ValidateRoomCeilingPreview();
 }
 
 void ADataCenterDebugController::UpdateRoomCeilingFromCursor()
@@ -635,9 +658,9 @@ bool ADataCenterDebugController::EndRoomCeilingCornerDrag(bool bCommit)
 	if(CeilingDragCorner==INDEX_NONE) return false;
 	const int32 Index=GetSelectedRoomCeilingIndex(); auto* Sim=FindSimActor(); bool bOk=false;
 	if(bCommit && bCeilingPreviewValid && Index!=INDEX_NONE && Sim && Sim->GetRoomAirDomain()==CeilingDragRoom
-		&& IsCameraInputAvailable() && !IsInputKeyDown(EKeys::RightMouseButton) && !(CeilingDragPreview==SelectedCeilingList[Index]))
+		&& IsCameraInputAvailable() && !IsInputKeyDown(EKeys::RightMouseButton) && !(CeilingDragPlatesPreview==SelectedCeilingList))
 	{
-		auto After=SelectedCeilingList; After[Index]=CeilingDragPreview; FString Reason;
+		const auto After=CeilingDragPlatesPreview; FString Reason;
 		if(Sim->TrySetRoomCeilingPlates(After,Reason))
 		{
 			FLayoutTransformCommand Command; Command.bRoomCeilings=true; Command.RoomSettingsTarget=Sim;
@@ -646,7 +669,7 @@ bool ADataCenterDebugController::EndRoomCeilingCornerDrag(bool bCommit)
 		}
 		else { bCeilingPreviewValid=false; CeilingEditMessage=TEXT("거절: ")+Reason; }
 	}
-	CeilingDragCorner=INDEX_NONE; CeilingDragHole=INDEX_NONE;
+	CeilingDragCorner=INDEX_NONE; CeilingDragHole=INDEX_NONE; CeilingDragItems.Reset(); CeilingDragPlatesPreview.Reset();
 	if(!bCommit) { CeilingEditMessage.Reset(); bCeilingPreviewValid=true; }
 	return bOk;
 }
@@ -740,6 +763,19 @@ void ADataCenterDebugController::DrawRoomCeilings() const
 			DrawHoles(P,PreviewPlans[0]);
 		}
 	}
+	if(CeilingDragCorner==CeilingMoveHandle && CeilingDragHole==INDEX_NONE && CeilingDragItems.Num()>1 && Selected!=INDEX_NONE)
+	{
+		const FColor Color=bCeilingPreviewValid ? FColor(255,165,0) : FColor::Red;
+		TArray<FRoomCeilingPlan> GroupPlans;
+		const bool bPlan=VrgRoomAirDomain::BuildCeilingPlans(Sim->GetRoomAirDomain(),CeilingDragPlatesPreview,GP,Bounds,GroupPlans,Reason);
+		for(int32 I:CeilingDragItems)
+		{
+			const auto& P=CeilingDragPlatesPreview[I]; const int32 Order[]={0,1,3,2,0};
+			for(int32 J=0;J<4;++J) DrawDebugLine(GetWorld(),CeilingCornerCm(P,Order[J]),CeilingCornerCm(P,Order[J+1]),Color,false,0,1,5);
+			if(bPlan) { const auto& Box=GroupPlans[I].ActualBoundsM; DrawDebugBox(GetWorld(),SimUnits::MetersToUnreal(Box.GetCenter()),SimUnits::MetersToUnreal(Box.GetExtent()),Color,false,0,1,5); DrawHoles(P,GroupPlans[I]); }
+		}
+	}
+
 }
 
 void ADataCenterDebugController::DrawRoomBounds() const
