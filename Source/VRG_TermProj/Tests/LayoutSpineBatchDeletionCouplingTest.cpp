@@ -88,7 +88,10 @@ bool FLayoutSpineBatchDeletionCouplingTest::RunTest(const FString& Parameters)
 			&& Spine->GetActorTransform().Equals(Transforms[I],1e-9) && Spine->GetMutableModel().GetEnergyInJ()==0);
 	}
 	Physics(true,TEXT("original-load"));
-	UWorld* Fresh=NewWorld(); FActorSpawnParameters P; P.Name=Rack->GetFName(); Fresh->SpawnActor<ARackThermalActor>(P);
+	UWorld* Fresh=NewWorld();
+	// Latest v2 room/ceiling settings require the same owner as the real level.
+	Fresh->SpawnActor<ADataCenterSimulationActor>()->EnterLayoutMode();
+	FActorSpawnParameters P; P.Name=Rack->GetFName(); Fresh->SpawnActor<ARackThermalActor>(P);
 	P.Name=Cdu->GetFName(); Fresh->SpawnActor<ACoolingDistributionUnitActor>(P); P.Name=Names[0]; Fresh->SpawnActor<ASpineCabinetActor>(P);
 	TestTrue(TEXT("Fresh world deletion/repeat"),VrgLayoutFile::Load(Fresh,After,Summary) && VrgLayoutFile::Load(Fresh,After,Summary)
 		&& !VrgSpineLifecycle::Find(Fresh,Ids[0]) && !VrgSpineLifecycle::Find(Fresh,Ids[1]));

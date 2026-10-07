@@ -91,7 +91,10 @@ bool FLayoutSpineDeletionPersistenceTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("Repeated full file no duplication"),VrgLayoutFile::Load(W,File,Summary) && Summary.Contains(TEXT("스파인0 생성/0 제거")));
 	Physics(true,TEXT("full-load"));
 	// A fresh level contains the original spine: explicit deletion must apply, then full save must reconstruct it.
-	UWorld* Fresh=NewWorld(); FActorSpawnParameters P; P.Name=Rack->GetFName(); Fresh->SpawnActor<ARackThermalActor>(P);
+	UWorld* Fresh=NewWorld();
+	// Latest v2 room/ceiling settings require the same owner as the real level.
+	Fresh->SpawnActor<ADataCenterSimulationActor>()->EnterLayoutMode();
+	FActorSpawnParameters P; P.Name=Rack->GetFName(); Fresh->SpawnActor<ARackThermalActor>(P);
 	P.Name=Name; Fresh->SpawnActor<ASpineCabinetActor>(P);
 	P.Name=Cdu->GetFName(); Fresh->SpawnActor<ACoolingDistributionUnitActor>(P);
 	FFileHelper::SaveStringToFile(Deleted,*VrgLayoutFile::PathFor(File));

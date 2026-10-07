@@ -76,6 +76,10 @@ bool FLayoutSpinePersistenceTest::RunTest(const FString& Parameters)
 	Added->ApplyLayoutSettings(NonDefault); TestTrue(TEXT("Save nondefault configuration"),VrgLayoutFile::Save(W,File,Summary));
 	UWorld* Fresh=NewWorld(); FActorSpawnParameters P; P.Name=Rack->GetFName(); auto* FreshRack=Fresh->SpawnActor<ARackThermalActor>(P);
 	FreshRack->ApplyGb200Nvl72Preset();
+	// Latest v2 stores authored room/ceiling settings; a fresh level must have their owner.
+	TestFalse(TEXT("Fresh world without room settings owner rejects load"),VrgLayoutFile::Load(Fresh,File,Summary));
+	TestTrue(TEXT("Missing-owner rejection explains the failure and preserves inventory"),Summary.Contains(TEXT("통합 액터 없음")) && !VrgSpineLifecycle::Find(Fresh,Id));
+	Fresh->SpawnActor<ADataCenterSimulationActor>()->EnterLayoutMode();
 	TestTrue(TEXT("Fresh world runtime restoration"),VrgLayoutFile::Load(Fresh,File,Summary));
 	auto* FreshSpine=VrgSpineLifecycle::Find(Fresh,Id);
 	TestTrue(TEXT("Fresh world config, identity and state"),FreshSpine && FreshSpine->CaptureLayoutSettings()==NonDefault && FreshSpine->GetFName()==Name && FreshSpine->GetMutableModel().GetEnergyInJ()==0);

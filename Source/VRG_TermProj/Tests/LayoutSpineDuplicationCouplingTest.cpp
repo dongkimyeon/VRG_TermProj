@@ -103,7 +103,10 @@ bool FLayoutSpineDuplicationCouplingTest::RunTest(const FString& Parameters)
 			&& Clone->GetMutableModel().GetEnergyInJ()==0 && C->GetLayoutUndoCount()==0 && C->GetLayoutRedoCount()==0);
 		TestTrue(TEXT("Repeated reload no duplicate"),VrgLayoutFile::Load(W,File,Summary) && Summary.Contains(TEXT("스파인0 생성/0 제거")));
 		TestTrue(TEXT("Unrelated deletion intent retained"),W->GetSubsystem<UVrgSpineLayoutState>()->DeletedPlaced.Contains(DeletedId)); Physics(true,TEXT("reload"));
-		UWorld* Fresh=NewWorld(); FActorSpawnParameters P; P.Name=Rack->GetFName(); Fresh->SpawnActor<ARackThermalActor>(P);
+		UWorld* Fresh=NewWorld();
+		// Latest v2 room/ceiling settings require the same owner as the real level.
+		Fresh->SpawnActor<ADataCenterSimulationActor>()->EnterLayoutMode();
+		FActorSpawnParameters P; P.Name=Rack->GetFName(); Fresh->SpawnActor<ARackThermalActor>(P);
 		P.Name=Cdu->GetFName(); Fresh->SpawnActor<ACoolingDistributionUnitActor>(P);
 		if(Case==0) { P.Name=SourceName; Fresh->SpawnActor<ASpineCabinetActor>(P); }
 		P.Name=DeletedName; Fresh->SpawnActor<ASpineCabinetActor>(P);

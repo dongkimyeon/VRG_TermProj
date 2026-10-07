@@ -84,7 +84,10 @@ bool FLayoutSpineBatchDuplicationCouplingTest::RunTest(const FString& Parameters
 			&& Clone->CaptureLayoutSettings()==Configs[I] && Clone->GetActorTransform().Equals(Transforms[I],1e-9) && Clone->GetMutableModel().GetEnergyInJ()==0
 			&& Source->GetFName()==SourceNames[I] && Source->CaptureLayoutSettings()==Configs[I] && Source->GetActorTransform().Equals(Originals[I],1e-9)); }
 	Physics(true,TEXT("reload"));
-	UWorld* Fresh=NewWorld(); FActorSpawnParameters P; P.Name=Rack->GetFName(); Fresh->SpawnActor<ARackThermalActor>(P);
+	UWorld* Fresh=NewWorld();
+	// Latest v2 room/ceiling settings require the same owner as the real level.
+	Fresh->SpawnActor<ADataCenterSimulationActor>()->EnterLayoutMode();
+	FActorSpawnParameters P; P.Name=Rack->GetFName(); Fresh->SpawnActor<ARackThermalActor>(P);
 	P.Name=Cdu->GetFName(); Fresh->SpawnActor<ACoolingDistributionUnitActor>(P); P.Name=SourceNames[0]; Fresh->SpawnActor<ASpineCabinetActor>(P);
 	TestTrue(TEXT("Fresh load/repeat"),VrgLayoutFile::Load(Fresh,File,Summary) && VrgLayoutFile::Load(Fresh,File,Summary) && Summary.Contains(TEXT("스파인0 생성/0 제거")));
 	int32 Count=0; for(TActorIterator<ASpineCabinetActor> It(Fresh);It;++It) ++Count; TestEqual(TEXT("Fresh inventory exactly four"),Count,4);
