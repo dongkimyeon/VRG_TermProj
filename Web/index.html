@@ -5,70 +5,262 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>VRG 요약</title>
 <style>
-  :root { --bg:#f4f5f7; --card:#fff; --ink:#1d2330; --muted:#667085; --line:#e2e5ea; --warn:#b54708; }
-  @media (prefers-color-scheme: dark) { :root { --bg:#12151b; --card:#1b2029; --ink:#e7eaf0; --muted:#98a2b3; --line:#2b3240; --warn:#f79009; } }
-  body { margin:0; padding:24px 16px; background:var(--bg); color:var(--ink); font:15px/1.45 system-ui, "Malgun Gothic", sans-serif; }
-  .card { max-width:640px; margin:0 auto; background:var(--card); border:1px solid var(--line); border-radius:12px; padding:20px; }
-  h1 { font-size:18px; margin:0 0 4px; }
-  .sub { color:var(--muted); font-size:13px; margin-bottom:16px; }
-  .grid { display:grid; grid-template-columns:repeat(auto-fit, minmax(170px, 1fr)); gap:12px; }
-  .kpi { border:1px solid var(--line); border-radius:8px; padding:10px 12px; }
+  /* 색 변수는 데모(VRG 냉각 트윈 데모)와 같다. 시리즈 색은 검증된 다크 카테고리 1·2번 슬롯. */
+  :root {
+    color-scheme: dark;
+    --bg:#14171d; --panel:#1c2029; --panel2:#222733; --line:#2e3441;
+    --text:#e4e7ee; --muted:#8a93a3; --faint:#5c6475;
+    --s1:#3987e5; --s2:#d95926;
+    --mono: ui-monospace, "Cascadia Mono", Consolas, monospace;
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; padding:20px 16px 32px; background:var(--bg); color:var(--text); font:14px/1.45 system-ui, "Malgun Gothic", sans-serif; }
+  .wrap { max-width:1100px; margin:0 auto; }
+  header { display:flex; align-items:baseline; gap:12px; flex-wrap:wrap; margin-bottom:14px; }
+  h1 { font-size:17px; margin:0; font-weight:600; }
+  .mode { color:var(--muted); font-size:13px; }
+  .status { margin-left:auto; color:var(--faint); font-size:12px; font-family:var(--mono); }
+  .status.err { color:#f0b43c; }
+  .panel { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:14px 16px; }
+  .kpis { display:grid; grid-template-columns:repeat(auto-fit, minmax(160px, 1fr)); gap:10px; margin-bottom:12px; }
   .kpi .label { color:var(--muted); font-size:12px; }
-  .kpi .value { font-size:22px; font-variant-numeric:tabular-nums; }
-  .kpi .note { color:var(--muted); font-size:11px; }
-  .status { margin-top:14px; font-size:13px; color:var(--muted); }
-  .status.err { color:var(--warn); }
-  .foot { margin-top:14px; font-size:12px; color:var(--muted); border-top:1px solid var(--line); padding-top:10px; }
+  .kpi .value { font:500 20px var(--mono); font-variant-numeric:tabular-nums; margin-top:2px; }
+  .kpi .note { color:var(--faint); font-size:11px; margin-top:2px; }
+  .charts { display:grid; grid-template-columns:repeat(auto-fit, minmax(330px, 1fr)); gap:12px; }
+  .chart h2 { font-size:13px; font-weight:600; margin:0; }
+  .chart .sub { color:var(--faint); font-size:11px; margin:2px 0 6px; }
+  .legend { display:flex; gap:14px; font-size:12px; color:var(--muted); margin-bottom:4px; min-height:16px; }
+  .legend i { display:inline-block; width:14px; height:2px; vertical-align:middle; margin-right:5px; border-radius:1px; }
+  svg { display:block; width:100%; height:190px; overflow:visible; }
+  svg text { fill:var(--faint); font:10.5px var(--mono); }
+  .grid line { stroke:var(--line); stroke-width:1; }
+  .series { fill:none; stroke-width:2; stroke-linejoin:round; stroke-linecap:round; }
+  .event line { stroke:var(--muted); stroke-width:1; stroke-dasharray:3 3; }
+  .event text { fill:var(--muted); }
+  .cross { stroke:var(--faint); stroke-width:1; }
+  .dot { stroke:var(--panel); stroke-width:2; }
+  .tip { position:fixed; pointer-events:none; background:var(--panel2); border:1px solid var(--line); border-radius:6px;
+         padding:6px 8px; font:12px var(--mono); color:var(--text); display:none; white-space:nowrap; z-index:5; }
+  .tip .k { color:var(--muted); }
+  .tablebar { margin-top:12px; display:flex; gap:10px; align-items:center; }
+  button { background:var(--panel2); color:var(--text); border:1px solid var(--line); border-radius:6px; padding:5px 10px; font:inherit; font-size:12px; cursor:pointer; }
+  table { width:100%; border-collapse:collapse; font:12px var(--mono); margin-top:8px; }
+  th, td { text-align:right; padding:4px 8px; border-bottom:1px solid var(--line); font-variant-numeric:tabular-nums; }
+  th { color:var(--muted); font-weight:500; }
+  .foot { margin-top:14px; font-size:12px; color:var(--faint); line-height:1.6; }
 </style>
 </head>
 <body>
-<div class="card">
-  <h1>데이터센터 냉각 요약</h1>
-  <div class="sub" id="mode">연결 중…</div>
-  <div class="grid">
+<div class="wrap">
+  <header>
+    <h1>데이터센터 냉각 요약</h1>
+    <span class="mode" id="mode">연결 중…</span>
+    <span class="status" id="status"></span>
+  </header>
+
+  <div class="panel kpis">
     <div class="kpi"><div class="label">SimTime</div><div class="value" id="t">-</div><div class="note">통합 시계</div></div>
     <div class="kpi"><div class="label">IT 전력</div><div class="value" id="it">-</div><div class="note" id="itnote">창 평균</div></div>
     <div class="kpi"><div class="label">제거열 (현재)</div><div class="value" id="rm">-</div><div class="note" id="rmnote">냉각수 + 공기 코일</div></div>
-    <div class="kpi"><div class="label">부분 PUE</div><div class="value" id="pue">-</div><div class="note">(IT + CRAH 팬 + 펌프) / IT, 시설 PUE 아님</div></div>
+    <div class="kpi"><div class="label">부분 PUE</div><div class="value" id="pue">-</div><div class="note">(IT + CRAH 팬 + 펌프) / IT</div></div>
     <div class="kpi"><div class="label">흡기 최고</div><div class="value" id="imax">-</div><div class="note">랙별 창 평균의 최고</div></div>
     <div class="kpi"><div class="label">흡기 평균</div><div class="value" id="iavg">-</div><div class="note" id="inote">랙별 창 평균의 평균</div></div>
   </div>
-  <div class="status" id="status"></div>
+
+  <div class="charts">
+    <div class="panel chart" id="c-inlet">
+      <h2>흡기 온도</h2><div class="sub">랙별 1 s 평균의 최고·평균 · °C</div>
+      <div class="legend"></div><svg></svg>
+    </div>
+    <div class="panel chart" id="c-heat">
+      <h2>IT 전력 대 제거열</h2><div class="sub">1 s 평균 · kW · 제거열 = 냉각수 방출 + 공기 코일</div>
+      <div class="legend"></div><svg></svg>
+    </div>
+    <div class="panel chart" id="c-pue">
+      <h2>부분 PUE</h2><div class="sub">1 s 평균 · (IT + CRAH 팬 + 펌프) / IT · 시설 PUE 아님</div>
+      <div class="legend"></div><svg></svg>
+    </div>
+  </div>
+
+  <div class="tablebar"><button id="tbtn" type="button">표 보기</button><span class="mode" id="tnote"></span></div>
+  <div id="table" hidden></div>
+
   <div class="foot">보정되지 않은 모델의 계산값이다. 보존 잔차가 작다는 것은 장부가 맞는다는 뜻이지 실제 설비 온도가 맞는다는 뜻이 아니다.
-    칠러·냉각탑·UPS·배전 손실·조명은 모델에 없다. 1초마다 /api/snapshot을 읽는다(읽기 전용).</div>
+    칠러·냉각탑·UPS·배전 손실·조명은 모델에 없다. 점선 세로선은 <code>vrg.Eval.Event</code> 시각이다(적용 전이면 "예정").
+    최근 600 s를 1 s 간격으로 보관하며 1초마다 읽는다(읽기 전용).</div>
 </div>
+<div class="tip" id="tip"></div>
+
 <script>
 const $ = id => document.getElementById(id);
+const toC = k => k - 273.15;                       // 규약 2: K로 받고 화면에서만 °C
 const kw = w => (w / 1000).toFixed(1) + ' kW';
-const c = k => (k - 273.15).toFixed(2) + ' °C';   // 규약 2: K로 받고 화면에서만 °C
-async function poll() {
-  try {
-    const r = await fetch('/api/snapshot', { cache: 'no-store' });
-    if (!r.ok) throw new Error(r.status === 503 ? '시뮬레이션 액터가 아직 값을 내지 않았다' : 'HTTP ' + r.status);
-    const s = await r.json();
-    $('t').textContent = s.simTimeS.toFixed(2) + ' s';
-    $('mode').textContent = s.mode === 'simulation' ? '시뮬레이션 모드' : '배치 모드 (물리 정지)';
-    if (s.evalReady) {
-      $('it').textContent = kw(s.itWindowW);
-      $('itnote').textContent = '창 평균 ' + s.windowS.toFixed(0) + ' s · 현재 ' + kw(s.itNowW);
-      $('rm').textContent = kw(s.removedNowW);
-      $('rmnote').textContent = '냉각수 ' + kw(s.coolantRemovedNowW) + ' + 공기 ' + kw(s.airRemovedNowW);
-      $('pue').textContent = s.partialPueWindow === null ? '계산 불가' : s.partialPueWindow.toFixed(4);
-      $('imax').textContent = c(s.inletWindowMeanMaxK);
-      $('iavg').textContent = c(s.inletWindowMeanAvgK);
-      $('inote').textContent = '흡기 ' + s.inletCount + '곳, 창 평균';
-    } else {
-      for (const id of ['it', 'rm', 'pue', 'imax', 'iavg']) $(id).textContent = '-';
+const LENGTH_S = 600;
+
+// ---- 요약 카드 (1단계) ----
+async function pollSnapshot() {
+  const r = await fetch('/api/snapshot', { cache:'no-store' });
+  if (!r.ok) throw new Error(r.status === 503 ? '시뮬레이션 액터가 아직 값을 내지 않았다' : 'HTTP ' + r.status);
+  const s = await r.json();
+  $('t').textContent = s.simTimeS.toFixed(2) + ' s';
+  $('mode').textContent = s.mode === 'simulation' ? '시뮬레이션 모드' : '배치 모드 (물리 정지)';
+  if (s.evalReady) {
+    $('it').textContent = kw(s.itWindowW);
+    $('itnote').textContent = '창 평균 ' + s.windowS.toFixed(0) + ' s · 현재 ' + kw(s.itNowW);
+    $('rm').textContent = kw(s.removedNowW);
+    $('rmnote').textContent = '냉각수 ' + kw(s.coolantRemovedNowW) + ' + 공기 ' + kw(s.airRemovedNowW);
+    $('pue').textContent = s.partialPueWindow === null ? '계산 불가' : s.partialPueWindow.toFixed(4);
+    $('imax').textContent = toC(s.inletWindowMeanMaxK).toFixed(2) + ' °C';
+    $('iavg').textContent = toC(s.inletWindowMeanAvgK).toFixed(2) + ' °C';
+    $('inote').textContent = '흡기 ' + s.inletCount + '곳, 창 평균';
+  } else {
+    for (const id of ['it', 'rm', 'pue', 'imax', 'iavg']) $(id).textContent = '-';
+  }
+}
+
+// ---- 시계열 (2단계) ----
+let points = [], events = [], generation = null, lastT = -1;
+async function pollSeries() {
+  const r = await fetch('/api/series?since=' + lastT, { cache:'no-store' });
+  if (!r.ok) throw new Error('시계열 HTTP ' + r.status);
+  const s = await r.json();
+  if (s.generation !== generation || s.simTimeS < lastT) {
+    // 실행을 다시 시작했다: 쌓은 점을 버리고 처음부터 받는다.
+    if (generation !== null && lastT >= 0) { generation = s.generation; lastT = -1; points = []; return pollSeries(); }
+    generation = s.generation;
+  }
+  for (const p of s.points) if (p.t > lastT) { points.push(p); lastT = p.t; }
+  if (points.length > LENGTH_S) points = points.slice(points.length - LENGTH_S);
+  events = s.events;
+}
+
+const charts = [
+  { id:'c-inlet', series:[
+      { name:'최고', color:'var(--s1)', get:p => toC(p.inletMaxK) },
+      { name:'평균', color:'var(--s2)', get:p => toC(p.inletMeanK) } ], fmt:v => v.toFixed(2) + ' °C' },
+  { id:'c-heat', series:[
+      { name:'IT 전력', color:'var(--s1)', get:p => p.itW / 1000 },
+      { name:'제거열', color:'var(--s2)', get:p => (p.coolantRemovedW + p.airRemovedW) / 1000 } ], fmt:v => v.toFixed(1) + ' kW' },
+  { id:'c-pue', series:[
+      { name:'부분 PUE', color:'var(--s1)', get:p => p.partialPue } ], fmt:v => v.toFixed(4) },
+];
+for (const c of charts) {
+  const el = $(c.id);
+  c.svg = el.querySelector('svg');
+  c.legend = el.querySelector('.legend');
+  // 시리즈가 2개 이상일 때만 범례(1개는 제목이 이름이다).
+  if (c.series.length > 1) c.legend.innerHTML = c.series.map(s => `<span><i style="background:${s.color}"></i>${s.name}</span>`).join('');
+}
+
+const NS = 'http://www.w3.org/2000/svg';
+const mk = (tag, attrs, parent) => { const e = document.createElementNS(NS, tag); for (const k in attrs) e.setAttribute(k, attrs[k]); parent && parent.appendChild(e); return e; };
+function niceTicks(lo, hi, n) {
+  const span = hi - lo || 1, step0 = span / n, mag = Math.pow(10, Math.floor(Math.log10(step0)));
+  const step = [1, 2, 2.5, 5, 10].map(m => m * mag).find(s => span / s <= n) || 10 * mag;
+  const out = []; for (let v = Math.ceil(lo / step) * step; v <= hi + step * 1e-9; v += step) out.push(+v.toFixed(10));
+  return out;
+}
+
+function draw(c) {
+  const svg = c.svg, W = svg.clientWidth || 340, H = 190, L = 48, R = 46, T = 14, B = 22;
+  svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
+  svg.replaceChildren();
+  const pts = points.filter(p => c.series.every(s => Number.isFinite(s.get(p))));
+  if (pts.length < 2) { mk('text', { x:L, y:H / 2 }, svg).textContent = '시계열을 모으는 중…'; c.geom = null; return; }
+  const t1 = pts[pts.length - 1].t, t0 = Math.max(pts[0].t, t1 - LENGTH_S);
+  let lo = Infinity, hi = -Infinity;
+  for (const p of pts) for (const s of c.series) { const v = s.get(p); lo = Math.min(lo, v); hi = Math.max(hi, v); }
+  const pad = (hi - lo) * 0.08 || Math.abs(hi) * 0.001 || 1; lo -= pad; hi += pad;
+  const x = t => L + (t - t0) / Math.max(t1 - t0, 1) * (W - L - R);
+  const y = v => T + (hi - v) / (hi - lo) * (H - T - B);
+  const g = mk('g', { class:'grid' }, svg);
+  for (const v of niceTicks(lo, hi, 4)) {
+    mk('line', { x1:L, x2:W - R, y1:y(v), y2:y(v) }, g);
+    mk('text', { x:L - 6, y:y(v) + 3.5, 'text-anchor':'end' }, svg).textContent = c.fmt(v).replace(/ .*/, '');
+  }
+  for (const t of niceTicks(t0, t1, 5)) mk('text', { x:x(t), y:H - 6, 'text-anchor':'middle' }, svg).textContent = t + ' s';
+  // 이벤트 세로선: 보이는 시간 구간 안의 것만.
+  for (const e of events) {
+    if (e.t < t0 || e.t > t1) continue;
+    const eg = mk('g', { class:'event' }, svg);
+    mk('line', { x1:x(e.t), x2:x(e.t), y1:T, y2:H - B }, eg);
+    const what = e.kind === 'util' ? `부하 ${e.value}` : e.kind === 'rackutil' ? `랙 ${e.index} 부하 ${e.value}` : e.kind;
+    mk('text', { x:x(e.t) + 4, y:T + 9 }, eg).textContent = `${e.t} s ${what}${e.applied ? '' : ' (예정)'}`;
+  }
+  for (const s of c.series) {
+    const d = pts.map((p, i) => (i ? 'L' : 'M') + x(p.t).toFixed(1) + ' ' + y(s.get(p)).toFixed(1)).join('');
+    mk('path', { d, class:'series', stroke:s.color }, svg);
+  }
+  // 2개 시리즈는 선 끝에 직접 라벨(4개 이하).
+  if (c.series.length > 1) {
+    const last = pts[pts.length - 1];
+    const ys = c.series.map(s => y(s.get(last)));
+    if (Math.abs(ys[0] - ys[1]) < 12) {          // 두 라벨이 겹치면 가운데에서 위아래로 벌린다
+      const m = (ys[0] + ys[1]) / 2, up = ys[0] <= ys[1];
+      ys[0] = m + (up ? -6 : 6); ys[1] = m + (up ? 6 : -6);
     }
-    $('status').textContent = '갱신 ' + new Date().toLocaleTimeString() + (s.evalReady ? '' : ' · 시뮬레이션 스텝 전이라 값 없음');
+    c.series.forEach((s, i) => { mk('text', { x:W - R + 6, y:ys[i] + 3.5 }, svg).textContent = s.name; });
+  }
+  c.geom = { pts, x, y, L, R, T, B, W, H };
+  c.cross = mk('line', { class:'cross', y1:T, y2:H - B, visibility:'hidden' }, svg);
+  c.dots = c.series.map(s => mk('circle', { r:4, class:'dot', fill:s.color, visibility:'hidden' }, svg));
+}
+
+// 크로스헤어 + 툴팁: 세 차트가 같은 SimTime을 가리킨다.
+const tip = $('tip');
+function hover(t, ev) {
+  if (t === null) { tip.style.display = 'none'; for (const c of charts) if (c.geom) { c.cross.setAttribute('visibility', 'hidden'); c.dots.forEach(d => d.setAttribute('visibility', 'hidden')); } return; }
+  let rows = '', when = null;
+  for (const c of charts) {
+    if (!c.geom) continue;
+    const { pts, x, y } = c.geom;
+    let best = pts[0]; for (const p of pts) if (Math.abs(p.t - t) < Math.abs(best.t - t)) best = p;
+    when = best.t;
+    c.cross.setAttribute('x1', x(best.t)); c.cross.setAttribute('x2', x(best.t)); c.cross.setAttribute('visibility', 'visible');
+    c.series.forEach((s, i) => { c.dots[i].setAttribute('cx', x(best.t)); c.dots[i].setAttribute('cy', y(s.get(best))); c.dots[i].setAttribute('visibility', 'visible');
+      rows += `<div><span class="k">${s.name}</span> ${c.fmt(s.get(best))}</div>`; });
+  }
+  tip.innerHTML = `<div class="k">SimTime ${when} s</div>` + rows;
+  tip.style.display = 'block';
+  const left = Math.min(ev.clientX + 14, window.innerWidth - tip.offsetWidth - 8);
+  tip.style.left = left + 'px'; tip.style.top = (ev.clientY + 14) + 'px';
+}
+for (const c of charts) {
+  c.svg.addEventListener('mousemove', ev => {
+    if (!c.geom) return;
+    const r = c.svg.getBoundingClientRect(), px = (ev.clientX - r.left) / r.width * c.geom.W;
+    const { pts, L, R, W } = c.geom, t0 = pts[0].t, t1 = pts[pts.length - 1].t;
+    hover(t0 + (px - L) / (W - L - R) * Math.max(t1 - t0, 1), ev);
+  });
+  c.svg.addEventListener('mouseleave', () => hover(null));
+}
+
+// 표 보기: 색 없이도 값을 읽을 수 있게(최근 30점).
+$('tbtn').addEventListener('click', () => { $('table').hidden = !$('table').hidden; $('tbtn').textContent = $('table').hidden ? '표 보기' : '표 닫기'; renderTable(); });
+function renderTable() {
+  if ($('table').hidden) return;
+  const rows = points.slice(-30).reverse().map(p => `<tr><td>${p.t}</td><td>${toC(p.inletMaxK).toFixed(2)}</td><td>${toC(p.inletMeanK).toFixed(2)}</td>`
+    + `<td>${(p.itW / 1000).toFixed(1)}</td><td>${((p.coolantRemovedW + p.airRemovedW) / 1000).toFixed(1)}</td><td>${p.partialPue === null ? '-' : p.partialPue.toFixed(4)}</td></tr>`).join('');
+  $('table').innerHTML = `<table><thead><tr><th>SimTime s</th><th>흡기 최고 °C</th><th>흡기 평균 °C</th><th>IT kW</th><th>제거열 kW</th><th>부분 PUE</th></tr></thead><tbody>${rows}</tbody></table>`;
+  $('tnote').textContent = '최근 30 s, 1 s 평균';
+}
+
+async function tick() {
+  try {
+    await pollSnapshot();
+    await pollSeries();
+    for (const c of charts) draw(c);
+    renderTable();
+    $('status').textContent = '갱신 ' + new Date().toLocaleTimeString() + ' · 점 ' + points.length;
     $('status').className = 'status';
   } catch (e) {
     $('status').textContent = '읽기 실패: ' + e.message;
     $('status').className = 'status err';
   }
 }
-poll();
-setInterval(poll, 1000);
+tick();
+setInterval(tick, 1000);
+window.addEventListener('resize', () => charts.forEach(draw));
 </script>
 </body>
 </html>

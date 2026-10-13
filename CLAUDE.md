@@ -4438,3 +4438,11 @@ L_Test 실제 화면(벽 색·잘라보기·볼륨과의 겹침)은 미확인. �
 검증: `VRG.Web.DashboardSummary`(신규, 리포트 값과 정확 일치·서버 켬/끔), `VRG.Eval.RerunEventsAndReport` 성공. Editor -game 한 번에서
 페이지가 실시간 갱신되고 30 s 리포트 IT·잔차가 기존과 같다. 요약 생성 1회 평균 0.006 ms(측정값). `Web/`는 패키지에 아직 스테이징하지 않았다.
 상세는 `Tools/웹대시보드_계획.md`의 "1단계 결과".
+
+## 2026-10-13 S7 웹 대시보드 2단계 (시계열)
+
+`FVrgEvaluation`이 SimTime 1 s 버킷을 닫을 때마다 흡기 최고·평균, IT, 제거열, 부분 PUE의 1 s 평균을 최근 600 s 링에 쌓는다(리포트 창과 같은 버킷,
+리포트 값 불변). `GET /api/series?since=`가 점과 `vrg.Eval.Event` 표식을 내고, 페이지는 데모의 어두운 테마로 차트 3개·이벤트 점선·툴팁·표 보기를 그린다.
+검증: `VRG.Web.SeriesAnalytic`(합성 입력 1 s 평균 해석값 상대 1.7e-16), `VRG.Web.DashboardSummary` 확장(빈틈 없음, 리포트 창 IT와 상대 차 0),
+`VRG.Eval.RerunEventsAndReport` 성공. Editor -game 한 번에서 71점·15 s 이벤트 표시 확인, 라벨 겹침 버그 수정. 발행 1회 평균 0.065 ms(측정값).
+상세는 `Tools/웹대시보드_계획.md`의 "2단계 결과".
