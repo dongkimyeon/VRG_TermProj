@@ -48,6 +48,26 @@
   th, td { text-align:right; padding:4px 8px; border-bottom:1px solid var(--line); font-variant-numeric:tabular-nums; }
   th { color:var(--muted); font-weight:500; }
   .foot { margin-top:14px; font-size:12px; color:var(--faint); line-height:1.6; }
+  /* 평면도(3단계) */
+  .plan { margin-bottom:12px; }
+  .plan .head { display:flex; gap:16px; align-items:flex-end; flex-wrap:wrap; }
+  .plan .head > div:first-child { flex:1; min-width:220px; }
+  .tag { font-size:10.5px; color:var(--s1); border:1px solid var(--line); border-radius:4px; padding:0 5px; margin-left:6px; font-weight:500; }
+  .scale .bar { width:220px; max-width:60vw; height:8px; border-radius:4px; }
+  .scale .ends { position:relative; width:220px; max-width:60vw; height:14px; font:10.5px var(--mono); color:var(--faint); }
+  .scale .ends span { position:absolute; top:2px; transform:translateX(-50%); white-space:nowrap; }
+  .scale .note { font-size:11px; color:var(--muted); margin-top:3px; }
+  #plansvg { height:440px; margin-top:8px; }
+  #plansvg .domain { fill:none; stroke:var(--faint); stroke-dasharray:4 4; }
+  #plansvg .cab { stroke:var(--bg); stroke-width:1.5; cursor:default; }
+  #plansvg .cab.none { fill:var(--panel2); }
+  #plansvg .unit { fill:var(--panel2); stroke:var(--muted); stroke-width:1; }
+  #plansvg .unit.auto { stroke-dasharray:3 2; }
+  #plansvg .barrier { fill:var(--faint); }
+  #plansvg .arrow { stroke:var(--muted); stroke-width:1.5; fill:none; }
+  #plansvg .warn { fill:#f0b43c; font:600 11px var(--mono); text-anchor:middle; }
+  #plansvg .lbl { fill:var(--muted); font:10px var(--mono); text-anchor:middle; }
+  #plansvg .hover { stroke:var(--text); stroke-width:2; fill:none; pointer-events:none; }
 </style>
 </head>
 <body>
@@ -65,6 +85,24 @@
     <div class="kpi"><div class="label">부분 PUE</div><div class="value" id="pue">-</div><div class="note">(IT + CRAH 팬 + 펌프) / IT</div></div>
     <div class="kpi"><div class="label">흡기 최고</div><div class="value" id="imax">-</div><div class="note">랙별 창 평균의 최고</div></div>
     <div class="kpi"><div class="label">흡기 평균</div><div class="value" id="iavg">-</div><div class="note" id="inote">랙별 창 평균의 평균</div></div>
+  </div>
+
+  <div class="panel plan">
+    <div class="head">
+      <div>
+        <h2 style="font-size:13px;margin:0;font-weight:600">흡기 평면도 <span class="tag">계산값</span></h2>
+        <div class="sub" style="color:var(--faint);font-size:11px;margin-top:2px" id="plansub">위에서 본 장비 발자국 · 랙·스파인 색 = 흡기 창 평균</div>
+      </div>
+      <div class="scale">
+        <div class="bar" id="pbar"></div>
+        <div class="ends" id="pends"></div>
+        <div class="note"><span style="color:#f0b43c">▲</span> 27 °C 권장 상한 초과 · 회색 = CDU·CRAH·벽 (점선 = 자동 배치 CRAH, 화살표 = 토출)</div>
+      </div>
+    </div>
+    <svg id="plansvg"></svg>
+    <div class="tablebar"><button id="pbtn" type="button">흡기 표 보기</button>
+      <button id="prange" type="button" aria-pressed="false">색 범위: 고정 21~29 °C</button></div>
+    <div id="ptable" hidden></div>
   </div>
 
   <div class="charts">
@@ -245,10 +283,114 @@ function renderTable() {
   $('tnote').textContent = '최근 30 s, 1 s 평균';
 }
 
+// ---- 평면도 (3단계) ----
+// 단일 색조 순차(파랑). 어두운 배경이라 낮은 값 = 배경 쪽 어두운 단계, 높은 값 = 밝은 단계(참조 팔레트 700 -> 100).
+// 범위는 데모처럼 21~29 °C 고정: 실행·배치끼리 같은 색이 같은 온도다. 범위 밖은 끝 색으로 자르고 툴팁에 적는다.
+const SEQ = ['#0d366b', '#104281', '#184f95', '#1c5cab', '#256abf', '#2a78d6', '#3987e5', '#5598e7', '#6da7ec', '#86b6ef', '#9ec5f4', '#b7d3f6', '#cde2fb'];
+// 기본은 고정(실행끼리 비교 가능). "현재 값"은 지금 흡기 최저~최고로 늘려 랙 사이 차이를 보이게 한다(실행끼리 비교 불가).
+const FIXED_MIN = 21, FIXED_MAX = 29;
+let TMIN = FIXED_MIN, TMAX = FIXED_MAX, autoRange = false;
+function updateRange() {
+  TMIN = FIXED_MIN; TMAX = FIXED_MAX;
+  if (autoRange && layout && layout.inletWindowMeanK.length > 0) {
+    const cs = layout.inletWindowMeanK.map(toC);
+    TMIN = Math.floor(Math.min(...cs) * 10) / 10; TMAX = Math.ceil(Math.max(...cs) * 10) / 10;
+    if (TMAX - TMIN < 0.5) TMAX = TMIN + 0.5;
+  }
+  // 끝 라벨은 막대 안쪽으로 붙이고(겹침 방지), 27 °C 눈금은 숫자만(뜻은 아래 설명 줄에 있다).
+  const marks = [[TMIN, TMIN.toFixed(1) + ' °C', 'translateX(0)'], [TMAX, TMAX.toFixed(1) + ' °C', 'translateX(-100%)']];
+  if (27 > TMIN + 0.15 * (TMAX - TMIN) && 27 < TMAX - 0.15 * (TMAX - TMIN)) marks.splice(1, 0, [27, '▲27', 'translateX(-50%)']);
+  $('pends').innerHTML = marks.map(([v, s, tf]) => `<span style="left:${(v - TMIN) / (TMAX - TMIN) * 100}%;transform:${tf}">${s}</span>`).join('');
+}
+$('prange').addEventListener('click', () => {
+  autoRange = !autoRange;
+  $('prange').setAttribute('aria-pressed', String(autoRange));
+  $('prange').textContent = autoRange ? '색 범위: 현재 값 (실행끼리 비교 불가)' : '색 범위: 고정 21~29 °C';
+  drawPlan();
+});
+function seqColor(c) {
+  const t = Math.max(0, Math.min(1, (c - TMIN) / (TMAX - TMIN))) * (SEQ.length - 1), i = Math.min(Math.floor(t), SEQ.length - 2), f = t - i;
+  const a = SEQ[i].match(/\w\w/g).map(h => parseInt(h, 16)), b = SEQ[i + 1].match(/\w\w/g).map(h => parseInt(h, 16));
+  return 'rgb(' + a.map((v, k) => Math.round(v + (b[k] - v) * f)).join(',') + ')';
+}
+$('pbar').style.background = 'linear-gradient(90deg,' + SEQ.join(',') + ')';
+
+const KIND = { rack:'랙', spine:'스파인', cdu:'CDU', crah:'CRAH', barrier:'벽·차단막' };
+let layout = null;
+async function pollLayout() {
+  const r = await fetch('/api/layout', { cache:'no-store' });
+  if (!r.ok) throw new Error('평면도 HTTP ' + r.status);
+  layout = await r.json();
+}
+const inletC = e => (layout && e.inlet >= 0 && e.inlet < layout.inletWindowMeanK.length) ? toC(layout.inletWindowMeanK[e.inlet]) : null;
+function drawPlan() {
+  const svg = $('plansvg');
+  svg.replaceChildren();
+  updateRange();
+  if (!layout || layout.equipment.length === 0) { mk('text', { x:10, y:20 }, svg).textContent = '장비가 없다'; return; }
+  // 화면 x = 세계 X, 화면 y = 세계 Y(위에서 본 UE 좌표와 같은 방향, 거울 없음).
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  const grow = (x, y) => { x0 = Math.min(x0, x); x1 = Math.max(x1, x); y0 = Math.min(y0, y); y1 = Math.max(y1, y); };
+  if (layout.domain) { grow(layout.domain.minXM, layout.domain.minYM); grow(layout.domain.maxXM, layout.domain.maxYM); }
+  for (const e of layout.equipment) { const r = Math.hypot(e.depthM, e.widthM) / 2; grow(e.xM - r, e.yM - r); grow(e.xM + r, e.yM + r); }
+  const pad = 0.6; x0 -= pad; y0 -= pad; x1 += pad; y1 += pad;
+  const W = 1000, H = Math.max(200, Math.round(W * (y1 - y0) / (x1 - x0)));
+  svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
+  const s = W / (x1 - x0), X = x => (x - x0) * s, Y = y => (y - y0) * s;
+  if (layout.domain) mk('rect', { class:'domain', x:X(layout.domain.minXM), y:Y(layout.domain.minYM),
+    width:(layout.domain.maxXM - layout.domain.minXM) * s, height:(layout.domain.maxYM - layout.domain.minYM) * s }, svg);
+  const order = { barrier:0, cdu:1, crah:2, spine:3, rack:3 };
+  const items = layout.equipment.slice().sort((a, b) => order[a.kind] - order[b.kind]);
+  let hot = 0, colored = 0;
+  for (const e of items) {
+    const g = mk('g', { transform:`translate(${X(e.xM).toFixed(1)} ${Y(e.yM).toFixed(1)}) rotate(${e.yawDeg.toFixed(2)})` }, svg);
+    const w = e.depthM * s, h = e.widthM * s, c = inletC(e);
+    let cls = 'unit' + (e.auto ? ' auto' : ''), fill = null;
+    if (e.kind === 'rack' || e.kind === 'spine') { cls = 'cab' + (c === null ? ' none' : ''); if (c !== null) { fill = seqColor(c); ++colored; } }
+    else if (e.kind === 'barrier') cls = 'barrier';
+    const rect = mk('rect', { class:cls, x:-w / 2, y:-h / 2, width:w, height:h, rx:Math.min(2, w / 4) }, g);
+    if (fill) rect.setAttribute('fill', fill);
+    if (e.kind === 'crah') {                       // 토출 방향(+X) 화살표
+      const a = w / 2 + Math.min(18, 0.6 * s);
+      mk('path', { class:'arrow', d:`M ${w / 2} 0 L ${a} 0 M ${a - 5} -4 L ${a} 0 L ${a - 5} 4` }, g);
+    }
+    if (e.kind === 'cdu' || e.kind === 'crah') mk('text', { class:'lbl', x:X(e.xM), y:Y(e.yM) + 3.5 }, svg).textContent = KIND[e.kind];
+    if (c !== null && c > 27) { ++hot; mk('text', { class:'warn', x:X(e.xM), y:Y(e.yM) + 4 }, svg).textContent = '▲'; }
+    rect.addEventListener('mousemove', ev => planTip(e, c, ev, g));
+    rect.addEventListener('mouseleave', () => { tip.style.display = 'none'; svg.querySelectorAll('.hover').forEach(n => n.remove()); });
+  }
+  $('plansub').textContent = `위에서 본 장비 발자국 · 랙·스파인 색 = 흡기 창 평균 (${colored}곳` + (hot ? `, 27 °C 초과 ${hot}곳` : '') + ')'
+    + (colored === 0 ? ' · 시뮬레이션 스텝 전이라 흡기 값 없음' : '');
+  renderPlanTable();
+}
+function planTip(e, c, ev, g) {
+  const svg = $('plansvg');
+  svg.querySelectorAll('.hover').forEach(n => n.remove());
+  const r = g.querySelector('rect');
+  mk('rect', { class:'hover', x:r.getAttribute('x'), y:r.getAttribute('y'), width:r.getAttribute('width'), height:r.getAttribute('height') }, g);
+  const val = c === null ? '' : `<div><span class="k">흡기 창 평균</span> ${c.toFixed(2)} °C${c < TMIN || c > TMAX ? ' (색 범위 밖)' : ''}${c > 27 ? ' ▲' : ''}</div>`;
+  tip.innerHTML = `<div class="k">${KIND[e.kind]}${e.auto ? ' (자동 배치)' : ''}</div><div>${e.name}</div>`
+    + `<div><span class="k">위치</span> (${e.xM.toFixed(2)}, ${e.yM.toFixed(2)}) m · ${Math.round(e.yawDeg)}°</div>` + val;
+  tip.style.display = 'block';
+  tip.style.left = Math.min(ev.clientX + 14, window.innerWidth - tip.offsetWidth - 8) + 'px';
+  tip.style.top = (ev.clientY + 14) + 'px';
+}
+$('pbtn').addEventListener('click', () => { $('ptable').hidden = !$('ptable').hidden; $('pbtn').textContent = $('ptable').hidden ? '흡기 표 보기' : '흡기 표 닫기'; renderPlanTable(); });
+function renderPlanTable() {
+  if ($('ptable').hidden || !layout) return;
+  const rows = layout.equipment.filter(e => inletC(e) !== null).sort((a, b) => inletC(b) - inletC(a)).map(e => {
+    const c = inletC(e);
+    return `<tr><td style="text-align:left">${KIND[e.kind]} ${e.name}</td><td>${e.xM.toFixed(2)}</td><td>${e.yM.toFixed(2)}</td><td>${c.toFixed(2)}</td><td>${c > 27 ? '▲ 초과' : ''}</td></tr>`;
+  }).join('');
+  $('ptable').innerHTML = `<table><thead><tr><th style="text-align:left">장비</th><th>X m</th><th>Y m</th><th>흡기 창 평균 °C</th><th>27 °C</th></tr></thead><tbody>${rows}</tbody></table>`;
+}
+
 async function tick() {
   try {
     await pollSnapshot();
     await pollSeries();
+    await pollLayout();
+    drawPlan();
     for (const c of charts) draw(c);
     renderTable();
     $('status').textContent = '갱신 ' + new Date().toLocaleTimeString() + ' · 점 ' + points.length;
