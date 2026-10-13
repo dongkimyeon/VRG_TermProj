@@ -62,6 +62,7 @@ struct FVrgDashboardEquipment
 	double CenterXM = 0.0, CenterYM = 0.0;   // footprint centre (actor origin = bottom centre)
 	double YawDeg = 0.0;                     // local +X (depth / CRAH supply direction) in world XY
 	double DepthM = 0.0, WidthM = 0.0;       // local X / Y extents
+	double BaseZM = 0.0, HeightM = 0.0;      // bottom height and Z extent (3D view, 2026-10-13)
 	int32 InletIndex = INDEX_NONE;           // FVrgEvaluation inlet for racks and spines
 	bool bAutoPlaced = false;                // automatic CRAH layout (no actor)
 };
@@ -71,6 +72,7 @@ struct VRG_TERMPROJ_API FVrgDashboardLayout
 	double SimTimeS = 0.0;
 	bool bHasDomain = false;
 	double DomainMinXM = 0.0, DomainMinYM = 0.0, DomainMaxXM = 0.0, DomainMaxYM = 0.0;
+	double DomainMinZM = 0.0, DomainMaxZM = 0.0;
 	TArray<FVrgDashboardEquipment> Equipment;
 	TArray<double> InletWindowMeanK;         // by inlet index; empty before the first simulation step
 	double RecommendedInletK = 0.0;          // ASHRAE recommended inlet limit used by the evaluation

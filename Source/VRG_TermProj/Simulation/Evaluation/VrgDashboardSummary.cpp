@@ -148,6 +148,7 @@ TSharedRef<FJsonObject> FVrgDashboardLayout::ToJsonObject() const
 		TSharedRef<FJsonObject> D = MakeShared<FJsonObject>();
 		D->SetNumberField(TEXT("minXM"), DomainMinXM); D->SetNumberField(TEXT("minYM"), DomainMinYM);
 		D->SetNumberField(TEXT("maxXM"), DomainMaxXM); D->SetNumberField(TEXT("maxYM"), DomainMaxYM);
+		D->SetNumberField(TEXT("minZM"), DomainMinZM); D->SetNumberField(TEXT("maxZM"), DomainMaxZM);
 		Root->SetObjectField(TEXT("domain"), D);
 	}
 	else Root->SetField(TEXT("domain"), MakeShared<FJsonValueNull>());
@@ -162,6 +163,8 @@ TSharedRef<FJsonObject> FVrgDashboardLayout::ToJsonObject() const
 		O->SetNumberField(TEXT("yawDeg"), E.YawDeg);
 		O->SetNumberField(TEXT("depthM"), E.DepthM);
 		O->SetNumberField(TEXT("widthM"), E.WidthM);
+		O->SetNumberField(TEXT("baseZM"), E.BaseZM);
+		O->SetNumberField(TEXT("heightM"), E.HeightM);
 		O->SetNumberField(TEXT("inlet"), E.InletIndex);
 		O->SetBoolField(TEXT("auto"), E.bAutoPlaced);
 		Items.Add(MakeShared<FJsonValueObject>(O));
@@ -188,6 +191,8 @@ bool FVrgDashboardLayout::FromJson(const FString& Json, FVrgDashboardLayout& Out
 	{
 		L.bHasDomain = (*Domain)->TryGetNumberField(TEXT("minXM"), L.DomainMinXM) && (*Domain)->TryGetNumberField(TEXT("minYM"), L.DomainMinYM)
 			&& (*Domain)->TryGetNumberField(TEXT("maxXM"), L.DomainMaxXM) && (*Domain)->TryGetNumberField(TEXT("maxYM"), L.DomainMaxYM);
+		// Z range since the 3D view (optional: plan views inside older reports lack it).
+		(*Domain)->TryGetNumberField(TEXT("minZM"), L.DomainMinZM); (*Domain)->TryGetNumberField(TEXT("maxZM"), L.DomainMaxZM);
 		if (!L.bHasDomain) return false;
 	}
 	for (const TSharedPtr<FJsonValue>& V : *Items)
@@ -200,6 +205,8 @@ bool FVrgDashboardLayout::FromJson(const FString& Json, FVrgDashboardLayout& Out
 			|| !O->TryGetNumberField(TEXT("yawDeg"), E.YawDeg) || !O->TryGetNumberField(TEXT("depthM"), E.DepthM)
 			|| !O->TryGetNumberField(TEXT("widthM"), E.WidthM) || !O->TryGetNumberField(TEXT("inlet"), Inlet)
 			|| !O->TryGetBoolField(TEXT("auto"), E.bAutoPlaced)) return false;
+		O->TryGetNumberField(TEXT("baseZM"), E.BaseZM);     // optional (older reports)
+		O->TryGetNumberField(TEXT("heightM"), E.HeightM);
 		E.InletIndex = int32(Inlet);
 		L.Equipment.Add(E);
 	}

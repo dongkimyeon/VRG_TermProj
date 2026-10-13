@@ -1712,7 +1712,7 @@ FVrgDashboardLayout ADataCenterSimulationActor::BuildDashboardLayout() const
 	{
 		const FBox B = AirField->GetDomainBoundsM();
 		L.bHasDomain = true;
-		L.DomainMinXM = B.Min.X; L.DomainMinYM = B.Min.Y; L.DomainMaxXM = B.Max.X; L.DomainMaxYM = B.Max.Y;
+		L.DomainMinXM = B.Min.X; L.DomainMinYM = B.Min.Y; L.DomainMaxXM = B.Max.X; L.DomainMaxYM = B.Max.Y; L.DomainMinZM = B.Min.Z; L.DomainMaxZM = B.Max.Z;
 	}
 	// Inlet i is Racks[i], then Spines[j] at Racks.Num() + j (the evaluation's order, see EvalAfterStep).
 	const bool bInletsMatch = bEvalReady && Eval.GetNumInlets() == Racks.Num() + Spines.Num();
@@ -1751,7 +1751,7 @@ FVrgDashboardLayout ADataCenterSimulationActor::BuildDashboardLayout() const
 			E.Name = It->GetName();
 			E.CenterXM = M.X; E.CenterYM = M.Y;
 			E.YawDeg = It->GetActorRotation().Yaw;
-			E.DepthM = SizeM.X; E.WidthM = SizeM.Y;
+			E.DepthM = SizeM.X; E.WidthM = SizeM.Y; E.BaseZM = M.Z; E.HeightM = SizeM.Z;
 		}
 	}
 	if (Mode == ESimMode::Simulation)
@@ -1765,7 +1765,7 @@ FVrgDashboardLayout ADataCenterSimulationActor::BuildDashboardLayout() const
 			E.Name = FString::Printf(TEXT("자동 CRAH %d"), I + 1);
 			E.CenterXM = P.BaseM.X; E.CenterYM = P.BaseM.Y;
 			E.YawDeg = FMath::RadiansToDegrees(FMath::Atan2(P.ForwardM.Y, P.ForwardM.X));
-			E.DepthM = P.SizeM.X; E.WidthM = P.SizeM.Y;
+			E.DepthM = P.SizeM.X; E.WidthM = P.SizeM.Y; E.BaseZM = P.BaseM.Z; E.HeightM = P.SizeM.Z;
 			E.bAutoPlaced = true;
 		}
 	}

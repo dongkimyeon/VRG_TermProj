@@ -154,7 +154,7 @@ bool FWebDashboardSummaryTest::RunTest(const FString& Parameters)
 		bool bMeansExact = Plan.InletWindowMeanK.Num() == Eval.GetNumInlets();
 		for (int32 I = 0; bMeansExact && I < Eval.GetNumInlets(); ++I) bMeansExact = Plan.InletWindowMeanK[I] == Eval.GetInlet(I).WindowMeanK;
 		TestTrue(TEXT("inlet means = evaluation window means (exact)"), bMeansExact);
-		TestTrue(TEXT("domain present"), Plan.bHasDomain && Plan.DomainMaxXM > Plan.DomainMinXM && Plan.DomainMaxYM > Plan.DomainMinYM);
+		TestTrue(TEXT("domain present"), Plan.bHasDomain && Plan.DomainMaxXM > Plan.DomainMinXM && Plan.DomainMaxYM > Plan.DomainMinYM && Plan.DomainMaxZM >= 2.236 && Plan.DomainMinZM <= 0.0);
 		int32 PlanRackCount = 0, AutoCrahs = 0, Walls = 0;
 		TSet<int32> SeenInlets;
 		for (const FVrgDashboardEquipment& E : Plan.Equipment)
@@ -165,7 +165,7 @@ bool FWebDashboardSummaryTest::RunTest(const FString& Parameters)
 				SeenInlets.Add(E.InletIndex);
 				const bool bLeft = E.CenterXM < 0.0;
 				TestTrue(TEXT("rack footprint at the actor (m) with its size and yaw"), FMath::Abs(E.CenterXM - (bLeft ? -1.5 : 1.5)) < 1e-12
-					&& FMath::Abs(E.CenterYM) < 1e-12 && E.DepthM == 1.068 && E.WidthM == .6
+					&& FMath::Abs(E.CenterYM) < 1e-12 && E.DepthM == 1.068 && E.WidthM == .6 && E.HeightM == 2.236 && FMath::Abs(E.BaseZM) < 1e-12
 					&& FMath::Abs(FRotator::NormalizeAxis(E.YawDeg - (bLeft ? 0.0 : 180.0))) < 1e-9);
 				TestTrue(TEXT("rack centre inside the air domain"), E.CenterXM > Plan.DomainMinXM && E.CenterXM < Plan.DomainMaxXM
 					&& E.CenterYM > Plan.DomainMinYM && E.CenterYM < Plan.DomainMaxYM);
@@ -175,7 +175,7 @@ bool FWebDashboardSummaryTest::RunTest(const FString& Parameters)
 			{
 				++Walls;
 				TestTrue(TEXT("barrier footprint from its scale"), FMath::Abs(E.DepthM - .2) < 1e-12 && FMath::Abs(E.WidthM - 2.0) < 1e-12
-					&& FMath::Abs(E.CenterYM - 3.0) < 1e-12);
+					&& FMath::Abs(E.CenterYM - 3.0) < 1e-12 && FMath::Abs(E.HeightM - 2.4) < 1e-12);
 			}
 		}
 		TestEqual(TEXT("both racks listed"), PlanRackCount, 2);
