@@ -1772,6 +1772,103 @@ FVrgDashboardLayout ADataCenterSimulationActor::BuildDashboardLayout() const
 	return L;
 }
 
+FVrgDashboardRacks ADataCenterSimulationActor::BuildDashboardRacks(int32 DetailInlet) const
+{
+	FVrgDashboardRacks Out;
+	Out.SimTimeS = Clock.GetSimTimeS();
+	Out.bSimulating = Mode == ESimMode::Simulation;
+	if (!Out.bSimulating || !bEvalReady) return Out;   // the cabinets' state is the coupled run's; nothing to show in layout
+	const TArray<double>& InletK = Bridge.GetLastAirInletTempK();
+	const FCouplingSnapshot& Snap = GetCachedDisplaySnapshot();
+	const int32 NumCabinets = Racks.Num() + Spines.Num();
+	for (int32 I = 0; I < NumCabinets; ++I)
+	{
+		const bool bRack = I < Racks.Num();
+		AActor* Cabinet = bRack ? static_cast<AActor*>(Racks[I].Get()) : static_cast<AActor*>(Spines[I - Racks.Num()].Get());
+		if (Cabinet == nullptr) continue;
+		const FRackThermalModel& Model = bRack ? Racks[I]->GetMutableModel() : Spines[I - Racks.Num()]->GetMutableModel();
+		const FRackThermalInput& In = bRack ? Racks[I]->Input : Spines[I - Racks.Num()]->GetMutableInput();
+		const FRackThermalParams& P = Model.GetParams();
+		const FRackThermalState& St = Model.GetState();
+		FVrgDashboardRackRow& R = Out.Rows.AddDefaulted_GetRef();
+		R.Inlet = I;
+		R.Kind = bRack ? TEXT("rack") : TEXT("spine");
+		R.Name = Cabinet->GetName();
+		const FVector M = SimUnits::UnrealToMeters(Cabinet->GetActorLocation());
+		R.XM = M.X; R.YM = M.Y;
+		R.Utilization = In.Utilization;
+		R.HeatW = Model.GetLastTotalHeatW();
+		R.ToCoolantW = Model.GetLastHeatRemovedByCoolantW();
+		R.ToRoomAirW = Model.GetLastTotalHeatToRoomAirW();
+		R.InletNowK = InletK.IsValidIndex(I) ? InletK[I] : In.AirInletTempK;
+		R.CoolantInK = In.CoolantInletTempK;
+		R.CoolantOutK = St.CoolantTempK;
+		R.CoolantFlowM3s = Snap.RackCoolantMassFlowKgs.IsValidIndex(I) && CoolantDensityKgM3 > 0.0 ? Snap.RackCoolantMassFlowKgs[I] / CoolantDensityKgM3 : 0.0;
+		R.FanPowerW = Model.GetLastTotalFanPowerW();
+		R.NumSlots = Model.GetNumSleds();
+		int32 FanSlots = 0;
+		for (int32 S = 0; S < R.NumSlots; ++S)
+		{
+			const bool bDocked = !In.SledDocked.IsValidIndex(S) || In.SledDocked[S];
+			R.DockedSlots += bDocked ? 1 : 0;
+			if (bDocked && FRackThermalModel::FansOf(P, S) != nullptr && St.SlotFanSpeedRatio.IsValidIndex(S))
+			{
+				R.FanSpeedMean += St.SlotFanSpeedRatio[S];
+				++FanSlots;
+			}
+			for (int32 N = Model.GetSlotNodeStart(S), End = N + Model.GetSlotNodeCount(S); N >= 0 && N < End; ++N)
+			{
+				if (bDocked && St.ComponentTempK.IsValidIndex(N) && St.ComponentTempK[N] > R.HottestPartK)
+				{
+					R.HottestPartK = St.ComponentTempK[N];
+					R.HottestPart = FString::Printf(TEXT("슬롯 %d %s"), S + 1, *Model.GetNodeParams(N).Name.ToString());
+				}
+			}
+		}
+		if (FanSlots > 0) R.FanSpeedMean /= FanSlots;
+
+		if (I != DetailInlet) continue;
+		// The selected cabinet only: one snapshot gives every part's heat flows.
+		const FRackThermalSnapshot RS = Model.MakeSnapshot(Out.SimTimeS);
+		FVrgDashboardRackDetail& D = Out.Detail;
+		Out.bHasDetail = true;
+		D.Inlet = I;
+		D.TotalHeatW = RS.TotalHeatW; D.ToCoolantW = RS.TotalHeatToCoolantW; D.ToAirW = RS.TotalHeatToAirW; D.ToAmbientW = RS.TotalHeatToAmbientW;
+		D.MixedAirOutletK = RS.MixedAirOutletTempK; D.CoolantOutletK = RS.CoolantOutletTempK;
+		const UEnum* KindEnum = StaticEnum<ERackPartKind>();
+		for (int32 S = 0; S < R.NumSlots; ++S)
+		{
+			FVrgDashboardRackSlot& Slot = D.Slots.AddDefaulted_GetRef();
+			Slot.Index = S;
+			if (P.Slots.IsValidIndex(S))
+			{
+				const FRackSlot& Def = P.Slots[S];
+				Slot.BottomZM = Def.BottomZM; Slot.HeightM = Def.HeightM;
+				if (P.DeviceTypes.IsValidIndex(Def.DeviceType)) Slot.Device = P.DeviceTypes[Def.DeviceType].Name.ToString();
+			}
+			Slot.bDocked = !In.SledDocked.IsValidIndex(S) || In.SledDocked[S];
+			Slot.InletK = In.SlotAirInletTempK.IsValidIndex(S) ? In.SlotAirInletTempK[S] : In.AirInletTempK;
+			Slot.HeatToAirW = RS.SlotHeatToAirW.IsValidIndex(S) ? RS.SlotHeatToAirW[S] : 0.0;
+			Slot.AirFlowKgs = RS.SlotAirMassFlowKgs.IsValidIndex(S) ? RS.SlotAirMassFlowKgs[S] : 0.0;
+			Slot.OutletAirK = RS.SledAirOutletTempK.IsValidIndex(S) ? RS.SledAirOutletTempK[S] : 0.0;
+			Slot.FanSpeed = RS.SlotFanSpeedRatio.IsValidIndex(S) ? RS.SlotFanSpeedRatio[S] : 0.0;
+			for (int32 N = Model.GetSlotNodeStart(S), End = N + Model.GetSlotNodeCount(S); N >= 0 && N < End; ++N)
+			{
+				const FRackComponentParams& Part = Model.GetNodeParams(N);
+				FVrgDashboardRackPart& Q = Slot.Parts.AddDefaulted_GetRef();
+				Q.Name = Part.Name.ToString();
+				Q.Kind = KindEnum != nullptr ? KindEnum->GetNameStringByValue(int64(Part.Kind)) : FString();
+				Q.TempK = RS.ComponentTempK.IsValidIndex(N) ? RS.ComponentTempK[N] : 0.0;
+				Q.HeatW = RS.ComponentHeatW.IsValidIndex(N) ? RS.ComponentHeatW[N] : 0.0;
+				Q.ToCoolantW = RS.ComponentHeatToCoolantW.IsValidIndex(N) ? RS.ComponentHeatToCoolantW[N] : 0.0;
+				Q.ToAirW = RS.ComponentHeatToAirW.IsValidIndex(N) ? RS.ComponentHeatToAirW[N] : 0.0;
+				Slot.HeatW += Q.HeatW;
+			}
+		}
+	}
+	return Out;
+}
+
 FString ADataCenterSimulationActor::ProfileDashboardLayout(int32 Repeats) const
 {
 	UWorld* World = GetWorld();
@@ -1834,6 +1931,7 @@ void ADataCenterSimulationActor::PublishDashboard()
 	}
 	Web.PublishSeries(MoveTemp(Series));
 	Web.PublishLayout(BuildDashboardLayout());   // struct copy; JSON is built per request (it was most of the publish cost)
+	Web.PublishRacks(BuildDashboardRacks(Web.GetRequestedRack()));
 }
 
 void ADataCenterSimulationActor::DrawSummary() const

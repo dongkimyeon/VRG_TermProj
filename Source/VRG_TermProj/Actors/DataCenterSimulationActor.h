@@ -334,6 +334,9 @@ public:
 	// Diagnostic (vrg.Web.ProfileLayout): average ms of the full actor walk (used) vs a class-wise walk (comparison),
 	// the whole layout build and its JSON, over Repeats runs on the game thread. Returns one log line.
 	FString ProfileDashboardLayout(int32 Repeats) const;
+	// Web dashboard stage 4: one row per evaluation inlet (racks, then spines) in simulation mode, plus the slots and
+	// parts of DetailInlet (one MakeSnapshot) when it is a valid inlet.
+	FVrgDashboardRacks BuildDashboardRacks(int32 DetailInlet) const;
 
 private:
 	friend bool VrgLayoutFile::Load(UWorld* World, const FString& Name, FString& OutSummary);

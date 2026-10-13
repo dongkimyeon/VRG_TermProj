@@ -71,6 +71,32 @@ FString FVrgWebDashboard::GetLayoutJson() const
 	return bHasLayout ? LatestLayout.ToJson() : FString();
 }
 
+void FVrgWebDashboard::PublishRacks(FVrgDashboardRacks&& InRacks)
+{
+	FScopeLock Guard(&Lock);
+	LatestRacks = MoveTemp(InRacks);
+	bHasRacks = true;
+}
+
+FString FVrgWebDashboard::GetRacksJson() const
+{
+	FScopeLock Guard(&Lock);
+	return bHasRacks ? LatestRacks.RowsToJson() : FString();
+}
+
+FString FVrgWebDashboard::RequestRackDetailJson(int32 Inlet)
+{
+	FScopeLock Guard(&Lock);
+	RequestedRack = Inlet;
+	return bHasRacks && LatestRacks.bHasDetail && LatestRacks.Detail.Inlet == Inlet ? LatestRacks.DetailToJson() : FString();
+}
+
+int32 FVrgWebDashboard::GetRequestedRack() const
+{
+	FScopeLock Guard(&Lock);
+	return RequestedRack;
+}
+
 void FVrgWebDashboard::Stop()
 {
 	if (Router.IsValid())
@@ -87,6 +113,9 @@ void FVrgWebDashboard::Stop()
 	bHasSeries = false;
 	LatestLayout = FVrgDashboardLayout();
 	bHasLayout = false;
+	LatestRacks = FVrgDashboardRacks();
+	bHasRacks = false;
+	RequestedRack = INDEX_NONE;
 }
 
 bool FVrgWebDashboard::ApplySettings()
@@ -133,6 +162,32 @@ bool FVrgWebDashboard::ApplySettings()
 			const FString Json = GetLayoutJson();
 			OnComplete(NoStore(Json.IsEmpty()
 				? FHttpServerResponse::Error(EHttpServerResponseCodes::ServiceUnavail, TEXT("no_layout"), TEXT("시뮬레이션 액터가 아직 값을 내지 않았다"))
+				: FHttpServerResponse::Create(Json, TEXT("application/json; charset=utf-8"))));
+			return true;
+		})));
+	Routes.Add(Router->BindRoute(FHttpPath(TEXT("/api/racks")), EHttpServerRequestVerbs::VERB_GET,
+		FHttpRequestHandler::CreateLambda([this](const FHttpServerRequest&, const FHttpResultCallback& OnComplete)
+		{
+			const FString Json = GetRacksJson();
+			OnComplete(NoStore(Json.IsEmpty()
+				? FHttpServerResponse::Error(EHttpServerResponseCodes::ServiceUnavail, TEXT("no_racks"), TEXT("시뮬레이션 액터가 아직 값을 내지 않았다"))
+				: FHttpServerResponse::Create(Json, TEXT("application/json; charset=utf-8"))));
+			return true;
+		})));
+	Routes.Add(Router->BindRoute(FHttpPath(TEXT("/api/rack")), EHttpServerRequestVerbs::VERB_GET,
+		FHttpRequestHandler::CreateLambda([this](const FHttpServerRequest& Request, const FHttpResultCallback& OnComplete)
+		{
+			int32 Inlet = INDEX_NONE;
+			if (const FString* I = Request.QueryParams.Find(TEXT("i"))) LexFromString(Inlet, **I);
+			if (Inlet < 0)
+			{
+				OnComplete(NoStore(FHttpServerResponse::Error(EHttpServerResponseCodes::BadRequest, TEXT("bad_index"), TEXT("i=<흡기 번호>가 필요하다"))));
+				return true;
+			}
+			const FString Json = RequestRackDetailJson(Inlet);
+			// 202: recorded; the game thread builds this rack's detail on its next publish (<= 0.5 s), ask again.
+			OnComplete(NoStore(Json.IsEmpty()
+				? FHttpServerResponse::Error(EHttpServerResponseCodes::Accepted, TEXT("pending"), TEXT("다음 발행 때 만든다"))
 				: FHttpServerResponse::Create(Json, TEXT("application/json; charset=utf-8"))));
 			return true;
 		})));

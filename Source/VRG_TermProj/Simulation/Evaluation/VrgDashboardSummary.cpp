@@ -201,3 +201,159 @@ bool FVrgDashboardLayout::FromJson(const FString& Json, FVrgDashboardLayout& Out
 	Out = MoveTemp(L);
 	return true;
 }
+
+namespace
+{
+	// Rack tab field order is shared by the writer and the reader so the two cannot drift.
+	template <typename FVisit>
+	void VisitRowNumbers(FVrgDashboardRackRow& R, FVisit&& Visit)
+	{
+		Visit(TEXT("xM"), R.XM); Visit(TEXT("yM"), R.YM); Visit(TEXT("utilization"), R.Utilization); Visit(TEXT("heatW"), R.HeatW);
+		Visit(TEXT("toCoolantW"), R.ToCoolantW); Visit(TEXT("toRoomAirW"), R.ToRoomAirW); Visit(TEXT("inletNowK"), R.InletNowK);
+		Visit(TEXT("coolantInK"), R.CoolantInK); Visit(TEXT("coolantOutK"), R.CoolantOutK); Visit(TEXT("coolantFlowM3s"), R.CoolantFlowM3s);
+		Visit(TEXT("fanSpeedMean"), R.FanSpeedMean); Visit(TEXT("fanPowerW"), R.FanPowerW); Visit(TEXT("hottestPartK"), R.HottestPartK);
+	}
+	template <typename FVisit>
+	void VisitSlotNumbers(FVrgDashboardRackSlot& S, FVisit&& Visit)
+	{
+		Visit(TEXT("bottomZM"), S.BottomZM); Visit(TEXT("heightM"), S.HeightM); Visit(TEXT("inletK"), S.InletK); Visit(TEXT("heatW"), S.HeatW);
+		Visit(TEXT("heatToAirW"), S.HeatToAirW); Visit(TEXT("airFlowKgs"), S.AirFlowKgs); Visit(TEXT("outletAirK"), S.OutletAirK);
+		Visit(TEXT("fanSpeed"), S.FanSpeed);
+	}
+	template <typename FVisit>
+	void VisitPartNumbers(FVrgDashboardRackPart& P, FVisit&& Visit)
+	{
+		Visit(TEXT("tempK"), P.TempK); Visit(TEXT("heatW"), P.HeatW); Visit(TEXT("toCoolantW"), P.ToCoolantW); Visit(TEXT("toAirW"), P.ToAirW);
+	}
+	FString SerializeJson(const TSharedRef<FJsonObject>& Root)
+	{
+		FString Json;
+		FJsonSerializer::Serialize(Root, TJsonWriterFactory<>::Create(&Json));
+		return Json;
+	}
+}
+
+FString FVrgDashboardRacks::RowsToJson() const
+{
+	TSharedRef<FJsonObject> Root = MakeShared<FJsonObject>();
+	Root->SetNumberField(TEXT("schema"), 1);
+	Root->SetNumberField(TEXT("simTimeS"), SimTimeS);
+	Root->SetStringField(TEXT("mode"), bSimulating ? TEXT("simulation") : TEXT("layout"));
+	TArray<TSharedPtr<FJsonValue>> Items;
+	for (FVrgDashboardRackRow R : Rows)
+	{
+		TSharedRef<FJsonObject> O = MakeShared<FJsonObject>();
+		O->SetNumberField(TEXT("inlet"), R.Inlet);
+		O->SetStringField(TEXT("kind"), R.Kind);
+		O->SetStringField(TEXT("name"), R.Name);
+		O->SetStringField(TEXT("hottestPart"), R.HottestPart);
+		O->SetNumberField(TEXT("dockedSlots"), R.DockedSlots);
+		O->SetNumberField(TEXT("numSlots"), R.NumSlots);
+		VisitRowNumbers(R, [&O](const TCHAR* Key, double& V) { O->SetNumberField(Key, V); });
+		Items.Add(MakeShared<FJsonValueObject>(O));
+	}
+	Root->SetArrayField(TEXT("racks"), Items);
+	return SerializeJson(Root);
+}
+
+FString FVrgDashboardRacks::DetailToJson() const
+{
+	if (!bHasDetail) return FString();
+	TSharedRef<FJsonObject> Root = MakeShared<FJsonObject>();
+	Root->SetNumberField(TEXT("schema"), 1);
+	Root->SetNumberField(TEXT("simTimeS"), SimTimeS);
+	Root->SetNumberField(TEXT("inlet"), Detail.Inlet);
+	Root->SetNumberField(TEXT("totalHeatW"), Detail.TotalHeatW);
+	Root->SetNumberField(TEXT("toCoolantW"), Detail.ToCoolantW);
+	Root->SetNumberField(TEXT("toAirW"), Detail.ToAirW);
+	Root->SetNumberField(TEXT("toAmbientW"), Detail.ToAmbientW);
+	Root->SetNumberField(TEXT("mixedAirOutletK"), Detail.MixedAirOutletK);
+	Root->SetNumberField(TEXT("coolantOutletK"), Detail.CoolantOutletK);
+	TArray<TSharedPtr<FJsonValue>> Slots;
+	for (FVrgDashboardRackSlot S : Detail.Slots)
+	{
+		TSharedRef<FJsonObject> O = MakeShared<FJsonObject>();
+		O->SetNumberField(TEXT("index"), S.Index);
+		O->SetStringField(TEXT("device"), S.Device);
+		O->SetBoolField(TEXT("docked"), S.bDocked);
+		VisitSlotNumbers(S, [&O](const TCHAR* Key, double& V) { O->SetNumberField(Key, V); });
+		TArray<TSharedPtr<FJsonValue>> Parts;
+		for (FVrgDashboardRackPart P : S.Parts)
+		{
+			TSharedRef<FJsonObject> Q = MakeShared<FJsonObject>();
+			Q->SetStringField(TEXT("name"), P.Name);
+			Q->SetStringField(TEXT("kind"), P.Kind);
+			VisitPartNumbers(P, [&Q](const TCHAR* Key, double& V) { Q->SetNumberField(Key, V); });
+			Parts.Add(MakeShared<FJsonValueObject>(Q));
+		}
+		O->SetArrayField(TEXT("parts"), Parts);
+		Slots.Add(MakeShared<FJsonValueObject>(O));
+	}
+	Root->SetArrayField(TEXT("slots"), Slots);
+	return SerializeJson(Root);
+}
+
+bool FVrgDashboardRacks::RowsFromJson(const FString& Json, FVrgDashboardRacks& Out)
+{
+	TSharedPtr<FJsonObject> Root;
+	const TArray<TSharedPtr<FJsonValue>>* Items = nullptr;
+	FString Mode;
+	FVrgDashboardRacks R;
+	if (!FJsonSerializer::Deserialize(TJsonReaderFactory<>::Create(Json), Root) || !Root.IsValid()
+		|| !Root->TryGetNumberField(TEXT("simTimeS"), R.SimTimeS) || !Root->TryGetStringField(TEXT("mode"), Mode)
+		|| !Root->TryGetArrayField(TEXT("racks"), Items)) return false;
+	R.bSimulating = Mode == TEXT("simulation");
+	for (const TSharedPtr<FJsonValue>& V : *Items)
+	{
+		const TSharedPtr<FJsonObject> O = V->AsObject();
+		FVrgDashboardRackRow Row;
+		double Inlet = 0.0, Docked = 0.0, NumSlots = 0.0;
+		bool bOk = O.IsValid() && O->TryGetNumberField(TEXT("inlet"), Inlet) && O->TryGetStringField(TEXT("kind"), Row.Kind)
+			&& O->TryGetStringField(TEXT("name"), Row.Name) && O->TryGetStringField(TEXT("hottestPart"), Row.HottestPart)
+			&& O->TryGetNumberField(TEXT("dockedSlots"), Docked) && O->TryGetNumberField(TEXT("numSlots"), NumSlots);
+		if (bOk) VisitRowNumbers(Row, [&](const TCHAR* Key, double& Value) { bOk = bOk && O->TryGetNumberField(Key, Value); });
+		if (!bOk) return false;
+		Row.Inlet = int32(Inlet); Row.DockedSlots = int32(Docked); Row.NumSlots = int32(NumSlots);
+		R.Rows.Add(Row);
+	}
+	Out = MoveTemp(R);
+	return true;
+}
+
+bool FVrgDashboardRacks::DetailFromJson(const FString& Json, FVrgDashboardRackDetail& Out)
+{
+	TSharedPtr<FJsonObject> Root;
+	const TArray<TSharedPtr<FJsonValue>>* Slots = nullptr;
+	FVrgDashboardRackDetail D;
+	double Inlet = 0.0;
+	if (!FJsonSerializer::Deserialize(TJsonReaderFactory<>::Create(Json), Root) || !Root.IsValid()
+		|| !Root->TryGetNumberField(TEXT("inlet"), Inlet) || !Root->TryGetNumberField(TEXT("totalHeatW"), D.TotalHeatW)
+		|| !Root->TryGetNumberField(TEXT("toCoolantW"), D.ToCoolantW) || !Root->TryGetNumberField(TEXT("toAirW"), D.ToAirW)
+		|| !Root->TryGetNumberField(TEXT("toAmbientW"), D.ToAmbientW) || !Root->TryGetNumberField(TEXT("mixedAirOutletK"), D.MixedAirOutletK)
+		|| !Root->TryGetNumberField(TEXT("coolantOutletK"), D.CoolantOutletK) || !Root->TryGetArrayField(TEXT("slots"), Slots)) return false;
+	D.Inlet = int32(Inlet);
+	for (const TSharedPtr<FJsonValue>& V : *Slots)
+	{
+		const TSharedPtr<FJsonObject> O = V->AsObject();
+		const TArray<TSharedPtr<FJsonValue>>* Parts = nullptr;
+		FVrgDashboardRackSlot S;
+		double Index = 0.0;
+		bool bOk = O.IsValid() && O->TryGetNumberField(TEXT("index"), Index) && O->TryGetStringField(TEXT("device"), S.Device)
+			&& O->TryGetBoolField(TEXT("docked"), S.bDocked) && O->TryGetArrayField(TEXT("parts"), Parts);
+		if (bOk) VisitSlotNumbers(S, [&](const TCHAR* Key, double& Value) { bOk = bOk && O->TryGetNumberField(Key, Value); });
+		if (!bOk) return false;
+		S.Index = int32(Index);
+		for (const TSharedPtr<FJsonValue>& PV : *Parts)
+		{
+			const TSharedPtr<FJsonObject> Q = PV->AsObject();
+			FVrgDashboardRackPart P;
+			bool bPart = Q.IsValid() && Q->TryGetStringField(TEXT("name"), P.Name) && Q->TryGetStringField(TEXT("kind"), P.Kind);
+			if (bPart) VisitPartNumbers(P, [&](const TCHAR* Key, double& Value) { bPart = bPart && Q->TryGetNumberField(Key, Value); });
+			if (!bPart) return false;
+			S.Parts.Add(P);
+		}
+		D.Slots.Add(MoveTemp(S));
+	}
+	Out = MoveTemp(D);
+	return true;
+}

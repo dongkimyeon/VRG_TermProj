@@ -77,3 +77,62 @@ struct VRG_TERMPROJ_API FVrgDashboardLayout
 	FString ToJson() const;
 	static bool FromJson(const FString& Json, FVrgDashboardLayout& Out);
 };
+
+// Web dashboard stage 4 (2026-10-13): rack tab. One row per evaluation inlet (racks, then spines), from the thermal
+// model's state and last-step totals; SI units (W, K, kg/s, m^3/s). Built cheaply every publish (no snapshots).
+struct FVrgDashboardRackRow
+{
+	int32 Inlet = INDEX_NONE;            // evaluation inlet index = plan view's InletIndex
+	FString Kind;                        // rack, spine
+	FString Name;
+	double XM = 0.0, YM = 0.0;
+	double Utilization = 1.0;
+	double HeatW = 0.0;                  // last step, IT incl. server fans and PSU losses (D8)
+	double ToCoolantW = 0.0, ToRoomAirW = 0.0;   // last step: coolant / room air (forced air + case convection, D1)
+	double InletNowK = 0.0;              // air inlet the coupling handed in this step
+	double CoolantInK = 0.0, CoolantOutK = 0.0, CoolantFlowM3s = 0.0;
+	double FanSpeedMean = 0.0;           // mean over slots with fans
+	double FanPowerW = 0.0;
+	double HottestPartK = 0.0;
+	FString HottestPart;                 // "<slot> <part>"
+	int32 DockedSlots = 0, NumSlots = 0;
+};
+
+struct FVrgDashboardRackPart
+{
+	FString Name, Kind;
+	double TempK = 0.0, HeatW = 0.0, ToCoolantW = 0.0, ToAirW = 0.0;
+};
+
+struct FVrgDashboardRackSlot
+{
+	int32 Index = 0;
+	FString Device;
+	double BottomZM = 0.0, HeightM = 0.0;
+	bool bDocked = true;
+	double InletK = 0.0, HeatW = 0.0, HeatToAirW = 0.0, AirFlowKgs = 0.0, OutletAirK = 0.0, FanSpeed = 0.0;
+	TArray<FVrgDashboardRackPart> Parts;
+};
+
+// The selected rack only (MakeSnapshot is a few thousand values, too heavy to copy for every rack each publish).
+struct FVrgDashboardRackDetail
+{
+	int32 Inlet = INDEX_NONE;
+	double TotalHeatW = 0.0, ToCoolantW = 0.0, ToAirW = 0.0, ToAmbientW = 0.0;   // removal split (forced air / case)
+	double MixedAirOutletK = 0.0, CoolantOutletK = 0.0;
+	TArray<FVrgDashboardRackSlot> Slots;
+};
+
+struct VRG_TERMPROJ_API FVrgDashboardRacks
+{
+	double SimTimeS = 0.0;
+	bool bSimulating = false;
+	TArray<FVrgDashboardRackRow> Rows;
+	bool bHasDetail = false;
+	FVrgDashboardRackDetail Detail;
+
+	FString RowsToJson() const;
+	FString DetailToJson() const;   // empty when bHasDetail is false
+	static bool RowsFromJson(const FString& Json, FVrgDashboardRacks& Out);
+	static bool DetailFromJson(const FString& Json, FVrgDashboardRackDetail& Out);
+};

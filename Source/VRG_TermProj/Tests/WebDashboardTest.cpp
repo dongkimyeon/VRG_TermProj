@@ -179,9 +179,59 @@ bool FWebDashboardSummaryTest::RunTest(const FString& Parameters)
 		AddInfo(FString::Printf(TEXT("plan view: %d entries, automatic CRAH units %d"), Plan.Equipment.Num(), AutoCrahs));
 		TestTrue(TEXT("published layout parses"), Web.GetLayoutJson().IsEmpty() || FVrgDashboardLayout::FromJson(Web.GetLayoutJson(), Plan));
 
+		// Stage 4 rack tab: rows are the models' last-step values; the detail of one rack sums back to its totals.
+		const FCouplingSnapshot RackSnap = Sim->GetSnapshot();
+		FVrgDashboardRacks Rows;
+		TestTrue(TEXT("rack rows JSON round-trip"), FVrgDashboardRacks::RowsFromJson(Sim->BuildDashboardRacks(INDEX_NONE).RowsToJson(), Rows));
+		TestEqual(TEXT("one row per inlet"), Rows.Rows.Num(), Eval.GetNumInlets());
+		for (const FVrgDashboardRackRow& R : Rows.Rows)
+		{
+			ARackThermalActor* RackActor = nullptr;
+			for (TActorIterator<ARackThermalActor> It(World); It; ++It) if (It->GetName() == R.Name) RackActor = *It;
+			if (!TestNotNull(TEXT("row names a rack actor"), RackActor)) continue;
+			const FRackThermalModel& M = RackActor->GetMutableModel();
+			TestTrue(TEXT("row = model last-step values"), R.HeatW == M.GetLastTotalHeatW() && R.ToCoolantW == M.GetLastHeatRemovedByCoolantW()
+				&& R.ToRoomAirW == M.GetLastTotalHeatToRoomAirW() && R.CoolantOutK == M.GetState().CoolantTempK && R.FanPowerW == M.GetLastTotalFanPowerW());
+			TestTrue(TEXT("row inlet = coupling inlet, coolant flow = coupling flow / density"),
+				RackSnap.RackAirInletTempK.IsValidIndex(R.Inlet) && R.InletNowK == RackSnap.RackAirInletTempK[R.Inlet]
+				&& FMath::Abs(R.CoolantFlowM3s - RackSnap.RackCoolantMassFlowKgs[R.Inlet] / Sim->CoolantDensityKgM3) <= 1e-15 * R.CoolantFlowM3s);
+			TestTrue(TEXT("row plausible (heat > 0, coolant out > in, docked = slots, hottest part named)"), R.HeatW > 0.0 && R.CoolantOutK > R.CoolantInK
+				&& R.DockedSlots == R.NumSlots && R.NumSlots > 0 && !R.HottestPart.IsEmpty() && R.HottestPartK > R.InletNowK);
+		}
+		const FVrgDashboardRacks WithDetail = Sim->BuildDashboardRacks(1);
+		FVrgDashboardRackDetail Detail;
+		TestTrue(TEXT("detail JSON round-trip"), WithDetail.bHasDetail && FVrgDashboardRacks::DetailFromJson(WithDetail.DetailToJson(), Detail));
+		if (WithDetail.bHasDetail && Rows.Rows.IsValidIndex(1))
+		{
+			int32 Parts = 0;
+			double PartHeatW = 0.0, PartCoolantW = 0.0, SlotHeatW = 0.0;
+			for (const FVrgDashboardRackSlot& DetailSlot : Detail.Slots)
+			{
+				Parts += DetailSlot.Parts.Num(); SlotHeatW += DetailSlot.HeatW;
+				for (const FVrgDashboardRackPart& Q : DetailSlot.Parts) { PartHeatW += Q.HeatW; PartCoolantW += Q.ToCoolantW; }
+			}
+			const FVrgDashboardRackRow& Row1 = Rows.Rows[1];
+			ARackThermalActor* RackActor = nullptr;
+			for (TActorIterator<ARackThermalActor> It(World); It; ++It) if (It->GetName() == Row1.Name) RackActor = *It;
+			const FRackThermalModel& M = RackActor->GetMutableModel();
+			TestTrue(TEXT("detail: one slot per sled, one part per node"), Detail.Slots.Num() == M.GetNumSleds() && Parts == M.GetNumNodes());
+			const double HeatRel = FMath::Abs(PartHeatW - Detail.TotalHeatW) / Detail.TotalHeatW;
+			const double CoolantRel = FMath::Abs(PartCoolantW - Detail.ToCoolantW) / Detail.ToCoolantW;
+			AddInfo(FString::Printf(TEXT("rack detail: parts %d, sum part heat vs total %.3e, sum part to-coolant vs total %.3e, total %.1f W vs row %.1f W"),
+				Parts, HeatRel, CoolantRel, Detail.TotalHeatW, Row1.HeatW));
+			TestTrue(TEXT("detail: part heat sums to the rack total (relative < 1e-12)"), HeatRel < 1e-12 && FMath::Abs(SlotHeatW - PartHeatW) <= 1e-12 * PartHeatW);
+			TestTrue(TEXT("detail: part to-coolant sums to the rack total (relative < 1e-12)"), CoolantRel < 1e-12);
+			TestTrue(TEXT("detail total = row heat (same last step)"), FMath::Abs(Detail.TotalHeatW - Row1.HeatW) <= 1e-12 * Row1.HeatW);
+		}
+		// Server path: the first ask records the rack (202 pending), the next publish builds it, then the detail is served.
+		TestTrue(TEXT("first ask is pending and recorded"), Web.RequestRackDetailJson(1).IsEmpty() && Web.GetRequestedRack() == 1);
+		Web.PublishRacks(Sim->BuildDashboardRacks(Web.GetRequestedRack()));
+		TestFalse(TEXT("after a publish the detail is served"), Web.RequestRackDetailJson(1).IsEmpty());
+		TestFalse(TEXT("rows served"), Web.GetRacksJson().IsEmpty());
+
 		Enable->Set(0, ECVF_SetByCode);
 		TestTrue(TEXT("off again: stopped and cleared"), !Web.IsRunning() && Web.GetLatestJson().IsEmpty() && Web.GetSeriesJson(-1.0).IsEmpty()
-			&& Web.GetLayoutJson().IsEmpty());
+			&& Web.GetLayoutJson().IsEmpty() && Web.GetRacksJson().IsEmpty() && Web.GetRequestedRack() == INDEX_NONE);
 		Port->Set(OldPort, ECVF_SetByCode);
 	}
 	World->DestroyWorld(false);
