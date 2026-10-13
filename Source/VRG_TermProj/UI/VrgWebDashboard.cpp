@@ -45,6 +45,19 @@ FString FVrgWebDashboard::GetLatestJson() const
 	return LatestJson;
 }
 
+void FVrgWebDashboard::PublishSeries(FVrgDashboardSeries&& InSeries)
+{
+	FScopeLock Guard(&Lock);
+	LatestSeries = MoveTemp(InSeries);
+	bHasSeries = true;
+}
+
+FString FVrgWebDashboard::GetSeriesJson(double SinceS) const
+{
+	FScopeLock Guard(&Lock);
+	return bHasSeries ? LatestSeries.ToJson(SinceS) : FString();
+}
+
 void FVrgWebDashboard::Stop()
 {
 	if (Router.IsValid())
@@ -56,6 +69,9 @@ void FVrgWebDashboard::Stop()
 	Router.Reset();
 	BoundPort = 0;
 	Publish(FString());
+	FScopeLock Guard(&Lock);
+	LatestSeries = FVrgDashboardSeries();
+	bHasSeries = false;
 }
 
 bool FVrgWebDashboard::ApplySettings()
@@ -82,6 +98,17 @@ bool FVrgWebDashboard::ApplySettings()
 			const FString Json = GetLatestJson();
 			OnComplete(NoStore(Json.IsEmpty()
 				? FHttpServerResponse::Error(EHttpServerResponseCodes::ServiceUnavail, TEXT("no_snapshot"), TEXT("시뮬레이션 액터가 아직 값을 내지 않았다"))
+				: FHttpServerResponse::Create(Json, TEXT("application/json; charset=utf-8"))));
+			return true;
+		})));
+	Routes.Add(Router->BindRoute(FHttpPath(TEXT("/api/series")), EHttpServerRequestVerbs::VERB_GET,
+		FHttpRequestHandler::CreateLambda([this](const FHttpServerRequest& Request, const FHttpResultCallback& OnComplete)
+		{
+			double SinceS = -1.0;
+			if (const FString* Since = Request.QueryParams.Find(TEXT("since"))) LexFromString(SinceS, **Since);
+			const FString Json = GetSeriesJson(FMath::IsFinite(SinceS) ? SinceS : -1.0);
+			OnComplete(NoStore(Json.IsEmpty()
+				? FHttpServerResponse::Error(EHttpServerResponseCodes::ServiceUnavail, TEXT("no_series"), TEXT("시뮬레이션 액터가 아직 값을 내지 않았다"))
 				: FHttpServerResponse::Create(Json, TEXT("application/json; charset=utf-8"))));
 			return true;
 		})));

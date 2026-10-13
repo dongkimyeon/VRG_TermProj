@@ -281,6 +281,7 @@ public:
 
 	// 랙마다 붙은 라디에이터가 지금 버리는 열의 합 [W].
 	double GetTotalRadiatorRejectedW() const { return LastRadiatorRejectedW; }
+	double GetLastAirCoolingRemovedW() const { return LastAirCoolingRemovedW; }
 
 	// S7-0 계측. 직전 스텝의 공기 솔버 시간 [ms]. 게임 스레드 쪽이 읽어 누산한다.
 	double GetLastAirSolverMs() const { return LastAirSolverMs; }

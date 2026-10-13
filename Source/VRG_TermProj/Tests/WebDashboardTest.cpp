@@ -37,6 +37,9 @@ bool FWebDashboardSummaryTest::RunTest(const FString& Parameters)
 	Sim->bShowSummary = false;
 	Sim->MaxStepsPerFrame = 16;
 	Sim->EvalSettings.WindowS = 2.0;
+	ADataCenterSimulationActor::FEvalEvent Marker;   // stage 2: shows up as a vertical line on the series
+	Marker.TimeS = 1.0; Marker.Kind = TEXT("util"); Marker.Value = .9;
+	Sim->EvalEvents.Add(Marker);
 
 	Sim->EnterLayoutMode();
 	const FVrgDashboardSummary Layout = Sim->BuildDashboardSummary();
@@ -98,11 +101,104 @@ bool FWebDashboardSummaryTest::RunTest(const FString& Parameters)
 		const FVrgDashboardSummary Now = Sim->BuildDashboardSummary();
 		TestTrue(TEXT("published copy = summary at that SimTime"), Published.SimTimeS == Now.SimTimeS && Published.ItWindowW == Now.ItWindowW
 			&& Published.InletWindowMeanMaxK == Now.InletWindowMeanMaxK);
+
+		// Stage 2 series: one point per closed second without gaps, the last WindowS points average to the report window,
+		// "since" returns only newer points, and the event marker is carried with its applied flag.
+		FVrgDashboardSeries Series, Newer;
+		TestTrue(TEXT("series parses"), FVrgDashboardSeries::FromJson(Web.GetSeriesJson(-1.0), Series));
+		const FVrgEvaluation& Eval = Sim->GetEvaluation();
+		TestTrue(TEXT("series generation and length"), Series.Generation == Eval.GetGeneration() && Series.LengthS == 600.0);
+		TestEqual(TEXT("one point per closed second (3.22 s -> 3)"), Series.Points.Num(), 3);
+		bool bGapless = Series.Points.Num() > 0 && Series.Points[0].TimeS == 1.0;
+		for (int32 I = 1; I < Series.Points.Num(); ++I) bGapless &= Series.Points[I].TimeS - Series.Points[I - 1].TimeS == 1.0;
+		TestTrue(TEXT("1 s spacing, no gaps"), bGapless);
+		if (Series.Points.Num() >= 2)
+		{
+			const int32 N = Series.Points.Num();
+			const double SeriesItW = (Series.Points[N - 2].ItW + Series.Points[N - 1].ItW) / 2.0;
+			const double WindowItW = Eval.GetWindowPower().ItW;
+			AddInfo(FString::Printf(TEXT("series last-2 IT %.6f W vs window %.6f W, relative %.3e"), SeriesItW, WindowItW,
+				FMath::Abs(SeriesItW - WindowItW) / WindowItW));
+			TestTrue(TEXT("last WindowS points = report window IT (relative < 1e-12)"), FMath::Abs(SeriesItW - WindowItW) <= 1e-12 * WindowItW);
+			bool bPlausible = true;
+			for (const FVrgSeriesPoint& P : Series.Points)
+				bPlausible &= P.ItW > 0.0 && P.CoolantRemovedW + P.AirRemovedW > 0.0 && P.InletMaxK >= P.InletMeanK
+					&& P.InletMeanK > 273.15 + 15.0 && P.InletMaxK < 273.15 + 35.0 && P.bPartialPueValid && P.PartialPue >= 1.0;
+			TestTrue(TEXT("points plausible (IT > 0, removal > 0, max >= mean, 15..35 C, PUE >= 1)"), bPlausible);
+		}
+		TestTrue(TEXT("since filter"), FVrgDashboardSeries::FromJson(Web.GetSeriesJson(2.0), Newer) && Newer.Points.Num() == 1
+			&& Newer.Points[0].TimeS == 3.0);
+		TestTrue(TEXT("event marker carried and applied"), Series.Events.Num() == 1 && Series.Events[0].TimeS == 1.0
+			&& Series.Events[0].Kind == TEXT("util") && Series.Events[0].bApplied);
+
 		Enable->Set(0, ECVF_SetByCode);
-		TestTrue(TEXT("off again: stopped and cleared"), !Web.IsRunning() && Web.GetLatestJson().IsEmpty());
+		TestTrue(TEXT("off again: stopped and cleared"), !Web.IsRunning() && Web.GetLatestJson().IsEmpty() && Web.GetSeriesJson(-1.0).IsEmpty());
 		Port->Set(OldPort, ECVF_SetByCode);
 	}
 	World->DestroyWorld(false);
+	return true;
+}
+
+// Stage 2: the 1 s series points are the averages of the step values over each second on the integrated clock.
+// Synthetic inputs (not equipment data): IT ramps linearly, one inlet ramps, the other is constant. Steps hand in the value
+// at the step end (right sum), so second k averages the ramp at k + 0.51 s for dt = 0.02 s.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FWebDashboardSeriesAnalyticTest, "VRG.Web.SeriesAnalytic",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::CommandletContext | EAutomationTestFlags::EngineFilter)
+bool FWebDashboardSeriesAnalyticTest::RunTest(const FString& Parameters)
+{
+	FVrgEvaluationSettings Settings;
+	Settings.WindowS = 3.0;
+	Settings.SeriesLengthS = 5.0;   // small ring so 8 s overflows it
+	FVrgEvaluation Eval;
+	Eval.Reset(Settings, 2, { 300.0, 290.0 });
+	const int32 FirstGeneration = Eval.GetGeneration();
+	const double Dt = .02;
+	for (int32 J = 1; J <= 400; ++J)   // 8 s
+	{
+		const double T = J * Dt;
+		FVrgEvaluationSample P;
+		P.ItW = 1000.0 + 100.0 * T; P.CrahFanW = 10.0; P.PumpW = 5.0; P.CoolantRemovedW = 700.0; P.AirRemovedW = 200.0;
+		Eval.AfterStep(T, Dt, { 300.0, 290.0 + T }, P);
+	}
+	TArray<FVrgSeriesPoint> Points, Newer;
+	Eval.GetSeries(-1.0, Points);
+	TestEqual(TEXT("ring keeps the last SeriesLengthS points"), Points.Num(), 5);
+	double MaxError = 0.0;
+	for (int32 I = 0; I < Points.Num(); ++I)
+	{
+		const FVrgSeriesPoint& P = Points[I];
+		const double K = 3.0 + I;                       // second [K, K+1) -> TimeS = K + 1
+		const double ItW = 1000.0 + 100.0 * (K + .51);
+		const double Ramp = 290.0 + K + .51;
+		TestEqual(TEXT("oldest-first, 1 s spacing"), P.TimeS, K + 1.0);
+		MaxError = FMath::Max(MaxError, FMath::Abs(P.ItW - ItW) / ItW);
+		MaxError = FMath::Max(MaxError, FMath::Abs(P.InletMaxK - FMath::Max(300.0, Ramp)) / 300.0);
+		MaxError = FMath::Max(MaxError, FMath::Abs(P.InletMeanK - (300.0 + Ramp) / 2.0) / 300.0);
+		MaxError = FMath::Max(MaxError, FMath::Abs(P.PartialPue - (ItW + 15.0) / ItW));
+		MaxError = FMath::Max(MaxError, FMath::Abs(P.CoolantRemovedW - 700.0) / 700.0 + FMath::Abs(P.AirRemovedW - 200.0) / 200.0);
+		TestTrue(TEXT("PUE valid"), P.bPartialPueValid);
+	}
+	AddInfo(FString::Printf(TEXT("max relative error vs analytic 1 s averages: %.3e"), MaxError));
+	TestTrue(TEXT("1 s averages match the analytic values (relative < 1e-12)"), MaxError < 1e-12);
+	Eval.GetSeries(6.0, Newer);
+	TestTrue(TEXT("since 6 s -> points at 7 and 8 s"), Newer.Num() == 2 && Newer[0].TimeS == 7.0 && Newer[1].TimeS == 8.0);
+
+	// JSON round-trip keeps every value bit-exact.
+	FVrgDashboardSeries Payload, Back;
+	Payload.Generation = Eval.GetGeneration(); Payload.SimTimeS = 8.0; Payload.LengthS = Settings.SeriesLengthS; Payload.Points = Points;
+	FVrgDashboardEvent E; E.TimeS = 4.0; E.Kind = TEXT("rackutil"); E.Index = 2; E.Value = .5; E.bApplied = true;
+	Payload.Events.Add(E);
+	TestTrue(TEXT("series JSON parses"), FVrgDashboardSeries::FromJson(Payload.ToJson(-1.0), Back));
+	bool bExact = Back.Points.Num() == Points.Num() && Back.Events.Num() == 1 && Back.Events[0].Index == 2 && Back.Events[0].bApplied;
+	for (int32 I = 0; bExact && I < Points.Num(); ++I)
+		bExact = Back.Points[I].TimeS == Points[I].TimeS && Back.Points[I].ItW == Points[I].ItW && Back.Points[I].InletMaxK == Points[I].InletMaxK
+			&& Back.Points[I].InletMeanK == Points[I].InletMeanK && Back.Points[I].PartialPue == Points[I].PartialPue
+			&& Back.Points[I].CoolantRemovedW == Points[I].CoolantRemovedW && Back.Points[I].AirRemovedW == Points[I].AirRemovedW;
+	TestTrue(TEXT("series JSON round-trip is exact"), bExact);
+
+	Eval.Reset(Settings, 2, { 300.0, 290.0 });
+	Eval.GetSeries(-1.0, Points);
+	TestTrue(TEXT("reset clears the series and bumps the generation"), Points.Num() == 0 && Eval.GetGeneration() == FirstGeneration + 1);
 	return true;
 }
 

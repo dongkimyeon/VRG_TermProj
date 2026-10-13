@@ -1709,12 +1709,24 @@ void ADataCenterSimulationActor::PublishDashboard()
 	const double NowS = FPlatformTime::Seconds();
 	if (!Web.IsRunning() || NowS - LastDashboardPublishS < DashboardPublishPeriodS) return;
 	LastDashboardPublishS = NowS;
-	FVrgDashboardSummary Summary;
+	// Summary JSON, series copy (<= SeriesLengthS points) and event markers all count as the dashboard's cost (D10).
+	VRG_SCOPE_COST(STAT_VrgDashboardPublish, DashboardMs);
+	Web.Publish(BuildDashboardSummary().ToJson());
+
+	FVrgDashboardSeries Series;
+	Series.SimTimeS = Clock.GetSimTimeS();
+	if (bEvalReady)
 	{
-		VRG_SCOPE_COST(STAT_VrgDashboardPublish, DashboardMs);
-		Summary = BuildDashboardSummary();
+		Series.Generation = Eval.GetGeneration();
+		Series.LengthS = Eval.GetSettings().SeriesLengthS;
+		Eval.GetSeries(-1.0, Series.Points);
 	}
-	Web.Publish(Summary.ToJson());
+	for (const FEvalEvent& E : EvalEvents)
+	{
+		FVrgDashboardEvent& D = Series.Events.AddDefaulted_GetRef();
+		D.TimeS = E.TimeS; D.Kind = E.Kind; D.Index = E.Index; D.Value = E.Value; D.bApplied = E.bApplied;
+	}
+	Web.PublishSeries(MoveTemp(Series));
 }
 
 void ADataCenterSimulationActor::DrawSummary() const
@@ -2007,6 +2019,8 @@ void ADataCenterSimulationActor::EvalAfterStep()
 	Power.ServerFanW = Bridge.GetLastServerFanPowerW();
 	Power.CrahFanW = Bridge.GetLastCrahFanPowerW();
 	Power.PumpW = Room != nullptr ? Room->GetTotalPumpElectricalW() : 0.0;
+	Power.CoolantRemovedW = Bridge.GetTotalRadiatorRejectedW();
+	Power.AirRemovedW = Bridge.GetLastAirCoolingRemovedW();
 	Eval.AfterStep(Clock.GetSimTimeS(), Clock.GetFixedStepS(), Inlets, Power);
 }
 

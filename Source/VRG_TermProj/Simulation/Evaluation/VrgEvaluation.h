@@ -19,11 +19,25 @@ struct FVrgEvaluationSettings
 	double AllowableInletK = 273.15 + 32.0;
 	FVirtualSensorSpec Sensor;
 	int32 Seed = 1;                       // sensor noise; sensor i uses Seed + i
+	double SeriesLengthS = 600.0;         // web dashboard time series: one point per closed second, last SeriesLengthS kept
 };
 
 struct FVrgEvaluationSample
 {
 	double ItW = 0.0, ServerFanW = 0.0, CrahFanW = 0.0, PumpW = 0.0;
+	// Heat leaving the model [W]: coolant to facility water (radiators / CDU) and air coils (time series only).
+	double CoolantRemovedW = 0.0, AirRemovedW = 0.0;
+};
+
+// One second of the run on the integrated clock, every value the average over that second (same 1 s buckets as the
+// report window). TimeS is the end of the second.
+struct FVrgSeriesPoint
+{
+	double TimeS = 0.0;
+	double InletMaxK = 0.0, InletMeanK = 0.0;   // max / mean over inlets of each inlet's 1 s average
+	double ItW = 0.0, CoolantRemovedW = 0.0, AirRemovedW = 0.0;
+	bool bPartialPueValid = false;
+	double PartialPue = 0.0;                    // (IT + CRAH fans + pumps) / IT over that second (D8)
 };
 
 class VRG_TERMPROJ_API FVrgEvaluation
@@ -52,6 +66,10 @@ public:
 	double GetSimTimeS() const { return SimTimeS; }
 	double GetWindowCoveredS() const;
 	const FVrgEvaluationSettings& GetSettings() const { return Settings; }
+	// Time series points with TimeS > SinceS, oldest first (at most SeriesLengthS of them).
+	void GetSeries(double SinceS, TArray<FVrgSeriesPoint>& Out) const;
+	// Increments on every Reset, so a reader can tell a restarted run from a continued one.
+	int32 GetGeneration() const { return Generation; }
 
 private:
 	// Per-second buckets of time-integrated values; a ring of WindowS buckets gives the last-window average.
@@ -74,7 +92,9 @@ private:
 	};
 	FVrgEvaluationSettings Settings;
 	TArray<FInlet> Inlets;
-	FWindowed It, ServerFan, CrahFan, Pump;
+	FWindowed It, ServerFan, CrahFan, Pump, CoolantRemoved, AirRemoved;
+	TArray<FVrgSeriesPoint> Series;   // ring
+	int32 SeriesNext = 0, SeriesFilled = 0, Generation = 0;
 	double SimTimeS = 0.0, SecondStartS = 0.0, RunTimeS = 0.0;
 	int32 SecondsClosed = 0;
 };

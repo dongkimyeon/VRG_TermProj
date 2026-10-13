@@ -50,3 +50,82 @@ bool FVrgDashboardSummary::FromJson(const FString& Json, FVrgDashboardSummary& O
 	Out = S;
 	return true;
 }
+
+FString FVrgDashboardSeries::ToJson(double SinceS) const
+{
+	TSharedRef<FJsonObject> Root = MakeShared<FJsonObject>();
+	Root->SetNumberField(TEXT("schema"), 1);
+	Root->SetNumberField(TEXT("generation"), Generation);
+	Root->SetNumberField(TEXT("simTimeS"), SimTimeS);
+	Root->SetNumberField(TEXT("intervalS"), 1.0);
+	Root->SetNumberField(TEXT("lengthS"), LengthS);
+	TArray<TSharedPtr<FJsonValue>> Items;
+	for (const FVrgSeriesPoint& P : Points)
+	{
+		if (!(P.TimeS > SinceS)) continue;
+		TSharedRef<FJsonObject> O = MakeShared<FJsonObject>();
+		O->SetNumberField(TEXT("t"), P.TimeS);
+		O->SetNumberField(TEXT("inletMaxK"), P.InletMaxK);
+		O->SetNumberField(TEXT("inletMeanK"), P.InletMeanK);
+		O->SetNumberField(TEXT("itW"), P.ItW);
+		O->SetNumberField(TEXT("coolantRemovedW"), P.CoolantRemovedW);
+		O->SetNumberField(TEXT("airRemovedW"), P.AirRemovedW);
+		if (P.bPartialPueValid) O->SetNumberField(TEXT("partialPue"), P.PartialPue);
+		else O->SetField(TEXT("partialPue"), MakeShared<FJsonValueNull>());
+		Items.Add(MakeShared<FJsonValueObject>(O));
+	}
+	Root->SetArrayField(TEXT("points"), Items);
+	TArray<TSharedPtr<FJsonValue>> EventItems;
+	for (const FVrgDashboardEvent& E : Events)
+	{
+		TSharedRef<FJsonObject> O = MakeShared<FJsonObject>();
+		O->SetNumberField(TEXT("t"), E.TimeS);
+		O->SetStringField(TEXT("kind"), E.Kind);
+		O->SetNumberField(TEXT("index"), E.Index);
+		O->SetNumberField(TEXT("value"), E.Value);
+		O->SetBoolField(TEXT("applied"), E.bApplied);
+		EventItems.Add(MakeShared<FJsonValueObject>(O));
+	}
+	Root->SetArrayField(TEXT("events"), EventItems);
+	FString Json;
+	FJsonSerializer::Serialize(Root, TJsonWriterFactory<>::Create(&Json));
+	return Json;
+}
+
+bool FVrgDashboardSeries::FromJson(const FString& Json, FVrgDashboardSeries& Out)
+{
+	TSharedPtr<FJsonObject> Root;
+	if (!FJsonSerializer::Deserialize(TJsonReaderFactory<>::Create(Json), Root) || !Root.IsValid()) return false;
+	FVrgDashboardSeries S;
+	double Gen = 0.0;
+	const TArray<TSharedPtr<FJsonValue>>* Items = nullptr;
+	const TArray<TSharedPtr<FJsonValue>>* EventItems = nullptr;
+	if (!Root->TryGetNumberField(TEXT("generation"), Gen) || !Root->TryGetNumberField(TEXT("simTimeS"), S.SimTimeS)
+		|| !Root->TryGetNumberField(TEXT("lengthS"), S.LengthS) || !Root->TryGetArrayField(TEXT("points"), Items)
+		|| !Root->TryGetArrayField(TEXT("events"), EventItems)) return false;
+	S.Generation = int32(Gen);
+	for (const TSharedPtr<FJsonValue>& V : *Items)
+	{
+		const TSharedPtr<FJsonObject> O = V->AsObject();
+		FVrgSeriesPoint P;
+		if (!O.IsValid() || !O->TryGetNumberField(TEXT("t"), P.TimeS) || !O->TryGetNumberField(TEXT("inletMaxK"), P.InletMaxK)
+			|| !O->TryGetNumberField(TEXT("inletMeanK"), P.InletMeanK) || !O->TryGetNumberField(TEXT("itW"), P.ItW)
+			|| !O->TryGetNumberField(TEXT("coolantRemovedW"), P.CoolantRemovedW)
+			|| !O->TryGetNumberField(TEXT("airRemovedW"), P.AirRemovedW)) return false;
+		P.bPartialPueValid = O->TryGetNumberField(TEXT("partialPue"), P.PartialPue);
+		S.Points.Add(P);
+	}
+	for (const TSharedPtr<FJsonValue>& V : *EventItems)
+	{
+		const TSharedPtr<FJsonObject> O = V->AsObject();
+		FVrgDashboardEvent E;
+		double Index = 0.0;
+		if (!O.IsValid() || !O->TryGetNumberField(TEXT("t"), E.TimeS) || !O->TryGetStringField(TEXT("kind"), E.Kind)
+			|| !O->TryGetNumberField(TEXT("index"), Index) || !O->TryGetNumberField(TEXT("value"), E.Value)
+			|| !O->TryGetBoolField(TEXT("applied"), E.bApplied)) return false;
+		E.Index = int32(Index);
+		S.Events.Add(E);
+	}
+	Out = MoveTemp(S);
+	return true;
+}

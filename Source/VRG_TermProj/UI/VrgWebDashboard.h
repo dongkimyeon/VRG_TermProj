@@ -4,6 +4,7 @@
 
 #include "CoreMinimal.h"
 #include "HttpRouteHandle.h"
+#include "Simulation/Evaluation/VrgDashboardSummary.h"
 
 class IHttpRouter;
 
@@ -11,6 +12,7 @@ class IHttpRouter;
 // (Config DefaultEngine.ini [HTTPServer.Listeners] DefaultBindAddress=127.0.0.1).
 //   GET /dashboard     -> <Project>/Web/index.html (the engine router cannot bind "/") (static summary card, polls /api/snapshot)
 //   GET /api/snapshot  -> latest published FVrgDashboardSummary JSON (503 before the first publish)
+//   GET /api/series?since=<SimTime s> -> 1 s points after since (last 600 s) and event markers (stage 2)
 // Console: vrg.Web.Enable 0|1 (default 0), vrg.Web.Port (default 18080).
 // Rule 5: the integrated actor publishes a JSON copy on the game thread; request handlers only read that copy under a
 // lock and never touch actors, UObjects or solvers. The site only displays; it changes no physics input.
@@ -23,6 +25,9 @@ public:
 	int32 GetPort() const { return BoundPort; }
 	void Publish(const FString& Json);
 	FString GetLatestJson() const;
+	void PublishSeries(FVrgDashboardSeries&& InSeries);
+	// Empty before the first PublishSeries.
+	FString GetSeriesJson(double SinceS) const;
 	// Re-reads the console variables and starts/stops/moves the server; returns false and logs on failure.
 	bool ApplySettings();
 	void Stop();
@@ -33,4 +38,6 @@ private:
 	int32 BoundPort = 0;
 	mutable FCriticalSection Lock;
 	FString LatestJson;
+	FVrgDashboardSeries LatestSeries;
+	bool bHasSeries = false;
 };
