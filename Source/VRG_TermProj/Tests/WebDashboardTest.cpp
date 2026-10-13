@@ -145,13 +145,13 @@ bool FWebDashboardSummaryTest::RunTest(const FString& Parameters)
 		for (int32 I = 0; bMeansExact && I < Eval.GetNumInlets(); ++I) bMeansExact = Plan.InletWindowMeanK[I] == Eval.GetInlet(I).WindowMeanK;
 		TestTrue(TEXT("inlet means = evaluation window means (exact)"), bMeansExact);
 		TestTrue(TEXT("domain present"), Plan.bHasDomain && Plan.DomainMaxXM > Plan.DomainMinXM && Plan.DomainMaxYM > Plan.DomainMinYM);
-		int32 RackCount = 0, AutoCrahs = 0, Walls = 0;
+		int32 PlanRackCount = 0, AutoCrahs = 0, Walls = 0;
 		TSet<int32> SeenInlets;
 		for (const FVrgDashboardEquipment& E : Plan.Equipment)
 		{
 			if (E.Kind == TEXT("rack"))
 			{
-				++RackCount;
+				++PlanRackCount;
 				SeenInlets.Add(E.InletIndex);
 				const bool bLeft = E.CenterXM < 0.0;
 				TestTrue(TEXT("rack footprint at the actor (m) with its size and yaw"), FMath::Abs(E.CenterXM - (bLeft ? -1.5 : 1.5)) < 1e-12
@@ -168,7 +168,7 @@ bool FWebDashboardSummaryTest::RunTest(const FString& Parameters)
 					&& FMath::Abs(E.CenterYM - 3.0) < 1e-12);
 			}
 		}
-		TestEqual(TEXT("both racks listed"), RackCount, 2);
+		TestEqual(TEXT("both racks listed"), PlanRackCount, 2);
 		// Every equipment actor (PlaceableBoxM) appears once; the rest of the entries are automatic CRAH units.
 		int32 FullWalk = 0;
 		FVector BoxM;

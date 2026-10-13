@@ -68,6 +68,32 @@
   #plansvg .warn { fill:#f0b43c; font:600 11px var(--mono); text-anchor:middle; }
   #plansvg .lbl { fill:var(--muted); font:10px var(--mono); text-anchor:middle; }
   #plansvg .hover { stroke:var(--text); stroke-width:2; fill:none; pointer-events:none; }
+  #plansvg .cab.pick { cursor:pointer; }
+  /* 탭과 랙 탭(4단계) */
+  .tabs { display:flex; gap:4px; margin:0 0 12px; border-bottom:1px solid var(--line); }
+  .tabs button { border:0; border-bottom:2px solid transparent; border-radius:0; background:none; color:var(--muted); padding:6px 12px; font-size:13px; }
+  .tabs button[aria-selected="true"] { color:var(--text); border-bottom-color:var(--s1); }
+  .scroll { overflow-x:auto; }
+  #racktable tbody tr { cursor:pointer; }
+  #racktable tbody tr:hover { background:var(--panel2); }
+  #racktable tbody tr.sel { background:var(--panel2); box-shadow:inset 3px 0 0 var(--s1); }
+  td.l, th.l { text-align:left; }
+  .detail h2 { font-size:13px; margin:0 0 4px; font-weight:600; }
+  .split { display:grid; grid-template-columns:repeat(auto-fit, minmax(150px, 1fr)); gap:8px; margin:8px 0 10px; }
+  .split div { border:1px solid var(--line); border-radius:6px; padding:6px 8px; font:12px var(--mono); }
+  .split span { display:block; color:var(--muted); font:11px system-ui, sans-serif; }
+  details.slot { border-bottom:1px solid var(--line); }
+  details.slot summary { display:grid; grid-template-columns:3.2em 1fr 6em 7em 6.5em 6.5em 6.5em 5em; gap:6px; padding:5px 4px;
+    cursor:pointer; font:12px var(--mono); align-items:center; list-style:none; }
+  details.slot summary::-webkit-details-marker { display:none; }
+  details.slot summary::before { content:'▸'; position:absolute; margin-left:-12px; color:var(--faint); }
+  details.slot[open] summary::before { content:'▾'; }
+  details.slot summary span.r { text-align:right; }
+  details.slot.empty summary { color:var(--faint); }
+  .slothead { display:grid; grid-template-columns:3.2em 1fr 6em 7em 6.5em 6.5em 6.5em 5em; gap:6px; padding:4px; color:var(--muted); font-size:11.5px; border-bottom:1px solid var(--line); }
+  .slothead span.r { text-align:right; }
+  .slots { padding-left:14px; }
+  details.slot table { margin:2px 0 8px; }
 </style>
 </head>
 <body>
@@ -87,6 +113,23 @@
     <div class="kpi"><div class="label">흡기 평균</div><div class="value" id="iavg">-</div><div class="note" id="inote">랙별 창 평균의 평균</div></div>
   </div>
 
+  <div class="tabs" role="tablist">
+    <button type="button" role="tab" id="tab-btn-summary" aria-selected="true" data-tab="summary">요약</button>
+    <button type="button" role="tab" id="tab-btn-racks" aria-selected="false" data-tab="racks">랙</button>
+  </div>
+
+  <section id="tab-racks" hidden>
+    <div class="panel">
+      <h2 style="font-size:13px;margin:0;font-weight:600">랙 목록 <span class="tag">계산값</span></h2>
+      <div class="sub" style="color:var(--faint);font-size:11px;margin:2px 0 6px" id="racksub">마지막 스텝 값 · 행을 누르면 아래에 슬롯·부품이 나온다</div>
+      <div class="scroll"><table id="racktable"></table></div>
+    </div>
+    <div class="panel detail" style="margin-top:12px" id="rackdetail">
+      <div class="mode">평면도나 목록에서 랙을 고르면 슬롯과 부품이 여기 나온다.</div>
+    </div>
+  </section>
+
+  <section id="tab-summary">
   <div class="panel plan">
     <div class="head">
       <div>
@@ -122,6 +165,8 @@
 
   <div class="tablebar"><button id="tbtn" type="button">표 보기</button><span class="mode" id="tnote"></span></div>
   <div id="table" hidden></div>
+
+  </section>
 
   <div class="foot">보정되지 않은 모델의 계산값이다. 보존 잔차가 작다는 것은 장부가 맞는다는 뜻이지 실제 설비 온도가 맞는다는 뜻이 아니다.
     칠러·냉각탑·UPS·배전 손실·조명은 모델에 없다. 점선 세로선은 <code>vrg.Eval.Event</code> 시각이다(적용 전이면 "예정").
@@ -356,6 +401,7 @@ function drawPlan() {
     }
     if (e.kind === 'cdu' || e.kind === 'crah') mk('text', { class:'lbl', x:X(e.xM), y:Y(e.yM) + 3.5 }, svg).textContent = KIND[e.kind];
     if (c !== null && c > 27) { ++hot; mk('text', { class:'warn', x:X(e.xM), y:Y(e.yM) + 4 }, svg).textContent = '▲'; }
+    if (e.inlet >= 0) { rect.classList.add('pick'); rect.addEventListener('click', () => { selectRack(e.inlet); showTab('racks'); }); }
     rect.addEventListener('mousemove', ev => planTip(e, c, ev, g));
     rect.addEventListener('mouseleave', () => { tip.style.display = 'none'; svg.querySelectorAll('.hover').forEach(n => n.remove()); });
   }
@@ -385,14 +431,105 @@ function renderPlanTable() {
   $('ptable').innerHTML = `<table><thead><tr><th style="text-align:left">장비</th><th>X m</th><th>Y m</th><th>흡기 창 평균 °C</th><th>27 °C</th></tr></thead><tbody>${rows}</tbody></table>`;
 }
 
+// ---- 탭과 랙 탭 (4단계) ----
+let tab = 'summary', selected = -1, racks = null, detail = null, detailPending = false;
+const openSlots = new Set();                     // 1초마다 다시 그려도 펼친 슬롯을 유지한다
+function showTab(name) {
+  tab = name;
+  for (const b of document.querySelectorAll('.tabs button')) b.setAttribute('aria-selected', String(b.dataset.tab === name));
+  $('tab-summary').hidden = name !== 'summary';
+  $('tab-racks').hidden = name !== 'racks';
+  history.replaceState(null, '', name === 'racks' ? (selected >= 0 ? '#rack=' + selected : '#racks') : '#');
+  tick();
+}
+for (const b of document.querySelectorAll('.tabs button')) b.addEventListener('click', () => showTab(b.dataset.tab));
+function selectRack(i) {
+  if (i !== selected) { openSlots.clear(); detail = null; }
+  selected = i;
+  if (tab === 'racks') history.replaceState(null, '', '#rack=' + i);
+  renderRacks(); renderDetail();
+}
+async function pollRacks() {
+  const r = await fetch('/api/racks', { cache:'no-store' });
+  if (!r.ok) throw new Error('랙 목록 HTTP ' + r.status);
+  racks = await r.json();
+  if (selected < 0) return;
+  const d = await fetch('/api/rack?i=' + selected, { cache:'no-store' });
+  detailPending = d.status === 202;                 // 기록됨: 다음 발행(0.5 s 안)에 만든다
+  if (d.ok && d.status === 200) detail = await d.json();
+  else if (!detailPending) throw new Error('랙 상세 HTTP ' + d.status);
+}
+const NAME = r => (r.kind === 'spine' ? '스파인 ' : '랙 ') + (r.inlet + 1);
+function renderRacks() {
+  if (!racks) return;
+  if (racks.racks.length === 0) {
+    $('racktable').innerHTML = '';
+    $('racksub').textContent = racks.mode === 'simulation' ? '시뮬레이션 스텝 전이라 값이 없다' : '배치 모드: 물리 정지 중이라 랙 값이 없다(Enter로 시뮬레이션)';
+    return;
+  }
+  $('racksub').textContent = `마지막 스텝 값 · SimTime ${racks.simTimeS.toFixed(2)} s · ${racks.racks.length}대 · 행을 누르면 아래에 슬롯·부품이 나온다`;
+  const rows = racks.racks.map(r => {
+    const share = r.toCoolantW + r.toRoomAirW > 0 ? r.toCoolantW / (r.toCoolantW + r.toRoomAirW) * 100 : 0;
+    return `<tr data-i="${r.inlet}" class="${r.inlet === selected ? 'sel' : ''}"><td class="l">${NAME(r)}</td>`
+      + `<td>${r.xM.toFixed(2)}, ${r.yM.toFixed(2)}</td><td>${(r.utilization * 100).toFixed(0)}</td><td>${(r.heatW / 1000).toFixed(1)}</td>`
+      + `<td>${toC(r.inletNowK).toFixed(2)}${toC(r.inletNowK) > 27 ? ' ▲' : ''}</td>`
+      + `<td>${r.coolantFlowM3s > 0 ? toC(r.coolantInK).toFixed(1) + ' → ' + toC(r.coolantOutK).toFixed(1) : '-'}</td>`
+      + `<td>${r.coolantFlowM3s > 0 ? (r.coolantFlowM3s * 1000).toFixed(3) : '-'}</td><td>${share.toFixed(0)}</td>`
+      + `<td>${(r.fanSpeedMean * 100).toFixed(0)}</td><td>${r.fanPowerW.toFixed(0)}</td>`
+      + `<td>${toC(r.hottestPartK).toFixed(1)}</td><td class="l">${r.hottestPart}</td><td>${r.dockedSlots}/${r.numSlots}</td></tr>`;
+  }).join('');
+  $('racktable').innerHTML = `<thead><tr><th class="l">장비</th><th>위치 m</th><th>부하율 %</th><th>발열 kW</th><th>흡기 °C</th>`
+    + `<th>냉각수 입→출 °C</th><th>유량 L/s</th><th>냉각수 반출 %</th><th>팬 속도 %</th><th>팬 W</th><th>최고 부품 °C</th><th class="l">그 부품</th><th>도킹</th></tr></thead><tbody>${rows}</tbody>`;
+  for (const tr of $('racktable').querySelectorAll('tbody tr')) tr.addEventListener('click', () => selectRack(+tr.dataset.i));
+}
+function renderDetail() {
+  const el = $('rackdetail');
+  if (selected < 0) return;
+  const row = racks && racks.racks.find(r => r.inlet === selected);
+  if (!detail || detail.inlet !== selected) {
+    el.innerHTML = `<div class="mode">${row ? NAME(row) : '선택한 랙'}: ${detailPending ? '상세를 만드는 중…(다음 갱신)' : '불러오는 중…'}</div>`;
+    return;
+  }
+  const kw = w => (w / 1000).toFixed(2) + ' kW';
+  const pct = w => detail.totalHeatW > 0 ? (w / detail.totalHeatW * 100).toFixed(1) + ' %' : '-';
+  let html = `<h2>${row ? NAME(row) : '랙'} 상세 <span class="tag">계산값</span></h2>`
+    + `<div class="mode">${row ? row.name : ''} · SimTime ${detail.simTimeS.toFixed(2)} s · 반출은 이 스텝 값이라 합이 발열과 다를 수 있다(나머지는 축적)</div>`
+    + `<div class="split"><div><span>발열</span>${kw(detail.totalHeatW)}</div><div><span>냉각수로</span>${kw(detail.toCoolantW)} · ${pct(detail.toCoolantW)}</div>`
+    + `<div><span>강제 공랭</span>${kw(detail.toAirW)} · ${pct(detail.toAirW)}</div><div><span>케이스 자연대류</span>${kw(detail.toAmbientW)} · ${pct(detail.toAmbientW)}</div>`
+    + `<div><span>혼합 배기</span>${toC(detail.mixedAirOutletK).toFixed(2)} °C</div><div><span>냉각수 출구</span>${toC(detail.coolantOutletK).toFixed(2)} °C</div></div>`
+    + `<div class="slothead"><span>슬롯</span><span>장비</span><span class="r">높이 m</span><span class="r">흡기 °C</span><span class="r">발열 kW</span><span class="r">공기로 W</span><span class="r">배기 °C</span><span class="r">팬 %</span></div><div class="slots">`;
+  // 위가 먼저(랙을 앞에서 본 순서): 바닥 높이 내림차순.
+  for (const s of detail.slots.slice().sort((a, b) => b.bottomZM - a.bottomZM)) {
+    const parts = s.parts.slice().sort((a, b) => b.tempK - a.tempK).map(p => `<tr><td class="l">${p.name}</td><td class="l">${p.kind}</td>`
+      + `<td>${toC(p.tempK).toFixed(2)}</td><td>${p.heatW.toFixed(1)}</td><td>${p.toCoolantW.toFixed(1)}</td><td>${p.toAirW.toFixed(1)}</td></tr>`).join('');
+    html += `<details class="slot${s.docked ? '' : ' empty'}" data-s="${s.index}"${openSlots.has(s.index) ? ' open' : ''}><summary>`
+      + `<span>${s.index + 1}</span><span>${s.device}${s.docked ? '' : ' (빠짐)'}</span><span class="r">${s.bottomZM.toFixed(3)}</span>`
+      + `<span class="r">${toC(s.inletK).toFixed(2)}</span><span class="r">${(s.heatW / 1000).toFixed(2)}</span><span class="r">${s.heatToAirW.toFixed(0)}</span>`
+      + `<span class="r">${s.docked && s.airFlowKgs > 0 ? toC(s.outletAirK).toFixed(2) : '-'}</span><span class="r">${(s.fanSpeed * 100).toFixed(0)}</span></summary>`
+      + `<table><thead><tr><th class="l">부품 (뜨거운 순)</th><th class="l">종류</th><th>온도 °C</th><th>발열 W</th><th>냉각수로 W</th><th>공기로 W</th></tr></thead><tbody>${parts}</tbody></table></details>`;
+  }
+  el.innerHTML = html + '</div><div class="mode" style="margin-top:6px">부품 허용 온도는 모델에 없어 여유를 표시하지 않는다.</div>';
+  for (const d of el.querySelectorAll('details.slot')) d.addEventListener('toggle', () => d.open ? openSlots.add(+d.dataset.s) : openSlots.delete(+d.dataset.s));
+}
+{ const m = location.hash.match(/^#rack=(\d+)$/); if (m) { selected = +m[1]; tab = 'racks'; } else if (location.hash === '#racks') tab = 'racks'; }
+
 async function tick() {
   try {
     await pollSnapshot();
-    await pollSeries();
-    await pollLayout();
-    drawPlan();
-    for (const c of charts) draw(c);
-    renderTable();
+    $('tab-summary').hidden = tab !== 'summary';
+    $('tab-racks').hidden = tab !== 'racks';
+    for (const b of document.querySelectorAll('.tabs button')) b.setAttribute('aria-selected', String(b.dataset.tab === tab));
+    await pollSeries();                          // 시계열은 탭과 무관하게 계속 쌓는다(돌아왔을 때 빈틈 없게)
+    if (tab === 'summary') {
+      await pollLayout();
+      drawPlan();
+      for (const c of charts) draw(c);
+      renderTable();
+    } else {
+      await pollRacks();
+      renderRacks();
+      renderDetail();
+    }
     $('status').textContent = '갱신 ' + new Date().toLocaleTimeString() + ' · 점 ' + points.length;
     $('status').className = 'status';
   } catch (e) {
