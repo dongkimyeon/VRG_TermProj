@@ -42,6 +42,9 @@ public:
 	};
 	FInletStats GetInlet(int32 Index) const;
 	int32 GetNumInlets() const { return Inlets.Num(); }
+	// Max and mean over inlets of the window-averaged inlet temperature [K] (report summary and web dashboard);
+	// false when there are no inlets.
+	bool GetInletWindowSummary(double& OutMaxK, double& OutMeanK) const;
 	// Window averages of the power categories [W].
 	FVrgEvaluationSample GetWindowPower() const;
 	// (IT + CRAH fans + pumps) / IT over the window; false when IT is zero.

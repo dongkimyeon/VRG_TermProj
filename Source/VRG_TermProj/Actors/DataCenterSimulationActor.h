@@ -7,6 +7,7 @@
 #include "Simulation/Core/SimClock.h"
 #include "Simulation/Coupling/CouplingBridge.h"
 #include "Simulation/Evaluation/VrgEvaluation.h"
+#include "Simulation/Evaluation/VrgDashboardSummary.h"
 #include "Interaction/VrgCrahLifecycle.h"
 #include "Simulation/Air/RoomAirDomain.h"
 #include "Interaction/VrgLayoutFile.h"
@@ -325,6 +326,8 @@ public:
 	// Writes Saved/Reports/<Name>.json and .md from the running evaluation; false before any simulation step.
 	bool WriteEvaluationReport(const FString& Name, FString& OutSummary) const;
 	const FVrgEvaluation& GetEvaluation() const { return Eval; }
+	// Web dashboard stage 1: summary card values at the current SimTime (window values = the report's).
+	FVrgDashboardSummary BuildDashboardSummary() const;
 
 private:
 	friend bool VrgLayoutFile::Load(UWorld* World, const FString& Name, FString& OutSummary);
@@ -339,6 +342,12 @@ private:
 	mutable FCouplingSnapshot DisplaySnapshot;
 	mutable double DisplaySnapshotSimTimeS = -1.0;
 	mutable bool bDisplaySnapshotValid = false;
+	// Snapshot rebuilt at most once per SimTime for display (HUD summary, web dashboard).
+	const FCouplingSnapshot& GetCachedDisplaySnapshot() const;
+	// Game-thread copy for the web dashboard (rule 5), every DashboardPublishPeriodS of real time while it runs.
+	void PublishDashboard();
+	double LastDashboardPublishS = -1.0e9;
+	static constexpr double DashboardPublishPeriodS = 0.5;
 	FSimClock Clock;
 	FCouplingBridge Bridge;
 

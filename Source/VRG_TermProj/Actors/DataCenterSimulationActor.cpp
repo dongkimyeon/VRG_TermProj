@@ -9,6 +9,7 @@
 #include "Serialization/JsonWriter.h"
 #include "Simulation/Core/VrgHud.h"
 #include "Simulation/Core/VrgPerfCounters.h"
+#include "UI/VrgWebDashboard.h"
 
 #include "Actors/AirFieldDebugActor.h"
 #include "Actors/CoolingDistributionUnitActor.h"
@@ -1594,6 +1595,7 @@ void ADataCenterSimulationActor::Tick(float DeltaTime)
 				FString::Printf(TEXT("[배치 모드] 물리 정지 | Enter: 시뮬레이션 시작 | G: 바라보는 장비 잡기/놓기 | T: 90도 회전 | C: 컨테인먼트 %s"),
 					Containment == EAisleContainment::None ? TEXT("없음") : Containment == EAisleContainment::Blanking ? TEXT("블랭킹") : TEXT("블랭킹 + 지붕")));
 		}
+		PublishDashboard();
 		return;
 	}
 
@@ -1665,6 +1667,54 @@ void ADataCenterSimulationActor::Tick(float DeltaTime)
 	{
 		DrawSummary();
 	}
+	// After the steps so the published copy is the state at this frame's SimTime.
+	PublishDashboard();
+}
+
+const FCouplingSnapshot& ADataCenterSimulationActor::GetCachedDisplaySnapshot() const
+{
+	if (!bDisplaySnapshotValid || Clock.GetSimTimeS() != DisplaySnapshotSimTimeS)
+	{
+		DisplaySnapshot = GetSnapshot();
+		DisplaySnapshotSimTimeS = Clock.GetSimTimeS();
+		bDisplaySnapshotValid = true;
+	}
+	return DisplaySnapshot;
+}
+
+FVrgDashboardSummary ADataCenterSimulationActor::BuildDashboardSummary() const
+{
+	FVrgDashboardSummary S;
+	S.SimTimeS = Clock.GetSimTimeS();
+	S.bSimulating = Mode == ESimMode::Simulation;
+	S.bEvalReady = bEvalReady && Eval.GetNumInlets() > 0;
+	if (S.bEvalReady)
+	{
+		S.WindowS = Eval.GetWindowCoveredS();
+		S.ItWindowW = Eval.GetWindowPower().ItW;
+		S.bPartialPueValid = Eval.GetPartialPue(S.PartialPueWindow);
+		S.InletCount = Eval.GetNumInlets();
+		Eval.GetInletWindowSummary(S.InletWindowMeanMaxK, S.InletWindowMeanAvgK);
+		const FCouplingSnapshot& Snap = GetCachedDisplaySnapshot();
+		S.ItNowW = Snap.TotalItHeatW;
+		S.CoolantRemovedNowW = Snap.TotalRadiatorRejectedW;
+		S.AirRemovedNowW = Snap.TotalAirCoolingRemovedW;
+	}
+	return S;
+}
+
+void ADataCenterSimulationActor::PublishDashboard()
+{
+	FVrgWebDashboard& Web = FVrgWebDashboard::Get();
+	const double NowS = FPlatformTime::Seconds();
+	if (!Web.IsRunning() || NowS - LastDashboardPublishS < DashboardPublishPeriodS) return;
+	LastDashboardPublishS = NowS;
+	FVrgDashboardSummary Summary;
+	{
+		VRG_SCOPE_COST(STAT_VrgDashboardPublish, DashboardMs);
+		Summary = BuildDashboardSummary();
+	}
+	Web.Publish(Summary.ToJson());
 }
 
 void ADataCenterSimulationActor::DrawSummary() const
@@ -1675,13 +1725,7 @@ void ADataCenterSimulationActor::DrawSummary() const
 	}
 
 	const uint64 BaseKey = static_cast<uint64>(GetUniqueID());
-	if (!bDisplaySnapshotValid || Clock.GetSimTimeS() != DisplaySnapshotSimTimeS)
-	{
-		DisplaySnapshot = GetSnapshot();
-		DisplaySnapshotSimTimeS = Clock.GetSimTimeS();
-		bDisplaySnapshotValid = true;
-	}
-	const FCouplingSnapshot& Snapshot = DisplaySnapshot;
+	const FCouplingSnapshot& Snapshot = GetCachedDisplaySnapshot();
 
 	if (!LastSetupMessage.IsEmpty())
 	{
@@ -2010,7 +2054,7 @@ bool ADataCenterSimulationActor::WriteEvaluationReport(const FString& Name, FStr
 
 	TArray<TSharedPtr<FJsonValue>> InletItems;
 	int32 AboveRecommended = 0, AboveAllowable = 0, SensorAlarms = 0;
-	double MaxMeanK = 0.0, SumMeanK = 0.0, FirstDetectionS = -1.0;
+	double MaxMeanK = 0.0, FirstDetectionS = -1.0;
 	for (int32 I = 0; I < Eval.GetNumInlets(); ++I)
 	{
 		const FVrgEvaluation::FInletStats St = Eval.GetInlet(I);
@@ -2034,12 +2078,13 @@ bool ADataCenterSimulationActor::WriteEvaluationReport(const FString& Name, FStr
 		AboveAllowable += St.WindowMeanK > S.AllowableInletK ? 1 : 0;
 		SensorAlarms += St.SensorAlarms > 0 ? 1 : 0;
 		if (St.SensorFirstAlarmS >= 0.0) FirstDetectionS = FirstDetectionS < 0.0 ? St.SensorFirstAlarmS : FMath::Min(FirstDetectionS, St.SensorFirstAlarmS);
-		MaxMeanK = FMath::Max(MaxMeanK, St.WindowMeanK); SumMeanK += St.WindowMeanK;
 	}
 	Root->SetArrayField(TEXT("inlets"), InletItems);
+	double AvgMeanK = 0.0;
+	Eval.GetInletWindowSummary(MaxMeanK, AvgMeanK);
 	TSharedRef<FJsonObject> Summary = MakeShared<FJsonObject>();
 	Summary->SetNumberField(TEXT("inletWindowMeanMaxC"), MaxMeanK - 273.15);
-	Summary->SetNumberField(TEXT("inletWindowMeanAvgC"), SumMeanK / Eval.GetNumInlets() - 273.15);
+	Summary->SetNumberField(TEXT("inletWindowMeanAvgC"), AvgMeanK - 273.15);
 	Summary->SetNumberField(TEXT("inletsAboveRecommended"), AboveRecommended);
 	Summary->SetNumberField(TEXT("inletsAboveAllowable"), AboveAllowable);
 	Summary->SetNumberField(TEXT("inletsWithSensorAlarm"), SensorAlarms);
@@ -2077,7 +2122,7 @@ bool ADataCenterSimulationActor::WriteEvaluationReport(const FString& Name, FStr
 		P.ItW / 1e3, P.ServerFanW / 1e3, P.CrahFanW / 1e3, P.PumpW / 1e3, bPue ? *FString::Printf(TEXT("%.4f"), Pue) : TEXT("계산 불가(IT 0)"));
 	Md += TEXT("부분 PUE = (IT + CRAH 팬 + 펌프) / IT. 칠러·냉각탑·UPS·배전 손실·조명은 모델에 없어 시설 PUE가 아니다(D8).\n\n");
 	Md += FString::Printf(TEXT("## 흡기\n\n창 평균 최고 %.2f C / 평균 %.2f C, 권장 27 C 초과 %d, 허용 32 C 초과 %d, 센서 경보 %d (첫 감지 %.1f s)\n\n| # | 위치 (m) | 창 평균 C | 최고 C | 27 C 초과 s | 센서 마지막 C | 첫 경보 s |\n|---|---|---|---|---|---|---|\n"),
-		MaxMeanK - 273.15, SumMeanK / Eval.GetNumInlets() - 273.15, AboveRecommended, AboveAllowable, SensorAlarms, FirstDetectionS);
+		MaxMeanK - 273.15, AvgMeanK - 273.15, AboveRecommended, AboveAllowable, SensorAlarms, FirstDetectionS);
 	for (int32 I = 0; I < Eval.GetNumInlets(); ++I)
 	{
 		const FVrgEvaluation::FInletStats St = Eval.GetInlet(I);

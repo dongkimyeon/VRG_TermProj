@@ -89,3 +89,18 @@ bool FVrgEvaluation::GetPartialPue(double& OutPue) const
 	OutPue = (P.ItW + P.CrahFanW + P.PumpW) / P.ItW;
 	return true;
 }
+
+bool FVrgEvaluation::GetInletWindowSummary(double& OutMaxK, double& OutMeanK) const
+{
+	if (Inlets.Num() == 0) return false;
+	double MaxK = 0.0, SumK = 0.0;
+	for (int32 I = 0; I < Inlets.Num(); ++I)
+	{
+		const double MeanK = GetInlet(I).WindowMeanK;
+		MaxK = FMath::Max(MaxK, MeanK);
+		SumK += MeanK;
+	}
+	OutMaxK = MaxK;
+	OutMeanK = SumK / Inlets.Num();
+	return true;
+}

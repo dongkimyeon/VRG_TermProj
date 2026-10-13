@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>VRG 요약</title>
+<style>
+  :root { --bg:#f4f5f7; --card:#fff; --ink:#1d2330; --muted:#667085; --line:#e2e5ea; --warn:#b54708; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#12151b; --card:#1b2029; --ink:#e7eaf0; --muted:#98a2b3; --line:#2b3240; --warn:#f79009; } }
+  body { margin:0; padding:24px 16px; background:var(--bg); color:var(--ink); font:15px/1.45 system-ui, "Malgun Gothic", sans-serif; }
+  .card { max-width:640px; margin:0 auto; background:var(--card); border:1px solid var(--line); border-radius:12px; padding:20px; }
+  h1 { font-size:18px; margin:0 0 4px; }
+  .sub { color:var(--muted); font-size:13px; margin-bottom:16px; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fit, minmax(170px, 1fr)); gap:12px; }
+  .kpi { border:1px solid var(--line); border-radius:8px; padding:10px 12px; }
+  .kpi .label { color:var(--muted); font-size:12px; }
+  .kpi .value { font-size:22px; font-variant-numeric:tabular-nums; }
+  .kpi .note { color:var(--muted); font-size:11px; }
+  .status { margin-top:14px; font-size:13px; color:var(--muted); }
+  .status.err { color:var(--warn); }
+  .foot { margin-top:14px; font-size:12px; color:var(--muted); border-top:1px solid var(--line); padding-top:10px; }
+</style>
+</head>
+<body>
+<div class="card">
+  <h1>데이터센터 냉각 요약</h1>
+  <div class="sub" id="mode">연결 중…</div>
+  <div class="grid">
+    <div class="kpi"><div class="label">SimTime</div><div class="value" id="t">-</div><div class="note">통합 시계</div></div>
+    <div class="kpi"><div class="label">IT 전력</div><div class="value" id="it">-</div><div class="note" id="itnote">창 평균</div></div>
+    <div class="kpi"><div class="label">제거열 (현재)</div><div class="value" id="rm">-</div><div class="note" id="rmnote">냉각수 + 공기 코일</div></div>
+    <div class="kpi"><div class="label">부분 PUE</div><div class="value" id="pue">-</div><div class="note">(IT + CRAH 팬 + 펌프) / IT, 시설 PUE 아님</div></div>
+    <div class="kpi"><div class="label">흡기 최고</div><div class="value" id="imax">-</div><div class="note">랙별 창 평균의 최고</div></div>
+    <div class="kpi"><div class="label">흡기 평균</div><div class="value" id="iavg">-</div><div class="note" id="inote">랙별 창 평균의 평균</div></div>
+  </div>
+  <div class="status" id="status"></div>
+  <div class="foot">보정되지 않은 모델의 계산값이다. 보존 잔차가 작다는 것은 장부가 맞는다는 뜻이지 실제 설비 온도가 맞는다는 뜻이 아니다.
+    칠러·냉각탑·UPS·배전 손실·조명은 모델에 없다. 1초마다 /api/snapshot을 읽는다(읽기 전용).</div>
+</div>
+<script>
+const $ = id => document.getElementById(id);
+const kw = w => (w / 1000).toFixed(1) + ' kW';
+const c = k => (k - 273.15).toFixed(2) + ' °C';   // 규약 2: K로 받고 화면에서만 °C
+async function poll() {
+  try {
+    const r = await fetch('/api/snapshot', { cache: 'no-store' });
+    if (!r.ok) throw new Error(r.status === 503 ? '시뮬레이션 액터가 아직 값을 내지 않았다' : 'HTTP ' + r.status);
+    const s = await r.json();
+    $('t').textContent = s.simTimeS.toFixed(2) + ' s';
+    $('mode').textContent = s.mode === 'simulation' ? '시뮬레이션 모드' : '배치 모드 (물리 정지)';
+    if (s.evalReady) {
+      $('it').textContent = kw(s.itWindowW);
+      $('itnote').textContent = '창 평균 ' + s.windowS.toFixed(0) + ' s · 현재 ' + kw(s.itNowW);
+      $('rm').textContent = kw(s.removedNowW);
+      $('rmnote').textContent = '냉각수 ' + kw(s.coolantRemovedNowW) + ' + 공기 ' + kw(s.airRemovedNowW);
+      $('pue').textContent = s.partialPueWindow === null ? '계산 불가' : s.partialPueWindow.toFixed(4);
+      $('imax').textContent = c(s.inletWindowMeanMaxK);
+      $('iavg').textContent = c(s.inletWindowMeanAvgK);
+      $('inote').textContent = '흡기 ' + s.inletCount + '곳, 창 평균';
+    } else {
+      for (const id of ['it', 'rm', 'pue', 'imax', 'iavg']) $(id).textContent = '-';
+    }
+    $('status').textContent = '갱신 ' + new Date().toLocaleTimeString() + (s.evalReady ? '' : ' · 시뮬레이션 스텝 전이라 값 없음');
+    $('status').className = 'status';
+  } catch (e) {
+    $('status').textContent = '읽기 실패: ' + e.message;
+    $('status').className = 'status err';
+  }
+}
+poll();
+setInterval(poll, 1000);
+</script>
+</body>
+</html>

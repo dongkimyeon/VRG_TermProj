@@ -5,6 +5,7 @@
 DEFINE_STAT(STAT_VrgAirSolverStep);
 DEFINE_STAT(STAT_VrgPressureSolve);
 DEFINE_STAT(STAT_VrgDebugDraw);
+DEFINE_STAT(STAT_VrgDashboardPublish);
 DEFINE_STAT(STAT_VrgCouplingStep);
 
 namespace VrgPerf

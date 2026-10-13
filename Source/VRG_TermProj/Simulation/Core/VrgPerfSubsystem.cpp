@@ -214,7 +214,7 @@ void UVrgPerfSubsystem::FinishCapture()
 	// 첫 몇 프레임은 레벨 로드와 셰이더 컴파일이 섞여 대표값이 아니다.
 	const int32 WarmupFrames = FMath::Min(Samples.Num() / 4, 30);
 
-	FString Csv = TEXT("TimeS,FrameMs,GameMs,DrawMs,GpuMs,SolverMs,PressureMs,CouplingMs,DebugDrawMs,SolverSteps,PressureIterations,DrawnPrimitives\n");
+	FString Csv = TEXT("TimeS,FrameMs,GameMs,DrawMs,GpuMs,SolverMs,PressureMs,CouplingMs,DebugDrawMs,SolverSteps,PressureIterations,DrawnPrimitives,DashboardMs\n");
 	TArray<double> FrameMs;
 	TArray<double> GameMs;
 	TArray<double> DrawMs;
@@ -224,13 +224,14 @@ void UVrgPerfSubsystem::FinishCapture()
 	TArray<double> DebugDrawMs;
 	double DrawnSum = 0.0;
 	double IterationSum = 0.0;
+	double DashboardSum = 0.0;
 	for (int32 Index = 0; Index < Samples.Num(); ++Index)
 	{
 		const FVrgPerfSample& S = Samples[Index];
-		Csv += FString::Printf(TEXT("%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%d,%d,%d\n"),
+		Csv += FString::Printf(TEXT("%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%d,%d,%d,%.4f\n"),
 			S.TimeS, S.FrameMs, S.GameMs, S.DrawMs, S.GpuMs,
 			S.Costs.SolverMs, S.Costs.PressureMs, S.Costs.CouplingMs, S.Costs.DebugDrawMs,
-			S.Costs.SolverSteps, S.Costs.PressureIterations, S.Costs.DrawnPrimitives);
+			S.Costs.SolverSteps, S.Costs.PressureIterations, S.Costs.DrawnPrimitives, S.Costs.DashboardMs);
 		if (Index < WarmupFrames)
 		{
 			continue;
@@ -244,6 +245,7 @@ void UVrgPerfSubsystem::FinishCapture()
 		DebugDrawMs.Add(S.Costs.DebugDrawMs);
 		DrawnSum += S.Costs.DrawnPrimitives;
 		IterationSum += S.Costs.PressureIterations;
+		DashboardSum += S.Costs.DashboardMs;
 	}
 
 	const int32 Counted = FMath::Max(1, FrameMs.Num());
@@ -252,7 +254,7 @@ void UVrgPerfSubsystem::FinishCapture()
 		TEXT("  중앙값 ms  Frame %.2f | Game %.2f | Draw %.2f | GPU %.2f\n")
 		TEXT("  95%% ms     Frame %.2f | Game %.2f | Draw %.2f | GPU %.2f\n")
 		TEXT("  중앙값 ms  솔버 %.2f | 압력 %.2f | 디버그 드로우 %.2f\n")
-		TEXT("  프레임당 평균 압력 반복 %.1f회 | 디버그 프리미티브 %.0f개\n")
+		TEXT("  프레임당 평균 압력 반복 %.1f회 | 디버그 프리미티브 %.0f개 | 웹 요약 생성 프레임당 평균 %.4f ms\n")
 		TEXT("  측정값이다. 보장값이 아니다 (D10)."),
 		*CaptureLabel, Samples.Num(), WarmupFrames, FrameMs.Num(),
 		PercentileMs(FrameMs, 0.5), PercentileMs(GameMs, 0.5),
@@ -260,7 +262,7 @@ void UVrgPerfSubsystem::FinishCapture()
 		PercentileMs(FrameMs, 0.95), PercentileMs(GameMs, 0.95),
 		PercentileMs(DrawMs, 0.95), PercentileMs(GpuMs, 0.95),
 		PercentileMs(SolverMs, 0.5), PercentileMs(PressureMs, 0.5), PercentileMs(DebugDrawMs, 0.5),
-		IterationSum / Counted, DrawnSum / Counted);
+		IterationSum / Counted, DrawnSum / Counted, DashboardSum / Counted);
 
 	const FString Directory = FPaths::ProjectSavedDir() / TEXT("Profiling");
 	IFileManager::Get().MakeDirectory(*Directory, true);
