@@ -4468,3 +4468,11 @@ Editor -game 한 번에서 L_Test 32랙·스파인 2·CDU 1·CRAH 8 표시. 발�
 검증: `VRG.Web.DashboardSummary` 확장(행 = 모델 값 정확 일치, 부품 613개, 부품 발열·냉각수 합 = 랙 합계 상대 0), Editor -game 한 번에서 클릭·상세·펼침 확인.
 발행 평균 0.50 ms(평면도 JSON 이전 + 랙 행 포함, 평면도·랙 몫 미분리). **모델 이상 발견(미수정):** L_Test 관리 스위치 Control CPU가 280 W·약 200 °C로
 계속 오른다(프리셋 25 W, UA 1.5 W/K). 레벨에 저장된 발열 배열 순서 문제로 추정, 미확인. 상세는 `Tools/웹대시보드_계획.md`의 "4단계 결과".
+
+## 2026-10-13 관리 스위치 Control CPU 과열 원인·수정
+
+원인: 디버그 컨트롤러 `ApplyHeatKnobs()`가 첫 CPU(Grace 280 W)의 W 값을 CPU 종류 모든 노드에 썼고, 키를 안 눌러도 시작·랙 갱신 때마다 실행돼
+관리 스위치 Control CPU(프리셋 25 W, UA 1.5 W/K)가 매 실행 280 W·약 200 °C였다(레벨 에셋 값은 정상, 배치 파일에는 실행 상태가 저장됨).
+수정: 손잡이를 첫 노드 기본값 대비 배율로 각 부품 기본값에 적용(`ApplyKindHeatScale`), 배치 파일에 남은 정확한 흔적만 불러올 때 보정(`RepairKindHeatSpread`).
+검증: `VRG.Thermal.Rack.HeatKnobKeepsPartShares` 신규 + 영향 테스트 성공. L_Test 최고 부품 56.3 °C(스파인 ASIC)·랙 48.7 °C, IT 3755.2 → 3733.2 kW.
+**이전 기록의 L_Test IT·흡기 값은 이 결함을 포함한다.** 상세는 `Tools/웹대시보드_계획.md`의 "관리 스위치 과열: 원인과 수정".

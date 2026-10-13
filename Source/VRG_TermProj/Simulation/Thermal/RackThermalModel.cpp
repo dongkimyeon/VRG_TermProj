@@ -37,6 +37,45 @@ TArray<double> FRackThermalModel::MakeDefaultHeatW(const FRackThermalParams& InP
 	return HeatW;
 }
 
+bool FRackThermalModel::ApplyKindHeatScale(const FRackThermalParams& InParams, TArray<double>& InOutHeatW, ERackPartKind Kind, double FirstNodeHeatW)
+{
+	TArray<FRackComponentParams> Nodes; TArray<int32> Starts;
+	ResolveLayout(InParams, Nodes, Starts);
+	const int32 First = Nodes.IndexOfByPredicate([Kind](const FRackComponentParams& P) { return P.Kind == Kind; });
+	if (InOutHeatW.Num() != Nodes.Num() || First == INDEX_NONE || !(Nodes[First].DefaultHeatW > 0.0)) return false;
+	const double Multiple = FirstNodeHeatW / Nodes[First].DefaultHeatW;
+	for (int32 N = 0; N < Nodes.Num(); ++N)
+	{
+		if (Nodes[N].Kind == Kind) InOutHeatW[N] = N == First ? FirstNodeHeatW : Nodes[N].DefaultHeatW * Multiple;
+	}
+	return true;
+}
+
+int32 FRackThermalModel::RepairKindHeatSpread(const FRackThermalParams& InParams, TArray<double>& InOutHeatW)
+{
+	TArray<FRackComponentParams> Nodes; TArray<int32> Starts;
+	ResolveLayout(InParams, Nodes, Starts);
+	if (InOutHeatW.Num() != Nodes.Num()) return 0;
+	int32 Repaired = 0;
+	for (const ERackPartKind Kind : { ERackPartKind::Cpu, ERackPartKind::Gpu })
+	{
+		const int32 First = Nodes.IndexOfByPredicate([Kind](const FRackComponentParams& P) { return P.Kind == Kind; });
+		if (First == INDEX_NONE || !(Nodes[First].DefaultHeatW > 0.0)) continue;
+		const double FirstW = InOutHeatW[First];
+		const double Multiple = FirstW / Nodes[First].DefaultHeatW;
+		for (int32 N = 0; N < Nodes.Num(); ++N)
+		{
+			if (Nodes[N].Kind != Kind || Nodes[N].DefaultHeatW == Nodes[First].DefaultHeatW) continue;
+			if (InOutHeatW[N] == FirstW && InOutHeatW[N] != Nodes[N].DefaultHeatW)
+			{
+				InOutHeatW[N] = Nodes[N].DefaultHeatW * Multiple;
+				++Repaired;
+			}
+		}
+	}
+	return Repaired;
+}
+
 void FRackThermalModel::Initialize(const FRackThermalParams& InParams, const FRackThermalState& InInitialState)
 {
 	Params = InParams;

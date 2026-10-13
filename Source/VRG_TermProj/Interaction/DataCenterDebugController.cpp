@@ -314,18 +314,10 @@ void ADataCenterDebugController::ApplyHeatKnobs()
 			continue;
 		}
 
-		TArray<FRackComponentParams> Nodes; TArray<int32> Starts;
-		FRackThermalModel::ResolveLayout(Rack->Params, Nodes, Starts);
-		if (Rack->Input.ComponentHeatW.Num() != Nodes.Num())
-		{
-			continue;
-		}
-
-		for (int32 Node = 0; Node < Nodes.Num(); ++Node)
-		{
-			if (Nodes[Node].Kind == ERackPartKind::Cpu) Rack->Input.ComponentHeatW[Node] = CpuHeatKnob.Value;
-			if (Nodes[Node].Kind == ERackPartKind::Gpu) Rack->Input.ComponentHeatW[Node] = GpuHeatKnob.Value;
-		}
+		// The knobs show the first CPU / GPU node's watts; other parts of that kind keep their own share (same multiple of
+		// their default). Writing the same watts everywhere put 280 W into a 25 W management-switch CPU (fixed 2026-10-13).
+		FRackThermalModel::ApplyKindHeatScale(Rack->Params, Rack->Input.ComponentHeatW, ERackPartKind::Cpu, CpuHeatKnob.Value);
+		FRackThermalModel::ApplyKindHeatScale(Rack->Params, Rack->Input.ComponentHeatW, ERackPartKind::Gpu, GpuHeatKnob.Value);
 	}
 }
 
