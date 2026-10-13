@@ -94,6 +94,27 @@
   .slothead span.r { text-align:right; }
   .slots { padding-left:14px; }
   details.slot table { margin:2px 0 8px; }
+  /* 리포트 저장·A/B (5단계) */
+  .save { display:flex; gap:6px; align-items:center; margin-left:12px; }
+  .save input, .ab select { background:var(--panel2); color:var(--text); border:1px solid var(--line); border-radius:6px; padding:4px 8px; font:12px var(--mono); }
+  .save input { width:150px; }
+  .save .msg { font-size:11.5px; color:var(--muted); max-width:340px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .save .msg.err { color:#f0b43c; }
+  .ab .pick { display:flex; gap:12px; flex-wrap:wrap; align-items:center; font-size:12px; color:var(--muted); }
+  .ab select { min-width:260px; }
+  .warnbox { border:1px solid #f0b43c; color:#f0b43c; border-radius:6px; padding:6px 10px; font-size:12px; margin:10px 0; }
+  .warnbox::before { content:'▲ '; }
+  #abplan { height:420px; margin-top:8px; }
+  #abplan .domain { fill:none; stroke:var(--faint); stroke-dasharray:4 4; }
+  #abplan .cab { stroke:var(--bg); stroke-width:1.5; }
+  #abplan .unit { fill:var(--panel2); stroke:var(--muted); stroke-width:1; }
+  #abplan .barrier { fill:var(--faint); }
+  #abplan .ghost { fill:none; stroke:var(--muted); stroke-dasharray:3 3; }
+  #abplan .move { stroke:var(--text); stroke-width:1.5; fill:none; }
+  #abplan .added { fill:none; stroke:var(--text); stroke-width:2; }
+  #abplan .tag2 { fill:var(--text); font:600 11px var(--mono); text-anchor:middle; }
+  #abplan .lbl { fill:var(--muted); font:10px var(--mono); text-anchor:middle; }
+  td.pos { color:#e66767; } td.neg { color:#5598e7; }
 </style>
 </head>
 <body>
@@ -101,6 +122,11 @@
   <header>
     <h1>데이터센터 냉각 요약</h1>
     <span class="mode" id="mode">연결 중…</span>
+    <span class="save">
+      <input id="savename" type="text" placeholder="리포트 이름" maxlength="64" aria-label="리포트 이름 (영문·숫자·_·-·한글)">
+      <button id="savebtn" type="button">리포트 저장</button>
+      <span class="msg" id="savemsg"></span>
+    </span>
     <span class="status" id="status"></span>
   </header>
 
@@ -116,7 +142,36 @@
   <div class="tabs" role="tablist">
     <button type="button" role="tab" id="tab-btn-summary" aria-selected="true" data-tab="summary">요약</button>
     <button type="button" role="tab" id="tab-btn-racks" aria-selected="false" data-tab="racks">랙</button>
+    <button type="button" role="tab" id="tab-btn-ab" aria-selected="false" data-tab="ab">A/B 비교</button>
   </div>
+
+  <section id="tab-ab" class="ab" hidden>
+    <div class="panel">
+      <div class="pick">
+        <label>A <select id="abA"></select></label>
+        <label>B <select id="abB"></select></label>
+        <span id="abnote">저장한 리포트 두 개를 고른다(Saved/Reports). 배치를 바꾸기 전후에 저장하면 장비 이동도 보인다.</span>
+      </div>
+      <div id="abwarn"></div>
+      <div class="scroll"><table id="abtable"></table></div>
+    </div>
+    <div class="panel" style="margin-top:12px">
+      <div class="head" style="display:flex;gap:16px;align-items:flex-end;flex-wrap:wrap">
+        <div style="flex:1;min-width:220px">
+          <h2 style="font-size:13px;margin:0;font-weight:600">흡기 차이 평면도 (B − A) <span class="tag">계산값</span></h2>
+          <div style="color:var(--faint);font-size:11px;margin-top:2px" id="absub">랙·스파인 색 = 흡기 창 평균 차</div>
+        </div>
+        <div class="scale">
+          <div class="bar" id="abbar"></div>
+          <div class="ends" id="abends"></div>
+          <div class="note">±0.5 K 이내는 회색 = 구분 불가(같은 설정도 실행마다 약 0.5 K 흔들린다) · 점선 = A 위치, 화살표 = 이동, 굵은 테 = B에만 있음</div>
+        </div>
+      </div>
+      <svg id="abplan"></svg>
+      <div class="tablebar"><button id="abtbtn" type="button">랙별 표 보기</button></div>
+      <div id="abrtable" hidden></div>
+    </div>
+  </section>
 
   <section id="tab-racks" hidden>
     <div class="panel">
@@ -439,7 +494,8 @@ function showTab(name) {
   for (const b of document.querySelectorAll('.tabs button')) b.setAttribute('aria-selected', String(b.dataset.tab === name));
   $('tab-summary').hidden = name !== 'summary';
   $('tab-racks').hidden = name !== 'racks';
-  history.replaceState(null, '', name === 'racks' ? (selected >= 0 ? '#rack=' + selected : '#racks') : '#');
+  $('tab-ab').hidden = name !== 'ab';
+  history.replaceState(null, '', name === 'racks' ? (selected >= 0 ? '#rack=' + selected : '#racks') : name === 'ab' ? '#ab' : '#');
   tick();
 }
 for (const b of document.querySelectorAll('.tabs button')) b.addEventListener('click', () => showTab(b.dataset.tab));
@@ -511,24 +567,179 @@ function renderDetail() {
   el.innerHTML = html + '</div><div class="mode" style="margin-top:6px">부품 허용 온도는 모델에 없어 여유를 표시하지 않는다.</div>';
   for (const d of el.querySelectorAll('details.slot')) d.addEventListener('toggle', () => d.open ? openSlots.add(+d.dataset.s) : openSlots.delete(+d.dataset.s));
 }
-{ const m = location.hash.match(/^#rack=(\d+)$/); if (m) { selected = +m[1]; tab = 'racks'; } else if (location.hash === '#racks') tab = 'racks'; }
+{ const m = location.hash.match(/^#rack=(\d+)$/); if (m) { selected = +m[1]; tab = 'racks'; } else if (location.hash === '#racks') tab = 'racks'; else if (location.hash === '#ab') tab = 'ab'; }
+
+// ---- 리포트 저장 (5단계): 사이트가 하는 유일한 쓰기. 게임 스레드가 다음 발행(0.5 s 안)에 vrg.Eval.Report와 같은 함수로 쓴다. ----
+const NAME_OK = /^[A-Za-z0-9_\-가-힣]{1,64}$/;
+let reportList = null, lastListAt = 0, waitingSave = null;
+$('savebtn').addEventListener('click', async () => {
+  const name = $('savename').value.trim();
+  const msg = $('savemsg');
+  if (!NAME_OK.test(name)) { msg.textContent = '이름은 영문·숫자·_·-·한글 1~64자'; msg.className = 'msg err'; return; }
+  const r = await fetch('/api/report?name=' + encodeURIComponent(name), { method:'POST' });
+  if (r.status !== 202) { msg.textContent = '저장 요청 실패 HTTP ' + r.status; msg.className = 'msg err'; return; }
+  waitingSave = name; msg.textContent = name + ' 저장 중…'; msg.className = 'msg';
+  lastListAt = 0;                                // 다음 갱신에서 바로 결과를 읽는다
+});
+async function pollReports(force) {
+  if (!force && Date.now() - lastListAt < 3000) return;   // 목록은 파일을 훑으므로 3 s마다만
+  lastListAt = Date.now();
+  const r = await fetch('/api/reports', { cache:'no-store' });
+  if (!r.ok) throw new Error('리포트 목록 HTTP ' + r.status);
+  reportList = await r.json();
+  if (waitingSave && reportList.lastSave && reportList.lastSave.name === waitingSave && reportList.pending !== waitingSave) {
+    const ls = reportList.lastSave, msg = $('savemsg');
+    msg.textContent = (ls.ok ? '저장됨: ' : '저장 실패: ') + (ls.ok ? waitingSave : ls.message);
+    msg.title = ls.message; msg.className = ls.ok ? 'msg' : 'msg err';
+    // 방금 저장한 것을 B, 그 직전 최신 리포트를 A로 둔다(배치를 바꾸기 전후 저장 → 바로 비교).
+    if (ls.ok) { const others = reportList.reports.map(r => r.name).filter(n => n !== waitingSave); if (others.length) abPair = [others[0], waitingSave]; delete reportCache[waitingSave]; }
+    waitingSave = null;
+  }
+}
+
+// ---- A/B 비교 (5단계) ----
+const reportCache = {};
+async function loadReport(name) {
+  if (!name) return null;
+  if (!reportCache[name]) {
+    const r = await fetch('/api/reportfile?name=' + encodeURIComponent(name), { cache:'no-store' });
+    if (!r.ok) throw new Error('리포트 ' + name + ' HTTP ' + r.status);
+    reportCache[name] = await r.json();
+  }
+  return reportCache[name];
+}
+function fillSelect(sel, keep) {
+  const opts = (reportList ? reportList.reports : []).map(r => {
+    const it = r.itW !== undefined ? ` · IT ${(r.itW / 1000).toFixed(0)} kW` : '';
+    return `<option value="${r.name}">${r.name} · ${r.simTimeS !== undefined ? r.simTimeS.toFixed(0) + ' s' : ''}${it}${r.hasLayout ? '' : ' · 평면도 없음'}</option>`;
+  }).join('');
+  if (sel.dataset.opts !== opts) { sel.innerHTML = opts; sel.dataset.opts = opts; }
+  if (keep && [...sel.options].some(o => o.value === keep)) sel.value = keep;
+}
+let abPair = ['', ''];
+for (const id of ['abA', 'abB']) $(id).addEventListener('change', () => { abPair = [$('abA').value, $('abB').value]; renderAb(); });
+// 발산: 파랑(B가 더 시원함) ↔ 중립 회색 ↔ 빨강(B가 더 뜨거움). 범위 ±3 K 고정, ±0.5 K 이내는 회색(구분 불가).
+const DIV_NEG = [57, 135, 229], DIV_MID = [56, 56, 53], DIV_POS = [230, 103, 103], DIV_MAX = 3, DIV_DEAD = 0.5;
+function divColor(d) {
+  if (Math.abs(d) < DIV_DEAD) return `rgb(${DIV_MID})`;
+  const t = Math.min(1, Math.abs(d) / DIV_MAX), end = d > 0 ? DIV_POS : DIV_NEG;
+  return 'rgb(' + DIV_MID.map((v, k) => Math.round(v + (end[k] - v) * t)).join(',') + ')';
+}
+$('abbar').style.background = `linear-gradient(90deg, rgb(${DIV_NEG}), rgb(${DIV_MID}) 50%, rgb(${DIV_POS}))`;
+$('abends').innerHTML = `<span style="left:0;transform:translateX(0)">−${DIV_MAX} K</span><span style="left:50%;transform:translateX(-50%)">0</span><span style="left:100%;transform:translateX(-100%)">+${DIV_MAX} K</span>`;
+$('abtbtn').addEventListener('click', () => { $('abrtable').hidden = !$('abrtable').hidden; $('abtbtn').textContent = $('abrtable').hidden ? '랙별 표 보기' : '랙별 표 닫기'; });
+
+async function renderAb() {
+  fillSelect($('abA'), abPair[0]); fillSelect($('abB'), abPair[1]);
+  const names = reportList ? reportList.reports.map(r => r.name) : [];
+  if (names.length < 2) { $('abtable').innerHTML = ''; $('abwarn').innerHTML = ''; $('abnote').textContent = '비교하려면 리포트가 두 개 이상 필요하다. 위에서 이름을 넣고 "리포트 저장"을 누른다.'; $('abplan').replaceChildren(); return; }
+  if (!abPair[0] || !abPair[1]) { abPair = [names[1], names[0]]; fillSelect($('abA'), abPair[0]); fillSelect($('abB'), abPair[1]); }   // 기본: 이전 것 A, 최신 B
+  const [A, B] = [await loadReport(abPair[0]), await loadReport(abPair[1])];
+  if (!A || !B) return;
+  // D8: 같은 IT 부하에서만 비교한다. 0.1 % 넘게 다르면 경고.
+  const itDiff = (B.power.itW - A.power.itW) / A.power.itW;
+  $('abwarn').innerHTML = Math.abs(itDiff) > 0.001 ? `<div class="warnbox">IT 부하가 ${(itDiff * 100).toFixed(2)} % 다르다. 냉각 결과는 같은 IT 부하에서만 비교한다(D8). 흡기·제거열 차이에는 부하 차이가 섞여 있다.</div>` : '';
+  const f = (v, d, u) => v === undefined || v === null ? '-' : v.toFixed(d) + (u || '');
+  const rows = [
+    ['시뮬 시각 s', A.simTimeS, B.simTimeS, 1], ['평균 창 s', A.windowS, B.windowS, 0],
+    ['흡기 창 평균 최고 °C', A.summary.inletWindowMeanMaxC, B.summary.inletWindowMeanMaxC, 2], ['흡기 창 평균의 평균 °C', A.summary.inletWindowMeanAvgC, B.summary.inletWindowMeanAvgC, 2],
+    ['27 °C 초과 랙', A.summary.inletsAboveRecommended, B.summary.inletsAboveRecommended, 0], ['32 °C 초과 랙', A.summary.inletsAboveAllowable, B.summary.inletsAboveAllowable, 0],
+    ['IT kW', A.power.itW / 1e3, B.power.itW / 1e3, 1],
+    ['냉각수 제거열 kW', A.power.coolantRemovedW / 1e3, B.power.coolantRemovedW / 1e3, 1], ['공기 코일 제거열 kW', A.power.airRemovedW / 1e3, B.power.airRemovedW / 1e3, 1],
+    ['CRAH 팬 kW', A.power.crahFanW / 1e3, B.power.crahFanW / 1e3, 2], ['펌프 kW', A.power.pumpW / 1e3, B.power.pumpW / 1e3, 2],
+    ['부분 PUE', A.power.partialPue, B.power.partialPue, 4], ['전역 열수지 잔차', A.checks.globalNormalizedEnergyResidual, B.checks.globalNormalizedEnergyResidual, -1],
+  ].map(([k, a, b, d]) => {
+    const num = v => typeof v === 'number' && Number.isFinite(v);
+    const show = v => !num(v) ? '-' : d < 0 ? v.toExponential(2) : v.toFixed(d);
+    const diff = num(a) && num(b) && d >= 0 ? b - a : null;
+    return `<tr><td class="l">${k}</td><td>${show(a)}</td><td>${show(b)}</td><td>${diff === null ? '' : (diff > 0 ? '+' : '') + diff.toFixed(d)}</td></tr>`;
+  }).join('');
+  $('abtable').innerHTML = `<thead><tr><th class="l">항목 (창 평균)</th><th>A ${abPair[0]}</th><th>B ${abPair[1]}</th><th>B − A</th></tr></thead><tbody>${rows}</tbody>`;
+  $('abnote').textContent = '부분 PUE = (IT + CRAH 팬 + 펌프) / IT, 시설 PUE 아님. "-"는 옛 리포트에 없는 값.';
+  drawAbPlan(A, B);
+}
+
+function drawAbPlan(A, B) {
+  const svg = $('abplan');
+  svg.replaceChildren();
+  const inA = {}, inB = {};
+  for (const i of A.inlets) inA[i.name] = i;
+  for (const i of B.inlets) inB[i.name] = i;
+  // 평면도: B의 것(없으면 A), 둘 다 없으면 흡기 위치 점으로만(옛 리포트).
+  const LB = B.layout || null, LA = A.layout || null, base = LB || LA;
+  const eqA = {}; if (LA) for (const e of LA.equipment) eqA[e.name] = e;
+  const eqB = {}; if (LB) for (const e of LB.equipment) eqB[e.name] = e;
+  const items = base ? base.equipment.slice() : B.inlets.map(i => ({ kind:'rack', name:i.name, xM:i.x_m, yM:i.y_m, yawDeg:0, depthM:1.0, widthM:0.6, inlet:i.index }));
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  const grow = (x, y) => { x0 = Math.min(x0, x); x1 = Math.max(x1, x); y0 = Math.min(y0, y); y1 = Math.max(y1, y); };
+  if (base && base.domain) { grow(base.domain.minXM, base.domain.minYM); grow(base.domain.maxXM, base.domain.maxYM); }
+  for (const e of [...items, ...Object.values(eqA)]) { const r = Math.hypot(e.depthM, e.widthM) / 2; grow(e.xM - r, e.yM - r); grow(e.xM + r, e.yM + r); }
+  const pad = 0.6; x0 -= pad; y0 -= pad; x1 += pad; y1 += pad;
+  const W = 1000, H = Math.max(200, Math.round(W * (y1 - y0) / (x1 - x0)));
+  svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
+  const s = W / (x1 - x0), X = x => (x - x0) * s, Y = y => (y - y0) * s;
+  if (base && base.domain) mk('rect', { class:'domain', x:X(base.domain.minXM), y:Y(base.domain.minYM), width:(base.domain.maxXM - base.domain.minXM) * s, height:(base.domain.maxYM - base.domain.minYM) * s }, svg);
+  const box = (e, cls, parent) => { const g = mk('g', { transform:`translate(${X(e.xM).toFixed(1)} ${Y(e.yM).toFixed(1)}) rotate(${e.yawDeg.toFixed(2)})` }, parent);
+    return [g, mk('rect', { class:cls, x:-e.depthM * s / 2, y:-e.widthM * s / 2, width:e.depthM * s, height:e.widthM * s, rx:2 }, g)]; };
+  let moved = 0, added = 0, removed = 0, distinct = 0;
+  const table = [];
+  // A에만 있는 장비(삭제)와 옮긴 장비의 A 위치는 점선.
+  if (LA && LB) for (const e of LA.equipment) {
+    const b = eqB[e.name];
+    if (!b) { ++removed; box(e, 'ghost', svg); mk('text', { class:'tag2', x:X(e.xM), y:Y(e.yM) + 4 }, svg).textContent = '−'; continue; }
+    const dist = Math.hypot(b.xM - e.xM, b.yM - e.yM), turn = Math.abs(((b.yawDeg - e.yawDeg) % 360 + 540) % 360 - 180);
+    if (dist > 0.01 || turn > 0.5) { ++moved; box(e, 'ghost', svg); mk('path', { class:'move', d:`M ${X(e.xM)} ${Y(e.yM)} L ${X(b.xM)} ${Y(b.yM)}`, 'marker-end':'url(#abarrow)' }, svg); }
+  }
+  const defs = mk('defs', {}, svg), mark = mk('marker', { id:'abarrow', viewBox:'0 0 10 10', refX:9, refY:5, markerWidth:7, markerHeight:7, orient:'auto' }, defs);
+  mk('path', { d:'M 0 0 L 10 5 L 0 10 z', fill:'var(--text)' }, mark);
+  const order = { barrier:0, cdu:1, crah:2, spine:3, rack:3 };
+  for (const e of items.sort((a, b) => order[a.kind] - order[b.kind])) {
+    const a = inA[e.name], b = inB[e.name];
+    const d = a && b ? b.windowMeanC - a.windowMeanC : null;
+    const cabinet = e.kind === 'rack' || e.kind === 'spine';
+    const [g, rect] = box(e, cabinet ? 'cab' : e.kind === 'barrier' ? 'barrier' : 'unit', svg);
+    if (cabinet) rect.setAttribute('fill', d === null ? 'var(--panel2)' : divColor(d));
+    if (d !== null) { if (Math.abs(d) >= DIV_DEAD) ++distinct; table.push({ e, a:a.windowMeanC, b:b.windowMeanC, d }); }
+    if (LA && LB && !eqA[e.name]) { ++added; box(e, 'added', svg); }
+    if (e.kind === 'cdu' || e.kind === 'crah') mk('text', { class:'lbl', x:X(e.xM), y:Y(e.yM) + 3.5 }, svg).textContent = KIND[e.kind];
+    rect.addEventListener('mousemove', ev => {
+      const ea = eqA[e.name], mv = ea ? Math.hypot(e.xM - ea.xM, e.yM - ea.yM) : null;
+      tip.innerHTML = `<div class="k">${KIND[e.kind] || e.kind}</div><div>${e.name}</div>`
+        + (d === null ? '' : `<div><span class="k">흡기 창 평균</span> A ${a.windowMeanC.toFixed(2)} → B ${b.windowMeanC.toFixed(2)} °C</div><div><span class="k">B − A</span> ${(d > 0 ? '+' : '') + d.toFixed(2)} K${Math.abs(d) < DIV_DEAD ? ' (구분 불가)' : ''}</div>`)
+        + (mv !== null && mv > 0.01 ? `<div><span class="k">이동</span> ${mv.toFixed(2)} m</div>` : '') + (LA && LB && !ea ? '<div class="k">B에만 있음</div>' : '');
+      tip.style.display = 'block';
+      tip.style.left = Math.min(ev.clientX + 14, window.innerWidth - tip.offsetWidth - 8) + 'px'; tip.style.top = (ev.clientY + 14) + 'px';
+    });
+    rect.addEventListener('mouseleave', () => { tip.style.display = 'none'; });
+  }
+  $('absub').textContent = `랙·스파인 색 = 흡기 창 평균 B − A · ±${DIV_DEAD} K 넘게 달라진 곳 ${distinct} / ${table.length}`
+    + (LA && LB ? ` · 이동 ${moved} · 추가 ${added} · 삭제 ${removed}` : ' · 평면도가 없는 리포트라 흡기 위치만 그렸다');
+  table.sort((p, q) => Math.abs(q.d) - Math.abs(p.d));
+  $('abrtable').innerHTML = `<table><thead><tr><th class="l">장비</th><th>A °C</th><th>B °C</th><th>B − A K</th></tr></thead><tbody>`
+    + table.map(r => `<tr><td class="l">${KIND[r.e.kind] || ''} ${r.e.name}</td><td>${r.a.toFixed(2)}</td><td>${r.b.toFixed(2)}</td>`
+      + `<td class="${Math.abs(r.d) < DIV_DEAD ? '' : r.d > 0 ? 'pos' : 'neg'}">${(r.d > 0 ? '+' : '') + r.d.toFixed(2)}${Math.abs(r.d) < DIV_DEAD ? ' (구분 불가)' : ''}</td></tr>`).join('') + '</tbody></table>';
+}
 
 async function tick() {
   try {
     await pollSnapshot();
     $('tab-summary').hidden = tab !== 'summary';
     $('tab-racks').hidden = tab !== 'racks';
+    $('tab-ab').hidden = tab !== 'ab';
     for (const b of document.querySelectorAll('.tabs button')) b.setAttribute('aria-selected', String(b.dataset.tab === tab));
+    if (tab === 'ab' || waitingSave) await pollReports(false);   // 저장 결과를 기다리는 동안은 어느 탭에서든
     await pollSeries();                          // 시계열은 탭과 무관하게 계속 쌓는다(돌아왔을 때 빈틈 없게)
     if (tab === 'summary') {
       await pollLayout();
       drawPlan();
       for (const c of charts) draw(c);
       renderTable();
-    } else {
+    } else if (tab === 'racks') {
       await pollRacks();
       renderRacks();
       renderDetail();
+    } else {
+      await renderAb();
     }
     $('status').textContent = '갱신 ' + new Date().toLocaleTimeString() + ' · 점 ' + points.length;
     $('status').className = 'status';

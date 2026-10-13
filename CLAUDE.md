@@ -4476,3 +4476,11 @@ Editor -game 한 번에서 L_Test 32랙·스파인 2·CDU 1·CRAH 8 표시. 발�
 수정: 손잡이를 첫 노드 기본값 대비 배율로 각 부품 기본값에 적용(`ApplyKindHeatScale`), 배치 파일에 남은 정확한 흔적만 불러올 때 보정(`RepairKindHeatSpread`).
 검증: `VRG.Thermal.Rack.HeatKnobKeepsPartShares` 신규 + 영향 테스트 성공. L_Test 최고 부품 56.3 °C(스파인 ASIC)·랙 48.7 °C, IT 3755.2 → 3733.2 kW.
 **이전 기록의 L_Test IT·흡기 값은 이 결함을 포함한다.** 상세는 `Tools/웹대시보드_계획.md`의 "관리 스위치 과열: 원인과 수정".
+
+## 2026-10-13 S7 웹 대시보드 5단계 (리포트 저장·A/B)
+
+`POST /api/report?name=`(이름 검사 후 202, 게임 스레드가 다음 발행 때 `WriteEvaluationReport`로 저장), `GET /api/reports`·`/api/reportfile?name=`.
+리포트에 선택 필드 `layout`(그 시점 평면도)과 창 평균 `coolantRemovedW`·`airRemovedW`를 추가했다(옛 리포트 호환). A/B 탭: IT 0.1 % 초과 경고(D8),
+수치 표, 흡기 B − A 발산 색 평면도(±0.5 K 회색 = 구분 불가), 이동·추가·삭제 표시. 검증: `VRG.Web.DashboardSummary` 확장·`VRG.Eval.RerunEventsAndReport` 성공,
+Editor -game 한 번에서 버튼 저장·A/B 확인(이동 표시는 진단 조작으로 확인). 발행 비용 성분: 요약 0.015·평면도 0.014·랙 행 0.098·랙 상세 포함 0.188 ms,
+실측 발행 평균 0.82 ms(상세 포함). **랙 탭 JSON이 요청마다 약 4.1 ms(게임 스레드)** — 개선 후보, 미수정. 상세는 `Tools/웹대시보드_계획.md`의 "5단계 결과".
