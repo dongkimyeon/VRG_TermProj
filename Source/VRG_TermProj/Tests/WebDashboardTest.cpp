@@ -3,6 +3,7 @@
 #include "Misc/AutomationTest.h"
 #include "Actors/AirFieldDebugActor.h"
 #include "Actors/DataCenterSimulationActor.h"
+#include "Actors/LayoutBarrierActor.h"
 #include "Actors/RackThermalActor.h"
 #include "Dom/JsonObject.h"
 #include "Engine/World.h"
@@ -131,8 +132,49 @@ bool FWebDashboardSummaryTest::RunTest(const FString& Parameters)
 		TestTrue(TEXT("event marker carried and applied"), Series.Events.Num() == 1 && Series.Events[0].TimeS == 1.0
 			&& Series.Events[0].Kind == TEXT("util") && Series.Events[0].bApplied);
 
+		// Stage 3 plan view: footprints in metres at the actor transforms, inlet colours = the evaluation's window means.
+		ALayoutBarrierActor* Wall = World->SpawnActor<ALayoutBarrierActor>(FVector(0, 300, 0), FRotator::ZeroRotator);
+		Wall->SetActorScale3D(FVector(.2, 2.0, 2.4));   // barrier size [m] is its scale
+		Sim->Tick(.02f);   // the 0.5 s real-time throttle may skip this publish; build directly as well
+		FVrgDashboardLayout Plan, Direct = Sim->BuildDashboardLayout();
+		TestTrue(TEXT("layout JSON round-trip"), FVrgDashboardLayout::FromJson(Direct.ToJson(), Plan));
+		TestEqual(TEXT("inlet means: one per inlet"), Plan.InletWindowMeanK.Num(), Eval.GetNumInlets());
+		bool bMeansExact = Plan.InletWindowMeanK.Num() == Eval.GetNumInlets();
+		for (int32 I = 0; bMeansExact && I < Eval.GetNumInlets(); ++I) bMeansExact = Plan.InletWindowMeanK[I] == Eval.GetInlet(I).WindowMeanK;
+		TestTrue(TEXT("inlet means = evaluation window means (exact)"), bMeansExact);
+		TestTrue(TEXT("domain present"), Plan.bHasDomain && Plan.DomainMaxXM > Plan.DomainMinXM && Plan.DomainMaxYM > Plan.DomainMinYM);
+		int32 RackCount = 0, AutoCrahs = 0, Walls = 0;
+		TSet<int32> SeenInlets;
+		for (const FVrgDashboardEquipment& E : Plan.Equipment)
+		{
+			if (E.Kind == TEXT("rack"))
+			{
+				++RackCount;
+				SeenInlets.Add(E.InletIndex);
+				const bool bLeft = E.CenterXM < 0.0;
+				TestTrue(TEXT("rack footprint at the actor (m) with its size and yaw"), FMath::Abs(E.CenterXM - (bLeft ? -1.5 : 1.5)) < 1e-12
+					&& FMath::Abs(E.CenterYM) < 1e-12 && E.DepthM == 1.068 && E.WidthM == .6
+					&& FMath::Abs(FRotator::NormalizeAxis(E.YawDeg - (bLeft ? 0.0 : 180.0))) < 1e-9);
+				TestTrue(TEXT("rack centre inside the air domain"), E.CenterXM > Plan.DomainMinXM && E.CenterXM < Plan.DomainMaxXM
+					&& E.CenterYM > Plan.DomainMinYM && E.CenterYM < Plan.DomainMaxYM);
+			}
+			if (E.bAutoPlaced) { ++AutoCrahs; TestEqual(TEXT("automatic entries are CRAH units"), E.Kind, FString(TEXT("crah"))); }
+			if (E.Kind == TEXT("barrier"))
+			{
+				++Walls;
+				TestTrue(TEXT("barrier footprint from its scale"), FMath::Abs(E.DepthM - .2) < 1e-12 && FMath::Abs(E.WidthM - 2.0) < 1e-12
+					&& FMath::Abs(E.CenterYM - 3.0) < 1e-12);
+			}
+		}
+		TestEqual(TEXT("both racks listed"), RackCount, 2);
+		TestTrue(TEXT("rack inlet indices 0 and 1"), SeenInlets.Num() == 2 && SeenInlets.Contains(0) && SeenInlets.Contains(1));
+		TestEqual(TEXT("one barrier listed"), Walls, 1);
+		AddInfo(FString::Printf(TEXT("plan view: %d entries, automatic CRAH units %d"), Plan.Equipment.Num(), AutoCrahs));
+		TestTrue(TEXT("published layout parses"), Web.GetLayoutJson().IsEmpty() || FVrgDashboardLayout::FromJson(Web.GetLayoutJson(), Plan));
+
 		Enable->Set(0, ECVF_SetByCode);
-		TestTrue(TEXT("off again: stopped and cleared"), !Web.IsRunning() && Web.GetLatestJson().IsEmpty() && Web.GetSeriesJson(-1.0).IsEmpty());
+		TestTrue(TEXT("off again: stopped and cleared"), !Web.IsRunning() && Web.GetLatestJson().IsEmpty() && Web.GetSeriesJson(-1.0).IsEmpty()
+			&& Web.GetLayoutJson().IsEmpty());
 		Port->Set(OldPort, ECVF_SetByCode);
 	}
 	World->DestroyWorld(false);

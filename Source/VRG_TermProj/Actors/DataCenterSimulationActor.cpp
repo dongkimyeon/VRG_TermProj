@@ -1703,6 +1703,73 @@ FVrgDashboardSummary ADataCenterSimulationActor::BuildDashboardSummary() const
 	return S;
 }
 
+FVrgDashboardLayout ADataCenterSimulationActor::BuildDashboardLayout() const
+{
+	FVrgDashboardLayout L;
+	L.SimTimeS = Clock.GetSimTimeS();
+	L.RecommendedInletK = EvalSettings.RecommendedInletK;
+	if (AirField != nullptr)
+	{
+		const FBox B = AirField->GetDomainBoundsM();
+		L.bHasDomain = true;
+		L.DomainMinXM = B.Min.X; L.DomainMinYM = B.Min.Y; L.DomainMaxXM = B.Max.X; L.DomainMaxYM = B.Max.Y;
+	}
+	// Inlet i is Racks[i], then Spines[j] at Racks.Num() + j (the evaluation's order, see EvalAfterStep).
+	const bool bInletsMatch = bEvalReady && Eval.GetNumInlets() == Racks.Num() + Spines.Num();
+	if (bEvalReady)
+	{
+		for (int32 I = 0; I < Eval.GetNumInlets(); ++I) L.InletWindowMeanK.Add(Eval.GetInlet(I).WindowMeanK);
+	}
+	if (UWorld* World = GetWorld())
+	{
+		for (TActorIterator<AActor> It(World); It; ++It)
+		{
+			FVector SizeM;
+			if (!ADataCenterDebugController::PlaceableBoxM(*It, SizeM)) continue;
+			FVrgDashboardEquipment& E = L.Equipment.AddDefaulted_GetRef();
+			if (const ARackThermalActor* Rack = Cast<ARackThermalActor>(*It))
+			{
+				E.Kind = TEXT("rack");
+				if (bInletsMatch) E.InletIndex = Racks.IndexOfByPredicate([Rack](const TObjectPtr<ARackThermalActor>& R) { return R.Get() == Rack; });
+			}
+			else if (const ASpineCabinetActor* Spine = Cast<ASpineCabinetActor>(*It))
+			{
+				E.Kind = TEXT("spine");
+				const int32 J = Spines.IndexOfByPredicate([Spine](const TObjectPtr<ASpineCabinetActor>& S) { return S.Get() == Spine; });
+				if (bInletsMatch && J != INDEX_NONE) E.InletIndex = Racks.Num() + J;
+			}
+			else if (It->IsA<ACoolingDistributionUnitActor>()) E.Kind = TEXT("cdu");
+			else if (It->IsA<ACrahUnitActor>()) E.Kind = TEXT("crah");
+			else
+			{
+				E.Kind = TEXT("barrier");
+				SizeM *= It->GetActorScale3D().GetAbs();   // a barrier's size is its scale (unit box)
+			}
+			const FVector M = SimUnits::UnrealToMeters(It->GetActorLocation());
+			E.Name = It->GetName();
+			E.CenterXM = M.X; E.CenterYM = M.Y;
+			E.YawDeg = It->GetActorRotation().Yaw;
+			E.DepthM = SizeM.X; E.WidthM = SizeM.Y;
+		}
+	}
+	if (Mode == ESimMode::Simulation)
+	{
+		for (int32 I = 0; I < CrahPlacements.Num(); ++I)
+		{
+			const FCrahPlacement& P = CrahPlacements[I];
+			if (P.bPlaced) continue;   // placed actors are already listed above
+			FVrgDashboardEquipment& E = L.Equipment.AddDefaulted_GetRef();
+			E.Kind = TEXT("crah");
+			E.Name = FString::Printf(TEXT("자동 CRAH %d"), I + 1);
+			E.CenterXM = P.BaseM.X; E.CenterYM = P.BaseM.Y;
+			E.YawDeg = FMath::RadiansToDegrees(FMath::Atan2(P.ForwardM.Y, P.ForwardM.X));
+			E.DepthM = P.SizeM.X; E.WidthM = P.SizeM.Y;
+			E.bAutoPlaced = true;
+		}
+	}
+	return L;
+}
+
 void ADataCenterSimulationActor::PublishDashboard()
 {
 	FVrgWebDashboard& Web = FVrgWebDashboard::Get();
@@ -1727,6 +1794,7 @@ void ADataCenterSimulationActor::PublishDashboard()
 		D.TimeS = E.TimeS; D.Kind = E.Kind; D.Index = E.Index; D.Value = E.Value; D.bApplied = E.bApplied;
 	}
 	Web.PublishSeries(MoveTemp(Series));
+	Web.PublishLayout(BuildDashboardLayout().ToJson());
 }
 
 void ADataCenterSimulationActor::DrawSummary() const

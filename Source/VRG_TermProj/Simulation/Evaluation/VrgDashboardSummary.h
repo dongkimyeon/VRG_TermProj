@@ -50,3 +50,30 @@ struct VRG_TERMPROJ_API FVrgDashboardSeries
 	FString ToJson(double SinceS) const;
 	static bool FromJson(const FString& Json, FVrgDashboardSeries& Out);
 };
+
+// Web dashboard stage 3 (2026-10-13): plan view. One footprint per equipment box seen from above, world metres
+// (rule 1: the cm -> m conversion happens when the actor builds this copy). Inlet colours come from the evaluation's
+// window means (the report's values) by inlet index.
+struct FVrgDashboardEquipment
+{
+	FString Kind;              // rack, spine, cdu, crah, barrier
+	FString Name;
+	double CenterXM = 0.0, CenterYM = 0.0;   // footprint centre (actor origin = bottom centre)
+	double YawDeg = 0.0;                     // local +X (depth / CRAH supply direction) in world XY
+	double DepthM = 0.0, WidthM = 0.0;       // local X / Y extents
+	int32 InletIndex = INDEX_NONE;           // FVrgEvaluation inlet for racks and spines
+	bool bAutoPlaced = false;                // automatic CRAH layout (no actor)
+};
+
+struct VRG_TERMPROJ_API FVrgDashboardLayout
+{
+	double SimTimeS = 0.0;
+	bool bHasDomain = false;
+	double DomainMinXM = 0.0, DomainMinYM = 0.0, DomainMaxXM = 0.0, DomainMaxYM = 0.0;
+	TArray<FVrgDashboardEquipment> Equipment;
+	TArray<double> InletWindowMeanK;         // by inlet index; empty before the first simulation step
+	double RecommendedInletK = 0.0;          // ASHRAE recommended inlet limit used by the evaluation
+
+	FString ToJson() const;
+	static bool FromJson(const FString& Json, FVrgDashboardLayout& Out);
+};

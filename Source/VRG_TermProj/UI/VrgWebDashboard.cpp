@@ -58,6 +58,18 @@ FString FVrgWebDashboard::GetSeriesJson(double SinceS) const
 	return bHasSeries ? LatestSeries.ToJson(SinceS) : FString();
 }
 
+void FVrgWebDashboard::PublishLayout(const FString& Json)
+{
+	FScopeLock Guard(&Lock);
+	LatestLayoutJson = Json;
+}
+
+FString FVrgWebDashboard::GetLayoutJson() const
+{
+	FScopeLock Guard(&Lock);
+	return LatestLayoutJson;
+}
+
 void FVrgWebDashboard::Stop()
 {
 	if (Router.IsValid())
@@ -72,6 +84,7 @@ void FVrgWebDashboard::Stop()
 	FScopeLock Guard(&Lock);
 	LatestSeries = FVrgDashboardSeries();
 	bHasSeries = false;
+	LatestLayoutJson.Reset();
 }
 
 bool FVrgWebDashboard::ApplySettings()
@@ -109,6 +122,15 @@ bool FVrgWebDashboard::ApplySettings()
 			const FString Json = GetSeriesJson(FMath::IsFinite(SinceS) ? SinceS : -1.0);
 			OnComplete(NoStore(Json.IsEmpty()
 				? FHttpServerResponse::Error(EHttpServerResponseCodes::ServiceUnavail, TEXT("no_series"), TEXT("시뮬레이션 액터가 아직 값을 내지 않았다"))
+				: FHttpServerResponse::Create(Json, TEXT("application/json; charset=utf-8"))));
+			return true;
+		})));
+	Routes.Add(Router->BindRoute(FHttpPath(TEXT("/api/layout")), EHttpServerRequestVerbs::VERB_GET,
+		FHttpRequestHandler::CreateLambda([this](const FHttpServerRequest&, const FHttpResultCallback& OnComplete)
+		{
+			const FString Json = GetLayoutJson();
+			OnComplete(NoStore(Json.IsEmpty()
+				? FHttpServerResponse::Error(EHttpServerResponseCodes::ServiceUnavail, TEXT("no_layout"), TEXT("시뮬레이션 액터가 아직 값을 내지 않았다"))
 				: FHttpServerResponse::Create(Json, TEXT("application/json; charset=utf-8"))));
 			return true;
 		})));

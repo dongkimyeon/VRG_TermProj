@@ -328,6 +328,9 @@ public:
 	const FVrgEvaluation& GetEvaluation() const { return Eval; }
 	// Web dashboard stage 1: summary card values at the current SimTime (window values = the report's).
 	FVrgDashboardSummary BuildDashboardSummary() const;
+	// Web dashboard stage 3: plan view of the equipment boxes in the world now, plus the inlet window means.
+	// Automatic CRAH units (no actor) are listed only in simulation mode, where their placement is current.
+	FVrgDashboardLayout BuildDashboardLayout() const;
 
 private:
 	friend bool VrgLayoutFile::Load(UWorld* World, const FString& Name, FString& OutSummary);

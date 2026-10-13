@@ -13,6 +13,7 @@ class IHttpRouter;
 //   GET /dashboard     -> <Project>/Web/index.html (the engine router cannot bind "/") (static summary card, polls /api/snapshot)
 //   GET /api/snapshot  -> latest published FVrgDashboardSummary JSON (503 before the first publish)
 //   GET /api/series?since=<SimTime s> -> 1 s points after since (last 600 s) and event markers (stage 2)
+//   GET /api/layout    -> plan view: equipment footprints (m) and inlet window means (K) (stage 3)
 // Console: vrg.Web.Enable 0|1 (default 0), vrg.Web.Port (default 18080).
 // Rule 5: the integrated actor publishes a JSON copy on the game thread; request handlers only read that copy under a
 // lock and never touch actors, UObjects or solvers. The site only displays; it changes no physics input.
@@ -28,6 +29,8 @@ public:
 	void PublishSeries(FVrgDashboardSeries&& InSeries);
 	// Empty before the first PublishSeries.
 	FString GetSeriesJson(double SinceS) const;
+	void PublishLayout(const FString& Json);
+	FString GetLayoutJson() const;
 	// Re-reads the console variables and starts/stops/moves the server; returns false and logs on failure.
 	bool ApplySettings();
 	void Stop();
@@ -40,4 +43,5 @@ private:
 	FString LatestJson;
 	FVrgDashboardSeries LatestSeries;
 	bool bHasSeries = false;
+	FString LatestLayoutJson;
 };

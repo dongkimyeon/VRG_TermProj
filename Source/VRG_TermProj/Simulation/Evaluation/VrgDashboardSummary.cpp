@@ -129,3 +129,75 @@ bool FVrgDashboardSeries::FromJson(const FString& Json, FVrgDashboardSeries& Out
 	Out = MoveTemp(S);
 	return true;
 }
+
+FString FVrgDashboardLayout::ToJson() const
+{
+	TSharedRef<FJsonObject> Root = MakeShared<FJsonObject>();
+	Root->SetNumberField(TEXT("schema"), 1);
+	Root->SetNumberField(TEXT("simTimeS"), SimTimeS);
+	if (bHasDomain)
+	{
+		TSharedRef<FJsonObject> D = MakeShared<FJsonObject>();
+		D->SetNumberField(TEXT("minXM"), DomainMinXM); D->SetNumberField(TEXT("minYM"), DomainMinYM);
+		D->SetNumberField(TEXT("maxXM"), DomainMaxXM); D->SetNumberField(TEXT("maxYM"), DomainMaxYM);
+		Root->SetObjectField(TEXT("domain"), D);
+	}
+	else Root->SetField(TEXT("domain"), MakeShared<FJsonValueNull>());
+	TArray<TSharedPtr<FJsonValue>> Items;
+	for (const FVrgDashboardEquipment& E : Equipment)
+	{
+		TSharedRef<FJsonObject> O = MakeShared<FJsonObject>();
+		O->SetStringField(TEXT("kind"), E.Kind);
+		O->SetStringField(TEXT("name"), E.Name);
+		O->SetNumberField(TEXT("xM"), E.CenterXM);
+		O->SetNumberField(TEXT("yM"), E.CenterYM);
+		O->SetNumberField(TEXT("yawDeg"), E.YawDeg);
+		O->SetNumberField(TEXT("depthM"), E.DepthM);
+		O->SetNumberField(TEXT("widthM"), E.WidthM);
+		O->SetNumberField(TEXT("inlet"), E.InletIndex);
+		O->SetBoolField(TEXT("auto"), E.bAutoPlaced);
+		Items.Add(MakeShared<FJsonValueObject>(O));
+	}
+	Root->SetArrayField(TEXT("equipment"), Items);
+	TArray<TSharedPtr<FJsonValue>> Inlets;
+	for (const double K : InletWindowMeanK) Inlets.Add(MakeShared<FJsonValueNumber>(K));
+	Root->SetArrayField(TEXT("inletWindowMeanK"), Inlets);
+	Root->SetNumberField(TEXT("recommendedInletK"), RecommendedInletK);
+	FString Json;
+	FJsonSerializer::Serialize(Root, TJsonWriterFactory<>::Create(&Json));
+	return Json;
+}
+
+bool FVrgDashboardLayout::FromJson(const FString& Json, FVrgDashboardLayout& Out)
+{
+	TSharedPtr<FJsonObject> Root;
+	if (!FJsonSerializer::Deserialize(TJsonReaderFactory<>::Create(Json), Root) || !Root.IsValid()) return false;
+	FVrgDashboardLayout L;
+	const TArray<TSharedPtr<FJsonValue>>* Items = nullptr;
+	const TArray<TSharedPtr<FJsonValue>>* Inlets = nullptr;
+	if (!Root->TryGetNumberField(TEXT("simTimeS"), L.SimTimeS) || !Root->TryGetArrayField(TEXT("equipment"), Items)
+		|| !Root->TryGetArrayField(TEXT("inletWindowMeanK"), Inlets) || !Root->TryGetNumberField(TEXT("recommendedInletK"), L.RecommendedInletK)) return false;
+	const TSharedPtr<FJsonObject>* Domain = nullptr;
+	if (Root->TryGetObjectField(TEXT("domain"), Domain))
+	{
+		L.bHasDomain = (*Domain)->TryGetNumberField(TEXT("minXM"), L.DomainMinXM) && (*Domain)->TryGetNumberField(TEXT("minYM"), L.DomainMinYM)
+			&& (*Domain)->TryGetNumberField(TEXT("maxXM"), L.DomainMaxXM) && (*Domain)->TryGetNumberField(TEXT("maxYM"), L.DomainMaxYM);
+		if (!L.bHasDomain) return false;
+	}
+	for (const TSharedPtr<FJsonValue>& V : *Items)
+	{
+		const TSharedPtr<FJsonObject> O = V->AsObject();
+		FVrgDashboardEquipment E;
+		double Inlet = 0.0;
+		if (!O.IsValid() || !O->TryGetStringField(TEXT("kind"), E.Kind) || !O->TryGetStringField(TEXT("name"), E.Name)
+			|| !O->TryGetNumberField(TEXT("xM"), E.CenterXM) || !O->TryGetNumberField(TEXT("yM"), E.CenterYM)
+			|| !O->TryGetNumberField(TEXT("yawDeg"), E.YawDeg) || !O->TryGetNumberField(TEXT("depthM"), E.DepthM)
+			|| !O->TryGetNumberField(TEXT("widthM"), E.WidthM) || !O->TryGetNumberField(TEXT("inlet"), Inlet)
+			|| !O->TryGetBoolField(TEXT("auto"), E.bAutoPlaced)) return false;
+		E.InletIndex = int32(Inlet);
+		L.Equipment.Add(E);
+	}
+	for (const TSharedPtr<FJsonValue>& V : *Inlets) L.InletWindowMeanK.Add(V->AsNumber());
+	Out = MoveTemp(L);
+	return true;
+}
