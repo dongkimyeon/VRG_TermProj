@@ -1905,9 +1905,14 @@ FString ADataCenterSimulationActor::ProfileDashboardLayout(int32 Repeats) const
 	FVrgDashboardRacks Racks4;
 	const double RackRowsMs = TimeMs([&] { Racks4 = BuildDashboardRacks(INDEX_NONE); });
 	const double RackDetailMs = TimeMs([&] { Racks4 = BuildDashboardRacks(0); });
-	const double RackJsonMs = TimeMs([&] { Json = Racks4.RowsToJson() + Racks4.DetailToJson(); });
-	return FString::Printf(TEXT("[VrgWeb] 평면도 비용 (%d회 평균, 게임 스레드): 전체 액터 순회 %.4f ms (액터 %d, 장비 %d) | 클래스별 순회 %.4f ms (장비 %d) | 평면도 생성 %.4f ms + JSON %.4f ms (항목 %d) | 요약 %.4f ms | 랙 탭 행 %.4f ms, 행+상세 1대 %.4f ms, 그 JSON %.4f ms (행 %d)"),
-		Repeats, FullMs, AllActors, FullHits, ClassMs, ClassHits, BuildMs, JsonMs, L.Equipment.Num(), SummaryMs, RackRowsMs, RackDetailMs, RackJsonMs, Racks4.Rows.Num());
+	// Rack tab JSON per request, split rows / detail, FJsonObject tree (before 2026-10-13) vs direct writer (now).
+	const double RowsDomMs = TimeMs([&] { Json = Racks4.RowsToJsonDom(); });
+	const double DetailDomMs = TimeMs([&] { Json = Racks4.DetailToJsonDom(); });
+	const double RowsFastMs = TimeMs([&] { Json = Racks4.RowsToJson(); });
+	const double DetailFastMs = TimeMs([&] { Json = Racks4.DetailToJson(); });
+	return FString::Printf(TEXT("[VrgWeb] 평면도 비용 (%d회 평균, 게임 스레드): 전체 액터 순회 %.4f ms (액터 %d, 장비 %d) | 클래스별 순회 %.4f ms (장비 %d) | 평면도 생성 %.4f ms + JSON %.4f ms (항목 %d) | 요약 %.4f ms | 랙 탭 행 %.4f ms, 행+상세 1대 %.4f ms (행 %d) | 랙 JSON 이전(객체 트리) 행 %.4f + 상세 %.4f ms -> 지금(직접 쓰기) 행 %.4f + 상세 %.4f ms (%d자)"),
+		Repeats, FullMs, AllActors, FullHits, ClassMs, ClassHits, BuildMs, JsonMs, L.Equipment.Num(), SummaryMs, RackRowsMs, RackDetailMs, Racks4.Rows.Num(),
+		RowsDomMs, DetailDomMs, RowsFastMs, DetailFastMs, Json.Len());
 }
 
 bool ADataCenterSimulationActor::ProcessDashboardRequests()

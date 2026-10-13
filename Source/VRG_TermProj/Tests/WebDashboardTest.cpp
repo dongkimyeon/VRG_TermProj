@@ -18,6 +18,16 @@
 
 #if WITH_DEV_AUTOMATION_TESTS
 
+namespace
+{
+	// Every numeric field of a rack row, for comparing two parsed copies.
+	void VisitFieldsForTest(const FVrgDashboardRackRow& R, TArray<double>& Out)
+	{
+		Out = { R.XM, R.YM, R.Utilization, R.HeatW, R.ToCoolantW, R.ToRoomAirW, R.InletNowK, R.CoolantInK, R.CoolantOutK,
+			R.CoolantFlowM3s, R.FanSpeedMean, R.FanPowerW, R.HottestPartK, double(R.NumSlots) };
+	}
+}
+
 // Web dashboard stage 1 (2026-10-13): the summary card JSON round-trips, its window values are exactly the report's
 // (same FVrgEvaluation calls), its "now" values are the coupling snapshot, and the server publishes only while enabled.
 // The HTTP transport itself is checked by hand in -game (Tools/웹대시보드_계획.md).
@@ -223,6 +233,49 @@ bool FWebDashboardSummaryTest::RunTest(const FString& Parameters)
 			TestTrue(TEXT("detail: part to-coolant sums to the rack total (relative < 1e-12)"), CoolantRel < 1e-12);
 			TestTrue(TEXT("detail total = row heat (same last step)"), FMath::Abs(Detail.TotalHeatW - Row1.HeatW) <= 1e-12 * Row1.HeatW);
 		}
+		// The direct writer (now served) and the FJsonObject reference read back to the same values, bit for bit.
+		if (WithDetail.bHasDetail)
+		{
+			FVrgDashboardRacks FastRows, DomRows;
+			FVrgDashboardRackDetail FastDetail, DomDetail;
+			const bool bParsed = FVrgDashboardRacks::RowsFromJson(WithDetail.RowsToJson(), FastRows) && FVrgDashboardRacks::RowsFromJson(WithDetail.RowsToJsonDom(), DomRows)
+				&& FVrgDashboardRacks::DetailFromJson(WithDetail.DetailToJson(), FastDetail) && FVrgDashboardRacks::DetailFromJson(WithDetail.DetailToJsonDom(), DomDetail);
+			bool bSame = bParsed && FastRows.Rows.Num() == DomRows.Rows.Num() && FastDetail.Slots.Num() == DomDetail.Slots.Num() && FastRows.SimTimeS == DomRows.SimTimeS;
+			for (int32 I = 0; bSame && I < FastRows.Rows.Num(); ++I)
+			{
+				FVrgDashboardRackRow &F = FastRows.Rows[I], &D = DomRows.Rows[I];
+				bSame = F.Inlet == D.Inlet && F.Name == D.Name && F.HottestPart == D.HottestPart && F.DockedSlots == D.DockedSlots;
+				TArray<double> FV, DV;
+				VisitFieldsForTest(F, FV); VisitFieldsForTest(D, DV);
+				bSame &= FV == DV;
+			}
+			bSame &= FastDetail.TotalHeatW == DomDetail.TotalHeatW && FastDetail.ToCoolantW == DomDetail.ToCoolantW && FastDetail.MixedAirOutletK == DomDetail.MixedAirOutletK;
+			for (int32 SlotI = 0; bSame && SlotI < FastDetail.Slots.Num(); ++SlotI)
+			{
+				const FVrgDashboardRackSlot &F = FastDetail.Slots[SlotI], &D = DomDetail.Slots[SlotI];
+				bSame = F.Index == D.Index && F.Device == D.Device && F.bDocked == D.bDocked && F.HeatW == D.HeatW && F.OutletAirK == D.OutletAirK
+					&& F.Parts.Num() == D.Parts.Num();
+				for (int32 K = 0; bSame && K < F.Parts.Num(); ++K)
+					bSame = F.Parts[K].Name == D.Parts[K].Name && F.Parts[K].Kind == D.Parts[K].Kind && F.Parts[K].TempK == D.Parts[K].TempK
+						&& F.Parts[K].HeatW == D.Parts[K].HeatW && F.Parts[K].ToCoolantW == D.Parts[K].ToCoolantW && F.Parts[K].ToAirW == D.Parts[K].ToAirW;
+			}
+			TestTrue(TEXT("direct writer = FJsonObject reference (every row, slot and part, bit-exact)"), bSame);
+			auto Time = [](auto&& Body) { const uint64 T0 = FPlatformTime::Cycles64(); for (int32 R = 0; R < 50; ++R) Body(); return FPlatformTime::ToMilliseconds64(FPlatformTime::Cycles64() - T0) / 50; };
+			FString Sink;
+			const double RowsDom = Time([&] { Sink = WithDetail.RowsToJsonDom(); }), DetailDom = Time([&] { Sink = WithDetail.DetailToJsonDom(); });
+			const double RowsFast = Time([&] { Sink = WithDetail.RowsToJson(); }), DetailFast = Time([&] { Sink = WithDetail.DetailToJson(); });
+			AddInfo(FString::Printf(TEXT("rack JSON (2 racks, 613 parts, 50 runs): rows %.4f -> %.4f ms, detail %.4f -> %.4f ms"), RowsDom, RowsFast, DetailDom, DetailFast));
+		}
+		// Strings are escaped (quote, backslash, control characters) and read back unchanged.
+		{
+			FVrgDashboardRacks Odd;
+			FVrgDashboardRackRow& R = Odd.Rows.AddDefaulted_GetRef();
+			R.Name = TEXT("a\"b\\c\nd\te"); R.Kind = TEXT("rack"); R.HottestPart = TEXT("슬롯 1 \"x\"");
+			FVrgDashboardRacks OddBack;
+			TestTrue(TEXT("escaped strings round-trip"), FVrgDashboardRacks::RowsFromJson(Odd.RowsToJson(), OddBack) && OddBack.Rows.Num() == 1
+				&& OddBack.Rows[0].Name == R.Name && OddBack.Rows[0].HottestPart == R.HottestPart);
+		}
+
 		// Server path: the first ask records the rack (202 pending), the next publish builds it, then the detail is served.
 		TestTrue(TEXT("first ask is pending and recorded"), Web.RequestRackDetailJson(1).IsEmpty() && Web.GetRequestedRack() == 1);
 		Web.PublishRacks(Sim->BuildDashboardRacks(Web.GetRequestedRack()));

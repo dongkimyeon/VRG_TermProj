@@ -5,6 +5,7 @@
 #include "Serialization/JsonReader.h"
 #include "Serialization/JsonSerializer.h"
 #include "Serialization/JsonWriter.h"
+#include <charconv>
 
 FString FVrgDashboardSummary::ToJson() const
 {
@@ -236,9 +237,106 @@ namespace
 		FJsonSerializer::Serialize(Root, TJsonWriterFactory<>::Create(&Json));
 		return Json;
 	}
+
+	// Minimal direct JSON writer for the rack tab: no object tree, one growing string. The caller places the commas.
+	struct FJsonText
+	{
+		FString S;
+		void Raw(const TCHAR* T) { S.Append(T); }
+		void Key(const TCHAR* K) { S.AppendChar(TEXT('"')); S.Append(K); S.Append(TEXT("\":")); }
+		void Num(double V)
+		{
+			if (!FMath::IsFinite(V)) { S.Append(TEXT("null")); return; }
+			// Shortest text that reads back to the same double (C++17 to_chars); printf %.17g was most of the detail's cost.
+			char Buf[32];
+			const std::to_chars_result R = std::to_chars(Buf, Buf + sizeof(Buf), V);
+			for (const char* C = Buf; C < R.ptr; ++C) S.AppendChar(TCHAR(*C));
+		}
+		void Int(int64 V) { S.Append(LexToString(V)); }
+		void Bool(bool V) { S.Append(V ? TEXT("true") : TEXT("false")); }
+		void Str(const FString& V)
+		{
+			S.AppendChar(TEXT('"'));
+			for (const TCHAR C : V)
+			{
+				if (C == TEXT('"') || C == TEXT('\\')) { S.AppendChar(TEXT('\\')); S.AppendChar(C); }
+				else if (C < 0x20) S.Appendf(TEXT("\\u%04x"), int32(C));
+				else S.AppendChar(C);
+			}
+			S.AppendChar(TEXT('"'));
+		}
+		// "key":number pairs from a Visit* function, each preceded by a comma (the object is already open).
+		auto NumberFields() { return [this](const TCHAR* K, double& V) { Raw(TEXT(",")); Key(K); Num(V); }; }
+	};
 }
 
 FString FVrgDashboardRacks::RowsToJson() const
+{
+	FJsonText J;
+	J.S.Reserve(256 + Rows.Num() * 480);
+	J.Raw(TEXT("{")); J.Key(TEXT("schema")); J.Int(1);
+	J.Raw(TEXT(",")); J.Key(TEXT("simTimeS")); J.Num(SimTimeS);
+	J.Raw(TEXT(",")); J.Key(TEXT("mode")); J.Str(bSimulating ? TEXT("simulation") : TEXT("layout"));
+	J.Raw(TEXT(",")); J.Key(TEXT("racks")); J.Raw(TEXT("["));
+	for (int32 I = 0; I < Rows.Num(); ++I)
+	{
+		FVrgDashboardRackRow& R = const_cast<FVrgDashboardRackRow&>(Rows[I]);   // the visitor only reads
+		J.Raw(I ? TEXT(",{") : TEXT("{"));
+		J.Key(TEXT("inlet")); J.Int(R.Inlet);
+		J.Raw(TEXT(",")); J.Key(TEXT("kind")); J.Str(R.Kind);
+		J.Raw(TEXT(",")); J.Key(TEXT("name")); J.Str(R.Name);
+		J.Raw(TEXT(",")); J.Key(TEXT("hottestPart")); J.Str(R.HottestPart);
+		J.Raw(TEXT(",")); J.Key(TEXT("dockedSlots")); J.Int(R.DockedSlots);
+		J.Raw(TEXT(",")); J.Key(TEXT("numSlots")); J.Int(R.NumSlots);
+		VisitRowNumbers(R, J.NumberFields());
+		J.Raw(TEXT("}"));
+	}
+	J.Raw(TEXT("]}"));
+	return MoveTemp(J.S);
+}
+
+FString FVrgDashboardRacks::DetailToJson() const
+{
+	if (!bHasDetail) return FString();
+	FJsonText J;
+	int32 NumParts = 0;
+	for (const FVrgDashboardRackSlot& S : Detail.Slots) NumParts += S.Parts.Num();
+	J.S.Reserve(512 + Detail.Slots.Num() * 320 + NumParts * 180);
+	J.Raw(TEXT("{")); J.Key(TEXT("schema")); J.Int(1);
+	J.Raw(TEXT(",")); J.Key(TEXT("simTimeS")); J.Num(SimTimeS);
+	J.Raw(TEXT(",")); J.Key(TEXT("inlet")); J.Int(Detail.Inlet);
+	J.Raw(TEXT(",")); J.Key(TEXT("totalHeatW")); J.Num(Detail.TotalHeatW);
+	J.Raw(TEXT(",")); J.Key(TEXT("toCoolantW")); J.Num(Detail.ToCoolantW);
+	J.Raw(TEXT(",")); J.Key(TEXT("toAirW")); J.Num(Detail.ToAirW);
+	J.Raw(TEXT(",")); J.Key(TEXT("toAmbientW")); J.Num(Detail.ToAmbientW);
+	J.Raw(TEXT(",")); J.Key(TEXT("mixedAirOutletK")); J.Num(Detail.MixedAirOutletK);
+	J.Raw(TEXT(",")); J.Key(TEXT("coolantOutletK")); J.Num(Detail.CoolantOutletK);
+	J.Raw(TEXT(",")); J.Key(TEXT("slots")); J.Raw(TEXT("["));
+	for (int32 I = 0; I < Detail.Slots.Num(); ++I)
+	{
+		FVrgDashboardRackSlot& S = const_cast<FVrgDashboardRackSlot&>(Detail.Slots[I]);
+		J.Raw(I ? TEXT(",{") : TEXT("{"));
+		J.Key(TEXT("index")); J.Int(S.Index);
+		J.Raw(TEXT(",")); J.Key(TEXT("device")); J.Str(S.Device);
+		J.Raw(TEXT(",")); J.Key(TEXT("docked")); J.Bool(S.bDocked);
+		VisitSlotNumbers(S, J.NumberFields());
+		J.Raw(TEXT(",")); J.Key(TEXT("parts")); J.Raw(TEXT("["));
+		for (int32 K = 0; K < S.Parts.Num(); ++K)
+		{
+			FVrgDashboardRackPart& P = S.Parts[K];
+			J.Raw(K ? TEXT(",{") : TEXT("{"));
+			J.Key(TEXT("name")); J.Str(P.Name);
+			J.Raw(TEXT(",")); J.Key(TEXT("kind")); J.Str(P.Kind);
+			VisitPartNumbers(P, J.NumberFields());
+			J.Raw(TEXT("}"));
+		}
+		J.Raw(TEXT("]}"));
+	}
+	J.Raw(TEXT("]}"));
+	return MoveTemp(J.S);
+}
+
+FString FVrgDashboardRacks::RowsToJsonDom() const
 {
 	TSharedRef<FJsonObject> Root = MakeShared<FJsonObject>();
 	Root->SetNumberField(TEXT("schema"), 1);
@@ -261,7 +359,7 @@ FString FVrgDashboardRacks::RowsToJson() const
 	return SerializeJson(Root);
 }
 
-FString FVrgDashboardRacks::DetailToJson() const
+FString FVrgDashboardRacks::DetailToJsonDom() const
 {
 	if (!bHasDetail) return FString();
 	TSharedRef<FJsonObject> Root = MakeShared<FJsonObject>();

@@ -134,8 +134,13 @@ struct VRG_TERMPROJ_API FVrgDashboardRacks
 	bool bHasDetail = false;
 	FVrgDashboardRackDetail Detail;
 
+	// Written straight into one string (2026-10-13): building an FJsonObject tree for the 613-part detail cost ~4 ms
+	// on the game thread per request (vrg.Web.ProfileLayout). Numbers use std::to_chars (shortest exact round-trip).
 	FString RowsToJson() const;
 	FString DetailToJson() const;   // empty when bHasDetail is false
+	// The earlier FJsonObject versions, kept as the reference the fast ones are tested against and for the profile.
+	FString RowsToJsonDom() const;
+	FString DetailToJsonDom() const;
 	static bool RowsFromJson(const FString& Json, FVrgDashboardRacks& Out);
 	static bool DetailFromJson(const FString& Json, FVrgDashboardRackDetail& Out);
 };
