@@ -4422,3 +4422,10 @@ h0.25m·dt0.02s, 수동 방 요청16×14×4.5m 전부 적용. 기본 IT3,755,227
 5조각 모두 도메인 밖·면 접촉, 랙 이동 추종, 수동 방 43x37x13 실제 경계, 시뮬레이션 격자 일치, 켬/끔 고체 마스크 불변, 잘라보기 규칙)과
 FitToRacks 리팩터 영향 RoomAirDomainFoundation/RoomAirDomainCoupling/FanDuctsFromRackActors/LayoutThenSimulate 5종 성공(NullRHI).
 L_Test 실제 화면(벽 색·잘라보기·볼륨과의 겹침)은 미확인. 근거 Saved/Build_RoomShell.log, Saved/Logs/RoomShell_Tests.log(커밋 제외).
+
+## 2026-10-13 최신 패키지(자동 방 셸) 검증
+
+패키지 E:/VRG_Builds/20261013(BuildCookRun Exit0)에서 자동/수동 셸·잘라보기·셸 끔 화면과 수동 방 Load를 Alt+Print Screen으로 확인했다.
+실제 DX12 1280×720 20 s 계측: 배치 Frame 중앙 17.47 ms, 시뮬레이션(1500스텝 뒤) 셸 켬 23.08 / 끔 22.62 ms(각 1회, 편차 미구분). 측정값이며 보장값 아님(D10).
+30 s 리포트: 33210셀, 전역 잔차 -1.271e-14(누적 입력 J 기준 <1e-9), 압력 실패 0, 흡기 최고 24.00 °C, 펌프/IT 0.0055.
+셸 켬/끔 리포트가 이름 외 바이트 동일 — 셸은 표시 전용이며 물리에 영향 없음. 제품 코드 변경 없음. 상세는 `Tools/S7_최신구성_검증_2026-10-13.md`.
