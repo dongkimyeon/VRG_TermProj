@@ -1720,6 +1720,8 @@ FVrgDashboardLayout ADataCenterSimulationActor::BuildDashboardLayout() const
 	{
 		for (int32 I = 0; I < Eval.GetNumInlets(); ++I) L.InletWindowMeanK.Add(Eval.GetInlet(I).WindowMeanK);
 	}
+	// A plain walk over every actor: L_Test has ~100 actors and it costs ~0.007 ms; the class-wise walk was not faster
+	// (vrg.Web.ProfileLayout, 2026-10-13). The publish cost was the JSON, which now happens per request.
 	if (UWorld* World = GetWorld())
 	{
 		for (TActorIterator<AActor> It(World); It; ++It)
@@ -1770,6 +1772,43 @@ FVrgDashboardLayout ADataCenterSimulationActor::BuildDashboardLayout() const
 	return L;
 }
 
+FString ADataCenterSimulationActor::ProfileDashboardLayout(int32 Repeats) const
+{
+	UWorld* World = GetWorld();
+	if (World == nullptr) return TEXT("월드 없음");
+	Repeats = FMath::Clamp(Repeats, 1, 1000);
+	auto TimeMs = [Repeats](auto&& Body)
+	{
+		const uint64 Start = FPlatformTime::Cycles64();
+		for (int32 R = 0; R < Repeats; ++R) Body();
+		return FPlatformTime::ToMilliseconds64(FPlatformTime::Cycles64() - Start) / Repeats;
+	};
+	int32 AllActors = 0, FullHits = 0, ClassHits = 0;
+	// (a) the stage-3 walk: every actor in the world through the PlaceableBoxM filter.
+	const double FullMs = TimeMs([&]
+	{
+		AllActors = FullHits = 0;
+		FVector SizeM;
+		for (TActorIterator<AActor> It(World); It; ++It) { ++AllActors; FullHits += ADataCenterDebugController::PlaceableBoxM(*It, SizeM) ? 1 : 0; }
+	});
+	// (b) a class-wise walk over the five equipment classes, for comparison only.
+	UClass* const EquipmentClasses[] = { ARackThermalActor::StaticClass(), ASpineCabinetActor::StaticClass(),
+		ACoolingDistributionUnitActor::StaticClass(), ACrahUnitActor::StaticClass(), ALayoutBarrierActor::StaticClass() };
+	const double ClassMs = TimeMs([&]
+	{
+		ClassHits = 0;
+		FVector SizeM;
+		for (UClass* C : EquipmentClasses) for (TActorIterator<AActor> It(World, C); It; ++It) ClassHits += ADataCenterDebugController::PlaceableBoxM(*It, SizeM) ? 1 : 0;
+	});
+	FVrgDashboardLayout L;
+	const double BuildMs = TimeMs([&] { L = BuildDashboardLayout(); });
+	FString Json;
+	const double JsonMs = TimeMs([&] { Json = L.ToJson(); });
+	const double SummaryMs = TimeMs([&] { Json = BuildDashboardSummary().ToJson(); });
+	return FString::Printf(TEXT("[VrgWeb] 평면도 비용 (%d회 평균, 게임 스레드): 전체 액터 순회 %.4f ms (액터 %d, 장비 %d) | 클래스별 순회 %.4f ms (장비 %d) | 평면도 생성 %.4f ms + JSON %.4f ms (항목 %d) | 요약 %.4f ms"),
+		Repeats, FullMs, AllActors, FullHits, ClassMs, ClassHits, BuildMs, JsonMs, L.Equipment.Num(), SummaryMs);
+}
+
 void ADataCenterSimulationActor::PublishDashboard()
 {
 	FVrgWebDashboard& Web = FVrgWebDashboard::Get();
@@ -1794,7 +1833,7 @@ void ADataCenterSimulationActor::PublishDashboard()
 		D.TimeS = E.TimeS; D.Kind = E.Kind; D.Index = E.Index; D.Value = E.Value; D.bApplied = E.bApplied;
 	}
 	Web.PublishSeries(MoveTemp(Series));
-	Web.PublishLayout(BuildDashboardLayout().ToJson());
+	Web.PublishLayout(BuildDashboardLayout());   // struct copy; JSON is built per request (it was most of the publish cost)
 }
 
 void ADataCenterSimulationActor::DrawSummary() const
@@ -2289,6 +2328,15 @@ namespace
 		return true;
 	}
 }
+
+static FAutoConsoleCommand GVrgWebProfileLayoutCommand(
+	TEXT("vrg.Web.ProfileLayout"),
+	TEXT("웹 대시보드 평면도 비용 진단: 전체 액터 순회와 클래스별 순회, 평면도 생성·JSON 시간을 로그에 쓴다. vrg.Web.ProfileLayout [반복 수=50]"),
+	FConsoleCommandWithArgsDelegate::CreateLambda([](const TArray<FString>& Args)
+	{
+		const int32 Repeats = Args.Num() > 0 ? FCString::Atoi(*Args[0]) : 50;
+		for (ADataCenterSimulationActor* Sim : EvalSimActors()) UE_LOG(LogTemp, Display, TEXT("%s"), *Sim->ProfileDashboardLayout(Repeats));
+	}));
 
 static FAutoConsoleCommand GVrgEvalReportCommand(
 	TEXT("vrg.Eval.Report"),

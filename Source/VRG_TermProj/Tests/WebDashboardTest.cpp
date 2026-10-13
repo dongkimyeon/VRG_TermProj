@@ -4,6 +4,8 @@
 #include "Actors/AirFieldDebugActor.h"
 #include "Actors/DataCenterSimulationActor.h"
 #include "Actors/LayoutBarrierActor.h"
+#include "EngineUtils.h"
+#include "Interaction/DataCenterDebugController.h"
 #include "Actors/RackThermalActor.h"
 #include "Dom/JsonObject.h"
 #include "Engine/World.h"
@@ -167,6 +169,11 @@ bool FWebDashboardSummaryTest::RunTest(const FString& Parameters)
 			}
 		}
 		TestEqual(TEXT("both racks listed"), RackCount, 2);
+		// Every equipment actor (PlaceableBoxM) appears once; the rest of the entries are automatic CRAH units.
+		int32 FullWalk = 0;
+		FVector BoxM;
+		for (TActorIterator<AActor> It(World); It; ++It) FullWalk += ADataCenterDebugController::PlaceableBoxM(*It, BoxM) ? 1 : 0;
+		TestEqual(TEXT("listed equipment = every PlaceableBoxM actor"), Plan.Equipment.Num() - AutoCrahs, FullWalk);
 		TestTrue(TEXT("rack inlet indices 0 and 1"), SeenInlets.Num() == 2 && SeenInlets.Contains(0) && SeenInlets.Contains(1));
 		TestEqual(TEXT("one barrier listed"), Walls, 1);
 		AddInfo(FString::Printf(TEXT("plan view: %d entries, automatic CRAH units %d"), Plan.Equipment.Num(), AutoCrahs));

@@ -58,16 +58,17 @@ FString FVrgWebDashboard::GetSeriesJson(double SinceS) const
 	return bHasSeries ? LatestSeries.ToJson(SinceS) : FString();
 }
 
-void FVrgWebDashboard::PublishLayout(const FString& Json)
+void FVrgWebDashboard::PublishLayout(FVrgDashboardLayout&& InLayout)
 {
 	FScopeLock Guard(&Lock);
-	LatestLayoutJson = Json;
+	LatestLayout = MoveTemp(InLayout);
+	bHasLayout = true;
 }
 
 FString FVrgWebDashboard::GetLayoutJson() const
 {
 	FScopeLock Guard(&Lock);
-	return LatestLayoutJson;
+	return bHasLayout ? LatestLayout.ToJson() : FString();
 }
 
 void FVrgWebDashboard::Stop()
@@ -84,7 +85,8 @@ void FVrgWebDashboard::Stop()
 	FScopeLock Guard(&Lock);
 	LatestSeries = FVrgDashboardSeries();
 	bHasSeries = false;
-	LatestLayoutJson.Reset();
+	LatestLayout = FVrgDashboardLayout();
+	bHasLayout = false;
 }
 
 bool FVrgWebDashboard::ApplySettings()

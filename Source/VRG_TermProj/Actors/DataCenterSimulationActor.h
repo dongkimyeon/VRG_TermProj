@@ -331,6 +331,9 @@ public:
 	// Web dashboard stage 3: plan view of the equipment boxes in the world now, plus the inlet window means.
 	// Automatic CRAH units (no actor) are listed only in simulation mode, where their placement is current.
 	FVrgDashboardLayout BuildDashboardLayout() const;
+	// Diagnostic (vrg.Web.ProfileLayout): average ms of the full actor walk (used) vs a class-wise walk (comparison),
+	// the whole layout build and its JSON, over Repeats runs on the game thread. Returns one log line.
+	FString ProfileDashboardLayout(int32 Repeats) const;
 
 private:
 	friend bool VrgLayoutFile::Load(UWorld* World, const FString& Name, FString& OutSummary);

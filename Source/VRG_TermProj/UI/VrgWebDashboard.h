@@ -29,7 +29,8 @@ public:
 	void PublishSeries(FVrgDashboardSeries&& InSeries);
 	// Empty before the first PublishSeries.
 	FString GetSeriesJson(double SinceS) const;
-	void PublishLayout(const FString& Json);
+	// Struct copy from the game thread; the JSON is built when a request asks for it (empty before the first publish).
+	void PublishLayout(FVrgDashboardLayout&& InLayout);
 	FString GetLayoutJson() const;
 	// Re-reads the console variables and starts/stops/moves the server; returns false and logs on failure.
 	bool ApplySettings();
@@ -43,5 +44,6 @@ private:
 	FString LatestJson;
 	FVrgDashboardSeries LatestSeries;
 	bool bHasSeries = false;
-	FString LatestLayoutJson;
+	FVrgDashboardLayout LatestLayout;
+	bool bHasLayout = false;
 };
