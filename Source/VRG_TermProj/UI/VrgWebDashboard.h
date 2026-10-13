@@ -15,6 +15,7 @@ class IHttpRouter;
 //   GET /api/series?since=<SimTime s> -> 1 s points after since (last 600 s) and event markers (stage 2)
 //   GET /api/layout    -> plan view: equipment footprints (m) and inlet window means (K) (stage 3)
 //   GET /api/racks     -> rack tab rows; GET /api/rack?i=<inlet> -> that rack's slots and parts (202 until built) (stage 4)
+//   POST /api/report?name= -> queue a report save (202); GET /api/reports -> saved reports; GET /api/reportfile?name= (stage 5)
 // Console: vrg.Web.Enable 0|1 (default 0), vrg.Web.Port (default 18080).
 // Rule 5: the integrated actor publishes a JSON copy on the game thread; request handlers only read that copy under a
 // lock and never touch actors, UObjects or solvers. The site only displays; it changes no physics input.
@@ -39,6 +40,17 @@ public:
 	// Records Inlet as the requested rack; returns its detail JSON, or empty while the next publish has not built it.
 	FString RequestRackDetailJson(int32 Inlet);
 	int32 GetRequestedRack() const;
+
+	// Stage 5: report save requests from the page (the only write the site makes). The game thread takes the request on
+	// its next publish and writes it with the same function as vrg.Eval.Report; the result is shown in the report list.
+	static bool IsValidReportName(const FString& Name);
+	bool QueueReport(const FString& Name);
+	bool TakePendingReport(FString& OutName);
+	void SetLastSave(const FString& Name, bool bOk, const FString& Message);
+	// Saved/Reports/*.json, newest first, with a few headline fields (file reads only; no actor access).
+	FString GetReportListJson() const;
+	// The file's text, or empty when the name is invalid or the file is missing.
+	FString GetReportFileJson(const FString& Name) const;
 	// Re-reads the console variables and starts/stops/moves the server; returns false and logs on failure.
 	bool ApplySettings();
 	void Stop();
@@ -56,4 +68,7 @@ private:
 	FVrgDashboardRacks LatestRacks;
 	bool bHasRacks = false;
 	int32 RequestedRack = INDEX_NONE;
+	FString PendingReport;
+	FString LastSaveName, LastSaveMessage;
+	bool bHasLastSave = false, bLastSaveOk = false;
 };

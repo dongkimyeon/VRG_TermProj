@@ -100,6 +100,8 @@ FVrgEvaluationSample FVrgEvaluation::GetWindowPower() const
 	P.ServerFanW = ServerFan.WindowIntegral() / Covered;
 	P.CrahFanW = CrahFan.WindowIntegral() / Covered;
 	P.PumpW = Pump.WindowIntegral() / Covered;
+	P.CoolantRemovedW = CoolantRemoved.WindowIntegral() / Covered;
+	P.AirRemovedW = AirRemoved.WindowIntegral() / Covered;
 	return P;
 }
 

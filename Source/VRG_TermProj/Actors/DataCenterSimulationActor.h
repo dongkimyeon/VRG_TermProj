@@ -337,6 +337,11 @@ public:
 	// Web dashboard stage 4: one row per evaluation inlet (racks, then spines) in simulation mode, plus the slots and
 	// parts of DetailInlet (one MakeSnapshot) when it is a valid inlet.
 	FVrgDashboardRacks BuildDashboardRacks(int32 DetailInlet) const;
+	// Stage 5: handles a report save the page queued (same writer as vrg.Eval.Report) and records the result for the
+	// report list. Called from each dashboard publish on the game thread; returns true when it handled one.
+	bool ProcessDashboardRequests();
+	// vrg.Web.ProfileLayout <N> wait: run the profile once the queued warm-up steps finish (0 = none).
+	int32 PendingProfileRepeats = 0;
 
 private:
 	friend bool VrgLayoutFile::Load(UWorld* World, const FString& Name, FString& OutSummary);

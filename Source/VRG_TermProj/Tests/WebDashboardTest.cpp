@@ -229,6 +229,44 @@ bool FWebDashboardSummaryTest::RunTest(const FString& Parameters)
 		TestFalse(TEXT("after a publish the detail is served"), Web.RequestRackDetailJson(1).IsEmpty());
 		TestFalse(TEXT("rows served"), Web.GetRacksJson().IsEmpty());
 
+		// Stage 5 report save: names are checked, the game thread writes the queued report with the same writer as
+		// vrg.Eval.Report, and the file carries the plan view and window heat removal at that SimTime.
+		TestTrue(TEXT("valid report names"), FVrgWebDashboard::IsValidReportName(TEXT("AB_1")) && FVrgWebDashboard::IsValidReportName(TEXT("a-b"))
+			&& FVrgWebDashboard::IsValidReportName(TEXT("컨테인먼트비교")));
+		TestTrue(TEXT("rejected report names"), !FVrgWebDashboard::IsValidReportName(TEXT("")) && !FVrgWebDashboard::IsValidReportName(TEXT("../x"))
+			&& !FVrgWebDashboard::IsValidReportName(TEXT("a.b")) && !FVrgWebDashboard::IsValidReportName(TEXT("a b"))
+			&& !FVrgWebDashboard::IsValidReportName(FString::ChrN(65, TEXT('a'))));
+		TestFalse(TEXT("bad name not queued"), Web.QueueReport(TEXT("../evil")));
+		TestTrue(TEXT("bad name file not served"), Web.GetReportFileJson(TEXT("../evil")).IsEmpty());
+		TestTrue(TEXT("report queued"), Web.QueueReport(TEXT("AutoWebReport")));
+		TestTrue(TEXT("queued report handled on the game thread"), Sim->ProcessDashboardRequests());
+		TestFalse(TEXT("nothing left to handle"), Sim->ProcessDashboardRequests());
+		TSharedPtr<FJsonObject> Saved;
+		const FString SavedText = Web.GetReportFileJson(TEXT("AutoWebReport"));
+		if (TestTrue(TEXT("saved report parses"), FJsonSerializer::Deserialize(TJsonReaderFactory<>::Create(SavedText), Saved) && Saved.IsValid()))
+		{
+			const FVrgEvaluationSample W = Eval.GetWindowPower();
+			const TSharedPtr<FJsonObject> Power = Saved->GetObjectField(TEXT("power"));
+			TestTrue(TEXT("report window heat removal = evaluation window (exact)"), Power->GetNumberField(TEXT("coolantRemovedW")) == W.CoolantRemovedW
+				&& Power->GetNumberField(TEXT("airRemovedW")) == W.AirRemovedW && W.CoolantRemovedW > 0.0);
+			const TSharedPtr<FJsonObject>* LayoutObj = nullptr;
+			FVrgDashboardLayout SavedPlan;
+			FString LayoutText;
+			if (TestTrue(TEXT("report carries the plan view"), Saved->TryGetObjectField(TEXT("layout"), LayoutObj)))
+				FJsonSerializer::Serialize(LayoutObj->ToSharedRef(), TJsonWriterFactory<>::Create(&LayoutText));
+			TestTrue(TEXT("plan view in the report = plan view now"), FVrgDashboardLayout::FromJson(LayoutText, SavedPlan)
+				&& SavedPlan.Equipment.Num() == Sim->BuildDashboardLayout().Equipment.Num() && SavedPlan.InletWindowMeanK.Num() == Eval.GetNumInlets());
+		}
+		TSharedPtr<FJsonObject> List;
+		bool bListed = false, bLastOk = false;
+		if (FJsonSerializer::Deserialize(TJsonReaderFactory<>::Create(Web.GetReportListJson()), List) && List.IsValid())
+		{
+			for (const TSharedPtr<FJsonValue>& V : List->GetArrayField(TEXT("reports"))) bListed |= V->AsObject()->GetStringField(TEXT("name")) == TEXT("AutoWebReport");
+			const TSharedPtr<FJsonObject>* Last = nullptr;
+			bLastOk = List->TryGetObjectField(TEXT("lastSave"), Last) && (*Last)->GetBoolField(TEXT("ok")) && (*Last)->GetStringField(TEXT("name")) == TEXT("AutoWebReport");
+		}
+		TestTrue(TEXT("report list shows it and the last save succeeded"), bListed && bLastOk);
+
 		Enable->Set(0, ECVF_SetByCode);
 		TestTrue(TEXT("off again: stopped and cleared"), !Web.IsRunning() && Web.GetLatestJson().IsEmpty() && Web.GetSeriesJson(-1.0).IsEmpty()
 			&& Web.GetLayoutJson().IsEmpty() && Web.GetRacksJson().IsEmpty() && Web.GetRequestedRack() == INDEX_NONE);

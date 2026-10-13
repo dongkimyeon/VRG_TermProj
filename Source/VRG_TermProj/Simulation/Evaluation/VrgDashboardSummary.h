@@ -3,6 +3,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Dom/JsonObject.h"
 #include "Simulation/Evaluation/VrgEvaluation.h"
 
 // Web dashboard stage 1 (2026-10-13): the summary card values, copied on the game thread (rule 5) and served as JSON.
@@ -75,6 +76,8 @@ struct VRG_TERMPROJ_API FVrgDashboardLayout
 	double RecommendedInletK = 0.0;          // ASHRAE recommended inlet limit used by the evaluation
 
 	FString ToJson() const;
+	// The same object, for embedding (stage 5: a report stores the plan view at its SimTime).
+	TSharedRef<FJsonObject> ToJsonObject() const;
 	static bool FromJson(const FString& Json, FVrgDashboardLayout& Out);
 };
 

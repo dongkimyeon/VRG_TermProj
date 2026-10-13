@@ -132,6 +132,13 @@ bool FVrgDashboardSeries::FromJson(const FString& Json, FVrgDashboardSeries& Out
 
 FString FVrgDashboardLayout::ToJson() const
 {
+	FString Json;
+	FJsonSerializer::Serialize(ToJsonObject(), TJsonWriterFactory<>::Create(&Json));
+	return Json;
+}
+
+TSharedRef<FJsonObject> FVrgDashboardLayout::ToJsonObject() const
+{
 	TSharedRef<FJsonObject> Root = MakeShared<FJsonObject>();
 	Root->SetNumberField(TEXT("schema"), 1);
 	Root->SetNumberField(TEXT("simTimeS"), SimTimeS);
@@ -163,9 +170,7 @@ FString FVrgDashboardLayout::ToJson() const
 	for (const double K : InletWindowMeanK) Inlets.Add(MakeShared<FJsonValueNumber>(K));
 	Root->SetArrayField(TEXT("inletWindowMeanK"), Inlets);
 	Root->SetNumberField(TEXT("recommendedInletK"), RecommendedInletK);
-	FString Json;
-	FJsonSerializer::Serialize(Root, TJsonWriterFactory<>::Create(&Json));
-	return Json;
+	return Root;
 }
 
 bool FVrgDashboardLayout::FromJson(const FString& Json, FVrgDashboardLayout& Out)

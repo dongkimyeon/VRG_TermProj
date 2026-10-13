@@ -1910,12 +1910,24 @@ FString ADataCenterSimulationActor::ProfileDashboardLayout(int32 Repeats) const
 		Repeats, FullMs, AllActors, FullHits, ClassMs, ClassHits, BuildMs, JsonMs, L.Equipment.Num(), SummaryMs, RackRowsMs, RackDetailMs, RackJsonMs, Racks4.Rows.Num());
 }
 
+bool ADataCenterSimulationActor::ProcessDashboardRequests()
+{
+	FString Name;
+	if (!FVrgWebDashboard::Get().TakePendingReport(Name)) return false;
+	FString Summary;
+	const bool bOk = WriteEvaluationReport(Name, Summary);
+	UE_LOG(LogTemp, Display, TEXT("[VrgWeb] 페이지 요청 리포트 %s: %s"), bOk ? TEXT("성공") : TEXT("실패"), *Summary);
+	FVrgWebDashboard::Get().SetLastSave(Name, bOk, Summary);
+	return true;
+}
+
 void ADataCenterSimulationActor::PublishDashboard()
 {
 	FVrgWebDashboard& Web = FVrgWebDashboard::Get();
 	const double NowS = FPlatformTime::Seconds();
 	if (!Web.IsRunning() || NowS - LastDashboardPublishS < DashboardPublishPeriodS) return;
 	LastDashboardPublishS = NowS;
+	ProcessDashboardRequests();   // a page-requested report write is a file write, kept out of the publish cost below
 	// Summary JSON, series copy (<= SeriesLengthS points) and event markers all count as the dashboard's cost (D10).
 	VRG_SCOPE_COST(STAT_VrgDashboardPublish, DashboardMs);
 	Web.Publish(BuildDashboardSummary().ToJson());
@@ -2138,6 +2150,12 @@ void ADataCenterSimulationActor::DrainWarmupSteps()
 		UE_LOG(LogTemp, Display, TEXT("[VrgEval] 리포트 %s: %s"), bOk ? TEXT("성공") : TEXT("실패"), *Summary);
 		PendingReportName.Reset();
 	}
+	if (PendingWarmupSteps == 0 && PendingProfileRepeats > 0)
+	{
+		// vrg.Web.ProfileLayout <N> wait: measured after the warm-up so the rack rows and detail exist.
+		UE_LOG(LogTemp, Display, TEXT("%s"), *ProfileDashboardLayout(PendingProfileRepeats));
+		PendingProfileRepeats = 0;
+	}
 	if (PendingWarmupSteps == 0)
 	{
 		const FCouplingSnapshot Snap = GetSnapshot();
@@ -2269,6 +2287,9 @@ bool ADataCenterSimulationActor::WriteEvaluationReport(const FString& Name, FStr
 	Power->SetNumberField(TEXT("serverFanW"), P.ServerFanW);
 	Power->SetNumberField(TEXT("crahFanW"), P.CrahFanW);
 	Power->SetNumberField(TEXT("pumpW"), P.PumpW);
+	// Web dashboard stage 5 (optional fields; older reports lack them): window-average heat removal [W].
+	Power->SetNumberField(TEXT("coolantRemovedW"), P.CoolantRemovedW);
+	Power->SetNumberField(TEXT("airRemovedW"), P.AirRemovedW);
 	double Pue = 0.0;
 	const bool bPue = Eval.GetPartialPue(Pue);
 	if (bPue) Power->SetNumberField(TEXT("partialPue"), Pue); else Power->SetField(TEXT("partialPue"), MakeShared<FJsonValueNull>());
@@ -2334,6 +2355,8 @@ bool ADataCenterSimulationActor::WriteEvaluationReport(const FString& Name, FStr
 		EventItems.Add(MakeShared<FJsonValueObject>(Item));
 	}
 	Root->SetArrayField(TEXT("events"), EventItems);
+	// Stage 5: the plan view at this SimTime (equipment footprints in metres), so an A/B comparison can show what moved.
+	Root->SetObjectField(TEXT("layout"), BuildDashboardLayout().ToJsonObject());
 
 	FString Json;
 	FJsonSerializer::Serialize(Root, TJsonWriterFactory<>::Create(&Json));
@@ -2433,11 +2456,16 @@ namespace
 
 static FAutoConsoleCommand GVrgWebProfileLayoutCommand(
 	TEXT("vrg.Web.ProfileLayout"),
-	TEXT("웹 대시보드 평면도 비용 진단: 전체 액터 순회와 클래스별 순회, 평면도 생성·JSON 시간을 로그에 쓴다. vrg.Web.ProfileLayout [반복 수=50]"),
+	TEXT("웹 대시보드 평면도 비용 진단: 전체 액터 순회와 클래스별 순회, 평면도 생성·JSON, 랙 탭 생성 시간을 로그에 쓴다. vrg.Web.ProfileLayout [반복 수=50] [wait = 예약된 예열이 끝난 뒤]"),
 	FConsoleCommandWithArgsDelegate::CreateLambda([](const TArray<FString>& Args)
 	{
 		const int32 Repeats = Args.Num() > 0 ? FCString::Atoi(*Args[0]) : 50;
-		for (ADataCenterSimulationActor* Sim : EvalSimActors()) UE_LOG(LogTemp, Display, TEXT("%s"), *Sim->ProfileDashboardLayout(Repeats));
+		const bool bWait = Args.Num() > 1 && Args[1] == TEXT("wait");   // after the queued warm-up (rack rows exist then)
+		for (ADataCenterSimulationActor* Sim : EvalSimActors())
+		{
+			if (bWait) Sim->PendingProfileRepeats = FMath::Max(1, Repeats);
+			else UE_LOG(LogTemp, Display, TEXT("%s"), *Sim->ProfileDashboardLayout(Repeats));
+		}
 	}));
 
 static FAutoConsoleCommand GVrgEvalReportCommand(
