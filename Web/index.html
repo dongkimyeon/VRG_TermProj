@@ -200,6 +200,14 @@
     <canvas id="c3d" aria-label="3D 방 보기: 드래그 회전, 휠 확대, 우클릭 드래그 이동. 같은 내용은 아래 평면도와 흡기 표에 있다."></canvas>
     <div class="over">드래그: 회전 · 휠: 확대 · 우클릭 드래그: 이동 · 랙 클릭: 랙 탭</div>
     <div class="err" id="err3d" hidden></div>
+    <div class="tablebar" style="align-items:center;flex-wrap:wrap">
+      <button id="pipebtn" type="button" aria-pressed="true">냉각수 배관: 켜짐</button>
+      <button id="pipetbtn" type="button">배관 표 보기</button>
+      <span id="pipelegend" style="display:inline-flex;align-items:center;gap:6px;font-size:11px;color:var(--faint)">
+        냉각수 온도 <span id="pipebar" style="display:inline-block;width:120px;height:8px;border-radius:2px"></span><span id="pipeends"></span>
+        · <span style="display:inline-block;width:14px;height:8px;border-radius:2px;background:#7b8494"></span> 모델 값 없음(헤더·펌프 연결) · 원뿔 = 계산된 유량 방향</span>
+    </div>
+    <div id="pipetable" hidden></div>
   </div>
   <div class="panel plan">
     <div class="head">
@@ -520,27 +528,30 @@ function init3D() {
   V3.ctl.enableDamping = true; V3.ctl.maxPolarAngle = Math.PI * 0.47;
   V3.scene.add(new THREE.HemisphereLight(0xc8d2e6, 0x20242c, 0.9));
   const sun = new THREE.DirectionalLight(0xffffff, 0.55); sun.position.set(-6, 14, -8); V3.scene.add(sun);
-  V3.room = new THREE.Group(); V3.items = new THREE.Group(); V3.scene.add(V3.room, V3.items);
+  V3.room = new THREE.Group(); V3.items = new THREE.Group(); V3.pipes = new THREE.Group(); V3.scene.add(V3.room, V3.items, V3.pipes);
+  V3.pipePickables = []; V3.pipeMats = []; V3.pipeArrows = []; V3.pipeKey = '';
   // ▲ 경고 표식(27 °C 권장 상한 초과): 색만으로 상태를 알리지 않도록 기호를 띄운다.
   const c = document.createElement('canvas'); c.width = c.height = 64;
   const g = c.getContext('2d'); g.fillStyle = '#f0b43c'; g.font = 'bold 52px sans-serif'; g.textAlign = 'center'; g.textBaseline = 'middle'; g.fillText('▲', 32, 36);
   V3.warnTex = new THREE.CanvasTexture(c);
   const ray = new THREE.Raycaster(), ndc = new THREE.Vector2();
   const hit = ev => { const r = canvas.getBoundingClientRect(); ndc.set((ev.clientX - r.left) / r.width * 2 - 1, -(ev.clientY - r.top) / r.height * 2 + 1);
-    ray.setFromCamera(ndc, V3.cam); const h = ray.intersectObjects(V3.pickables, false)[0]; return h ? h.object.userData.e : null; };
+    ray.setFromCamera(ndc, V3.cam);
+    const h = ray.intersectObjects(V3.pipes.visible ? V3.pickables.concat(V3.pipePickables) : V3.pickables, false)[0]; return h ? h.object.userData : null; };
   let down = null;
   canvas.addEventListener('pointerdown', ev => { down = { x:ev.clientX, y:ev.clientY }; });
   canvas.addEventListener('pointerup', ev => {
-    if (down && Math.hypot(ev.clientX - down.x, ev.clientY - down.y) < 4) { const e = hit(ev); if (e && e.inlet >= 0) { selectRack(e.inlet); showTab('racks'); } }
+    if (down && Math.hypot(ev.clientX - down.x, ev.clientY - down.y) < 4) { const u = hit(ev), e = u && u.e; if (e && e.inlet >= 0) { selectRack(e.inlet); showTab('racks'); } }
     down = null;
   });
   canvas.addEventListener('pointermove', ev => {
     if (ev.buttons) { tip.style.display = 'none'; return; }
-    const e = hit(ev);
-    if (!e) { tip.style.display = 'none'; return; }
-    const cv = inletC(e);
+    const u = hit(ev), e = u && u.e;
+    if (!u) { tip.style.display = 'none'; return; }
+    if (u.pipe !== undefined) tip.innerHTML = pipeTip(layout.pipes[u.pipe]);
+    else { const cv = inletC(e);
     tip.innerHTML = `<div class="k">${KIND[e.kind]}${e.auto ? ' (자동 배치)' : ''}</div><div>${e.name}</div><div><span class="k">위치</span> (${e.xM.toFixed(2)}, ${e.yM.toFixed(2)}) m · 높이 ${(e.heightM || 0).toFixed(2)} m</div>`
-      + (cv === null ? '' : `<div><span class="k">흡기 창 평균</span> ${cv.toFixed(2)} °C${cv > 27 ? ' ▲' : ''}</div>`);
+      + (cv === null ? '' : `<div><span class="k">흡기 창 평균</span> ${cv.toFixed(2)} °C${cv > 27 ? ' ▲' : ''}</div>`); }
     tip.style.display = 'block';
     tip.style.left = Math.min(ev.clientX + 14, window.innerWidth - tip.offsetWidth - 8) + 'px'; tip.style.top = (ev.clientY + 14) + 'px';
   });
@@ -632,7 +643,90 @@ function update3D() {
   }
   $('sub3d').textContent = `장비 ${layout.equipment.length}개 · 랙·스파인 색 = 흡기 창 평균 (${colored}곳, 아래 평면도와 같은 색 범위)` + (hot ? ` · ▲ 27 °C 초과 ${hot}곳` : '')
     + ' · 벽 = 공기 격자 경계(가까운 두 면은 낮게 잘랐다)';
+  updatePipes3D();
 }
+
+// ---- 3D 2단계: 냉각수 배관 레이어 (2026-10-14) ----
+// 경로 = 방 액터가 배관 메시를 만든 경로(수력망이 푸는 배관 그대로, 도식 아님). 굵기 = 배관 지름(실제 m).
+// 색 = 그 배관의 계산된 냉각수 온도. 모델에 온도가 있는 곳은 랙 분기뿐이다(공급 = 랙 입구, 회수 = 랙 출구).
+// 헤더·펌프 연결은 관 지연·혼합을 모델에 두지 않으므로 값을 지어내지 않고 회색으로 둔다(vrg.Pipes.Temperature와 같은 규칙).
+// 원뿔 = 계산된 유량 방향(유량 0이면 없음). 색 범위 20~45 °C는 표시용 고정값이다(장비 사양·허용치 아님).
+const PIPE_SEQ = ['#4a2309', '#8a3f12', '#c95f1e', '#ef8a3c', '#f9c08a'];   // 한 색조(주황) 순차, 어두움 -> 밝음 = 차가움 -> 뜨거움
+const PIPE_TMIN = 20, PIPE_TMAX = 45, PIPE_UNKNOWN = 0x7b8494;
+function pipeColor(c) {
+  const t = Math.max(0, Math.min(1, (c - PIPE_TMIN) / (PIPE_TMAX - PIPE_TMIN))) * (PIPE_SEQ.length - 1), i = Math.min(Math.floor(t), PIPE_SEQ.length - 2), f = t - i;
+  const a = PIPE_SEQ[i].match(/\w\w/g).map(h => parseInt(h, 16)), b = PIPE_SEQ[i + 1].match(/\w\w/g).map(h => parseInt(h, 16));
+  return 'rgb(' + a.map((v, k) => Math.round(v + (b[k] - v) * f)).join(',') + ')';
+}
+$('pipebar').style.background = 'linear-gradient(90deg,' + PIPE_SEQ.join(',') + ')';
+$('pipeends').textContent = `${PIPE_TMIN}~${PIPE_TMAX} °C`;
+const pipeRole = p => (p.edge < 0 ? 'CDU→펌프 연결' : p.branch ? '랙 분기' : '헤더') + ' · ' + (p.supply ? '공급' : '회수');
+function pipeTip(p) {
+  if (!p) return '';
+  const t = p.tempK === null ? '모델 값 없음' : toC(p.tempK).toFixed(2) + ' °C';
+  return `<div class="k">냉각수 배관 (${pipeRole(p)})</div><div><span class="k">유량</span> ${(Math.abs(p.flowM3s) * 1e3).toFixed(3)} L/s${p.flowM3s < 0 ? ' (그린 방향과 반대)' : ''}</div>`
+    + `<div><span class="k">온도</span> ${t}</div><div><span class="k">지름</span> ${(p.diameterM * 1e3).toFixed(0)} mm` + (p.edge >= 0 ? ` · 수력망 배관 #${p.edge}` : '') + '</div>';
+}
+function buildPipes3D() {
+  clear3D(V3.pipes); V3.pipePickables = []; V3.pipeMats = []; V3.pipeArrows = [];
+  const up = new THREE.Vector3(0, 1, 0);
+  layout.pipes.forEach((p, idx) => {
+    const mat = new THREE.MeshStandardMaterial({ color:PIPE_UNKNOWN, roughness:.5 });
+    const r = Math.max(p.diameterM / 2, 0.015), pts = [];
+    for (let k = 0; k + 2 < p.pointsM.length; k += 3) pts.push(P3(p.pointsM[k], p.pointsM[k + 1], p.pointsM[k + 2]));
+    let longest = null;
+    for (let k = 0; k + 1 < pts.length; ++k) {
+      const a = pts[k], b = pts[k + 1], d = b.clone().sub(a), len = d.length();
+      if (len < 1e-6) continue;
+      const seg = new THREE.Mesh(new THREE.CylinderGeometry(r, r, len, 10, 1), mat);
+      seg.position.copy(a).add(b).multiplyScalar(.5);
+      seg.quaternion.setFromUnitVectors(up, d.clone().normalize());
+      seg.userData = { pipe:idx };
+      V3.pipes.add(seg); V3.pipePickables.push(seg);
+      if (!longest || len > longest.len) longest = { a, b, len };
+    }
+    V3.pipeMats.push(mat);
+    if (longest) {   // 흐름 방향 원뿔: 가장 긴 구간 가운데
+      const cone = new THREE.Mesh(new THREE.ConeGeometry(Math.max(r * 2.2, .06), Math.max(r * 4, .16), 12), mat);
+      cone.position.copy(longest.a).add(longest.b).multiplyScalar(.5);
+      cone.userData = { pipe:idx, dir:longest.b.clone().sub(longest.a).normalize() };
+      V3.pipes.add(cone); V3.pipeArrows.push(cone);
+    }
+  });
+}
+function updatePipes3D() {
+  if (!V3.ok || !layout) return;
+  const pipes = layout.pipes || [];
+  V3.pipes.visible = $('pipebtn').getAttribute('aria-pressed') === 'true';
+  const key = JSON.stringify(pipes.map(p => [p.edge, p.pointsM]));
+  if (key !== V3.pipeKey) { V3.pipeKey = key; buildPipes3D(); }
+  const up = new THREE.Vector3(0, 1, 0);
+  pipes.forEach((p, i) => { if (V3.pipeMats[i]) V3.pipeMats[i].color.set(p.tempK === null ? PIPE_UNKNOWN : pipeColor(toC(p.tempK))); });
+  for (const cone of V3.pipeArrows) {
+    const f = pipes[cone.userData.pipe].flowM3s;
+    cone.visible = f !== 0;
+    cone.quaternion.setFromUnitVectors(up, f < 0 ? cone.userData.dir.clone().negate() : cone.userData.dir);
+  }
+  const known = pipes.filter(p => p.tempK !== null).length;
+  $('pipelegend').hidden = !V3.pipes.visible;
+  if (!pipes.length) $('pipelegend').textContent = '냉각수 배관 데이터 없음(방 액터 없음)';
+  else if (!layout.hydraulicsConverged) $('pipelegend').title = '수력 수렴 실패: 유량을 믿지 말 것(D5)';
+  $('pipebtn').title = `배관 ${pipes.length}개 경로, 온도가 있는 배관 ${known}개` + (layout.hydraulicsConverged ? '' : ' · 수력 수렴 실패(D5)');
+  renderPipeTable();
+}
+function renderPipeTable() {
+  if ($('pipetable').hidden || !layout) return;
+  const rows = (layout.pipes || []).map(p => `<tr><td style="text-align:left">${p.edge >= 0 ? '#' + p.edge : '펌프'}</td><td style="text-align:left">${pipeRole(p)}</td>`
+    + `<td>${(p.flowM3s * 1e3).toFixed(3)}</td><td>${p.tempK === null ? '-' : toC(p.tempK).toFixed(2)}</td><td>${(p.diameterM * 1e3).toFixed(0)}</td></tr>`).join('');
+  $('pipetable').innerHTML = `<table><thead><tr><th style="text-align:left">배관</th><th style="text-align:left">역할</th><th>유량 L/s (그린 방향 +)</th><th>온도 °C</th><th>지름 mm</th></tr></thead><tbody>${rows}</tbody></table>`
+    + (layout.hydraulicsConverged ? '' : '<div style="color:#f0b43c;font-size:11px">수력 수렴 실패: 유량을 믿지 말 것(D5)</div>');
+}
+$('pipebtn').addEventListener('click', () => {
+  const on = $('pipebtn').getAttribute('aria-pressed') !== 'true';
+  $('pipebtn').setAttribute('aria-pressed', on); $('pipebtn').textContent = '냉각수 배관: ' + (on ? '켜짐' : '꺼짐');
+  updatePipes3D();
+});
+$('pipetbtn').addEventListener('click', () => { $('pipetable').hidden = !$('pipetable').hidden; $('pipetbtn').textContent = $('pipetable').hidden ? '배관 표 보기' : '배관 표 닫기'; renderPipeTable(); });
 if (V3.ok) { try { init3D(); } catch (err) { V3.ok = false; $('err3d').hidden = false; $('err3d').textContent = '3D를 시작하지 못했다: ' + err.message; } }
 else { $('err3d').hidden = false; $('err3d').textContent = 'three.js를 불러오지 못했다(CDN, 인터넷 연결 필요). 아래 2D 평면도는 그대로 쓸 수 있다.'; }
 
