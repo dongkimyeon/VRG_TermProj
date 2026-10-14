@@ -208,6 +208,13 @@
         · <span style="display:inline-block;width:14px;height:8px;border-radius:2px;background:#7b8494"></span> 모델 값 없음(헤더·펌프 연결) · 원뿔 = 계산된 유량 방향</span>
     </div>
     <div id="pipetable" hidden></div>
+    <div class="tablebar" style="align-items:center;flex-wrap:wrap">
+      <button id="airbtn" type="button" aria-pressed="false">기류: 꺼짐</button>
+      <label style="font-size:11px;color:var(--faint)">높이 <select id="airlayer" disabled><option value="all">모든 층</option></select></label>
+      <span id="airlegend" hidden style="display:inline-flex;align-items:center;gap:6px;font-size:11px;color:var(--faint)">
+        속력 <span id="airbar" style="display:inline-block;width:120px;height:8px;border-radius:2px"></span><span id="airends"></span></span>
+    </div>
+    <div id="airnote" style="font-size:11px;color:var(--faint);margin-top:4px" hidden></div>
   </div>
   <div class="panel plan">
     <div class="head">
@@ -530,6 +537,7 @@ function init3D() {
   const sun = new THREE.DirectionalLight(0xffffff, 0.55); sun.position.set(-6, 14, -8); V3.scene.add(sun);
   V3.room = new THREE.Group(); V3.items = new THREE.Group(); V3.pipes = new THREE.Group(); V3.scene.add(V3.room, V3.items, V3.pipes);
   V3.pipePickables = []; V3.pipeMats = []; V3.pipeArrows = []; V3.pipeKey = '';
+  V3.air = new THREE.Group(); V3.air.visible = false; V3.scene.add(V3.air);
   // ▲ 경고 표식(27 °C 권장 상한 초과): 색만으로 상태를 알리지 않도록 기호를 띄운다.
   const c = document.createElement('canvas'); c.width = c.height = 64;
   const g = c.getContext('2d'); g.fillStyle = '#f0b43c'; g.font = 'bold 52px sans-serif'; g.textAlign = 'center'; g.textBaseline = 'middle'; g.fillText('▲', 32, 36);
@@ -726,6 +734,74 @@ $('pipebtn').addEventListener('click', () => {
   $('pipebtn').setAttribute('aria-pressed', on); $('pipebtn').textContent = '냉각수 배관: ' + (on ? '켜짐' : '꺼짐');
   updatePipes3D();
 });
+// ---- 3D 3단계: 기류 레이어 (2026-10-14) ----
+// /api/airflow = 공기 격자 셀 중심 속도(MAC 두 면 평균)를 X·Y로 strideCells칸마다, 정해진 높이에 가장 가까운 셀 층에서 뽑은 표본.
+// 화살표 하나 = 표본 셀 하나의 계산된 속도(방향 그대로, 수직 성분 포함). 흐름선이 아니다(적분하지 않는다).
+// 길이 = 속력 / 지금 표본 최대 속력 × 표본 간격의 90 %, 색 = 속력(청록 한 색조 순차, 같은 기준). 기준이 매번 바뀌므로 실행끼리 길이·색을 비교하지 않는다.
+const AIR_SEQ = ['#16413c', '#1f6b62', '#2f9a8c', '#5cc6b5', '#a8eadf'];
+let airflow = null;
+function airColor(t) {
+  t = Math.max(0, Math.min(1, t)) * (AIR_SEQ.length - 1); const i = Math.min(Math.floor(t), AIR_SEQ.length - 2), f = t - i;
+  const a = AIR_SEQ[i].match(/\w\w/g).map(h => parseInt(h, 16)), b = AIR_SEQ[i + 1].match(/\w\w/g).map(h => parseInt(h, 16));
+  return new THREE.Color('rgb(' + a.map((v, k) => Math.round(v + (b[k] - v) * f)).join(',') + ')');
+}
+$('airbar').style.background = 'linear-gradient(90deg,' + AIR_SEQ.join(',') + ')';
+const airOn = () => $('airbtn').getAttribute('aria-pressed') === 'true';
+async function pollAirflow() {
+  if (!airOn() || tab !== 'summary') return;
+  const r = await fetch('/api/airflow', { cache:'no-store' });
+  if (!r.ok) { airflow = null; return; }
+  airflow = await r.json();
+  const sel = $('airlayer'), want = airflow.layerHeightsM.map(h => h.toFixed(3)).join();
+  if (sel.dataset.layers !== want) {   // 층 목록은 격자가 바뀔 때만 다시 만든다
+    sel.dataset.layers = want;
+    const keep = sel.value;
+    sel.innerHTML = '<option value="all">모든 층</option>' + airflow.layerHeightsM.map(h => `<option value="${h}">${h.toFixed(2)} m</option>`).join('');
+    sel.value = [...sel.options].some(o => o.value === keep) ? keep : 'all';
+  }
+}
+function updateAir3D() {
+  if (!V3.ok) return;
+  V3.air.visible = airOn();
+  $('airlayer').disabled = !airOn(); $('airlegend').hidden = !airOn(); $('airnote').hidden = !airOn();
+  clear3D(V3.air);
+  if (!airOn()) return;
+  if (!airflow) { $('airnote').textContent = '기류 데이터 없음(시뮬레이션 액터·공기 격자가 아직 값을 내지 않았다)'; return; }
+  if (airflow.octree) { $('airnote').textContent = '옥트리 공기 경로라 균일 격자 표본을 보내지 않는다(균일 격자는 풀이 결과가 아니다).'; return; }
+  const layer = $('airlayer').value, n = airflow.positionsM.length / 3, maxV = airflow.maxSpeedMs, step = airflow.cellM * airflow.strideCells;
+  const pos = [], col = [], heads = [];
+  for (let i = 0; i < n; ++i) {
+    const z = airflow.positionsM[3 * i + 2];
+    if (layer !== 'all' && Math.abs(z - Number(layer)) > 1e-6) continue;
+    const v = [airflow.velocitiesMs[3 * i], airflow.velocitiesMs[3 * i + 1], airflow.velocitiesMs[3 * i + 2]];
+    const sp = Math.hypot(v[0], v[1], v[2]);
+    if (!(sp > 0) || !(maxV > 0)) continue;   // 속도 0인 셀은 방향이 없다
+    const len = 0.9 * step * sp / maxV, a = P3(airflow.positionsM[3 * i], airflow.positionsM[3 * i + 1], z);
+    const d = P3(v[0], v[1], v[2]).normalize(), b = a.clone().addScaledVector(d, len), c = airColor(sp / maxV);
+    pos.push(a.x, a.y, a.z, b.x, b.y, b.z); col.push(c.r, c.g, c.b, c.r, c.g, c.b);
+    heads.push({ b, d, c, len });
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3)); g.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
+  V3.air.add(new THREE.LineSegments(g, new THREE.LineBasicMaterial({ vertexColors:true })));
+  if (heads.length) {   // 화살촉: 원뿔 하나를 인스턴스로 반복 (드로우 호출 1개)
+    const cone = new THREE.ConeGeometry(.035, .1, 6); cone.translate(0, -.05, 0);
+    const inst = new THREE.InstancedMesh(cone, new THREE.MeshBasicMaterial(), heads.length), m = new THREE.Matrix4(), q = new THREE.Quaternion(), up = new THREE.Vector3(0, 1, 0);
+    heads.forEach((h, k) => { const s1 = Math.min(1, h.len / .15); q.setFromUnitVectors(up, h.d); m.compose(h.b, q, new THREE.Vector3(s1, s1, s1)); inst.setMatrixAt(k, m); inst.setColorAt(k, h.c); });
+    V3.air.add(inst);
+  }
+  $('airends').textContent = `0 ~ ${maxV.toFixed(3)} m/s (지금 표본 최대)`;
+  $('airnote').textContent = `표본 ${heads.length}개${layer === 'all' ? '' : ' (이 층)'} · 셀 ${airflow.cellM} m, ${airflow.strideCells}칸마다 = ${step.toFixed(2)} m 간격 · 층 높이 `
+    + airflow.layerHeightsM.map(h => h.toFixed(2)).join(' / ') + ' m (셀 중심) · 화살표 = 그 셀의 계산된 속도(흐름선 아님), 길이·색 = 지금 표본 최대 기준'
+    + (airflow.mode === 'simulation' ? '' : ' · 배치 모드: 계산이 멈춰 있다');
+}
+$('airbtn').addEventListener('click', async () => {
+  const on = !airOn();
+  $('airbtn').setAttribute('aria-pressed', on); $('airbtn').textContent = '기류: ' + (on ? '켜짐' : '꺼짐');
+  if (on) { try { await pollAirflow(); } catch (e) { airflow = null; } }
+  updateAir3D();
+});
+$('airlayer').addEventListener('change', updateAir3D);
 $('pipetbtn').addEventListener('click', () => { $('pipetable').hidden = !$('pipetable').hidden; $('pipetbtn').textContent = $('pipetable').hidden ? '배관 표 보기' : '배관 표 닫기'; renderPipeTable(); });
 if (V3.ok) { try { init3D(); } catch (err) { V3.ok = false; $('err3d').hidden = false; $('err3d').textContent = '3D를 시작하지 못했다: ' + err.message; } }
 else { $('err3d').hidden = false; $('err3d').textContent = 'three.js를 불러오지 못했다(CDN, 인터넷 연결 필요). 아래 2D 평면도는 그대로 쓸 수 있다.'; }
@@ -977,6 +1053,7 @@ async function tick() {
       await pollLayout();
       drawPlan();                                 // 색 범위(고정/현재 값)를 정한다
       update3D();
+      if (airOn()) { await pollAirflow(); updateAir3D(); }   // 기류는 레이어가 켜져 있을 때만 받는다
       for (const c of charts) draw(c);
       renderTable();
     } else if (tab === 'racks') {
