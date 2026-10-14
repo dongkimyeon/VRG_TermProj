@@ -1,0 +1,97 @@
+{
+  "models": {
+    "InRow": {
+      "nominal_dimensions_m": [
+        1.068,
+        0.6,
+        2.236
+      ],
+      "bounds_min_m": [
+        -0.534000039100647,
+        -0.30000001192092896,
+        0.0
+      ],
+      "bounds_max_m": [
+        0.534000039100647,
+        0.30000001192092896,
+        2.2360000610351562
+      ],
+      "dimensions_m": [
+        1.068000078201294,
+        0.6000000238418579,
+        2.2360000610351562
+      ],
+      "max_bound_error_m": 6.103515604038989e-08,
+      "vertices": 5540,
+      "triangles": 10060,
+      "materials": [
+        "MC_CRAH_Recess",
+        "MC_CRAH_Charcoal",
+        "MC_CRAH_Panel",
+        "MC_CRAH_Screen",
+        "MC_CRAH_Ink",
+        "MC_CRAH_Hardware",
+        "MC_CRAH_Grille"
+      ],
+      "uv_channels": 1,
+      "origin_m": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "front_axis": "+X",
+      "intake": "-X",
+      "supply": "+X full face",
+      "authoring_parts": 267
+    },
+    "Perimeter": {
+      "nominal_dimensions_m": [
+        0.9,
+        2.0,
+        2.0
+      ],
+      "bounds_min_m": [
+        -0.44999998807907104,
+        -1.0,
+        0.0
+      ],
+      "bounds_max_m": [
+        0.44999998807907104,
+        1.0,
+        2.0
+      ],
+      "dimensions_m": [
+        0.8999999761581421,
+        2.0,
+        2.0
+      ],
+      "max_bound_error_m": 1.1920928966180355e-08,
+      "vertices": 5660,
+      "triangles": 10476,
+      "materials": [
+        "MC_CRAH_Recess",
+        "MC_CRAH_Charcoal",
+        "MC_CRAH_Panel",
+        "MC_CRAH_Grille",
+        "MC_CRAH_Hardware",
+        "MC_CRAH_Screen",
+        "MC_CRAH_Ink"
+      ],
+      "uv_channels": 1,
+      "origin_m": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "front_axis": "+X",
+      "intake": "+Z",
+      "supply": "+X lower half",
+      "authoring_parts": 223
+    }
+  },
+  "units": "metres",
+  "geometry_bound_tolerance_m": 1e-06,
+  "triangle_limit_per_mesh": 15000,
+  "reference_scope": "Appearance only; project dimensions, no manufacturer CAD",
+  "physics_tested": false
+}

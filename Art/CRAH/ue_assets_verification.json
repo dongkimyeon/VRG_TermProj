@@ -1,0 +1,71 @@
+{
+  "engine_version": "5.7.3-50162420+++UE5+Release-5.7",
+  "project": "../../../../../../VRG_TermProj/Saved/CRAH_UE57/",
+  "scope": "assets_only",
+  "level_saved": false,
+  "physics_tested": false,
+  "assets": [
+    {
+      "name": "SM_CRAH_InRow",
+      "bounds_min_cm": [
+        -53.40000915527344,
+        -30.0000057220459,
+        0.0
+      ],
+      "bounds_max_cm": [
+        53.40000915527344,
+        30.0000057220459,
+        223.60000610351562
+      ],
+      "max_import_bound_error_cm": 5.245208740234375e-06,
+      "tolerance_cm": 0.001,
+      "material_slots": [
+        "MC_CRAH_Recess",
+        "MC_CRAH_Charcoal",
+        "MC_CRAH_Panel",
+        "MC_CRAH_Screen",
+        "MC_CRAH_Ink",
+        "MC_CRAH_Hardware",
+        "MC_CRAH_Grille"
+      ],
+      "triangles": 10036,
+      "authored_triangles": 10060,
+      "import_removed_triangles": 24,
+      "vertices": 21060,
+      "uv_channels": 1,
+      "simple_collision_count": 0
+    },
+    {
+      "name": "SM_CRAH_Perimeter",
+      "bounds_min_cm": [
+        -45.00000762939453,
+        -100.00000762939453,
+        0.0
+      ],
+      "bounds_max_cm": [
+        45.00000762939453,
+        100.00000762939453,
+        200.0
+      ],
+      "max_import_bound_error_cm": 8.821487426757812e-06,
+      "tolerance_cm": 0.001,
+      "material_slots": [
+        "MC_CRAH_Recess",
+        "MC_CRAH_Charcoal",
+        "MC_CRAH_Panel",
+        "MC_CRAH_Grille",
+        "MC_CRAH_Hardware",
+        "MC_CRAH_Screen",
+        "MC_CRAH_Ink"
+      ],
+      "triangles": 10452,
+      "authored_triangles": 10476,
+      "import_removed_triangles": 24,
+      "vertices": 23343,
+      "uv_channels": 1,
+      "simple_collision_count": 0
+    }
+  ],
+  "actors": [],
+  "status": "PASS"
+}

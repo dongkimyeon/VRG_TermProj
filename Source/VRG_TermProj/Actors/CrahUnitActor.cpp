@@ -1,6 +1,7 @@
 // Fill out your copyright notice in the Description page of Project Settings.
 
 #include "Actors/CrahUnitActor.h"
+#include "Visualization/CrahVisualModel.h"
 
 #include "Components/ArrowComponent.h"
 #include "Components/SceneComponent.h"
@@ -34,9 +35,13 @@ void ACrahUnitActor::OnConstruction(const FTransform& Transform)
 
 void ACrahUnitActor::RefreshVisuals()
 {
-	// Metres -> cm only here, at the actor boundary (rule 1). The engine cube is 100 cm on a side.
-	Body->SetRelativeLocation(FVector(0.0, 0.0, SizeM.Z * 50.0));
-	Body->SetRelativeScale3D(SizeM);
+	const bool bPerimeter = Kind == ECrahUnitKind::Perimeter;
+	const auto Visual = CrahVisualModel::Resolve(SizeM, bPerimeter,
+		bUseReferenceModel ? CrahVisualModel::LoadReference(bPerimeter) : nullptr,
+		LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Cube.Cube")));
+	Body->SetStaticMesh(Visual.Mesh);
+	Body->SetRelativeLocation(Visual.OffsetCm);
+	Body->SetRelativeScale3D(Visual.Scale);
 	// The arrow leaves the supply face: the front for both kinds, low for a perimeter unit.
 	const double ArrowZCm = Kind == ECrahUnitKind::Perimeter ? SizeM.Z * 25.0 : SizeM.Z * 50.0;
 	SupplyArrow->SetRelativeLocation(FVector(SizeM.X * 50.0, 0.0, ArrowZCm));

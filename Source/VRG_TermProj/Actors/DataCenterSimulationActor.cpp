@@ -19,6 +19,7 @@
 #include "Actors/SpineCabinetActor.h"
 #include "Interaction/DataCenterDebugController.h"
 #include "Visualization/GjRackLayout.h"
+#include "Visualization/CrahVisualModel.h"
 #include "Simulation/Air/AirSolver.h"
 #include "Simulation/Air/AirConnectivity.h"
 #include "Simulation/Core/SimUnits.h"
@@ -1417,18 +1418,21 @@ void ADataCenterSimulationActor::UpdateCrahMeshes()
 	{
 		return;
 	}
-	// The engine cube is 100 cm on a side; scale 1 = 1 m. Every placed unit is drawn: one without faces carries
-	// no air but still blocks it as a solid, and the summary reports it (what is shown is what is computed).
+	// Resolve once per kind; CrahMesh remains the engine cube for containment and missing-asset fallback.
+	UStaticMesh* InRowModel = bUseCrahReferenceModels ? CrahVisualModel::LoadReference(false) : nullptr;
+	UStaticMesh* PerimeterModel = bUseCrahReferenceModels ? CrahVisualModel::LoadReference(true) : nullptr;
 	for (const FCrahPlacement& P : CrahPlacements)
 	{
 		if (P.bPlaced) continue;  // an ACrahUnitActor draws itself
+		const auto Visual = CrahVisualModel::Resolve(P.SizeM, P.bTopIntake,
+			P.bTopIntake ? PerimeterModel : InRowModel, CrahMesh);
 		UStaticMeshComponent* Mesh = NewObject<UStaticMeshComponent>(this);
-		Mesh->SetStaticMesh(CrahMesh);
+		Mesh->SetStaticMesh(Visual.Mesh);
 		Mesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
 		Mesh->SetupAttachment(RootComponent);
 		Mesh->RegisterComponent();
-		Mesh->SetWorldLocationAndRotation(SimUnits::MetersToUnreal(P.BaseM + FVector(0.0, 0.0, .5 * P.SizeM.Z)), P.ForwardM.Rotation());
-		Mesh->SetWorldScale3D(P.SizeM);
+		Mesh->SetWorldLocationAndRotation(SimUnits::MetersToUnreal(P.BaseM) + Visual.OffsetCm, P.ForwardM.Rotation());
+		Mesh->SetWorldScale3D(Visual.Scale);
 		CrahMeshes.Add(Mesh);
 	}
 }

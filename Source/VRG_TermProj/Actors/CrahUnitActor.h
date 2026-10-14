@@ -53,6 +53,7 @@ public:
 
 	virtual void OnConstruction(const FTransform& Transform) override;
  FCrahLayoutSettings CaptureLayoutSettings() const;
+ UFUNCTION(CallInEditor, BlueprintCallable, Category = "Visualization")
  void RefreshVisuals();
  void ApplyLayoutSettings(const FCrahLayoutSettings& Settings);
  UPROPERTY(VisibleAnywhere, Category = "CRAH|Layout") FString LayoutId;
@@ -74,6 +75,10 @@ public:
 	// Airflow [m^3/s]. 0 = an equal share of the design airflow among the units left at 0.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "CRAH", meta = (ClampMin = "0.0"))
 	double VolumeFlowM3s = 0.0;
+
+	// Display preference only, intentionally excluded from the v2 layout/physics settings.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Visualization")
+	bool bUseReferenceModel = true;
 
 private:
 	UPROPERTY(VisibleAnywhere, Category = "CRAH")

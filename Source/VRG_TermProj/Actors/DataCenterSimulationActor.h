@@ -205,6 +205,10 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Cooling|CRAH")
 	ECrahLayout CrahLayout = ECrahLayout::InRow;
 
+	// Display only. Automatic units share the authored models used by placed CRAH actors.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Visualization")
+	bool bUseCrahReferenceModels = true;
+
 	// Design air temperature rise through the racks = drop through the CRAH coils [K]. Sets the total CRAH
 	// airflow: design air load / (rho * cp * this). A design assumption, not a measured value.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Cooling|CRAH", meta = (ClampMin = "2.0"))
