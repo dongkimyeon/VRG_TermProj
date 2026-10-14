@@ -4532,3 +4532,13 @@ SizeM/Kind/VolumeFlowM3s·덕트/고체/코일/팬·저장 v2·L_Test/외부 액
 Blender 4방향 렌더 확인을 게임 화면 검증으로 취급하지 않는다. 전체 Automation은 실행하지 않았다.
 
 UE 5.7 에셋 전용 commandlet 최종 Exit0/PASS: 각 재질7/UV1/충돌0, 삼각형10,036/10,452(각 퇴화24 제거), 임포트 경계차5.24521e-6/8.82149e-6 cm<0.001 cm. 검증한 신규 uasset9개 복사 후 해시 일치. 별도 에디터 임시 맵 생성 로그 확인 후 Alt+Print Screen 1회 시도했으나 클립보드 읽기 실패로 PNG 확보 불가; 반복하지 않았고 UE 시각 확인 미완료로 기록한다. 제공 이미지는 Blender 렌더다.
+
+## 2026-10-14 CRAH 모델 UE 5.8 검증과 메시 개수 테스트 수정
+
+친구 작업(c8ca37d)의 CRAH 모델을 이 PC UE 5.8.2(E:/UE_5.8)에서 확인했다. Editor 빌드 성공, `Tools/verify_crah_model.py` PASS
+(5.7 임포트 에셋을 5.8에서 정상 로드, 경계 오차 ≤ 8.8e-6 cm, 재질 7, 충돌 0, 옵션 끔 시 큐브 복귀, 결과 `Art/CRAH/ue_verification.json`).
+영향 Automation 22건 중 20건 성공, 2건(`CrahAdditionCoupling`, `PerimeterCrahAdditionPersistenceCoupling`) 실패. 원인은 CRAH 모델이 아니라
+2026-10-07 자동 방 셸이 시뮬레이션 액터에 큐브 5개를 붙여 테스트의 "Sim의 모든 StaticMeshComponent 수 = 자동 CRAH 수" 가정을 깨뜨린 것이다
+(방 셸 기본값만 끄면 2건 성공으로 확인, 그날 이 테스트를 돌리지 않아 놓쳤다). `GetNumAutomaticCrahMeshes()`를 두고 같은 패턴의 테스트 5개가
+자동 CRAH 표시 메시만 세게 고쳤다(f4db8ef). 제품 동작 변경 없음. 수정 후 5건 성공. Editor -game L_Test: CRAH 8대가 모델로 랙 줄 끝에 표시, 로그 오류 0.
+배치 모드에서 버튼으로 인로우·벽면을 직접 놓는 화면 조작은 미확인.
