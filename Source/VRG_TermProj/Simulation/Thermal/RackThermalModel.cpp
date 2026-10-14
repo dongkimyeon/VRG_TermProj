@@ -94,6 +94,7 @@ void FRackThermalModel::Initialize(const FRackThermalParams& InParams, const FRa
 	EnergyInJ = 0.0;
 	EnergyOutJ = 0.0;
 	LastTotalHeatW = 0.0;
+	LastConversionLossW = 0.0;
 	LastHeatRemovedByCoolantW = 0.0;
 	bLastStepStable = true;
 
@@ -265,13 +266,18 @@ void FRackThermalModel::Step(const FRackThermalInput& Input, double DeltaTimeS)
 			if (Part.LossFractionOfRackLoad <= 0.0) DcLoadW += HeatW;
 		}
 	}
+	LastConversionLossW = 0.0;
 	for (int32 SledIndex = 0; SledIndex < NumSleds; ++SledIndex)
 	{
 		if (!IsDocked(Input.SledDocked, SledIndex, NumSleds)) continue;
 		const double FanShareW = SlotFanHeatNodes[SledIndex] > 0 ? LastSlotFanPowerW[SledIndex] / SlotFanHeatNodes[SledIndex] : 0.0;
 		for (int32 Index = SlotNodeStart[SledIndex]; Index < SlotNodeStart[SledIndex + 1]; ++Index)
 			if (NodeParams[Index].LossFractionOfRackLoad > 0.0)
-				ScratchNodeHeatW[Index] = NodeParams[Index].LossFractionOfRackLoad * DcLoadW + (NodeGetsFanHeat[Index] ? FanShareW : 0.0);
+			{
+				const double LossW = NodeParams[Index].LossFractionOfRackLoad * DcLoadW;
+				ScratchNodeHeatW[Index] = LossW + (NodeGetsFanHeat[Index] ? FanShareW : 0.0);
+				LastConversionLossW += LossW;
+			}
 	}
 	const bool bSlotInlets = Input.SlotAirInletTempK.Num() == NumSleds;
 

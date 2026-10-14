@@ -343,6 +343,9 @@ public:
 	// Web dashboard stage 4: one row per evaluation inlet (racks, then spines) in simulation mode, plus the slots and
 	// parts of DetailInlet (one MakeSnapshot) when it is a valid inlet.
 	FVrgDashboardRacks BuildDashboardRacks(int32 DetailInlet) const;
+	// Web dashboard tab 4 (2026-10-14): CRAH units, CDUs, pumps and the power breakdown of the last step, copied from
+	// values the coupled step already computed (empty lists outside simulation mode).
+	FVrgDashboardCooling BuildDashboardCooling() const;
 	// Stage 5: handles a report save the page queued (same writer as vrg.Eval.Report) and records the result for the
 	// report list. Called from each dashboard publish on the game thread; returns true when it handled one.
 	bool ProcessDashboardRequests();
@@ -479,6 +482,9 @@ private:
 	void PlanAutoCrahUnits();
 	TArray<FCrahPlacement> CrahPlacements;
 	TArray<FCrahCouplingUnit> CrahUnits;
+	// Per CrahUnits entry: where it stands and what it is, for the dashboard (placements can be re-planned later).
+	struct FCrahUnitLabel { FVector2D XYM; bool bTopIntake = false; bool bPlaced = false; };
+	TArray<FCrahUnitLabel> CrahUnitLabels;
 	double CrahUnitFlowM3s = 0.0, CrahUnitUAWK = 0.0, CrahUnitFanW = 0.0;
 	int32 CrahUnitsDropped = 0;
 	bool bCrahFellBackToCoil = false;

@@ -347,6 +347,14 @@ public:
 
 	// Heat duct coils (CRAH units) removed in the last step [W]; included in the cooling ledger.
 	double GetLastDuctCoilRemovedW() const { return LastDuctCoilRemovedW; }
+	// Per duct, last step (web dashboard, 2026-10-14): coil heat removed [W] and the mixed intake / exhaust (after coil
+	// and fan heat) temperatures [K], time-averaged over the transport sub-steps. Recorded where AdvectTemperature
+	// already computes them; the removed values sum to GetLastDuctCoilRemovedW(). Only the CPU uniform path records
+	// them: empty after a GPU or octree step (the caller then shows "no per-unit value"). A duct with no flow in a
+	// sub-step adds nothing to its temperature average (0 K means no flow in the whole step).
+	const TArray<double>& GetLastDuctCoilRemovedPerDuctW() const { return LastDuctCoilRemovedPerDuctW; }
+	const TArray<double>& GetLastDuctIntakeMixK() const { return LastDuctIntakeMixK; }
+	const TArray<double>& GetLastDuctExhaustK() const { return LastDuctExhaustK; }
 
 	// Duct fan heat: last step [W] and cumulative [J]. Part of GetEnergyInJ (an input to the air, like CellHeatW).
 	double GetLastDuctFanHeatW() const { return LastDuctFanHeatW; }
@@ -428,6 +436,8 @@ private:
 	TArray<double> DuctIntakeEnthalpy, DuctExhaustSpeedSum;
 	double LastDuctFlowM3s = 0.0;
 	double DuctCoilRemovedJ = 0.0, LastDuctCoilRemovedW = 0.0;  // this step (sum over sub-steps) / its rate
+	TArray<double> DuctRemovedStepJ, DuctMixKs, DuctExhaustKs, DuctFlowTimeS;   // per duct, this step (CPU path)
+	TArray<double> LastDuctCoilRemovedPerDuctW, LastDuctIntakeMixK, LastDuctExhaustK;
 	double DuctFanHeatStepJ = 0.0, LastDuctFanHeatW = 0.0, DuctFanHeatTotalJ = 0.0;
 	int32 LastNumDuctFaces = 0;
 	bool bLastDuctsRejected = false;

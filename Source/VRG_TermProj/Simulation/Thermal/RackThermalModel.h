@@ -156,6 +156,9 @@ public:
 	double GetLastTotalHeatToRoomAirW() const { return LastTotalHeatToRoomAirW; }
 	bool IsInFanMode() const { return bFanMode; }
 	double GetLastTotalFanPowerW() const { double W = 0.0; for (const double P : LastSlotFanPowerW) W += P; return W; }
+	// PSU conversion loss of the last step [W] (sum of LossFractionOfRackLoad x DC load, without the PSU fans' share).
+	// Recorded where the step computes it; already part of GetLastTotalHeatW (dashboard power breakdown, 2026-10-14).
+	double GetLastConversionLossW() const { return LastConversionLossW; }
 
 	// 누적 에너지 [J]. 보존 검사용.
 	double GetEnergyInJ() const { return EnergyInJ; }
@@ -200,6 +203,7 @@ private:
 	TArray<double> LastSlotAirMassFlowKgs;
 	TArray<double> LastSledAirOutletTempK;
 	double LastTotalHeatW = 0.0;
+	double LastConversionLossW = 0.0;
 	double LastHeatRemovedByCoolantW = 0.0;
 	double LastTotalHeatToRoomAirW = 0.0;
 	bool bLastStepStable = true;

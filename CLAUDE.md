@@ -4549,3 +4549,9 @@ UE 5.7 에셋 전용 commandlet 최종 Exit0/PASS: 각 재질7/UV1/충돌0, 삼�
 (`FInletStats`에 AirNowK·SensorElementK·판독 시각·수 추가, 리포트 값 불변). 3D 레이어(기본 꺼짐): 흡기면 앞 대표 위치 공, 색 = 상태(정상/경보+▲/판독 없음),
 툴팁·표에 "판독 − 실제"·경과·사양과 "모의 계측값(D9)" 명시. 검증: 신규 `VRG.Web.SensorsMatchEvaluation`(지연 해석해 5.7e-14 K, 30회 판독, 경보) 등 7건 성공.
 Editor -game L_Test: 34개 표시, 판독 − 실제 최대 0.74 K, 경보 0. 실제 경보 화면은 미확인(페이지 경로만 확인). 상세는 `Tools/웹대시보드_계획.md`.
+
+## 2026-10-14 웹 대시보드 냉각 설비·전력 탭 (서버 쪽만)
+
+`GET /api/cooling`과 `VRG.Web.CoolingMatchesModel` 추가(이미 계산된 값만, 새 물리 없음, 상세는 `Tools/웹대시보드_계획.md`).
+공기 솔버 CPU 경로가 덕트별 코일 제거열·혼합/토출 온도를, 랙 모델이 PSU 변환 손실을 기록만 한다(합계·장부 불변). 영향 테스트 13건 성공.
+페이지 탭과 Editor -game 확인은 아직 하지 않았다.

@@ -151,6 +151,60 @@ struct VRG_TERMPROJ_API FVrgDashboardSensors
 	static bool FromJson(const FString& Json, FVrgDashboardSensors& Out);
 };
 
+// Web dashboard tab 4 (2026-10-14): cooling plant and power. Every value is one the last step already computed
+// (coupling bridge, air solver duct record, hydraulic solution, CDU sizing on the actor); nothing new is modelled.
+// SI units (W, K, m^3/s, kg/s, Pa, W/K). Copied on the game thread, JSON built per request (rule 5).
+struct FVrgDashboardCrah
+{
+	FString Kind;                 // inrow (rear intake) / perimeter (top intake)
+	bool bPlaced = false;         // ACrahUnitActor in the level, else the automatic layout
+	double XM = 0.0, YM = 0.0;    // bottom centre, world [m]
+	double FlowM3s = 0.0, UAWK = 0.0, FanW = 0.0, WaterSupplyK = 0.0;
+	bool bHasAir = false;         // per-unit air values recorded (CPU uniform air path only)
+	double RemovedW = 0.0, IntakeMixK = 0.0, SupplyK = 0.0;
+};
+
+struct FVrgDashboardCdu
+{
+	FString Name;
+	int32 NumRacks = 0;
+	double DesignDutyW = 0.0, UAWK = 0.0, FacilityFlowKgs = 0.0, FacilityCpJKgK = 0.0, FacilitySupplyK = 0.0;
+	double DutyW = 0.0, ReturnK = 0.0, SupplyK = 0.0, FacilityReturnK = 0.0, HotWK = 0.0, CoolantKgs = 0.0;
+};
+
+struct FVrgDashboardPump
+{
+	int32 Row = INDEX_NONE;
+	FString Cdu;                  // empty: virtual loop of a row without a CDU (racks use their own radiators)
+	double FlowM3s = 0.0, HeadPa = 0.0, ElectricW = 0.0, HydraulicW = 0.0;
+	int32 Branches = 0;
+	double BranchMinM3s = 0.0, BranchMaxM3s = 0.0, BranchMeanM3s = 0.0;
+};
+
+struct VRG_TERMPROJ_API FVrgDashboardCooling
+{
+	double SimTimeS = 0.0;
+	bool bSimulating = false;
+	bool bCoupled = false;                 // coupling built (simulation mode entered at least once)
+	FString CrahMode;                      // units / ceilingCoil
+	bool bCrahPerUnit = false;             // per-unit air values available
+	double AirRemovedW = 0.0, CrahCoilRemovedW = 0.0, CoolantRemovedW = 0.0, RadiatorRemovedW = 0.0;
+	int32 RadiatorRacks = 0;               // racks on their own radiator (no CDU in their row)
+	TArray<FVrgDashboardCrah> Crahs;
+	TArray<FVrgDashboardCdu> Cdus;
+	bool bHydraulics = false, bHydConverged = false, bHydSparse = false;
+	int32 HydIterations = 0;
+	double HydResidual = 0.0;
+	TArray<FVrgDashboardPump> Pumps;
+	// Power of the last step [W] (D8): IT = parts + server fans + PSU conversion loss; CRAH fans and pumps are electric inputs.
+	double ItW = 0.0, ServerFanW = 0.0, PsuLossW = 0.0, CrahFanW = 0.0, PumpW = 0.0;
+	bool bPartialPueValid = false;
+	double PartialPue = 0.0;               // (IT + CRAH fans + pumps) / IT of the last step, not a facility PUE
+
+	FString ToJson() const;
+	static bool FromJson(const FString& Json, FVrgDashboardCooling& Out);
+};
+
 // Web dashboard stage 4 (2026-10-13): rack tab. One row per evaluation inlet (racks, then spines), from the thermal
 // model's state and last-step totals; SI units (W, K, kg/s, m^3/s). Built cheaply every publish (no snapshots).
 struct FVrgDashboardRackRow

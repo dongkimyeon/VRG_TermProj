@@ -17,6 +17,7 @@ class IHttpRouter;
 //   GET /api/racks     -> rack tab rows; GET /api/rack?i=<inlet> -> that rack's slots and parts (202 until built) (stage 4)
 //   GET /api/airflow   -> sampled cell-centre air velocities for the 3D airflow layer (3D stage 3)
 //   GET /api/sensors   -> virtual inlet sensors: reading, true air, lag/error spec, alarm (3D stage 4)
+//   GET /api/cooling   -> CRAH units, CDUs, pumps and the power breakdown of the last step (tab 4)
 //   POST /api/report?name= -> queue a report save (202); GET /api/reports -> saved reports; GET /api/reportfile?name= (stage 5)
 // Console: vrg.Web.Enable 0|1 (default 0), vrg.Web.Port (default 18080).
 // Rule 5: the integrated actor publishes a JSON copy on the game thread; request handlers only read that copy under a
@@ -43,6 +44,8 @@ public:
 	FString GetAirflowJson() const;
 	void PublishSensors(FVrgDashboardSensors&& InSensors);
 	FString GetSensorsJson() const;
+	void PublishCooling(FVrgDashboardCooling&& InCooling);
+	FString GetCoolingJson() const;
 	FString GetRacksJson() const;
 	// Records Inlet as the requested rack; returns its detail JSON, or empty while the next publish has not built it.
 	FString RequestRackDetailJson(int32 Inlet);
@@ -78,6 +81,8 @@ private:
 	bool bHasAirflow = false;
 	FVrgDashboardSensors LatestSensors;
 	bool bHasSensors = false;
+	FVrgDashboardCooling LatestCooling;
+	bool bHasCooling = false;
 	int32 RequestedRack = INDEX_NONE;
 	FString PendingReport;
 	FString LastSaveName, LastSaveMessage;

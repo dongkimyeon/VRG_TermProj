@@ -255,6 +255,9 @@ public:
 	// Row index of every rack, in GetRoutedRacks() order, and the CDU serving a row (null if none).
 	TArray<int32> GetRoutedRackRows() const;
 	ACoolingDistributionUnitActor* GetRowCdu(int32 RowIndex) const { return Rows.IsValidIndex(RowIndex) ? Rows[RowIndex].Cdu.Get() : nullptr; }
+	// Web dashboard cooling tab: rows and each row's pump in the hydraulic network (INDEX_NONE if none).
+	int32 GetNumRows() const { return Rows.Num(); }
+	int32 GetRowPumpIndex(int32 RowIndex) const { return Rows.IsValidIndex(RowIndex) ? Rows[RowIndex].PumpIndex : INDEX_NONE; }
 
 	// 배관을 다시 이었는지. 통합 액터가 이번 스텝에 유량이 바뀌었는지 알아야 한다.
 	bool ConsumeRebuiltFlag();

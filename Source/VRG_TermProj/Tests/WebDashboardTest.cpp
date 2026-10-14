@@ -477,6 +477,135 @@ bool FWebDashboardPipesTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+// Web dashboard tab 4 (2026-10-14): the cooling/power JSON copies values the coupled step already computed. Checked
+// against the models directly: PSU loss = sum(loss fraction) x DC load from the node heats, the CRAH per-unit record
+// sums to the solver's duct coil total and satisfies the coil's own epsilon-NTU and enthalpy identities, CDU duty
+// equals both stream enthalpy changes (rule 6), pump rows are the network's pumps and branch flows sum to them.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FWebDashboardCoolingTest, "VRG.Web.CoolingMatchesModel",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::CommandletContext | EAutomationTestFlags::EngineFilter)
+bool FWebDashboardCoolingTest::RunTest(const FString& Parameters)
+{
+	UWorld* World = UWorld::CreateWorld(EWorldType::Game, false);
+	GEngine->CreateNewWorldContext(EWorldType::Game).SetCurrentWorld(World);
+	ADataCenterSimulationActor* Sim = World->SpawnActor<ADataCenterSimulationActor>();
+	Sim->bShowSummary = false;
+	Sim->MaxStepsPerFrame = 16;
+	ADataCenterRoomActor* Room = World->SpawnActor<ADataCenterRoomActor>();
+	AAirFieldDebugActor* Air = World->SpawnActor<AAirFieldDebugActor>();
+	Air->bShowSummary = false;
+	TArray<ARackThermalActor*> Racks;
+	for (const double Y : { 0.0, 66.0 })   // one row of two racks (synthetic placement), default in-row CRAH + CDU
+	{
+		ARackThermalActor* Rack = World->SpawnActor<ARackThermalActor>(FVector(0, Y, 0), FRotator::ZeroRotator);
+		Rack->ApplyGb200Nvl72Preset(); Rack->bShowReadout = false;
+		Rack->RackSizeM = FVector(GjRackLayout::FrameDepthM, GjRackLayout::FrameWidthM, GjRackLayout::FrameHeightM);
+		Racks.Add(Rack);
+	}
+	World->SpawnActor<ACoolingDistributionUnitActor>(FVector(-300, 100, 0), FRotator::ZeroRotator);
+
+	Sim->EnterLayoutMode();
+	const FVrgDashboardCooling Layout = Sim->BuildDashboardCooling();
+	TestTrue(TEXT("layout mode: not coupled, no rows"), !Layout.bCoupled && Layout.Crahs.Num() == 0 && Layout.Cdus.Num() == 0 && Layout.Pumps.Num() == 0);
+
+	Room->RebuildRoomNow();
+	Sim->EnterSimulationMode();
+	for (int32 F = 0; F < 10; ++F) Sim->Tick(.1f);   // 1 s
+	const FVrgDashboardCooling C = Sim->BuildDashboardCooling();
+	TestTrue(TEXT("coupled in simulation mode"), C.bCoupled && C.bSimulating);
+	FVrgDashboardCooling Back;
+	TestTrue(TEXT("JSON round-trip parses"), FVrgDashboardCooling::FromJson(C.ToJson(), Back));
+	TestTrue(TEXT("JSON round-trip of the power and rows"), Back.ItW == C.ItW && Back.PsuLossW == C.PsuLossW && Back.PumpW == C.PumpW
+		&& Back.PartialPue == C.PartialPue && Back.Crahs.Num() == C.Crahs.Num() && Back.Cdus.Num() == C.Cdus.Num()
+		&& Back.Pumps.Num() == C.Pumps.Num() && Back.HydIterations == C.HydIterations && Back.CrahMode == C.CrahMode
+		&& (C.Crahs.Num() == 0 || (Back.Crahs[0].RemovedW == C.Crahs[0].RemovedW && Back.Crahs[0].SupplyK == C.Crahs[0].SupplyK))
+		&& (C.Cdus.Num() == 0 || (Back.Cdus[0].DutyW == C.Cdus[0].DutyW && Back.Cdus[0].Name == C.Cdus[0].Name))
+		&& (C.Pumps.Num() == 0 || (Back.Pumps[0].HeadPa == C.Pumps[0].HeadPa && Back.Pumps[0].Cdu == C.Pumps[0].Cdu)));
+
+	// Power: IT is the sum of every node heat; the PSU loss is sum(loss fraction) x DC load (DC = non-loss nodes).
+	double ItW = 0.0, ExpectedLossW = 0.0, LossFractionSum = 0.0, DcW = 0.0;
+	for (ARackThermalActor* Rack : Racks)
+	{
+		const FRackThermalModel& M = Rack->GetMutableModel();
+		const FRackThermalSnapshot Snap = M.MakeSnapshot(0.0);
+		double RackDc = 0.0, RackFraction = 0.0;
+		for (int32 N = 0; N < Snap.ComponentHeatW.Num(); ++N)
+		{
+			ItW += Snap.ComponentHeatW[N];
+			if (M.GetNodeParams(N).LossFractionOfRackLoad > 0.0) RackFraction += M.GetNodeParams(N).LossFractionOfRackLoad;
+			else RackDc += Snap.ComponentHeatW[N];
+		}
+		ExpectedLossW += RackFraction * RackDc; LossFractionSum += RackFraction; DcW += RackDc;
+	}
+	const double ItRel = FMath::Abs(C.ItW - ItW) / ItW, LossRel = FMath::Abs(C.PsuLossW - ExpectedLossW) / ExpectedLossW;
+	TestTrue(TEXT("IT = sum of node heats (rel < 1e-12)"), ItRel < 1e-12);
+	TestTrue(TEXT("PSU loss = loss fraction x DC load (rel < 1e-12)"), LossRel < 1e-12);
+	// Safety net: the GB200 preset holds PSU efficiency 97.5% (two racks: fraction sum 2 x (1/0.975 - 1)).
+	TestTrue(TEXT("PSU loss fraction = 1/0.975 - 1 per rack"), FMath::Abs(LossFractionSum / 2.0 - (1.0 / .975 - 1.0)) < 1e-12);
+	TestTrue(TEXT("parts share >= 0"), C.ItW - C.ServerFanW - C.PsuLossW > 0.0);
+	TestTrue(TEXT("partial PUE = (IT + CRAH fans + pumps) / IT"), C.bPartialPueValid && C.PartialPue == (C.ItW + C.CrahFanW + C.PumpW) / C.ItW);
+
+	// CRAH units: the per-unit record sums to the solver's duct coil total; each unit obeys its coil's own equations.
+	const FAirGridParams& Ap = Air->GetSolver().GetGrid().GetParams();
+	TestTrue(TEXT("in-row CRAH units with per-unit values"), C.CrahMode == TEXT("units") && C.Crahs.Num() > 0 && C.bCrahPerUnit);
+	double RemovedSum = 0.0, FanSum = 0.0, WorstEps = 0.0, WorstEnthalpy = 0.0;
+	for (const FVrgDashboardCrah& U : C.Crahs)
+	{
+		const double CapWK = Ap.DensityKgM3 * U.FlowM3s * Ap.SpecificHeatJKgK;
+		const double Eps = 1.0 - FMath::Exp(-U.UAWK / CapWK);
+		RemovedSum += U.RemovedW; FanSum += U.FanW;
+		WorstEps = FMath::Max(WorstEps, FMath::Abs(U.RemovedW - CapWK * Eps * (U.IntakeMixK - U.WaterSupplyK)) / U.RemovedW);
+		// Supply = coil exhaust + fan heat: C (mix - supply) = removed - fan.
+		WorstEnthalpy = FMath::Max(WorstEnthalpy, FMath::Abs(CapWK * (U.IntakeMixK - U.SupplyK) - (U.RemovedW - U.FanW)) / U.RemovedW);
+	}
+	const double DuctTotalW = Air->GetSolver().GetLastDuctCoilRemovedW();
+	const double SumRel = FMath::Abs(RemovedSum - DuctTotalW) / DuctTotalW;
+	TestTrue(TEXT("per-unit removed sums to the duct coil total (rel < 1e-12)"), SumRel < 1e-12 && C.CrahCoilRemovedW == RemovedSum);
+	TestTrue(TEXT("each unit: removed = C eps (mix - water) (rel < 1e-9)"), WorstEps < 1e-9);
+	TestTrue(TEXT("each unit: C (mix - supply) = removed - fan (rel < 1e-9)"), WorstEnthalpy < 1e-9);
+	TestTrue(TEXT("unit fans sum to the CRAH fan power (rel < 1e-12)"), FMath::Abs(FanSum - C.CrahFanW) / C.CrahFanW < 1e-12);
+
+	// CDU: duty = rack side C_hot (return - supply) = facility side C_fac (return - supply) and <= C_min (return - facility in).
+	TestEqual(TEXT("one CDU group with both racks"), C.Cdus.Num() == 1 ? C.Cdus[0].NumRacks : -1, 2);
+	double WorstDuty = 0.0;
+	bool bCduBound = C.Cdus.Num() > 0;
+	for (const FVrgDashboardCdu& D : C.Cdus)
+	{
+		const double FacWK = D.FacilityFlowKgs * D.FacilityCpJKgK;
+		WorstDuty = FMath::Max(WorstDuty, FMath::Abs(D.HotWK * (D.ReturnK - D.SupplyK) - D.DutyW) / D.DutyW);
+		WorstDuty = FMath::Max(WorstDuty, FMath::Abs(FacWK * (D.FacilityReturnK - D.FacilitySupplyK) - D.DutyW) / D.DutyW);
+		bCduBound &= D.DutyW > 0.0 && D.DutyW <= FMath::Min(D.HotWK, FacWK) * (D.ReturnK - D.FacilitySupplyK) && D.DesignDutyW > 0.0;
+	}
+	double RackKgs = 0.0;
+	for (ARackThermalActor* Rack : Racks) RackKgs += Rack->Input.CoolantMassFlowKgs;
+	TestTrue(TEXT("CDU duty = both stream enthalpy changes (rel < 1e-12)"), WorstDuty < 1e-12);
+	TestTrue(TEXT("CDU duty positive, below C_min x (return - facility in), design duty known"), bCduBound);
+	TestTrue(TEXT("CDU coolant flow = sum of its racks' flows"), C.Cdus.Num() == 1 && FMath::Abs(C.Cdus[0].CoolantKgs - RackKgs) <= 1e-12 * RackKgs);
+	TestTrue(TEXT("no rack on its own radiator"), C.RadiatorRacks == 0 && FMath::Abs(C.RadiatorRemovedW) <= 1e-9 * C.CoolantRemovedW);
+
+	// Pumps: one per row, the network's operating point; branch flows add up to it (mass conservation).
+	const FHydraulicNetwork& Net = Room->GetNetwork();
+	TestTrue(TEXT("hydraulics converged"), C.bHydraulics && C.bHydConverged && C.HydIterations > 0);
+	TestEqual(TEXT("one pump row"), C.Pumps.Num(), 1);
+	double PumpW = 0.0, WorstBranch = 0.0;
+	for (const FVrgDashboardPump& P : C.Pumps)
+	{
+		PumpW += P.ElectricW;
+		WorstBranch = FMath::Max(WorstBranch, FMath::Abs(P.BranchMeanM3s * P.Branches - P.FlowM3s) / P.FlowM3s);
+		TestTrue(TEXT("pump row = network pump"), P.FlowM3s == Net.GetPumpFlowM3s(Room->GetRowPumpIndex(P.Row)) && P.Branches == 2 && !P.Cdu.IsEmpty());
+		TestTrue(TEXT("electric >= hydraulic power (D8)"), P.ElectricW >= P.HydraulicW && P.HydraulicW > 0.0);
+	}
+	TestTrue(TEXT("branch flows sum to the pump flow (rel < 1e-9)"), WorstBranch < 1e-9);
+	TestTrue(TEXT("pump rows sum to the power breakdown's pumps"), FMath::Abs(PumpW - C.PumpW) <= 1e-12 * C.PumpW);
+
+	AddInfo(FString::Printf(TEXT("IT %.3f W (PSU %.3f W, fans %.3f W), CRAH %d units %.3f W removed, sum rel %.3e, eps %.3e, enthalpy %.3e, ")
+		TEXT("CDU duty rel %.3e, branch rel %.3e, PSU rel %.3e, pump %.3f W, pPUE %.6f"),
+		C.ItW, C.PsuLossW, C.ServerFanW, C.Crahs.Num(), RemovedSum, SumRel, WorstEps, WorstEnthalpy, WorstDuty, WorstBranch, LossRel, C.PumpW, C.PartialPue));
+	Sim->EnterLayoutMode();
+	GEngine->DestroyWorldContext(World);
+	World->DestroyWorld(false);
+	return true;
+}
+
 // 3D view stage 3 (2026-10-14): airflow samples are the cell-centre mean of the two MAC faces per axis, on the cell
 // layers holding the requested heights, every StrideCells cells, solid cells skipped, in world metres (synthetic field).
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FWebDashboardAirflowTest, "VRG.Web.AirflowSample",

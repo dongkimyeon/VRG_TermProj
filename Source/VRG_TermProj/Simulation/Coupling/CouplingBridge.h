@@ -290,6 +290,24 @@ public:
 	double GetLastItHeatW() const { return LastItHeatW; }
 	double GetLastServerFanPowerW() const { return LastFanPowerW; }
 	double GetLastCrahFanPowerW() const { return AirSolver != nullptr && !AirSolver->WereDuctsRejected() ? AirSolver->GetLastDuctFanHeatW() : 0.0; }
+	// PSU conversion loss of all racks in the last step [W] (already inside GetLastItHeatW; dashboard breakdown).
+	double GetLastConversionLossW() const { return LastConversionLossW; }
+
+	// ---- Web dashboard cooling tab (2026-10-14): read-only views of values the step already computed ----
+	const TArray<FCrahCouplingUnit>& GetCrahUnits() const { return CrahUnits; }
+	// Per CRAH unit (CrahUnits order) of the last step: coil heat removed [W], mixed intake and supply (after coil
+	// and fan) temperatures [K], copied from the air solver's per-duct record. False when the solver did not record
+	// them (GPU or octree step, rejected ducts, no air solver): there is no per-unit value then.
+	bool GetLastCrahUnitReadings(TArray<double>& OutRemovedW, TArray<double>& OutIntakeMixK, TArray<double>& OutSupplyK) const;
+	const TArray<FCduCouplingGroup>& GetCduGroups() const { return CduGroups; }
+	// Per CDU group of the last step: duty [W], mixed return / supply to the racks / facility return [K],
+	// rack-side capacity rate sum(mdot cp) [W/K] and mass flow [kg/s].
+	const TArray<double>& GetLastCduDutyW() const { return LastCduDutyW; }
+	const TArray<double>& GetLastCduReturnK() const { return LastCduReturnK; }
+	const TArray<double>& GetLastCduSupplyK() const { return LastCduSupplyK; }
+	const TArray<double>& GetLastCduFacilityReturnK() const { return LastCduFacilityReturnK; }
+	const TArray<double>& GetLastCduHotWK() const { return LastCduHotWK; }
+	const TArray<double>& GetLastCduCoolantKgs() const { return LastCduCoolantKgs; }
 	// Wall time of the rack models in the last step [ms] (measurement).
 	double GetLastRackModelsMs() const { return LastRackModelsMs; }
 
@@ -316,6 +334,7 @@ private:
 	TArray<double> LastRackAirMassFlowKgs, LastRackDuctMassFlowKgs;
 	double LastFanPowerW = 0.0;
 	double LastItHeatW = 0.0;
+	double LastConversionLossW = 0.0;
 
 	// Fan ducts: global duct id of every rack layer (DuctBase[r] + layer) and the air solver face arrays,
 	// built once in Initialize; only the velocities change per step.
@@ -323,7 +342,7 @@ private:
 	TArray<FCrahCouplingUnit> CrahUnits;
 	TArray<FCduCouplingGroup> CduGroups;
 	TArray<int32> RackCduGroup;  // per target: CDU group index or INDEX_NONE (own radiator)
-	TArray<double> LastCduDutyW, LastCduReturnK, LastCduSupplyK, LastCduFacilityReturnK;
+	TArray<double> LastCduDutyW, LastCduReturnK, LastCduSupplyK, LastCduFacilityReturnK, LastCduHotWK, LastCduCoolantKgs;
 	int32 CrahDuctBase = 0;  // duct id of CrahUnits[0]
 	TArray<double> ScratchLayerFlowKgs, ScratchLayerIntakeK;
 	TArray<int32> ScratchLayerIntakeCount, ScratchLayerExhaustCount;

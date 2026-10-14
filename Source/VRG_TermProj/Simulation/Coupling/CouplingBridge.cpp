@@ -21,6 +21,8 @@ void FCouplingBridge::Initialize(const TArray<FRackCouplingTarget>& InTargets,
 	CduGroups.Reset();
 	RackCduGroup.Init(INDEX_NONE, NumRacks);
 	LastCduDutyW.Reset(); LastCduReturnK.Reset(); LastCduSupplyK.Reset(); LastCduFacilityReturnK.Reset();
+	LastCduHotWK.Reset(); LastCduCoolantKgs.Reset();
+	LastConversionLossW = 0.0;
 
 	EnergyInJ = 0.0;
 	EnergyOutJ = 0.0;
@@ -196,6 +198,23 @@ void FCouplingBridge::UpdateDuctVelocities()
 	}
 }
 
+bool FCouplingBridge::GetLastCrahUnitReadings(TArray<double>& OutRemovedW, TArray<double>& OutIntakeMixK, TArray<double>& OutSupplyK) const
+{
+	OutRemovedW.Reset(); OutIntakeMixK.Reset(); OutSupplyK.Reset();
+	if (AirSolver == nullptr || AirSolver->WereDuctsRejected() || CrahUnits.Num() == 0) return false;
+	const TArray<double>& Removed = AirSolver->GetLastDuctCoilRemovedPerDuctW();
+	const TArray<double>& Mix = AirSolver->GetLastDuctIntakeMixK();
+	const TArray<double>& Exhaust = AirSolver->GetLastDuctExhaustK();
+	if (Removed.Num() < CrahDuctBase + CrahUnits.Num() || Mix.Num() != Removed.Num() || Exhaust.Num() != Removed.Num()) return false;
+	for (int32 U = 0; U < CrahUnits.Num(); ++U)
+	{
+		OutRemovedW.Add(Removed[CrahDuctBase + U]);
+		OutIntakeMixK.Add(Mix[CrahDuctBase + U]);
+		OutSupplyK.Add(Exhaust[CrahDuctBase + U]);
+	}
+	return true;
+}
+
 void FCouplingBridge::PullCoolantFlow()
 {
 	for (int32 RackIndex = 0; RackIndex < Targets.Num(); ++RackIndex)
@@ -325,6 +344,7 @@ void FCouplingBridge::SetCduGroups(const TArray<FCduCouplingGroup>& InGroups)
 	}
 	LastCduDutyW.Init(0.0, CduGroups.Num()); LastCduReturnK.Init(0.0, CduGroups.Num());
 	LastCduSupplyK.Init(0.0, CduGroups.Num()); LastCduFacilityReturnK.Init(0.0, CduGroups.Num());
+	LastCduHotWK.Init(0.0, CduGroups.Num()); LastCduCoolantKgs.Init(0.0, CduGroups.Num());
 }
 
 void FCouplingBridge::CloseCoolantLoop(double DeltaTimeS)
@@ -335,15 +355,17 @@ void FCouplingBridge::CloseCoolantLoop(double DeltaTimeS)
 	for (int32 G = 0; G < CduGroups.Num(); ++G)
 	{
 		const FCduCouplingGroup& Group = CduGroups[G];
-		double HotWK = 0.0, MixSum = 0.0;
+		double HotWK = 0.0, MixSum = 0.0, MassKgs = 0.0;
 		for (const int32 R : Group.RackIndices)
 		{
 			const FRackCouplingTarget& Target = Targets[R];
 			if (Target.Model == nullptr || Target.Input == nullptr) continue;
 			const double C = FMath::Max(Target.Input->CoolantMassFlowKgs, 0.0) * Target.Model->GetParams().CoolantCpJKgK;
+			MassKgs += FMath::Max(Target.Input->CoolantMassFlowKgs, 0.0);
 			HotWK += C;
 			MixSum += C * Target.Model->GetState().CoolantTempK;
 		}
+		LastCduHotWK[G] = HotWK; LastCduCoolantKgs[G] = MassKgs;
 		// No flow: nothing is carried, so nothing is exchanged; the racks keep their inlet as it was (D2).
 		if (HotWK <= UE_DOUBLE_SMALL_NUMBER)
 		{
@@ -513,7 +535,7 @@ void FCouplingBridge::Step(double DeltaTimeS, bool bHydraulicsResolved, bool bHy
 	CloseCoolantLoop(DeltaTimeS);
 
 	// 4) 랙 열모델을 돌린다. 규약 4대로 모든 도메인이 같은 dt를 쓴다.
-	double ItHeatW = 0.0;
+	double ItHeatW = 0.0, ConversionLossW = 0.0;
 	const uint64 RackStart = FPlatformTime::Cycles64();
 	for (int32 RackIndex = 0; RackIndex < Targets.Num(); ++RackIndex)
 	{
@@ -525,10 +547,12 @@ void FCouplingBridge::Step(double DeltaTimeS, bool bHydraulicsResolved, bool bHy
 
 		Target.Model->Step(*Target.Input, DeltaTimeS);
 		ItHeatW += Target.Model->GetLastTotalHeatW();
+		ConversionLossW += Target.Model->GetLastConversionLossW();
 		RackCoolantOutJ += Target.Model->GetLastHeatRemovedByCoolantW() * DeltaTimeS;
 		RackAirOutJ += Target.Model->GetLastTotalHeatToRoomAirW() * DeltaTimeS;
 	}
 	LastItHeatW = ItHeatW;
+	LastConversionLossW = ConversionLossW;
 	LastRackModelsMs = FPlatformTime::ToMilliseconds64(FPlatformTime::Cycles64() - RackStart);
 
 	// 5) 열 -> 공기: 랙이 공기로 내보낸 열을 체적 열원으로 민다 (D1: 합산해 하나로).

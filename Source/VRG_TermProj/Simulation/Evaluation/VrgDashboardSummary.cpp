@@ -685,3 +685,151 @@ bool FVrgDashboardRacks::DetailFromJson(const FString& Json, FVrgDashboardRackDe
 	Out = MoveTemp(D);
 	return true;
 }
+
+namespace
+{
+	template <typename FVisit>
+	void VisitCrahNumbers(FVrgDashboardCrah& C, FVisit&& Visit)
+	{
+		Visit(TEXT("xM"), C.XM); Visit(TEXT("yM"), C.YM); Visit(TEXT("flowM3s"), C.FlowM3s); Visit(TEXT("uaWK"), C.UAWK);
+		Visit(TEXT("fanW"), C.FanW); Visit(TEXT("waterSupplyK"), C.WaterSupplyK);
+	}
+	template <typename FVisit>
+	void VisitCduNumbers(FVrgDashboardCdu& C, FVisit&& Visit)
+	{
+		Visit(TEXT("designDutyW"), C.DesignDutyW); Visit(TEXT("uaWK"), C.UAWK); Visit(TEXT("facilityFlowKgs"), C.FacilityFlowKgs);
+		Visit(TEXT("facilityCpJKgK"), C.FacilityCpJKgK); Visit(TEXT("facilitySupplyK"), C.FacilitySupplyK); Visit(TEXT("dutyW"), C.DutyW);
+		Visit(TEXT("returnK"), C.ReturnK); Visit(TEXT("supplyK"), C.SupplyK); Visit(TEXT("facilityReturnK"), C.FacilityReturnK);
+		Visit(TEXT("hotWK"), C.HotWK); Visit(TEXT("coolantKgs"), C.CoolantKgs);
+	}
+	template <typename FVisit>
+	void VisitPumpNumbers(FVrgDashboardPump& P, FVisit&& Visit)
+	{
+		Visit(TEXT("flowM3s"), P.FlowM3s); Visit(TEXT("headPa"), P.HeadPa); Visit(TEXT("electricW"), P.ElectricW);
+		Visit(TEXT("hydraulicW"), P.HydraulicW); Visit(TEXT("branchMinM3s"), P.BranchMinM3s);
+		Visit(TEXT("branchMaxM3s"), P.BranchMaxM3s); Visit(TEXT("branchMeanM3s"), P.BranchMeanM3s);
+	}
+	template <typename FVisit>
+	void VisitCoolingNumbers(FVrgDashboardCooling& C, FVisit&& Visit)
+	{
+		Visit(TEXT("airRemovedW"), C.AirRemovedW); Visit(TEXT("crahCoilRemovedW"), C.CrahCoilRemovedW);
+		Visit(TEXT("coolantRemovedW"), C.CoolantRemovedW); Visit(TEXT("radiatorRemovedW"), C.RadiatorRemovedW);
+		Visit(TEXT("hydResidual"), C.HydResidual); Visit(TEXT("itW"), C.ItW); Visit(TEXT("serverFanW"), C.ServerFanW);
+		Visit(TEXT("psuLossW"), C.PsuLossW); Visit(TEXT("crahFanW"), C.CrahFanW); Visit(TEXT("pumpW"), C.PumpW);
+	}
+}
+
+FString FVrgDashboardCooling::ToJson() const
+{
+	FVrgDashboardCooling& C = const_cast<FVrgDashboardCooling&>(*this);   // the visitors only read
+	FJsonText J;
+	J.S.Reserve(1024 + Crahs.Num() * 260 + Cdus.Num() * 420 + Pumps.Num() * 300);
+	J.Raw(TEXT("{")); J.Key(TEXT("schema")); J.Int(1);
+	J.Raw(TEXT(",")); J.Key(TEXT("simTimeS")); J.Num(SimTimeS);
+	J.Raw(TEXT(",")); J.Key(TEXT("mode")); J.Str(bSimulating ? TEXT("simulation") : TEXT("layout"));
+	J.Raw(TEXT(",")); J.Key(TEXT("coupled")); J.Bool(bCoupled);
+	J.Raw(TEXT(",")); J.Key(TEXT("crahMode")); J.Str(CrahMode);
+	J.Raw(TEXT(",")); J.Key(TEXT("crahPerUnit")); J.Bool(bCrahPerUnit);
+	J.Raw(TEXT(",")); J.Key(TEXT("radiatorRacks")); J.Int(RadiatorRacks);
+	J.Raw(TEXT(",")); J.Key(TEXT("hydraulics")); J.Bool(bHydraulics);
+	J.Raw(TEXT(",")); J.Key(TEXT("hydConverged")); J.Bool(bHydConverged);
+	J.Raw(TEXT(",")); J.Key(TEXT("hydSparse")); J.Bool(bHydSparse);
+	J.Raw(TEXT(",")); J.Key(TEXT("hydIterations")); J.Int(HydIterations);
+	J.Raw(TEXT(",")); J.Key(TEXT("partialPue")); if (bPartialPueValid) J.Num(PartialPue); else J.Raw(TEXT("null"));
+	VisitCoolingNumbers(C, J.NumberFields());
+	J.Raw(TEXT(",")); J.Key(TEXT("crahs")); J.Raw(TEXT("["));
+	for (int32 I = 0; I < Crahs.Num(); ++I)
+	{
+		FVrgDashboardCrah& R = C.Crahs[I];
+		J.Raw(I ? TEXT(",{") : TEXT("{"));
+		J.Key(TEXT("kind")); J.Str(R.Kind);
+		J.Raw(TEXT(",")); J.Key(TEXT("placed")); J.Bool(R.bPlaced);
+		VisitCrahNumbers(R, J.NumberFields());
+		// Per-unit air values only where the solver recorded them; null otherwise (never a guessed value).
+		J.Raw(TEXT(",")); J.Key(TEXT("removedW")); if (R.bHasAir) J.Num(R.RemovedW); else J.Raw(TEXT("null"));
+		J.Raw(TEXT(",")); J.Key(TEXT("intakeMixK")); if (R.bHasAir) J.Num(R.IntakeMixK); else J.Raw(TEXT("null"));
+		J.Raw(TEXT(",")); J.Key(TEXT("supplyK")); if (R.bHasAir) J.Num(R.SupplyK); else J.Raw(TEXT("null"));
+		J.Raw(TEXT("}"));
+	}
+	J.Raw(TEXT("]")); J.Raw(TEXT(",")); J.Key(TEXT("cdus")); J.Raw(TEXT("["));
+	for (int32 I = 0; I < Cdus.Num(); ++I)
+	{
+		FVrgDashboardCdu& R = C.Cdus[I];
+		J.Raw(I ? TEXT(",{") : TEXT("{"));
+		J.Key(TEXT("name")); J.Str(R.Name);
+		J.Raw(TEXT(",")); J.Key(TEXT("numRacks")); J.Int(R.NumRacks);
+		VisitCduNumbers(R, J.NumberFields());
+		J.Raw(TEXT("}"));
+	}
+	J.Raw(TEXT("]")); J.Raw(TEXT(",")); J.Key(TEXT("pumps")); J.Raw(TEXT("["));
+	for (int32 I = 0; I < Pumps.Num(); ++I)
+	{
+		FVrgDashboardPump& R = C.Pumps[I];
+		J.Raw(I ? TEXT(",{") : TEXT("{"));
+		J.Key(TEXT("row")); J.Int(R.Row);
+		J.Raw(TEXT(",")); J.Key(TEXT("cdu")); J.Str(R.Cdu);
+		J.Raw(TEXT(",")); J.Key(TEXT("branches")); J.Int(R.Branches);
+		VisitPumpNumbers(R, J.NumberFields());
+		J.Raw(TEXT("}"));
+	}
+	J.Raw(TEXT("]}"));
+	return MoveTemp(J.S);
+}
+
+bool FVrgDashboardCooling::FromJson(const FString& Json, FVrgDashboardCooling& Out)
+{
+	TSharedPtr<FJsonObject> Root;
+	if (!FJsonSerializer::Deserialize(TJsonReaderFactory<>::Create(Json), Root) || !Root.IsValid()) return false;
+	FVrgDashboardCooling C;
+	FString Mode;
+	double Radiators = 0.0, Iterations = 0.0;
+	const TArray<TSharedPtr<FJsonValue>>* Crahs = nullptr, * Cdus = nullptr, * Pumps = nullptr;
+	bool bOk = Root->TryGetNumberField(TEXT("simTimeS"), C.SimTimeS) && Root->TryGetStringField(TEXT("mode"), Mode)
+		&& Root->TryGetBoolField(TEXT("coupled"), C.bCoupled) && Root->TryGetStringField(TEXT("crahMode"), C.CrahMode)
+		&& Root->TryGetBoolField(TEXT("crahPerUnit"), C.bCrahPerUnit) && Root->TryGetNumberField(TEXT("radiatorRacks"), Radiators)
+		&& Root->TryGetBoolField(TEXT("hydraulics"), C.bHydraulics) && Root->TryGetBoolField(TEXT("hydConverged"), C.bHydConverged)
+		&& Root->TryGetBoolField(TEXT("hydSparse"), C.bHydSparse) && Root->TryGetNumberField(TEXT("hydIterations"), Iterations)
+		&& Root->TryGetArrayField(TEXT("crahs"), Crahs) && Root->TryGetArrayField(TEXT("cdus"), Cdus)
+		&& Root->TryGetArrayField(TEXT("pumps"), Pumps);
+	if (bOk) VisitCoolingNumbers(C, [&](const TCHAR* Key, double& Value) { bOk = bOk && Root->TryGetNumberField(Key, Value); });
+	if (!bOk) return false;
+	C.bSimulating = Mode == TEXT("simulation");
+	C.RadiatorRacks = int32(Radiators); C.HydIterations = int32(Iterations);
+	C.bPartialPueValid = Root->TryGetNumberField(TEXT("partialPue"), C.PartialPue);
+	for (const TSharedPtr<FJsonValue>& V : *Crahs)
+	{
+		const TSharedPtr<FJsonObject> O = V->AsObject();
+		FVrgDashboardCrah R;
+		bOk = O.IsValid() && O->TryGetStringField(TEXT("kind"), R.Kind) && O->TryGetBoolField(TEXT("placed"), R.bPlaced);
+		if (bOk) VisitCrahNumbers(R, [&](const TCHAR* Key, double& Value) { bOk = bOk && O->TryGetNumberField(Key, Value); });
+		if (!bOk) return false;
+		R.bHasAir = O->TryGetNumberField(TEXT("removedW"), R.RemovedW);
+		if (R.bHasAir && !(O->TryGetNumberField(TEXT("intakeMixK"), R.IntakeMixK) && O->TryGetNumberField(TEXT("supplyK"), R.SupplyK))) return false;
+		C.Crahs.Add(R);
+	}
+	for (const TSharedPtr<FJsonValue>& V : *Cdus)
+	{
+		const TSharedPtr<FJsonObject> O = V->AsObject();
+		FVrgDashboardCdu R;
+		double NumRacks = 0.0;
+		bOk = O.IsValid() && O->TryGetStringField(TEXT("name"), R.Name) && O->TryGetNumberField(TEXT("numRacks"), NumRacks);
+		if (bOk) VisitCduNumbers(R, [&](const TCHAR* Key, double& Value) { bOk = bOk && O->TryGetNumberField(Key, Value); });
+		if (!bOk) return false;
+		R.NumRacks = int32(NumRacks);
+		C.Cdus.Add(R);
+	}
+	for (const TSharedPtr<FJsonValue>& V : *Pumps)
+	{
+		const TSharedPtr<FJsonObject> O = V->AsObject();
+		FVrgDashboardPump R;
+		double Row = 0.0, Branches = 0.0;
+		bOk = O.IsValid() && O->TryGetNumberField(TEXT("row"), Row) && O->TryGetStringField(TEXT("cdu"), R.Cdu)
+			&& O->TryGetNumberField(TEXT("branches"), Branches);
+		if (bOk) VisitPumpNumbers(R, [&](const TCHAR* Key, double& Value) { bOk = bOk && O->TryGetNumberField(Key, Value); });
+		if (!bOk) return false;
+		R.Row = int32(Row); R.Branches = int32(Branches);
+		C.Pumps.Add(R);
+	}
+	Out = MoveTemp(C);
+	return true;
+}

@@ -1412,6 +1412,7 @@ void ADataCenterSimulationActor::FilterCrahPlacementsToGrid(AAirFieldDebugActor*
 void ADataCenterSimulationActor::BuildCrahUnits()
 {
 	CrahUnits.Reset();
+	CrahUnitLabels.Reset();
 	CrahUnitFlowM3s = CrahUnitUAWK = CrahUnitFanW = 0.0;
 	bCrahFellBackToCoil = false;
 	if (CrahLayout == ECrahLayout::CeilingCoil || AirField == nullptr)
@@ -1474,7 +1475,11 @@ void ADataCenterSimulationActor::BuildCrahUnits()
 				}
 		Unit.WaterSupplyTempK = CoilSupplyTempK;
 		Unit.VolumeFlowM3s = P.FlowM3s;  // 0 = share of the design airflow (sized below)
-		if (Unit.HasBothSides()) CrahUnits.Add(MoveTemp(Unit));
+		if (Unit.HasBothSides())
+		{
+			CrahUnits.Add(MoveTemp(Unit));
+			CrahUnitLabels.Add({ FVector2D(P.BaseM.X, P.BaseM.Y), P.bTopIntake, P.bPlaced });
+		}
 		else ++CrahUnitsDropped;
 	}
 
@@ -1795,6 +1800,104 @@ FVrgDashboardLayout ADataCenterSimulationActor::BuildDashboardLayout() const
 	return L;
 }
 
+FVrgDashboardCooling ADataCenterSimulationActor::BuildDashboardCooling() const
+{
+	FVrgDashboardCooling C;
+	C.SimTimeS = Clock.GetSimTimeS();
+	C.bSimulating = Mode == ESimMode::Simulation;
+	C.bCoupled = C.bSimulating && bEvalReady;
+	if (!C.bCoupled) return C;   // the plant values belong to the coupled run; nothing in layout mode
+
+	// Power of the last step (D8), the same reads the evaluation sample uses (EvalAfterStep).
+	C.ItW = Bridge.GetLastItHeatW();
+	C.ServerFanW = Bridge.GetLastServerFanPowerW();
+	C.PsuLossW = Bridge.GetLastConversionLossW();
+	C.CrahFanW = Bridge.GetLastCrahFanPowerW();
+	C.PumpW = Room != nullptr ? Room->GetTotalPumpElectricalW() : 0.0;
+	C.bPartialPueValid = C.ItW > 0.0;
+	C.PartialPue = C.bPartialPueValid ? (C.ItW + C.CrahFanW + C.PumpW) / C.ItW : 0.0;
+
+	// Air side: CRAH units (one duct each) or the lumped ceiling coil.
+	C.AirRemovedW = Bridge.GetLastAirCoolingRemovedW();
+	const TArray<FCrahCouplingUnit>& Units = Bridge.GetCrahUnits();
+	C.CrahMode = Units.Num() > 0 ? TEXT("units") : TEXT("ceilingCoil");
+	TArray<double> RemovedW, MixK, SupplyK;
+	C.bCrahPerUnit = Bridge.GetLastCrahUnitReadings(RemovedW, MixK, SupplyK);
+	for (int32 U = 0; U < Units.Num(); ++U)
+	{
+		FVrgDashboardCrah& R = C.Crahs.AddDefaulted_GetRef();
+		const bool bLabel = CrahUnitLabels.IsValidIndex(U) && CrahUnitLabels.Num() == Units.Num();
+		R.Kind = bLabel && CrahUnitLabels[U].bTopIntake ? TEXT("perimeter") : TEXT("inrow");
+		R.bPlaced = bLabel && CrahUnitLabels[U].bPlaced;
+		if (bLabel) { R.XM = CrahUnitLabels[U].XYM.X; R.YM = CrahUnitLabels[U].XYM.Y; }
+		R.FlowM3s = Units[U].HasBothSides() ? Units[U].VolumeFlowM3s : 0.0;
+		R.UAWK = Units[U].CoilUAWK;
+		R.FanW = Units[U].HasBothSides() ? Units[U].FanPowerW : 0.0;
+		R.WaterSupplyK = Units[U].WaterSupplyTempK;
+		R.bHasAir = C.bCrahPerUnit;
+		if (R.bHasAir) { R.RemovedW = RemovedW[U]; R.IntakeMixK = MixK[U]; R.SupplyK = SupplyK[U]; C.CrahCoilRemovedW += RemovedW[U]; }
+	}
+
+	// Coolant side: CDU groups (same order as CduSummaries, BuildCduGroups) and racks on their own radiators.
+	C.CoolantRemovedW = Bridge.GetTotalRadiatorRejectedW();
+	const TArray<FCduCouplingGroup>& Groups = Bridge.GetCduGroups();
+	double CduDutySumW = 0.0;
+	int32 CduRacks = 0;
+	for (int32 G = 0; G < Groups.Num(); ++G)
+	{
+		FVrgDashboardCdu& R = C.Cdus.AddDefaulted_GetRef();
+		if (CduSummaries.IsValidIndex(G)) { R.Name = CduSummaries[G].Name; R.DesignDutyW = CduSummaries[G].DesignDutyW; }
+		R.NumRacks = Groups[G].RackIndices.Num();
+		R.UAWK = Groups[G].Hx.UAWK;
+		R.FacilityFlowKgs = Groups[G].Hx.FacilityMassFlowKgs;
+		R.FacilityCpJKgK = Groups[G].Hx.FacilityCpJKgK;
+		R.FacilitySupplyK = Groups[G].Hx.FacilitySupplyTempK;
+		auto At = [G](const TArray<double>& A) { return A.IsValidIndex(G) ? A[G] : 0.0; };
+		R.DutyW = At(Bridge.GetLastCduDutyW()); R.ReturnK = At(Bridge.GetLastCduReturnK()); R.SupplyK = At(Bridge.GetLastCduSupplyK());
+		R.FacilityReturnK = At(Bridge.GetLastCduFacilityReturnK());
+		R.HotWK = At(Bridge.GetLastCduHotWK()); R.CoolantKgs = At(Bridge.GetLastCduCoolantKgs());
+		CduDutySumW += R.DutyW;
+		CduRacks += R.NumRacks;
+	}
+	C.RadiatorRemovedW = C.CoolantRemovedW - CduDutySumW;
+	C.RadiatorRacks = FMath::Max(Racks.Num() - CduRacks, 0);   // spines carry no coolant
+
+	// Hydraulics: one pump per row (InRowLoopBuilder), branch flows of that row's racks.
+	if (Room != nullptr)
+	{
+		const FHydraulicNetwork& Net = Room->GetNetwork();
+		const FHydraulicSolveResult& Res = Room->GetLastSolveResult();
+		C.bHydraulics = Room->GetNumRows() > 0;
+		C.bHydConverged = Res.bConverged; C.bHydSparse = Res.bUsedSparse;
+		C.HydIterations = Res.IterationsUsed; C.HydResidual = Res.NormalizedResidual;
+		const TArray<int32> RackRows = Room->GetRoutedRackRows();
+		const TArray<int32>& Branches = Room->GetRackBranchPipeIndices();
+		for (int32 Row = 0; Row < Room->GetNumRows(); ++Row)
+		{
+			const int32 Pump = Room->GetRowPumpIndex(Row);
+			if (Pump == INDEX_NONE) continue;
+			FVrgDashboardPump& P = C.Pumps.AddDefaulted_GetRef();
+			P.Row = Row;
+			if (const ACoolingDistributionUnitActor* Cdu = Room->GetRowCdu(Row)) P.Cdu = Cdu->GetName();
+			P.FlowM3s = Net.GetPumpFlowM3s(Pump);
+			P.HeadPa = Net.GetPumpDeltaPPa(Pump);
+			P.ElectricW = Net.GetPumpElectricalInputPowerW(Pump);
+			P.HydraulicW = Net.GetPumpHydraulicPowerW(Pump);
+			double Sum = 0.0;
+			for (int32 R = 0; R < RackRows.Num() && R < Branches.Num(); ++R)
+			{
+				if (RackRows[R] != Row || Branches[R] == INDEX_NONE) continue;
+				const double F = Net.GetPipeFlowM3s(Branches[R]);
+				P.BranchMinM3s = P.Branches ? FMath::Min(P.BranchMinM3s, F) : F;
+				P.BranchMaxM3s = P.Branches ? FMath::Max(P.BranchMaxM3s, F) : F;
+				Sum += F; ++P.Branches;
+			}
+			P.BranchMeanM3s = P.Branches ? Sum / P.Branches : 0.0;
+		}
+	}
+	return C;
+}
+
 FVrgDashboardRacks ADataCenterSimulationActor::BuildDashboardRacks(int32 DetailInlet) const
 {
 	FVrgDashboardRacks Out;
@@ -1976,6 +2079,7 @@ void ADataCenterSimulationActor::PublishDashboard()
 	Web.PublishSeries(MoveTemp(Series));
 	Web.PublishLayout(BuildDashboardLayout());   // struct copy; JSON is built per request (it was most of the publish cost)
 	Web.PublishRacks(BuildDashboardRacks(Web.GetRequestedRack()));
+	Web.PublishCooling(BuildDashboardCooling());
 	{
 		// 3D sensor layer: the same evaluation sensors the report uses (D9 simulated measurements).
 		FVrgDashboardSensors Sensors;

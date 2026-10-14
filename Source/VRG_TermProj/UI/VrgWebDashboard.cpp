@@ -107,6 +107,19 @@ FString FVrgWebDashboard::GetSensorsJson() const
 	return bHasSensors ? LatestSensors.ToJson() : FString();
 }
 
+void FVrgWebDashboard::PublishCooling(FVrgDashboardCooling&& InCooling)
+{
+	FScopeLock Guard(&Lock);
+	LatestCooling = MoveTemp(InCooling);
+	bHasCooling = true;
+}
+
+FString FVrgWebDashboard::GetCoolingJson() const
+{
+	FScopeLock Guard(&Lock);
+	return bHasCooling ? LatestCooling.ToJson() : FString();
+}
+
 FString FVrgWebDashboard::GetRacksJson() const
 {
 	FScopeLock Guard(&Lock);
@@ -244,6 +257,8 @@ void FVrgWebDashboard::Stop()
 	bHasAirflow = false;
 	LatestSensors = FVrgDashboardSensors();
 	bHasSensors = false;
+	LatestCooling = FVrgDashboardCooling();
+	bHasCooling = false;
 	RequestedRack = INDEX_NONE;
 	PendingReport.Reset();
 	bHasLastSave = false;
@@ -311,6 +326,15 @@ bool FVrgWebDashboard::ApplySettings()
 			const FString Json = GetSensorsJson();
 			OnComplete(NoStore(Json.IsEmpty()
 				? FHttpServerResponse::Error(EHttpServerResponseCodes::ServiceUnavail, TEXT("no_sensors"), TEXT("시뮬레이션 액터가 아직 값을 내지 않았다"))
+				: FHttpServerResponse::Create(Json, TEXT("application/json; charset=utf-8"))));
+			return true;
+		})));
+	Routes.Add(Router->BindRoute(FHttpPath(TEXT("/api/cooling")), EHttpServerRequestVerbs::VERB_GET,
+		FHttpRequestHandler::CreateLambda([this](const FHttpServerRequest&, const FHttpResultCallback& OnComplete)
+		{
+			const FString Json = GetCoolingJson();
+			OnComplete(NoStore(Json.IsEmpty()
+				? FHttpServerResponse::Error(EHttpServerResponseCodes::ServiceUnavail, TEXT("no_cooling"), TEXT("시뮬레이션 액터가 아직 값을 내지 않았다"))
 				: FHttpServerResponse::Create(Json, TEXT("application/json; charset=utf-8"))));
 			return true;
 		})));

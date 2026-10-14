@@ -454,6 +454,11 @@ void FAirSolver::AdvectTemperature(double DeltaTimeS)
 		// The heat removed is booked from that same temperature, so fluid change + removed = 0 exactly.
 		const bool bCoils = ActiveDucts->DuctCoilUAWK.Num() == ActiveDucts->NumDucts;
 		const bool bFans = ActiveDucts->DuctFanHeatW.Num() == ActiveDucts->NumDucts;
+		if (DuctRemovedStepJ.Num() != ActiveDucts->NumDucts)
+		{
+			DuctRemovedStepJ.Init(0.0, ActiveDucts->NumDucts); DuctMixKs.Init(0.0, ActiveDucts->NumDucts);
+			DuctExhaustKs.Init(0.0, ActiveDucts->NumDucts); DuctFlowTimeS.Init(0.0, ActiveDucts->NumDucts);
+		}
 		const FAirGridParams& Params = Grid.GetParams();
 		const double FaceAreaM2 = CellSizeM * CellSizeM;
 		for (int32 D = 0; D < ActiveDucts->NumDucts; ++D)
@@ -466,13 +471,19 @@ void FAirSolver::AdvectTemperature(double DeltaTimeS)
 				const double CapacityWK = Params.DensityKgM3 * SpeedSum * FaceAreaM2 * Params.SpecificHeatJKgK;
 				const double Effectiveness = 1.0 - FMath::Exp(-ActiveDucts->DuctCoilUAWK[D] / CapacityWK);
 				ExhaustK = MixK - Effectiveness * (MixK - ActiveDucts->DuctCoilWaterTempK[D]);
-				DuctCoilRemovedJ += CapacityWK * (MixK - ExhaustK) * DeltaTimeS;
+				const double RemovedJ = CapacityWK * (MixK - ExhaustK) * DeltaTimeS;
+				DuctCoilRemovedJ += RemovedJ;
+				DuctRemovedStepJ[D] += RemovedJ;
 			}
 			if (bFans && SpeedSum > 0.0 && ActiveDucts->DuctFanHeatW[D] > 0.0)
 			{
 				const double CapacityWK = Params.DensityKgM3 * SpeedSum * FaceAreaM2 * Params.SpecificHeatJKgK;
 				ExhaustK += ActiveDucts->DuctFanHeatW[D] / CapacityWK;
 				DuctFanHeatStepJ += ActiveDucts->DuctFanHeatW[D] * DeltaTimeS;
+			}
+			if (SpeedSum > 0.0)
+			{
+				DuctMixKs[D] += MixK * DeltaTimeS; DuctExhaustKs[D] += ExhaustK * DeltaTimeS; DuctFlowTimeS[D] += DeltaTimeS;
 			}
 			DuctIntakeEnthalpy[D] = ExhaustK;
 		}
@@ -562,6 +573,8 @@ void FAirSolver::Step(const FAirSolverInput& Input, double DeltaTimeS)
 	LastNumDuctFaces = 0;
 	DuctCoilRemovedJ = LastDuctCoilRemovedW = 0.0;
 	DuctFanHeatStepJ = LastDuctFanHeatW = 0.0;
+	DuctRemovedStepJ.Reset(); DuctMixKs.Reset(); DuctExhaustKs.Reset(); DuctFlowTimeS.Reset();
+	LastDuctCoilRemovedPerDuctW.Reset(); LastDuctIntakeMixK.Reset(); LastDuctExhaustK.Reset();
 	// Fan ducts are checked before anything moves: a bad duct would make the pressure problem incompatible.
 	if (Input.HasDucts())
 	{
@@ -725,6 +738,14 @@ void FAirSolver::Step(const FAirSolverInput& Input, double DeltaTimeS)
 	++StageSteps;
 	// Duct coils removed their heat during transport (AdvectTemperature); book it with the cell coils.
 	LastDuctCoilRemovedW = DuctCoilRemovedJ / DeltaTimeS;
+	LastDuctCoilRemovedPerDuctW.SetNumUninitialized(DuctRemovedStepJ.Num());
+	LastDuctIntakeMixK.SetNumUninitialized(DuctRemovedStepJ.Num()); LastDuctExhaustK.SetNumUninitialized(DuctRemovedStepJ.Num());
+	for (int32 D = 0; D < DuctRemovedStepJ.Num(); ++D)
+	{
+		LastDuctCoilRemovedPerDuctW[D] = DuctRemovedStepJ[D] / DeltaTimeS;
+		LastDuctIntakeMixK[D] = DuctFlowTimeS[D] > 0.0 ? DuctMixKs[D] / DuctFlowTimeS[D] : 0.0;
+		LastDuctExhaustK[D] = DuctFlowTimeS[D] > 0.0 ? DuctExhaustKs[D] / DuctFlowTimeS[D] : 0.0;
+	}
 	LastCoolingRemovedW += LastDuctCoilRemovedW;
 	EnergyOutJ += DuctCoilRemovedJ;
 	LastDuctFanHeatW = DuctFanHeatStepJ / DeltaTimeS;
