@@ -8,6 +8,7 @@
 #include "Interaction/DataCenterDebugController.h"
 #include "Actors/RackThermalActor.h"
 #include "Actors/DataCenterRoomActor.h"
+#include "Simulation/Air/AirSolver.h"
 #include "Actors/CoolingDistributionUnitActor.h"
 #include "Engine/Engine.h"
 #include "Visualization/GjRackLayout.h"
@@ -473,6 +474,51 @@ bool FWebDashboardPipesTest::RunTest(const FString& Parameters)
 	}
 	GEngine->DestroyWorldContext(World);
 	World->DestroyWorld(false);
+	return true;
+}
+
+// 3D view stage 3 (2026-10-14): airflow samples are the cell-centre mean of the two MAC faces per axis, on the cell
+// layers holding the requested heights, every StrideCells cells, solid cells skipped, in world metres (synthetic field).
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FWebDashboardAirflowTest, "VRG.Web.AirflowSample",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::CommandletContext | EAutomationTestFlags::EngineFilter)
+bool FWebDashboardAirflowTest::RunTest(const FString& Parameters)
+{
+	FAirGridParams Params;
+	Params.NumCellsX = 8; Params.NumCellsY = 6; Params.NumCellsZ = 4; Params.CellSizeM = .25;
+	FAirSolver Solver;
+	Solver.Initialize(Params, 297.15);
+	FUniformAirGrid& G = Solver.GetMutableGrid();
+	// Face values chosen so the cell-centre mean is known in closed form: u = X, v = 2Y, w = -3Z on the faces.
+	for (int32 Z = 0; Z < 4; ++Z) for (int32 Y = 0; Y < 6; ++Y) for (int32 X = 0; X <= 8; ++X) G.VelocityXMs[G.FaceXIndex(X, Y, Z)] = X;
+	for (int32 Z = 0; Z < 4; ++Z) for (int32 Y = 0; Y <= 6; ++Y) for (int32 X = 0; X < 8; ++X) G.VelocityYMs[G.FaceYIndex(X, Y, Z)] = 2.0 * Y;
+	for (int32 Z = 0; Z <= 4; ++Z) for (int32 Y = 0; Y < 6; ++Y) for (int32 X = 0; X < 8; ++X) G.VelocityZMs[G.FaceZIndex(X, Y, Z)] = -3.0 * Z;
+	G.bSolidCell[G.CellIndex(3, 1, 1)] = true;   // one solid cell on a sampled position (skipped)
+	const FVector Origin(10.0, -2.0, 0.0);
+	// 0.30 m -> layer 1, 0.90 m -> layer 3, 0.95 m duplicate of layer 3, 5 m and -1 m outside the grid (dropped).
+	const FVrgDashboardAirflow A = FVrgDashboardAirflow::Sample(Solver, Origin, 2, { .30, .90, .95, 5.0, -1.0 });
+	TestFalse(TEXT("uniform path"), A.bOctree);
+	TestTrue(TEXT("two layers at the cell-centre heights 0.375 / 0.875 m"), A.LayerHeightsM.Num() == 2
+		&& A.LayerHeightsM[0] == .375 && A.LayerHeightsM[1] == .875);
+	// Stride 2 starts one cell in: X = 1,3,5,7 and Y = 1,3,5 -> 12 per layer, minus the solid one.
+	TestEqual(TEXT("sample count"), A.PositionsM.Num(), 12 * 2 - 1);
+	bool bExact = A.PositionsM.Num() == A.VelocitiesMs.Num();
+	double MaxSpeed = 0.0;
+	for (int32 I = 0; bExact && I < A.PositionsM.Num(); ++I)
+	{
+		const FVector L = (A.PositionsM[I] - Origin) / .25 - FVector(.5);   // back to cell indices
+		const int32 X = FMath::RoundToInt32(L.X), Y = FMath::RoundToInt32(L.Y), Z = FMath::RoundToInt32(L.Z);
+		bExact = X % 2 == 1 && Y % 2 == 1 && (Z == 1 || Z == 3) && !(X == 3 && Y == 1 && Z == 1)
+			&& A.VelocitiesMs[I] == FVector(X + .5, 2.0 * Y + 1.0, -3.0 * Z - 1.5);
+		MaxSpeed = FMath::Max(MaxSpeed, A.VelocitiesMs[I].Size());
+	}
+	TestTrue(TEXT("every sample = face mean at its cell (exact), solid skipped"), bExact);
+	TestEqual(TEXT("max speed over samples"), A.MaxSpeedMs, MaxSpeed);
+	FVrgDashboardAirflow Back;
+	TestTrue(TEXT("JSON round-trip parses"), FVrgDashboardAirflow::FromJson(A.ToJson(), Back));
+	TestTrue(TEXT("JSON round-trip exact"), Back.PositionsM == A.PositionsM && Back.VelocitiesMs == A.VelocitiesMs
+		&& Back.LayerHeightsM == A.LayerHeightsM && Back.StrideCells == 2 && Back.CellM == .25 && Back.MaxSpeedMs == A.MaxSpeedMs);
+	const FVrgDashboardAirflow None = FVrgDashboardAirflow::Sample(Solver, Origin, 2, { 7.0 });
+	TestTrue(TEXT("no layer inside -> no samples"), None.PositionsM.Num() == 0 && None.LayerHeightsM.Num() == 0);
 	return true;
 }
 

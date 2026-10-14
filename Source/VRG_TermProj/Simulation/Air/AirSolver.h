@@ -277,6 +277,8 @@ public:
 	int32 GetLastMomentumDiffusionSubsteps() const { return LastMomentumDiffusionSubsteps; }
 
 	const FUniformAirGrid& GetGrid() const { return Grid; }
+	// Cell-centre velocity [m/s]: the mean of the two MAC faces per axis (also used by the web dashboard airflow layer).
+	FVector CellCenterVelocityMs(int32 X, int32 Y, int32 Z) const;
 	// Any caller may edit the fields through this; the GPU copy is re-uploaded before the next GPU step.
 	FUniformAirGrid& GetMutableGrid() { bGpuStateDirty = true; return Grid; }
 
@@ -419,7 +421,6 @@ private:
 	TArray<double> TemperatureFluxZ;
 
 	// 면 속도를 셀 중심으로 평균한 값 [m/s].
-	FVector CellCenterVelocityMs(int32 X, int32 Y, int32 Z) const;
 
 	// Ducts of the step in progress (set by Step, cleared after). ApplyWallBoundary re-imposes their face
 	// velocities; AdvectTemperature applies their enthalpy transfer.

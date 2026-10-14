@@ -6,6 +6,7 @@
 #include "Serialization/JsonSerializer.h"
 #include "Serialization/JsonWriter.h"
 #include <charconv>
+#include "Simulation/Air/AirSolver.h"
 
 FString FVrgDashboardSummary::ToJson() const
 {
@@ -311,6 +312,93 @@ namespace
 		// "key":number pairs from a Visit* function, each preceded by a comma (the object is already open).
 		auto NumberFields() { return [this](const TCHAR* K, double& V) { Raw(TEXT(",")); Key(K); Num(V); }; }
 	};
+}
+
+FVrgDashboardAirflow FVrgDashboardAirflow::Sample(const FAirSolver& Solver, const FVector& OriginM, int32 InStride, const TArray<double>& HeightsM)
+{
+	FVrgDashboardAirflow A;
+	A.bOctree = Solver.IsUsingOctree();
+	const FUniformAirGrid& G = Solver.GetGrid();
+	A.CellM = G.GetCellSizeM();
+	A.StrideCells = FMath::Max(1, InStride);
+	if (A.bOctree || G.GetNumCells() == 0 || G.VelocityXMs.Num() != G.GetNumFacesX()) return A;
+	TArray<int32> Layers;
+	for (const double H : HeightsM)
+	{
+		const int32 Z = FMath::FloorToInt32((H - OriginM.Z) / A.CellM);
+		if (Z >= 0 && Z < G.GetNumCellsZ()) Layers.AddUnique(Z);
+	}
+	Layers.Sort();
+	for (const int32 Z : Layers)
+	{
+		A.LayerHeightsM.Add(OriginM.Z + G.CellCenterM(0, 0, Z).Z);
+		// Start half a stride in so the samples sit symmetrically in the domain.
+		for (int32 Y = A.StrideCells / 2; Y < G.GetNumCellsY(); Y += A.StrideCells)
+			for (int32 X = A.StrideCells / 2; X < G.GetNumCellsX(); X += A.StrideCells)
+			{
+				if (!G.IsFluidCell(X, Y, Z)) continue;
+				const FVector V = Solver.CellCenterVelocityMs(X, Y, Z);
+				A.PositionsM.Add(OriginM + G.CellCenterM(X, Y, Z));
+				A.VelocitiesMs.Add(V);
+				A.MaxSpeedMs = FMath::Max(A.MaxSpeedMs, V.Size());
+			}
+	}
+	return A;
+}
+
+FString FVrgDashboardAirflow::ToJson() const
+{
+	FJsonText J;
+	J.S.Reserve(256 + PositionsM.Num() * 140);
+	J.Raw(TEXT("{")); J.Key(TEXT("schema")); J.Int(1);
+	J.Raw(TEXT(",")); J.Key(TEXT("simTimeS")); J.Num(SimTimeS);
+	J.Raw(TEXT(",")); J.Key(TEXT("mode")); J.Str(bSimulating ? TEXT("simulation") : TEXT("layout"));
+	J.Raw(TEXT(",")); J.Key(TEXT("octree")); J.Bool(bOctree);
+	J.Raw(TEXT(",")); J.Key(TEXT("cellM")); J.Num(CellM);
+	J.Raw(TEXT(",")); J.Key(TEXT("strideCells")); J.Int(StrideCells);
+	J.Raw(TEXT(",")); J.Key(TEXT("maxSpeedMs")); J.Num(MaxSpeedMs);
+	J.Raw(TEXT(",")); J.Key(TEXT("layerHeightsM")); J.Raw(TEXT("["));
+	for (int32 I = 0; I < LayerHeightsM.Num(); ++I) { if (I) J.Raw(TEXT(",")); J.Num(LayerHeightsM[I]); }
+	auto Vectors = [&J](const TCHAR* Name, const TArray<FVector>& V)
+	{
+		J.Raw(TEXT(",")); J.Key(Name); J.Raw(TEXT("["));
+		for (int32 I = 0; I < V.Num(); ++I)
+		{
+			if (I) J.Raw(TEXT(","));
+			J.Num(V[I].X); J.Raw(TEXT(",")); J.Num(V[I].Y); J.Raw(TEXT(",")); J.Num(V[I].Z);
+		}
+		J.Raw(TEXT("]"));
+	};
+	J.Raw(TEXT("]"));
+	Vectors(TEXT("positionsM"), PositionsM);
+	Vectors(TEXT("velocitiesMs"), VelocitiesMs);
+	J.Raw(TEXT("}"));
+	return MoveTemp(J.S);
+}
+
+bool FVrgDashboardAirflow::FromJson(const FString& Json, FVrgDashboardAirflow& Out)
+{
+	TSharedPtr<FJsonObject> Root;
+	if (!FJsonSerializer::Deserialize(TJsonReaderFactory<>::Create(Json), Root) || !Root.IsValid()) return false;
+	FVrgDashboardAirflow A;
+	FString Mode;
+	double Stride = 0.0;
+	const TArray<TSharedPtr<FJsonValue>> *Layers = nullptr, *P = nullptr, *V = nullptr;
+	if (!Root->TryGetNumberField(TEXT("simTimeS"), A.SimTimeS) || !Root->TryGetStringField(TEXT("mode"), Mode)
+		|| !Root->TryGetBoolField(TEXT("octree"), A.bOctree) || !Root->TryGetNumberField(TEXT("cellM"), A.CellM)
+		|| !Root->TryGetNumberField(TEXT("strideCells"), Stride) || !Root->TryGetNumberField(TEXT("maxSpeedMs"), A.MaxSpeedMs)
+		|| !Root->TryGetArrayField(TEXT("layerHeightsM"), Layers) || !Root->TryGetArrayField(TEXT("positionsM"), P)
+		|| !Root->TryGetArrayField(TEXT("velocitiesMs"), V) || P->Num() != V->Num() || P->Num() % 3) return false;
+	A.bSimulating = Mode == TEXT("simulation");
+	A.StrideCells = int32(Stride);
+	for (const TSharedPtr<FJsonValue>& L : *Layers) A.LayerHeightsM.Add(L->AsNumber());
+	for (int32 I = 0; I + 2 < P->Num(); I += 3)
+	{
+		A.PositionsM.Add(FVector((*P)[I]->AsNumber(), (*P)[I + 1]->AsNumber(), (*P)[I + 2]->AsNumber()));
+		A.VelocitiesMs.Add(FVector((*V)[I]->AsNumber(), (*V)[I + 1]->AsNumber(), (*V)[I + 2]->AsNumber()));
+	}
+	Out = MoveTemp(A);
+	return true;
 }
 
 FString FVrgDashboardRacks::RowsToJson() const

@@ -1972,6 +1972,17 @@ void ADataCenterSimulationActor::PublishDashboard()
 	Web.PublishSeries(MoveTemp(Series));
 	Web.PublishLayout(BuildDashboardLayout());   // struct copy; JSON is built per request (it was most of the publish cost)
 	Web.PublishRacks(BuildDashboardRacks(Web.GetRequestedRack()));
+	if (AirField != nullptr)
+	{
+		// 3D airflow layer sampling (display choice, not a physics setting): every 2nd cell in X and Y (0.5 m at the
+		// default h 0.25 m) on the layers nearest 0.4 / 1.1 / 1.9 / 2.75 m above the floor (low, rack middle, rack top,
+		// above the racks). The actual heights and spacing go into the JSON.
+		static const TArray<double> HeightsM = { 0.4, 1.1, 1.9, 2.75 };
+		FVrgDashboardAirflow Air = FVrgDashboardAirflow::Sample(AirField->GetSolver(), AirField->GetDomainBoundsM().Min, 2, HeightsM);
+		Air.SimTimeS = Clock.GetSimTimeS();
+		Air.bSimulating = Mode == ESimMode::Simulation;
+		Web.PublishAirflow(MoveTemp(Air));
+	}
 }
 
 void ADataCenterSimulationActor::DrawSummary() const

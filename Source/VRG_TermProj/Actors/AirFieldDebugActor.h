@@ -119,6 +119,7 @@ public:
 
 	// 통합 액터가 빌려 가는 내부 솔버. 수명은 이 액터가 쥔다.
 	FAirSolver& GetMutableSolver() { return Solver; }
+	const FAirSolver& GetSolver() const { return Solver; }
 
 	void SetExternalSimTimeS(double InSimTimeS) { ExternalSimTimeS = InSimTimeS; }
 

@@ -99,6 +99,29 @@ struct VRG_TERMPROJ_API FVrgDashboardLayout
 	static bool FromJson(const FString& Json, FVrgDashboardLayout& Out);
 };
 
+class FAirSolver;
+
+// 3D view stage 3 (2026-10-14): airflow layer. Cell-centre velocities of the uniform air grid (mean of the two MAC faces
+// per axis, FAirSolver::CellCenterVelocityMs) sampled every StrideCells cells in X and Y on the cell layers nearest to
+// the requested heights. Solid cells are skipped. World metres and m/s (rule 1); a sample, not a streamline.
+struct VRG_TERMPROJ_API FVrgDashboardAirflow
+{
+	double SimTimeS = 0.0;
+	bool bSimulating = false;
+	bool bOctree = false;              // octree path: the uniform grid is not the solved field, so no samples are sent
+	double CellM = 0.0;
+	int32 StrideCells = 0;
+	TArray<double> LayerHeightsM;      // actual cell-centre heights sampled (world Z, m)
+	TArray<FVector> PositionsM;        // cell centres, world m
+	TArray<FVector> VelocitiesMs;
+	double MaxSpeedMs = 0.0;           // over the samples
+
+	// OriginM = world position of the grid's (0,0,0) corner. Heights outside the grid are dropped; duplicates merged.
+	static FVrgDashboardAirflow Sample(const FAirSolver& Solver, const FVector& OriginM, int32 StrideCells, const TArray<double>& HeightsM);
+	FString ToJson() const;            // direct writer (a few thousand numbers)
+	static bool FromJson(const FString& Json, FVrgDashboardAirflow& Out);
+};
+
 // Web dashboard stage 4 (2026-10-13): rack tab. One row per evaluation inlet (racks, then spines), from the thermal
 // model's state and last-step totals; SI units (W, K, kg/s, m^3/s). Built cheaply every publish (no snapshots).
 struct FVrgDashboardRackRow
