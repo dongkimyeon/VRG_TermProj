@@ -119,6 +119,7 @@ public:
 
 	// 통합 액터가 빌려 가는 내부 솔버. 수명은 이 액터가 쥔다.
 	FAirSolver& GetMutableSolver() { return Solver; }
+	const FAirSolver& GetSolver() const { return Solver; }
 
 	void SetExternalSimTimeS(double InSimTimeS) { ExternalSimTimeS = InSimTimeS; }
 
@@ -297,6 +298,10 @@ public:
 	// 위치와 셀 개수를 직접 맞추는 건 손이 많이 간다.
 	UFUNCTION(BlueprintCallable, CallInEditor, Category = "Air")
 	void FitToRacks();
+	// Value-only FitToRacks: the grid and origin [m] it would apply, nothing changed. False without racks.
+	bool PlanFitToRacks(FAirGridParams& OutParams, FVector& OutOriginM, FVector* OutSpanM = nullptr, int32* OutNumRacks = nullptr) const;
+	// Current domain box [m]: origin = outer corner of cell (0,0,0), size = cell counts x cell size.
+	FBox GetDomainBoundsM() const;
 	// A prevalidated manual plan; no integration/reset until the shared simulation starts.
 	void ApplyRoomAirGrid(const FAirGridParams& Params, const FVector& OriginM);
 

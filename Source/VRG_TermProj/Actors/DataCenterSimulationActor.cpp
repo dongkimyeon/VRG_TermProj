@@ -9,6 +9,7 @@
 #include "Serialization/JsonWriter.h"
 #include "Simulation/Core/VrgHud.h"
 #include "Simulation/Core/VrgPerfCounters.h"
+#include "UI/VrgWebDashboard.h"
 
 #include "Actors/AirFieldDebugActor.h"
 #include "Actors/CoolingDistributionUnitActor.h"
@@ -33,6 +34,10 @@
 #include "EngineUtils.h"
 #include "HAL/IConsoleManager.h"
 #include "UObject/ConstructorHelpers.h"
+#include "Camera/PlayerCameraManager.h"
+#include "GameFramework/PlayerController.h"
+#include "Materials/MaterialInstanceDynamic.h"
+#include "Materials/MaterialInterface.h"
 
 ADataCenterSimulationActor::ADataCenterSimulationActor()
 {
@@ -41,7 +46,29 @@ ADataCenterSimulationActor::ADataCenterSimulationActor()
 	// Referenced from the CDO so the cooker packages it (a runtime LoadObject would not be found in a build).
 	static ConstructorHelpers::FObjectFinder<UStaticMesh> Cube(TEXT("/Engine/BasicShapes/Cube.Cube"));
 	CrahMesh = Cube.Object;
+	static ConstructorHelpers::FObjectFinder<UMaterialInterface> ShellMaterial(TEXT("/Engine/BasicShapes/BasicShapeMaterial.BasicShapeMaterial"));
+	RoomShellMaterial = ShellMaterial.Object;
 }
+
+// Shows or hides the automatic room shell of every running integrated actor (display only).
+static FAutoConsoleCommand GVrgRoomShellCommand(
+	TEXT("vrg.Room.Shell"),
+	TEXT("자동 방 벽·천장 표시. 표시 전용이며 계산은 바뀌지 않는다. vrg.Room.Shell <0|1> [잘라보기 0|1]"),
+	FConsoleCommandWithArgsDelegate::CreateLambda([](const TArray<FString>& Args)
+	{
+		if (Args.Num() == 0 || GEngine == nullptr) return;
+		for (const FWorldContext& Context : GEngine->GetWorldContexts())
+		{
+			UWorld* World = Context.World();
+			if (World == nullptr || !World->IsGameWorld()) continue;
+			for (TActorIterator<ADataCenterSimulationActor> It(World); It; ++It)
+			{
+				It->bAutoRoomShell = FCString::Atoi(*Args[0]) != 0;
+				if (Args.Num() > 1) It->bRoomShellCutaway = FCString::Atoi(*Args[1]) != 0;
+				It->UpdateRoomShell();
+			}
+		}
+	}));
 
 // Switches the air cooling of every running integrated actor and rebuilds it (the clock restarts at 0).
 static FAutoConsoleCommand GVrgSimCrahLayoutCommand(
@@ -1171,6 +1198,125 @@ void ADataCenterSimulationActor::UpdateContainmentMeshes()
 		}
 }
 
+bool ADataCenterSimulationActor::GetRoomShellBoundsM(FBox& OutBoundsM) const
+{
+	const AAirFieldDebugActor* Field = AirField;
+	if (Field == nullptr && GetWorld() != nullptr)
+	{
+		for (TActorIterator<AAirFieldDebugActor> It(GetWorld()); It; ++It) { Field = *It; break; }
+	}
+	if (Field == nullptr) return false;
+	// Simulation: the live grid. Layout: the grid the next simulation entry will build.
+	if (Mode == ESimMode::Layout)
+	{
+		if (RoomAirDomain.bManual)
+		{
+			FAirGridParams Grid; FBox Actual(ForceInit); FString Reason;
+			if (VrgRoomAirDomain::BuildGrid(RoomAirDomain, Field->GridParams, Grid, Actual, Reason))
+			{
+				OutBoundsM = Actual;
+				return true;
+			}
+		}
+		else if (Field->bAutoFitToRacks)
+		{
+			FAirGridParams Grid; FVector OriginM;
+			if (!Field->PlanFitToRacks(Grid, OriginM)) return false;  // nothing to enclose yet
+			OutBoundsM = FBox(OriginM, OriginM + FVector(Grid.NumCellsX, Grid.NumCellsY, Grid.NumCellsZ) * Grid.CellSizeM);
+			return true;
+		}
+	}
+	OutBoundsM = Field->GetDomainBoundsM();
+	return OutBoundsM.IsValid != 0;
+}
+
+void ADataCenterSimulationActor::ComputeRoomShellVisibility(const FBox& B, const FVector& C, bool bCutaway, bool OutVisible[NumRoomShellPieces])
+{
+	// A wall is cut away when the camera is on its outer side; the ceiling when the camera is above it.
+	OutVisible[0] = !bCutaway || C.X >= B.Min.X;
+	OutVisible[1] = !bCutaway || C.X <= B.Max.X;
+	OutVisible[2] = !bCutaway || C.Y >= B.Min.Y;
+	OutVisible[3] = !bCutaway || C.Y <= B.Max.Y;
+	OutVisible[4] = !bCutaway || C.Z <= B.Max.Z;
+}
+
+int32 ADataCenterSimulationActor::GetNumVisibleRoomShellPieces() const
+{
+	int32 N = 0;
+	for (const UStaticMeshComponent* Mesh : RoomShellMeshes) if (Mesh && Mesh->IsVisible()) ++N;
+	return N;
+}
+
+void ADataCenterSimulationActor::UpdateRoomShell()
+{
+	FBox BoundsM(ForceInit);
+	if (!bAutoRoomShell || CrahMesh == nullptr || !GetRoomShellBoundsM(BoundsM))
+	{
+		for (UStaticMeshComponent* Mesh : RoomShellMeshes) if (Mesh) Mesh->DestroyComponent();
+		RoomShellMeshes.Reset();
+		RoomShellBoundsM = FBox(ForceInit);
+		return;
+	}
+	if (RoomShellMeshes.Num() != NumRoomShellPieces)
+	{
+		for (UStaticMeshComponent* Mesh : RoomShellMeshes) if (Mesh) Mesh->DestroyComponent();
+		RoomShellMeshes.Reset();
+		for (int32 I = 0; I < NumRoomShellPieces; ++I)
+		{
+			UStaticMeshComponent* Mesh = NewObject<UStaticMeshComponent>(this);
+			Mesh->SetStaticMesh(CrahMesh);
+			Mesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+			Mesh->SetMobility(EComponentMobility::Movable);
+			Mesh->SetupAttachment(RootComponent);
+			Mesh->RegisterComponent();
+			if (RoomShellMaterial)
+			{
+				Mesh->SetMaterial(0, RoomShellMaterial);
+				if (UMaterialInstanceDynamic* Mid = Mesh->CreateDynamicMaterialInstance(0))
+				{
+					// Display colours only: pale walls, slightly darker ceiling.
+					Mid->SetVectorParameterValue(TEXT("Color"), I == 4 ? FLinearColor(.62f, .63f, .65f) : FLinearColor(.78f, .78f, .76f));
+				}
+			}
+			RoomShellMeshes.Add(Mesh);
+		}
+		RoomShellBoundsM = FBox(ForceInit);
+	}
+	const double T = FMath::Max(RoomShellThicknessM, .01);
+	if (!(RoomShellBoundsM.IsValid && RoomShellBoundsM.Equals(BoundsM, 1e-9)) || RoomShellBuiltThicknessM != T)
+	{
+		// Every piece lies outside the domain; the X walls and the ceiling overlap the corners so they close.
+		const FVector Mid = BoundsM.GetCenter(), Size = BoundsM.GetSize();
+		const double ZMid = BoundsM.Min.Z + .5 * Size.Z;
+		const FVector Centres[NumRoomShellPieces] = {
+			FVector(BoundsM.Min.X - .5 * T, Mid.Y, ZMid), FVector(BoundsM.Max.X + .5 * T, Mid.Y, ZMid),
+			FVector(Mid.X, BoundsM.Min.Y - .5 * T, ZMid), FVector(Mid.X, BoundsM.Max.Y + .5 * T, ZMid),
+			FVector(Mid.X, Mid.Y, BoundsM.Max.Z + .5 * T)};
+		const FVector Sizes[NumRoomShellPieces] = {
+			FVector(T, Size.Y + 2 * T, Size.Z), FVector(T, Size.Y + 2 * T, Size.Z),
+			FVector(Size.X, T, Size.Z), FVector(Size.X, T, Size.Z),
+			FVector(Size.X + 2 * T, Size.Y + 2 * T, T)};
+		for (int32 I = 0; I < NumRoomShellPieces; ++I)
+		{
+			// m -> cm only here (rule 1). The engine cube is 100 cm, so the scale is the size in metres.
+			RoomShellMeshes[I]->SetWorldLocationAndRotation(SimUnits::MetersToUnreal(Centres[I]), FRotator::ZeroRotator);
+			RoomShellMeshes[I]->SetWorldScale3D(Sizes[I]);
+		}
+		RoomShellBoundsM = BoundsM;
+		RoomShellBuiltThicknessM = T;
+	}
+	bool Visible[NumRoomShellPieces] = {true, true, true, true, true};
+	const APlayerController* PC = GetWorld() ? GetWorld()->GetFirstPlayerController() : nullptr;
+	if (PC && PC->PlayerCameraManager)
+	{
+		ComputeRoomShellVisibility(BoundsM, SimUnits::UnrealToMeters(PC->PlayerCameraManager->GetCameraLocation()), bRoomShellCutaway, Visible);
+	}
+	for (int32 I = 0; I < NumRoomShellPieces; ++I)
+	{
+		if (RoomShellMeshes[I]->IsVisible() != Visible[I]) RoomShellMeshes[I]->SetVisibility(Visible[I]);
+	}
+}
+
 void ADataCenterSimulationActor::PlanAutoCrahUnits()
 {
 	auto Place = [&](const FVector& BaseM, const FVector& Forward, const FVector& SizeM, bool bTopIntake)
@@ -1440,6 +1586,7 @@ void ADataCenterSimulationActor::UpdateCrahMeshes()
 void ADataCenterSimulationActor::Tick(float DeltaTime)
 {
 	Super::Tick(DeltaTime);
+	UpdateRoomShell();
 
 	if (Mode == ESimMode::Layout)
 	{
@@ -1452,6 +1599,7 @@ void ADataCenterSimulationActor::Tick(float DeltaTime)
 				FString::Printf(TEXT("[배치 모드] 물리 정지 | Enter: 시뮬레이션 시작 | G: 바라보는 장비 잡기/놓기 | T: 90도 회전 | C: 컨테인먼트 %s"),
 					Containment == EAisleContainment::None ? TEXT("없음") : Containment == EAisleContainment::Blanking ? TEXT("블랭킹") : TEXT("블랭킹 + 지붕")));
 		}
+		PublishDashboard();
 		return;
 	}
 
@@ -1523,6 +1671,322 @@ void ADataCenterSimulationActor::Tick(float DeltaTime)
 	{
 		DrawSummary();
 	}
+	// After the steps so the published copy is the state at this frame's SimTime.
+	PublishDashboard();
+}
+
+const FCouplingSnapshot& ADataCenterSimulationActor::GetCachedDisplaySnapshot() const
+{
+	if (!bDisplaySnapshotValid || Clock.GetSimTimeS() != DisplaySnapshotSimTimeS)
+	{
+		DisplaySnapshot = GetSnapshot();
+		DisplaySnapshotSimTimeS = Clock.GetSimTimeS();
+		bDisplaySnapshotValid = true;
+	}
+	return DisplaySnapshot;
+}
+
+FVrgDashboardSummary ADataCenterSimulationActor::BuildDashboardSummary() const
+{
+	FVrgDashboardSummary S;
+	S.SimTimeS = Clock.GetSimTimeS();
+	S.bSimulating = Mode == ESimMode::Simulation;
+	S.bEvalReady = bEvalReady && Eval.GetNumInlets() > 0;
+	if (S.bEvalReady)
+	{
+		S.WindowS = Eval.GetWindowCoveredS();
+		S.ItWindowW = Eval.GetWindowPower().ItW;
+		S.bPartialPueValid = Eval.GetPartialPue(S.PartialPueWindow);
+		S.InletCount = Eval.GetNumInlets();
+		Eval.GetInletWindowSummary(S.InletWindowMeanMaxK, S.InletWindowMeanAvgK);
+		const FCouplingSnapshot& Snap = GetCachedDisplaySnapshot();
+		S.ItNowW = Snap.TotalItHeatW;
+		S.CoolantRemovedNowW = Snap.TotalRadiatorRejectedW;
+		S.AirRemovedNowW = Snap.TotalAirCoolingRemovedW;
+	}
+	return S;
+}
+
+FVrgDashboardLayout ADataCenterSimulationActor::BuildDashboardLayout() const
+{
+	FVrgDashboardLayout L;
+	L.SimTimeS = Clock.GetSimTimeS();
+	L.RecommendedInletK = EvalSettings.RecommendedInletK;
+	if (AirField != nullptr)
+	{
+		const FBox B = AirField->GetDomainBoundsM();
+		L.bHasDomain = true;
+		L.DomainMinXM = B.Min.X; L.DomainMinYM = B.Min.Y; L.DomainMaxXM = B.Max.X; L.DomainMaxYM = B.Max.Y; L.DomainMinZM = B.Min.Z; L.DomainMaxZM = B.Max.Z;
+	}
+	// Inlet i is Racks[i], then Spines[j] at Racks.Num() + j (the evaluation's order, see EvalAfterStep).
+	const bool bInletsMatch = bEvalReady && Eval.GetNumInlets() == Racks.Num() + Spines.Num();
+	if (bEvalReady)
+	{
+		for (int32 I = 0; I < Eval.GetNumInlets(); ++I) L.InletWindowMeanK.Add(Eval.GetInlet(I).WindowMeanK);
+	}
+	// A plain walk over every actor: L_Test has ~100 actors and it costs ~0.007 ms; the class-wise walk was not faster
+	// (vrg.Web.ProfileLayout, 2026-10-13). The publish cost was the JSON, which now happens per request.
+	if (UWorld* World = GetWorld())
+	{
+		for (TActorIterator<AActor> It(World); It; ++It)
+		{
+			FVector SizeM;
+			if (!ADataCenterDebugController::PlaceableBoxM(*It, SizeM)) continue;
+			FVrgDashboardEquipment& E = L.Equipment.AddDefaulted_GetRef();
+			if (const ARackThermalActor* Rack = Cast<ARackThermalActor>(*It))
+			{
+				E.Kind = TEXT("rack");
+				if (bInletsMatch) E.InletIndex = Racks.IndexOfByPredicate([Rack](const TObjectPtr<ARackThermalActor>& R) { return R.Get() == Rack; });
+			}
+			else if (const ASpineCabinetActor* Spine = Cast<ASpineCabinetActor>(*It))
+			{
+				E.Kind = TEXT("spine");
+				const int32 J = Spines.IndexOfByPredicate([Spine](const TObjectPtr<ASpineCabinetActor>& S) { return S.Get() == Spine; });
+				if (bInletsMatch && J != INDEX_NONE) E.InletIndex = Racks.Num() + J;
+			}
+			else if (It->IsA<ACoolingDistributionUnitActor>()) E.Kind = TEXT("cdu");
+			else if (It->IsA<ACrahUnitActor>()) E.Kind = TEXT("crah");
+			else
+			{
+				E.Kind = TEXT("barrier");
+				SizeM *= It->GetActorScale3D().GetAbs();   // a barrier's size is its scale (unit box)
+			}
+			const FVector M = SimUnits::UnrealToMeters(It->GetActorLocation());
+			E.Name = It->GetName();
+			E.CenterXM = M.X; E.CenterYM = M.Y;
+			E.YawDeg = It->GetActorRotation().Yaw;
+			E.DepthM = SizeM.X; E.WidthM = SizeM.Y; E.BaseZM = M.Z; E.HeightM = SizeM.Z;
+		}
+	}
+	if (Mode == ESimMode::Simulation)
+	{
+		for (int32 I = 0; I < CrahPlacements.Num(); ++I)
+		{
+			const FCrahPlacement& P = CrahPlacements[I];
+			if (P.bPlaced) continue;   // placed actors are already listed above
+			FVrgDashboardEquipment& E = L.Equipment.AddDefaulted_GetRef();
+			E.Kind = TEXT("crah");
+			E.Name = FString::Printf(TEXT("자동 CRAH %d"), I + 1);
+			E.CenterXM = P.BaseM.X; E.CenterYM = P.BaseM.Y;
+			E.YawDeg = FMath::RadiansToDegrees(FMath::Atan2(P.ForwardM.Y, P.ForwardM.X));
+			E.DepthM = P.SizeM.X; E.WidthM = P.SizeM.Y; E.BaseZM = P.BaseM.Z; E.HeightM = P.SizeM.Z;
+			E.bAutoPlaced = true;
+		}
+	}
+	// 3D stage 2: the drawn coolant pipes with this step's solved flow; temperature only where the model has one
+	// (rack branches: rack inlet / outlet), never interpolated for headers (same rule as vrg.Pipes.Temperature).
+	if (Room != nullptr)
+	{
+		const FHydraulicNetwork& Net = Room->GetNetwork();
+		L.bHydraulicsConverged = Room->GetLastSolveResult().bConverged;
+		for (const FRoomPipeRoute& R : Room->GetPipeRoutesM())
+		{
+			FVrgDashboardPipe& P = L.Pipes.AddDefaulted_GetRef();
+			P.Edge = R.Edge; P.bSupply = R.bSupply; P.bBranch = R.bBranch; P.PointsM = R.PointsM;
+			P.DiameterM = R.bBranch ? Room->BranchDiameterM : Room->HeaderDiameterM;
+			if (R.Edge >= 0 && R.Edge < Net.GetNumPipes())
+			{
+				P.FlowM3s = Net.GetPipeFlowM3s(R.Edge);
+				P.bTempValid = Room->TryGetPipeTemperatureK(R.Edge, P.TempK);
+			}
+			else if (R.Edge < 0 && -1 - R.Edge < Net.GetNumPumps()) P.FlowM3s = Net.GetPumpFlowM3s(-1 - R.Edge);
+		}
+	}
+	return L;
+}
+
+FVrgDashboardRacks ADataCenterSimulationActor::BuildDashboardRacks(int32 DetailInlet) const
+{
+	FVrgDashboardRacks Out;
+	Out.SimTimeS = Clock.GetSimTimeS();
+	Out.bSimulating = Mode == ESimMode::Simulation;
+	if (!Out.bSimulating || !bEvalReady) return Out;   // the cabinets' state is the coupled run's; nothing to show in layout
+	const TArray<double>& InletK = Bridge.GetLastAirInletTempK();
+	const FCouplingSnapshot& Snap = GetCachedDisplaySnapshot();
+	const int32 NumCabinets = Racks.Num() + Spines.Num();
+	for (int32 I = 0; I < NumCabinets; ++I)
+	{
+		const bool bRack = I < Racks.Num();
+		AActor* Cabinet = bRack ? static_cast<AActor*>(Racks[I].Get()) : static_cast<AActor*>(Spines[I - Racks.Num()].Get());
+		if (Cabinet == nullptr) continue;
+		const FRackThermalModel& Model = bRack ? Racks[I]->GetMutableModel() : Spines[I - Racks.Num()]->GetMutableModel();
+		const FRackThermalInput& In = bRack ? Racks[I]->Input : Spines[I - Racks.Num()]->GetMutableInput();
+		const FRackThermalParams& P = Model.GetParams();
+		const FRackThermalState& St = Model.GetState();
+		FVrgDashboardRackRow& R = Out.Rows.AddDefaulted_GetRef();
+		R.Inlet = I;
+		R.Kind = bRack ? TEXT("rack") : TEXT("spine");
+		R.Name = Cabinet->GetName();
+		const FVector M = SimUnits::UnrealToMeters(Cabinet->GetActorLocation());
+		R.XM = M.X; R.YM = M.Y;
+		R.Utilization = In.Utilization;
+		R.HeatW = Model.GetLastTotalHeatW();
+		R.ToCoolantW = Model.GetLastHeatRemovedByCoolantW();
+		R.ToRoomAirW = Model.GetLastTotalHeatToRoomAirW();
+		R.InletNowK = InletK.IsValidIndex(I) ? InletK[I] : In.AirInletTempK;
+		R.CoolantInK = In.CoolantInletTempK;
+		R.CoolantOutK = St.CoolantTempK;
+		R.CoolantFlowM3s = Snap.RackCoolantMassFlowKgs.IsValidIndex(I) && CoolantDensityKgM3 > 0.0 ? Snap.RackCoolantMassFlowKgs[I] / CoolantDensityKgM3 : 0.0;
+		R.FanPowerW = Model.GetLastTotalFanPowerW();
+		R.NumSlots = Model.GetNumSleds();
+		int32 FanSlots = 0;
+		for (int32 S = 0; S < R.NumSlots; ++S)
+		{
+			const bool bDocked = !In.SledDocked.IsValidIndex(S) || In.SledDocked[S];
+			R.DockedSlots += bDocked ? 1 : 0;
+			if (bDocked && FRackThermalModel::FansOf(P, S) != nullptr && St.SlotFanSpeedRatio.IsValidIndex(S))
+			{
+				R.FanSpeedMean += St.SlotFanSpeedRatio[S];
+				++FanSlots;
+			}
+			for (int32 N = Model.GetSlotNodeStart(S), End = N + Model.GetSlotNodeCount(S); N >= 0 && N < End; ++N)
+			{
+				if (bDocked && St.ComponentTempK.IsValidIndex(N) && St.ComponentTempK[N] > R.HottestPartK)
+				{
+					R.HottestPartK = St.ComponentTempK[N];
+					R.HottestPart = FString::Printf(TEXT("슬롯 %d %s"), S + 1, *Model.GetNodeParams(N).Name.ToString());
+				}
+			}
+		}
+		if (FanSlots > 0) R.FanSpeedMean /= FanSlots;
+
+		if (I != DetailInlet) continue;
+		// The selected cabinet only: one snapshot gives every part's heat flows.
+		const FRackThermalSnapshot RS = Model.MakeSnapshot(Out.SimTimeS);
+		FVrgDashboardRackDetail& D = Out.Detail;
+		Out.bHasDetail = true;
+		D.Inlet = I;
+		D.TotalHeatW = RS.TotalHeatW; D.ToCoolantW = RS.TotalHeatToCoolantW; D.ToAirW = RS.TotalHeatToAirW; D.ToAmbientW = RS.TotalHeatToAmbientW;
+		D.MixedAirOutletK = RS.MixedAirOutletTempK; D.CoolantOutletK = RS.CoolantOutletTempK;
+		const UEnum* KindEnum = StaticEnum<ERackPartKind>();
+		for (int32 S = 0; S < R.NumSlots; ++S)
+		{
+			FVrgDashboardRackSlot& Slot = D.Slots.AddDefaulted_GetRef();
+			Slot.Index = S;
+			if (P.Slots.IsValidIndex(S))
+			{
+				const FRackSlot& Def = P.Slots[S];
+				Slot.BottomZM = Def.BottomZM; Slot.HeightM = Def.HeightM;
+				if (P.DeviceTypes.IsValidIndex(Def.DeviceType)) Slot.Device = P.DeviceTypes[Def.DeviceType].Name.ToString();
+			}
+			Slot.bDocked = !In.SledDocked.IsValidIndex(S) || In.SledDocked[S];
+			Slot.InletK = In.SlotAirInletTempK.IsValidIndex(S) ? In.SlotAirInletTempK[S] : In.AirInletTempK;
+			Slot.HeatToAirW = RS.SlotHeatToAirW.IsValidIndex(S) ? RS.SlotHeatToAirW[S] : 0.0;
+			Slot.AirFlowKgs = RS.SlotAirMassFlowKgs.IsValidIndex(S) ? RS.SlotAirMassFlowKgs[S] : 0.0;
+			Slot.OutletAirK = RS.SledAirOutletTempK.IsValidIndex(S) ? RS.SledAirOutletTempK[S] : 0.0;
+			Slot.FanSpeed = RS.SlotFanSpeedRatio.IsValidIndex(S) ? RS.SlotFanSpeedRatio[S] : 0.0;
+			for (int32 N = Model.GetSlotNodeStart(S), End = N + Model.GetSlotNodeCount(S); N >= 0 && N < End; ++N)
+			{
+				const FRackComponentParams& Part = Model.GetNodeParams(N);
+				FVrgDashboardRackPart& Q = Slot.Parts.AddDefaulted_GetRef();
+				Q.Name = Part.Name.ToString();
+				Q.Kind = KindEnum != nullptr ? KindEnum->GetNameStringByValue(int64(Part.Kind)) : FString();
+				Q.TempK = RS.ComponentTempK.IsValidIndex(N) ? RS.ComponentTempK[N] : 0.0;
+				Q.HeatW = RS.ComponentHeatW.IsValidIndex(N) ? RS.ComponentHeatW[N] : 0.0;
+				Q.ToCoolantW = RS.ComponentHeatToCoolantW.IsValidIndex(N) ? RS.ComponentHeatToCoolantW[N] : 0.0;
+				Q.ToAirW = RS.ComponentHeatToAirW.IsValidIndex(N) ? RS.ComponentHeatToAirW[N] : 0.0;
+				Slot.HeatW += Q.HeatW;
+			}
+		}
+	}
+	return Out;
+}
+
+FString ADataCenterSimulationActor::ProfileDashboardLayout(int32 Repeats) const
+{
+	UWorld* World = GetWorld();
+	if (World == nullptr) return TEXT("월드 없음");
+	Repeats = FMath::Clamp(Repeats, 1, 1000);
+	auto TimeMs = [Repeats](auto&& Body)
+	{
+		const uint64 Start = FPlatformTime::Cycles64();
+		for (int32 R = 0; R < Repeats; ++R) Body();
+		return FPlatformTime::ToMilliseconds64(FPlatformTime::Cycles64() - Start) / Repeats;
+	};
+	int32 AllActors = 0, FullHits = 0, ClassHits = 0;
+	// (a) the stage-3 walk: every actor in the world through the PlaceableBoxM filter.
+	const double FullMs = TimeMs([&]
+	{
+		AllActors = FullHits = 0;
+		FVector SizeM;
+		for (TActorIterator<AActor> It(World); It; ++It) { ++AllActors; FullHits += ADataCenterDebugController::PlaceableBoxM(*It, SizeM) ? 1 : 0; }
+	});
+	// (b) a class-wise walk over the five equipment classes, for comparison only.
+	UClass* const EquipmentClasses[] = { ARackThermalActor::StaticClass(), ASpineCabinetActor::StaticClass(),
+		ACoolingDistributionUnitActor::StaticClass(), ACrahUnitActor::StaticClass(), ALayoutBarrierActor::StaticClass() };
+	const double ClassMs = TimeMs([&]
+	{
+		ClassHits = 0;
+		FVector SizeM;
+		for (UClass* C : EquipmentClasses) for (TActorIterator<AActor> It(World, C); It; ++It) ClassHits += ADataCenterDebugController::PlaceableBoxM(*It, SizeM) ? 1 : 0;
+	});
+	FVrgDashboardLayout L;
+	const double BuildMs = TimeMs([&] { L = BuildDashboardLayout(); });
+	FString Json;
+	const double JsonMs = TimeMs([&] { Json = L.ToJson(); });
+	const double SummaryMs = TimeMs([&] { Json = BuildDashboardSummary().ToJson(); });
+	FVrgDashboardRacks Racks4;
+	const double RackRowsMs = TimeMs([&] { Racks4 = BuildDashboardRacks(INDEX_NONE); });
+	const double RackDetailMs = TimeMs([&] { Racks4 = BuildDashboardRacks(0); });
+	// Rack tab JSON per request, split rows / detail, FJsonObject tree (before 2026-10-13) vs direct writer (now).
+	const double RowsDomMs = TimeMs([&] { Json = Racks4.RowsToJsonDom(); });
+	const double DetailDomMs = TimeMs([&] { Json = Racks4.DetailToJsonDom(); });
+	const double RowsFastMs = TimeMs([&] { Json = Racks4.RowsToJson(); });
+	const double DetailFastMs = TimeMs([&] { Json = Racks4.DetailToJson(); });
+	return FString::Printf(TEXT("[VrgWeb] 평면도 비용 (%d회 평균, 게임 스레드): 전체 액터 순회 %.4f ms (액터 %d, 장비 %d) | 클래스별 순회 %.4f ms (장비 %d) | 평면도 생성 %.4f ms + JSON %.4f ms (항목 %d) | 요약 %.4f ms | 랙 탭 행 %.4f ms, 행+상세 1대 %.4f ms (행 %d) | 랙 JSON 이전(객체 트리) 행 %.4f + 상세 %.4f ms -> 지금(직접 쓰기) 행 %.4f + 상세 %.4f ms (%d자)"),
+		Repeats, FullMs, AllActors, FullHits, ClassMs, ClassHits, BuildMs, JsonMs, L.Equipment.Num(), SummaryMs, RackRowsMs, RackDetailMs, Racks4.Rows.Num(),
+		RowsDomMs, DetailDomMs, RowsFastMs, DetailFastMs, Json.Len());
+}
+
+bool ADataCenterSimulationActor::ProcessDashboardRequests()
+{
+	FString Name;
+	if (!FVrgWebDashboard::Get().TakePendingReport(Name)) return false;
+	FString Summary;
+	const bool bOk = WriteEvaluationReport(Name, Summary);
+	UE_LOG(LogTemp, Display, TEXT("[VrgWeb] 페이지 요청 리포트 %s: %s"), bOk ? TEXT("성공") : TEXT("실패"), *Summary);
+	FVrgWebDashboard::Get().SetLastSave(Name, bOk, Summary);
+	return true;
+}
+
+void ADataCenterSimulationActor::PublishDashboard()
+{
+	FVrgWebDashboard& Web = FVrgWebDashboard::Get();
+	const double NowS = FPlatformTime::Seconds();
+	if (!Web.IsRunning() || NowS - LastDashboardPublishS < DashboardPublishPeriodS) return;
+	LastDashboardPublishS = NowS;
+	ProcessDashboardRequests();   // a page-requested report write is a file write, kept out of the publish cost below
+	// Summary JSON, series copy (<= SeriesLengthS points) and event markers all count as the dashboard's cost (D10).
+	VRG_SCOPE_COST(STAT_VrgDashboardPublish, DashboardMs);
+	Web.Publish(BuildDashboardSummary().ToJson());
+
+	FVrgDashboardSeries Series;
+	Series.SimTimeS = Clock.GetSimTimeS();
+	if (bEvalReady)
+	{
+		Series.Generation = Eval.GetGeneration();
+		Series.LengthS = Eval.GetSettings().SeriesLengthS;
+		Eval.GetSeries(-1.0, Series.Points);
+	}
+	for (const FEvalEvent& E : EvalEvents)
+	{
+		FVrgDashboardEvent& D = Series.Events.AddDefaulted_GetRef();
+		D.TimeS = E.TimeS; D.Kind = E.Kind; D.Index = E.Index; D.Value = E.Value; D.bApplied = E.bApplied;
+	}
+	Web.PublishSeries(MoveTemp(Series));
+	Web.PublishLayout(BuildDashboardLayout());   // struct copy; JSON is built per request (it was most of the publish cost)
+	Web.PublishRacks(BuildDashboardRacks(Web.GetRequestedRack()));
+	if (AirField != nullptr)
+	{
+		// 3D airflow layer sampling (display choice, not a physics setting): every 2nd cell in X and Y (0.5 m at the
+		// default h 0.25 m) on the layers nearest 0.4 / 1.1 / 1.9 / 2.75 m above the floor (low, rack middle, rack top,
+		// above the racks). The actual heights and spacing go into the JSON.
+		static const TArray<double> HeightsM = { 0.4, 1.1, 1.9, 2.75 };
+		FVrgDashboardAirflow Air = FVrgDashboardAirflow::Sample(AirField->GetSolver(), AirField->GetDomainBoundsM().Min, 2, HeightsM);
+		Air.SimTimeS = Clock.GetSimTimeS();
+		Air.bSimulating = Mode == ESimMode::Simulation;
+		Web.PublishAirflow(MoveTemp(Air));
+	}
 }
 
 void ADataCenterSimulationActor::DrawSummary() const
@@ -1533,13 +1997,7 @@ void ADataCenterSimulationActor::DrawSummary() const
 	}
 
 	const uint64 BaseKey = static_cast<uint64>(GetUniqueID());
-	if (!bDisplaySnapshotValid || Clock.GetSimTimeS() != DisplaySnapshotSimTimeS)
-	{
-		DisplaySnapshot = GetSnapshot();
-		DisplaySnapshotSimTimeS = Clock.GetSimTimeS();
-		bDisplaySnapshotValid = true;
-	}
-	const FCouplingSnapshot& Snapshot = DisplaySnapshot;
+	const FCouplingSnapshot& Snapshot = GetCachedDisplaySnapshot();
 
 	if (!LastSetupMessage.IsEmpty())
 	{
@@ -1731,6 +2189,12 @@ void ADataCenterSimulationActor::DrainWarmupSteps()
 		UE_LOG(LogTemp, Display, TEXT("[VrgEval] 리포트 %s: %s"), bOk ? TEXT("성공") : TEXT("실패"), *Summary);
 		PendingReportName.Reset();
 	}
+	if (PendingWarmupSteps == 0 && PendingProfileRepeats > 0)
+	{
+		// vrg.Web.ProfileLayout <N> wait: measured after the warm-up so the rack rows and detail exist.
+		UE_LOG(LogTemp, Display, TEXT("%s"), *ProfileDashboardLayout(PendingProfileRepeats));
+		PendingProfileRepeats = 0;
+	}
 	if (PendingWarmupSteps == 0)
 	{
 		const FCouplingSnapshot Snap = GetSnapshot();
@@ -1821,6 +2285,8 @@ void ADataCenterSimulationActor::EvalAfterStep()
 	Power.ServerFanW = Bridge.GetLastServerFanPowerW();
 	Power.CrahFanW = Bridge.GetLastCrahFanPowerW();
 	Power.PumpW = Room != nullptr ? Room->GetTotalPumpElectricalW() : 0.0;
+	Power.CoolantRemovedW = Bridge.GetTotalRadiatorRejectedW();
+	Power.AirRemovedW = Bridge.GetLastAirCoolingRemovedW();
 	Eval.AfterStep(Clock.GetSimTimeS(), Clock.GetFixedStepS(), Inlets, Power);
 }
 
@@ -1860,6 +2326,9 @@ bool ADataCenterSimulationActor::WriteEvaluationReport(const FString& Name, FStr
 	Power->SetNumberField(TEXT("serverFanW"), P.ServerFanW);
 	Power->SetNumberField(TEXT("crahFanW"), P.CrahFanW);
 	Power->SetNumberField(TEXT("pumpW"), P.PumpW);
+	// Web dashboard stage 5 (optional fields; older reports lack them): window-average heat removal [W].
+	Power->SetNumberField(TEXT("coolantRemovedW"), P.CoolantRemovedW);
+	Power->SetNumberField(TEXT("airRemovedW"), P.AirRemovedW);
 	double Pue = 0.0;
 	const bool bPue = Eval.GetPartialPue(Pue);
 	if (bPue) Power->SetNumberField(TEXT("partialPue"), Pue); else Power->SetField(TEXT("partialPue"), MakeShared<FJsonValueNull>());
@@ -1868,7 +2337,7 @@ bool ADataCenterSimulationActor::WriteEvaluationReport(const FString& Name, FStr
 
 	TArray<TSharedPtr<FJsonValue>> InletItems;
 	int32 AboveRecommended = 0, AboveAllowable = 0, SensorAlarms = 0;
-	double MaxMeanK = 0.0, SumMeanK = 0.0, FirstDetectionS = -1.0;
+	double MaxMeanK = 0.0, FirstDetectionS = -1.0;
 	for (int32 I = 0; I < Eval.GetNumInlets(); ++I)
 	{
 		const FVrgEvaluation::FInletStats St = Eval.GetInlet(I);
@@ -1892,12 +2361,13 @@ bool ADataCenterSimulationActor::WriteEvaluationReport(const FString& Name, FStr
 		AboveAllowable += St.WindowMeanK > S.AllowableInletK ? 1 : 0;
 		SensorAlarms += St.SensorAlarms > 0 ? 1 : 0;
 		if (St.SensorFirstAlarmS >= 0.0) FirstDetectionS = FirstDetectionS < 0.0 ? St.SensorFirstAlarmS : FMath::Min(FirstDetectionS, St.SensorFirstAlarmS);
-		MaxMeanK = FMath::Max(MaxMeanK, St.WindowMeanK); SumMeanK += St.WindowMeanK;
 	}
 	Root->SetArrayField(TEXT("inlets"), InletItems);
+	double AvgMeanK = 0.0;
+	Eval.GetInletWindowSummary(MaxMeanK, AvgMeanK);
 	TSharedRef<FJsonObject> Summary = MakeShared<FJsonObject>();
 	Summary->SetNumberField(TEXT("inletWindowMeanMaxC"), MaxMeanK - 273.15);
-	Summary->SetNumberField(TEXT("inletWindowMeanAvgC"), SumMeanK / Eval.GetNumInlets() - 273.15);
+	Summary->SetNumberField(TEXT("inletWindowMeanAvgC"), AvgMeanK - 273.15);
 	Summary->SetNumberField(TEXT("inletsAboveRecommended"), AboveRecommended);
 	Summary->SetNumberField(TEXT("inletsAboveAllowable"), AboveAllowable);
 	Summary->SetNumberField(TEXT("inletsWithSensorAlarm"), SensorAlarms);
@@ -1924,6 +2394,8 @@ bool ADataCenterSimulationActor::WriteEvaluationReport(const FString& Name, FStr
 		EventItems.Add(MakeShared<FJsonValueObject>(Item));
 	}
 	Root->SetArrayField(TEXT("events"), EventItems);
+	// Stage 5: the plan view at this SimTime (equipment footprints in metres), so an A/B comparison can show what moved.
+	Root->SetObjectField(TEXT("layout"), BuildDashboardLayout().ToJsonObject());
 
 	FString Json;
 	FJsonSerializer::Serialize(Root, TJsonWriterFactory<>::Create(&Json));
@@ -1935,7 +2407,7 @@ bool ADataCenterSimulationActor::WriteEvaluationReport(const FString& Name, FStr
 		P.ItW / 1e3, P.ServerFanW / 1e3, P.CrahFanW / 1e3, P.PumpW / 1e3, bPue ? *FString::Printf(TEXT("%.4f"), Pue) : TEXT("계산 불가(IT 0)"));
 	Md += TEXT("부분 PUE = (IT + CRAH 팬 + 펌프) / IT. 칠러·냉각탑·UPS·배전 손실·조명은 모델에 없어 시설 PUE가 아니다(D8).\n\n");
 	Md += FString::Printf(TEXT("## 흡기\n\n창 평균 최고 %.2f C / 평균 %.2f C, 권장 27 C 초과 %d, 허용 32 C 초과 %d, 센서 경보 %d (첫 감지 %.1f s)\n\n| # | 위치 (m) | 창 평균 C | 최고 C | 27 C 초과 s | 센서 마지막 C | 첫 경보 s |\n|---|---|---|---|---|---|---|\n"),
-		MaxMeanK - 273.15, SumMeanK / Eval.GetNumInlets() - 273.15, AboveRecommended, AboveAllowable, SensorAlarms, FirstDetectionS);
+		MaxMeanK - 273.15, AvgMeanK - 273.15, AboveRecommended, AboveAllowable, SensorAlarms, FirstDetectionS);
 	for (int32 I = 0; I < Eval.GetNumInlets(); ++I)
 	{
 		const FVrgEvaluation::FInletStats St = Eval.GetInlet(I);
@@ -2020,6 +2492,20 @@ namespace
 		return true;
 	}
 }
+
+static FAutoConsoleCommand GVrgWebProfileLayoutCommand(
+	TEXT("vrg.Web.ProfileLayout"),
+	TEXT("웹 대시보드 평면도 비용 진단: 전체 액터 순회와 클래스별 순회, 평면도 생성·JSON, 랙 탭 생성 시간을 로그에 쓴다. vrg.Web.ProfileLayout [반복 수=50] [wait = 예약된 예열이 끝난 뒤]"),
+	FConsoleCommandWithArgsDelegate::CreateLambda([](const TArray<FString>& Args)
+	{
+		const int32 Repeats = Args.Num() > 0 ? FCString::Atoi(*Args[0]) : 50;
+		const bool bWait = Args.Num() > 1 && Args[1] == TEXT("wait");   // after the queued warm-up (rack rows exist then)
+		for (ADataCenterSimulationActor* Sim : EvalSimActors())
+		{
+			if (bWait) Sim->PendingProfileRepeats = FMath::Max(1, Repeats);
+			else UE_LOG(LogTemp, Display, TEXT("%s"), *Sim->ProfileDashboardLayout(Repeats));
+		}
+	}));
 
 static FAutoConsoleCommand GVrgEvalReportCommand(
 	TEXT("vrg.Eval.Report"),

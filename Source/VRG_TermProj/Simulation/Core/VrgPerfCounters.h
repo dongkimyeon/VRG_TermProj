@@ -30,6 +30,7 @@ DECLARE_CYCLE_STAT_EXTERN(TEXT("VRG Air Solver Step"), STAT_VrgAirSolverStep, ST
 DECLARE_CYCLE_STAT_EXTERN(TEXT("VRG Pressure Solve"), STAT_VrgPressureSolve, STATGROUP_VRG, VRG_TERMPROJ_API);
 DECLARE_CYCLE_STAT_EXTERN(TEXT("VRG Debug Draw"), STAT_VrgDebugDraw, STATGROUP_VRG, VRG_TERMPROJ_API);
 DECLARE_CYCLE_STAT_EXTERN(TEXT("VRG Coupling Step"), STAT_VrgCouplingStep, STATGROUP_VRG, VRG_TERMPROJ_API);
+DECLARE_CYCLE_STAT_EXTERN(TEXT("VRG Web Dashboard Publish"), STAT_VrgDashboardPublish, STATGROUP_VRG, VRG_TERMPROJ_API);
 
 namespace VrgPerf
 {
@@ -41,6 +42,7 @@ namespace VrgPerf
 		double PressureMs = 0.0;
 		double CouplingMs = 0.0;
 		double DebugDrawMs = 0.0;
+		double DashboardMs = 0.0;   // web dashboard summary build (0.5 s real-time throttle, so mostly 0)
 		int32 SolverSteps = 0;
 		int32 PressureIterations = 0;
 		int32 DrawnPrimitives = 0;

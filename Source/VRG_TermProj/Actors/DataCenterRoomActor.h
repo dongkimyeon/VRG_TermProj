@@ -17,6 +17,15 @@ struct FRackPlacementRow
 	FVector RearDir, AlongDir;
 	TArray<ARackThermalActor*> Racks;
 };
+// The polyline each drawn pipe follows, world metres (rule 1: converted from the mesh path's cm here).
+// Same points the meshes are built from, so the web 3D view draws the pipes the solver solves (2026-10-14).
+struct FRoomPipeRoute
+{
+	int32 Edge = INDEX_NONE;   // network pipe index, or -1 - pump index for the CDU supply -> pump link (no pipe)
+	bool bSupply = false;
+	bool bBranch = false;      // rack branch (riser) vs header
+	TArray<FVector> PointsM;
+};
 class ACoolingDistributionUnitActor;
 class UStaticMeshComponent;
 
@@ -234,6 +243,7 @@ public:
 
 	// 통합 액터가 빌려 가는 수력망. 수명은 이 액터가 쥔다.
 	FHydraulicNetwork& GetMutableNetwork() { return Network; }
+	const FHydraulicNetwork& GetNetwork() const { return Network; }
 	const FHydraulicSolveResult& GetLastSolveResult() const { return LastResult; }
 
 	// GetRoutedRacks()와 같은 순서로 늘어놓은 랙별 공급 분기 파이프 인덱스.
@@ -248,6 +258,9 @@ public:
 
 	// 배관을 다시 이었는지. 통합 액터가 이번 스텝에 유량이 바뀌었는지 알아야 한다.
 	bool ConsumeRebuiltFlag();
+
+	// Drawn pipe paths (see FRoomPipeRoute), rebuilt with the pipe meshes.
+	const TArray<FRoomPipeRoute>& GetPipeRoutesM() const { return PipeRoutesM; }
 
 protected:
 	virtual void BeginPlay() override;
@@ -289,6 +302,8 @@ private:
 
 	// 파이프마다 공급 쪽인지. 표시용이며 계산에 쓰이지 않는다.
 	TArray<bool> bPipeIsSupplySide;
+
+	TArray<FRoomPipeRoute> PipeRoutesM;
 
 	// SpawnRackGrid가 찍어 낸 랙. 지울 때 손으로 놓은 랙과 구분한다.
 	UPROPERTY()

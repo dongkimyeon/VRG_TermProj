@@ -7,6 +7,7 @@
 #include "Simulation/Core/SimClock.h"
 #include "Simulation/Coupling/CouplingBridge.h"
 #include "Simulation/Evaluation/VrgEvaluation.h"
+#include "Simulation/Evaluation/VrgDashboardSummary.h"
 #include "Interaction/VrgCrahLifecycle.h"
 #include "Simulation/Air/RoomAirDomain.h"
 #include "Interaction/VrgLayoutFile.h"
@@ -18,6 +19,7 @@ class ARackThermalActor;
 class ASpineCabinetActor;
 class UStaticMesh;
 class UStaticMeshComponent;
+class UMaterialInterface;
 
 // Layout vs simulation (2026-09-27). Layout: nothing is integrated, cabinets can be moved freely. Simulation: the
 // coupling is built from the current layout in one go and the clock starts at 0.
@@ -279,6 +281,35 @@ public:
 	int32 GetNumBarrierCellsKeptOpen() const { return BarrierCellsKeptOpen; }
 	int32 GetNumSplitDucts() const { return SplitDucts; }
 
+	// ---- Automatic room shell (2026-10-07) ----
+	// Four walls and a ceiling drawn on the faces of the air domain, every frame in both modes: the planned
+	// auto-fit (layout, auto room), the manual room's actual grid bounds (layout, manual room) or the live grid
+	// (simulation). Display only. The air grid boundary already is an impermeable, adiabatic wall and ceiling,
+	// so the shell adds no solid cells, heat capacity or leakage (what is shown is what is computed).
+	// Ceiling holes / exhaust through the ceiling are not modelled.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Visualization|Room")
+	bool bAutoRoomShell = true;
+
+	// Shell thickness [m], laid outside the domain so it never covers an air cell. Display value.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Visualization|Room", meta = (ClampMin = "0.01"))
+	double RoomShellThicknessM = 0.2;
+
+	// Hide the walls the camera is outside of and the ceiling when the camera is above it, so the room can be
+	// looked into from outside.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Visualization|Room")
+	bool bRoomShellCutaway = true;
+
+	// Box [m] the shell currently encloses; false when there is nothing to enclose (no air actor / no racks).
+	bool GetRoomShellBoundsM(FBox& OutBoundsM) const;
+	// Shell piece order: -X, +X, -Y, +Y walls, ceiling.
+	static constexpr int32 NumRoomShellPieces = 5;
+	// Which pieces stay visible for a camera at CameraM [m] (cutaway rule), in the order above.
+	static void ComputeRoomShellVisibility(const FBox& BoundsM, const FVector& CameraM, bool bCutaway, bool OutVisible[NumRoomShellPieces]);
+	// Visible shell pieces after the last update (0 when off).
+	int32 GetNumVisibleRoomShellPieces() const;
+	const FBox& GetDisplayedRoomShellBoundsM() const { return RoomShellBoundsM; }
+	void UpdateRoomShell();
+
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Visualization")
 	bool bShowSummary = true;
 
@@ -299,6 +330,22 @@ public:
 	// Writes Saved/Reports/<Name>.json and .md from the running evaluation; false before any simulation step.
 	bool WriteEvaluationReport(const FString& Name, FString& OutSummary) const;
 	const FVrgEvaluation& GetEvaluation() const { return Eval; }
+	// Web dashboard stage 1: summary card values at the current SimTime (window values = the report's).
+	FVrgDashboardSummary BuildDashboardSummary() const;
+	// Web dashboard stage 3: plan view of the equipment boxes in the world now, plus the inlet window means.
+	// Automatic CRAH units (no actor) are listed only in simulation mode, where their placement is current.
+	FVrgDashboardLayout BuildDashboardLayout() const;
+	// Diagnostic (vrg.Web.ProfileLayout): average ms of the full actor walk (used) vs a class-wise walk (comparison),
+	// the whole layout build and its JSON, over Repeats runs on the game thread. Returns one log line.
+	FString ProfileDashboardLayout(int32 Repeats) const;
+	// Web dashboard stage 4: one row per evaluation inlet (racks, then spines) in simulation mode, plus the slots and
+	// parts of DetailInlet (one MakeSnapshot) when it is a valid inlet.
+	FVrgDashboardRacks BuildDashboardRacks(int32 DetailInlet) const;
+	// Stage 5: handles a report save the page queued (same writer as vrg.Eval.Report) and records the result for the
+	// report list. Called from each dashboard publish on the game thread; returns true when it handled one.
+	bool ProcessDashboardRequests();
+	// vrg.Web.ProfileLayout <N> wait: run the profile once the queued warm-up steps finish (0 = none).
+	int32 PendingProfileRepeats = 0;
 
 private:
 	friend bool VrgLayoutFile::Load(UWorld* World, const FString& Name, FString& OutSummary);
@@ -313,6 +360,12 @@ private:
 	mutable FCouplingSnapshot DisplaySnapshot;
 	mutable double DisplaySnapshotSimTimeS = -1.0;
 	mutable bool bDisplaySnapshotValid = false;
+	// Snapshot rebuilt at most once per SimTime for display (HUD summary, web dashboard).
+	const FCouplingSnapshot& GetCachedDisplaySnapshot() const;
+	// Game-thread copy for the web dashboard (rule 5), every DashboardPublishPeriodS of real time while it runs.
+	void PublishDashboard();
+	double LastDashboardPublishS = -1.0e9;
+	static constexpr double DashboardPublishPeriodS = 0.5;
 	FSimClock Clock;
 	FCouplingBridge Bridge;
 
@@ -444,4 +497,11 @@ private:
 	void UpdateContainmentMeshes();
 
 	void DrawSummary() const;
+
+	UPROPERTY()
+	TObjectPtr<UMaterialInterface> RoomShellMaterial;
+	UPROPERTY(Transient)
+	TArray<TObjectPtr<UStaticMeshComponent>> RoomShellMeshes;
+	FBox RoomShellBoundsM = FBox(ForceInit);
+	double RoomShellBuiltThicknessM = -1.0;
 };

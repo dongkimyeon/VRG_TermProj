@@ -456,6 +456,7 @@ void ADataCenterRoomActor::BuildPipeMeshes()
 	DestroyMeshes(PipeMeshes);
 	PipeMeshFlowIndices.Reset();
 	PipeMeshSupply.Reset();
+	PipeRoutesM.Reset();
 	if (bUseGjConnections) { BuildGjPipeMeshes(); return; }
 
 	UStaticMesh* CylinderMesh = SimMeshBuilder::LoadCylinderMesh();
@@ -482,6 +483,8 @@ void ADataCenterRoomActor::BuildPipeMeshes()
 			NodeWorldOffsetCm(Network.GetPipeToNodeIndex(PipeIndex)),
 			bIsBranch ? BranchDiameterCm : HeaderDiameterCm);
 		PipeMeshes.Add(Pipe);
+		PipeRoutesM.Add({PipeIndex, bPipeIsSupplySide.IsValidIndex(PipeIndex) && bPipeIsSupplySide[PipeIndex], bIsBranch,
+			{NodePositionM[Network.GetPipeFromNodeIndex(PipeIndex)], NodePositionM[Network.GetPipeToNodeIndex(PipeIndex)]}});
 	}
 }
 
@@ -968,6 +971,8 @@ void ADataCenterRoomActor::BuildGjPipeMeshes()
 	auto Add=[&](TArray<FVector> Points, bool Branch, int32 Edge, bool Supply)
 	{
 		LastPipeCabinetHits += CountCabinetHits(Points);
+		FRoomPipeRoute& Route=PipeRoutesM.AddDefaulted_GetRef(); Route.Edge=Edge; Route.bSupply=Supply; Route.bBranch=Branch;
+		for (const FVector& P:Points) Route.PointsM.Add(SimUnits::UnrealToMeters(P));
 		for (FVector& P:Points) P=GetActorTransform().InverseTransformPosition(P);
 		QueuePath(Points,Branch?Riser:Header,Surface,Branch?6.0:14.0,Branch?BranchDiameterM/.05:HeaderDiameterM/.11,true,Edge,Supply);
 	};

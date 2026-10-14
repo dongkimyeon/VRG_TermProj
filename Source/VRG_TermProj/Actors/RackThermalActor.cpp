@@ -66,6 +66,14 @@ void ARackThermalActor::ConformInputArrays()
 	{
 		Input.ComponentHeatW = FRackThermalModel::MakeDefaultHeatW(Params);
 	}
+	// The old CPU/GPU heat knob ran on every start (debug controller BeginPlay) and wrote a Grace CPU's 280 W into the
+	// management switch's 25 W control CPUs (~200 C and rising). Layout files saved from such runs (vrg.Layout.Save,
+	// v2 rack input) carry that trace; loading goes through here (ApplyLayoutSettings -> ResetSim). Rescale only that exact
+	// pattern. The level asset is not edited.
+	if (const int32 Repaired = FRackThermalModel::RepairKindHeatSpread(Params, Input.ComponentHeatW))
+	{
+		UE_LOG(LogTemp, Display, TEXT("RackThermalActor %s: 옛 CPU/GPU 발열 손잡이가 다른 부품에 쓴 값 %d개를 부품 기본값 비율로 바로잡았다."), *GetName(), Repaired);
+	}
 
 	if (Input.SledDocked.Num() != NumSleds)
 	{

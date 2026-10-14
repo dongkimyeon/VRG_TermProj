@@ -16,7 +16,10 @@ void FVrgEvaluation::Reset(const FVrgEvaluationSettings& InSettings, int32 NumIn
 		In.AboveRecommendedS = In.AboveAllowableS = 0.0;
 		In.Sensor.Reset(Settings.Sensor, T0, Settings.Seed + I);
 	}
-	for (FWindowed* W : { &It, &ServerFan, &CrahFan, &Pump }) W->Reset(NumBuckets);
+	for (FWindowed* W : { &It, &ServerFan, &CrahFan, &Pump, &CoolantRemoved, &AirRemoved }) W->Reset(NumBuckets);
+	Series.SetNum(FMath::Max(1, FMath::RoundToInt32(Settings.SeriesLengthS)));
+	SeriesNext = SeriesFilled = 0;
+	++Generation;
 	SimTimeS = SecondStartS = RunTimeS = 0.0;
 	SecondsClosed = 0;
 }
@@ -37,11 +40,29 @@ void FVrgEvaluation::AfterStep(double InSimTimeS, double DtS, const TArray<doubl
 		In.Sensor.Advance(SimTimeS, DtS, T);
 	}
 	It.Add(Power.ItW, DtS); ServerFan.Add(Power.ServerFanW, DtS); CrahFan.Add(Power.CrahFanW, DtS); Pump.Add(Power.PumpW, DtS);
+	CoolantRemoved.Add(Power.CoolantRemovedW, DtS); AirRemoved.Add(Power.AirRemovedW, DtS);
 	// Close every whole second that ended (a small tolerance for the accumulated step times).
 	while (SimTimeS - SecondStartS >= 1.0 - 1e-9)
 	{
+		// The running-second integrals over 1 s are that second's averages (the same buckets the window uses).
+		FVrgSeriesPoint P;
+		P.TimeS = SecondStartS + 1.0;
+		for (int32 I = 0; I < Inlets.Num(); ++I)
+		{
+			const double MeanK = Inlets[I].Temperature.Current;
+			P.InletMaxK = I == 0 ? MeanK : FMath::Max(P.InletMaxK, MeanK);
+			P.InletMeanK += MeanK;
+		}
+		if (Inlets.Num() > 0) P.InletMeanK /= Inlets.Num();
+		P.ItW = It.Current; P.CoolantRemovedW = CoolantRemoved.Current; P.AirRemovedW = AirRemoved.Current;
+		P.bPartialPueValid = It.Current > 0.0;
+		if (P.bPartialPueValid) P.PartialPue = (It.Current + CrahFan.Current + Pump.Current) / It.Current;
+		Series[SeriesNext] = P;
+		SeriesNext = (SeriesNext + 1) % Series.Num();
+		SeriesFilled = FMath::Min(SeriesFilled + 1, Series.Num());
+
 		for (FInlet& In : Inlets) In.Temperature.CloseSecond();
-		for (FWindowed* W : { &It, &ServerFan, &CrahFan, &Pump }) W->CloseSecond();
+		for (FWindowed* W : { &It, &ServerFan, &CrahFan, &Pump, &CoolantRemoved, &AirRemoved }) W->CloseSecond();
 		SecondStartS += 1.0;
 		++SecondsClosed;
 	}
@@ -79,6 +100,8 @@ FVrgEvaluationSample FVrgEvaluation::GetWindowPower() const
 	P.ServerFanW = ServerFan.WindowIntegral() / Covered;
 	P.CrahFanW = CrahFan.WindowIntegral() / Covered;
 	P.PumpW = Pump.WindowIntegral() / Covered;
+	P.CoolantRemovedW = CoolantRemoved.WindowIntegral() / Covered;
+	P.AirRemovedW = AirRemoved.WindowIntegral() / Covered;
 	return P;
 }
 
@@ -88,4 +111,30 @@ bool FVrgEvaluation::GetPartialPue(double& OutPue) const
 	if (P.ItW <= 0.0) return false;  // D8: not computable without IT power
 	OutPue = (P.ItW + P.CrahFanW + P.PumpW) / P.ItW;
 	return true;
+}
+
+bool FVrgEvaluation::GetInletWindowSummary(double& OutMaxK, double& OutMeanK) const
+{
+	if (Inlets.Num() == 0) return false;
+	double MaxK = 0.0, SumK = 0.0;
+	for (int32 I = 0; I < Inlets.Num(); ++I)
+	{
+		const double MeanK = GetInlet(I).WindowMeanK;
+		MaxK = FMath::Max(MaxK, MeanK);
+		SumK += MeanK;
+	}
+	OutMaxK = MaxK;
+	OutMeanK = SumK / Inlets.Num();
+	return true;
+}
+
+void FVrgEvaluation::GetSeries(double SinceS, TArray<FVrgSeriesPoint>& Out) const
+{
+	Out.Reset();
+	const int32 N = Series.Num();
+	for (int32 K = 0; K < SeriesFilled; ++K)
+	{
+		const FVrgSeriesPoint& P = Series[(SeriesNext - SeriesFilled + K + N) % N];
+		if (P.TimeS > SinceS) Out.Add(P);
+	}
 }

@@ -71,6 +71,17 @@ public:
 		TArray<int32>& OutSlotNodeStart);
 	// ComponentHeatW filled from every component's DefaultHeatW.
 	static TArray<double> MakeDefaultHeatW(const FRackThermalParams& InParams);
+	// Debug heat knob (keys 1/2 CPU, 3/4 GPU): FirstNodeHeatW is the new heat of the first node of that kind; every node
+	// of the kind gets its own DefaultHeatW times the same multiple (first node heat / its default). Writing the first
+	// node's watts into every node of the kind (the pre-2026-10-13 behaviour, applied on every start) put a Grace CPU's
+	// 280 W into a management switch's 25 W control CPU. Returns false (array untouched) when the sizes do not match or
+	// the first default is 0.
+	static bool ApplyKindHeatScale(const FRackThermalParams& InParams, TArray<double>& InOutHeatW, ERackPartKind Kind, double FirstNodeHeatW);
+	// Repairs exactly that old trace in a saved heat array (layout files saved from such runs): a CPU/GPU node whose part
+	// default differs from the first node
+	// of its kind but whose heat equals the first node's heat exactly (and not its own default) is rescaled as
+	// ApplyKindHeatScale would. Any other value is a deliberate setting and is kept. Returns the number of nodes repaired.
+	static int32 RepairKindHeatSpread(const FRackThermalParams& InParams, TArray<double>& InOutHeatW);
 
 	// Design-point heat that leaves through air [W]: docked components' heat times their air share
 	// ToAirUAWK / (ToAirUAWK + ToCoolantUAWK). Used to size the room's air cooling (2-2), not by Step().

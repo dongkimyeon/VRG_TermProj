@@ -1,0 +1,1095 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>VRG 요약</title>
+<style>
+  /* 색 변수는 데모(VRG 냉각 트윈 데모)와 같다. 시리즈 색은 검증된 다크 카테고리 1·2번 슬롯. */
+  :root {
+    color-scheme: dark;
+    --bg:#14171d; --panel:#1c2029; --panel2:#222733; --line:#2e3441;
+    --text:#e4e7ee; --muted:#8a93a3; --faint:#5c6475;
+    --s1:#3987e5; --s2:#d95926;
+    --mono: ui-monospace, "Cascadia Mono", Consolas, monospace;
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; padding:20px 16px 32px; background:var(--bg); color:var(--text); font:14px/1.45 system-ui, "Malgun Gothic", sans-serif; }
+  .wrap { max-width:1100px; margin:0 auto; }
+  header { display:flex; align-items:baseline; gap:12px; flex-wrap:wrap; margin-bottom:14px; }
+  h1 { font-size:17px; margin:0; font-weight:600; }
+  .mode { color:var(--muted); font-size:13px; }
+  .status { margin-left:auto; color:var(--faint); font-size:12px; font-family:var(--mono); }
+  .status.err { color:#f0b43c; }
+  .panel { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:14px 16px; }
+  .kpis { display:grid; grid-template-columns:repeat(auto-fit, minmax(160px, 1fr)); gap:10px; margin-bottom:12px; }
+  .kpi .label { color:var(--muted); font-size:12px; }
+  .kpi .value { font:500 20px var(--mono); font-variant-numeric:tabular-nums; margin-top:2px; }
+  .kpi .note { color:var(--faint); font-size:11px; margin-top:2px; }
+  .charts { display:grid; grid-template-columns:repeat(auto-fit, minmax(330px, 1fr)); gap:12px; }
+  .chart h2 { font-size:13px; font-weight:600; margin:0; }
+  .chart .sub { color:var(--faint); font-size:11px; margin:2px 0 6px; }
+  .legend { display:flex; gap:14px; font-size:12px; color:var(--muted); margin-bottom:4px; min-height:16px; }
+  .legend i { display:inline-block; width:14px; height:2px; vertical-align:middle; margin-right:5px; border-radius:1px; }
+  svg { display:block; width:100%; height:190px; overflow:visible; }
+  svg text { fill:var(--faint); font:10.5px var(--mono); }
+  .grid line { stroke:var(--line); stroke-width:1; }
+  .series { fill:none; stroke-width:2; stroke-linejoin:round; stroke-linecap:round; }
+  .event line { stroke:var(--muted); stroke-width:1; stroke-dasharray:3 3; }
+  .event text { fill:var(--muted); }
+  .cross { stroke:var(--faint); stroke-width:1; }
+  .dot { stroke:var(--panel); stroke-width:2; }
+  .tip { position:fixed; pointer-events:none; background:var(--panel2); border:1px solid var(--line); border-radius:6px;
+         padding:6px 8px; font:12px var(--mono); color:var(--text); display:none; white-space:nowrap; z-index:5; }
+  .tip .k { color:var(--muted); }
+  .tablebar { margin-top:12px; display:flex; gap:10px; align-items:center; }
+  button { background:var(--panel2); color:var(--text); border:1px solid var(--line); border-radius:6px; padding:5px 10px; font:inherit; font-size:12px; cursor:pointer; }
+  table { width:100%; border-collapse:collapse; font:12px var(--mono); margin-top:8px; }
+  th, td { text-align:right; padding:4px 8px; border-bottom:1px solid var(--line); font-variant-numeric:tabular-nums; }
+  th { color:var(--muted); font-weight:500; }
+  .foot { margin-top:14px; font-size:12px; color:var(--faint); line-height:1.6; }
+  /* 평면도(3단계) */
+  .plan { margin-bottom:12px; }
+  .plan .head { display:flex; gap:16px; align-items:flex-end; flex-wrap:wrap; }
+  .plan .head > div:first-child { flex:1; min-width:220px; }
+  .tag { font-size:10.5px; color:var(--s1); border:1px solid var(--line); border-radius:4px; padding:0 5px; margin-left:6px; font-weight:500; }
+  .scale .bar { width:220px; max-width:60vw; height:8px; border-radius:4px; }
+  .scale .ends { position:relative; width:220px; max-width:60vw; height:14px; font:10.5px var(--mono); color:var(--faint); }
+  .scale .ends span { position:absolute; top:2px; transform:translateX(-50%); white-space:nowrap; }
+  .scale .note { font-size:11px; color:var(--muted); margin-top:3px; }
+  #plansvg { height:440px; margin-top:8px; }
+  #plansvg .domain { fill:none; stroke:var(--faint); stroke-dasharray:4 4; }
+  #plansvg .cab { stroke:var(--bg); stroke-width:1.5; cursor:default; }
+  #plansvg .cab.none { fill:var(--panel2); }
+  #plansvg .unit { fill:var(--panel2); stroke:var(--muted); stroke-width:1; }
+  #plansvg .unit.auto { stroke-dasharray:3 2; }
+  #plansvg .barrier { fill:var(--faint); }
+  #plansvg .arrow { stroke:var(--muted); stroke-width:1.5; fill:none; }
+  #plansvg .warn { fill:#f0b43c; font:600 11px var(--mono); text-anchor:middle; }
+  #plansvg .lbl { fill:var(--muted); font:10px var(--mono); text-anchor:middle; }
+  #plansvg .hover { stroke:var(--text); stroke-width:2; fill:none; pointer-events:none; }
+  #plansvg .cab.pick { cursor:pointer; }
+  /* 탭과 랙 탭(4단계) */
+  .tabs { display:flex; gap:4px; margin:0 0 12px; border-bottom:1px solid var(--line); }
+  .tabs button { border:0; border-bottom:2px solid transparent; border-radius:0; background:none; color:var(--muted); padding:6px 12px; font-size:13px; }
+  .tabs button[aria-selected="true"] { color:var(--text); border-bottom-color:var(--s1); }
+  .scroll { overflow-x:auto; }
+  #racktable tbody tr { cursor:pointer; }
+  #racktable tbody tr:hover { background:var(--panel2); }
+  #racktable tbody tr.sel { background:var(--panel2); box-shadow:inset 3px 0 0 var(--s1); }
+  td.l, th.l { text-align:left; }
+  .detail h2 { font-size:13px; margin:0 0 4px; font-weight:600; }
+  .split { display:grid; grid-template-columns:repeat(auto-fit, minmax(150px, 1fr)); gap:8px; margin:8px 0 10px; }
+  .split div { border:1px solid var(--line); border-radius:6px; padding:6px 8px; font:12px var(--mono); }
+  .split span { display:block; color:var(--muted); font:11px system-ui, sans-serif; }
+  details.slot { border-bottom:1px solid var(--line); }
+  details.slot summary { display:grid; grid-template-columns:3.2em 1fr 6em 7em 6.5em 6.5em 6.5em 5em; gap:6px; padding:5px 4px;
+    cursor:pointer; font:12px var(--mono); align-items:center; list-style:none; }
+  details.slot summary::-webkit-details-marker { display:none; }
+  details.slot summary::before { content:'▸'; position:absolute; margin-left:-12px; color:var(--faint); }
+  details.slot[open] summary::before { content:'▾'; }
+  details.slot summary span.r { text-align:right; }
+  details.slot.empty summary { color:var(--faint); }
+  .slothead { display:grid; grid-template-columns:3.2em 1fr 6em 7em 6.5em 6.5em 6.5em 5em; gap:6px; padding:4px; color:var(--muted); font-size:11.5px; border-bottom:1px solid var(--line); }
+  .slothead span.r { text-align:right; }
+  .slots { padding-left:14px; }
+  details.slot table { margin:2px 0 8px; }
+  /* 리포트 저장·A/B (5단계) */
+  .save { display:flex; gap:6px; align-items:center; margin-left:12px; }
+  .save input, .ab select { background:var(--panel2); color:var(--text); border:1px solid var(--line); border-radius:6px; padding:4px 8px; font:12px var(--mono); }
+  .save input { width:150px; }
+  .save .msg { font-size:11.5px; color:var(--muted); max-width:340px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .save .msg.err { color:#f0b43c; }
+  .ab .pick { display:flex; gap:12px; flex-wrap:wrap; align-items:center; font-size:12px; color:var(--muted); }
+  .ab select { min-width:260px; }
+  .warnbox { border:1px solid #f0b43c; color:#f0b43c; border-radius:6px; padding:6px 10px; font-size:12px; margin:10px 0; }
+  .warnbox::before { content:'▲ '; }
+  #abplan { height:420px; margin-top:8px; }
+  #abplan .domain { fill:none; stroke:var(--faint); stroke-dasharray:4 4; }
+  #abplan .cab { stroke:var(--bg); stroke-width:1.5; }
+  #abplan .unit { fill:var(--panel2); stroke:var(--muted); stroke-width:1; }
+  #abplan .barrier { fill:var(--faint); }
+  #abplan .ghost { fill:none; stroke:var(--muted); stroke-dasharray:3 3; }
+  #abplan .move { stroke:var(--text); stroke-width:1.5; fill:none; }
+  #abplan .added { fill:none; stroke:var(--text); stroke-width:2; }
+  #abplan .tag2 { fill:var(--text); font:600 11px var(--mono); text-anchor:middle; }
+  #abplan .lbl { fill:var(--muted); font:10px var(--mono); text-anchor:middle; }
+  td.pos { color:#e66767; } td.neg { color:#5598e7; }
+  /* 3D 방 보기 */
+  .view3d { position:relative; margin-bottom:12px; }
+  #c3d { display:block; width:100%; height:460px; border-radius:8px; background:var(--bg); cursor:grab; touch-action:none; }
+  #c3d:active { cursor:grabbing; }
+  .view3d .over { position:absolute; left:28px; bottom:22px; font-size:11px; color:var(--faint); pointer-events:none; }
+  .view3d .err { position:absolute; inset:60px 16px auto; color:#f0b43c; font-size:12px; }
+</style>
+<!-- 3D 보기: 데모와 같은 three.js 0.128 (전역 THREE + OrbitControls). 못 불러와도 나머지 화면은 동작한다. -->
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/build/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>데이터센터 냉각 요약</h1>
+    <span class="mode" id="mode">연결 중…</span>
+    <span class="save">
+      <input id="savename" type="text" placeholder="리포트 이름" maxlength="64" aria-label="리포트 이름 (영문·숫자·_·-·한글)">
+      <button id="savebtn" type="button">리포트 저장</button>
+      <span class="msg" id="savemsg"></span>
+    </span>
+    <span class="status" id="status"></span>
+  </header>
+
+  <div class="panel kpis">
+    <div class="kpi"><div class="label">SimTime</div><div class="value" id="t">-</div><div class="note">통합 시계</div></div>
+    <div class="kpi"><div class="label">IT 전력</div><div class="value" id="it">-</div><div class="note" id="itnote">창 평균</div></div>
+    <div class="kpi"><div class="label">제거열 (현재)</div><div class="value" id="rm">-</div><div class="note" id="rmnote">냉각수 + 공기 코일</div></div>
+    <div class="kpi"><div class="label">부분 PUE</div><div class="value" id="pue">-</div><div class="note">(IT + CRAH 팬 + 펌프) / IT</div></div>
+    <div class="kpi"><div class="label">흡기 최고</div><div class="value" id="imax">-</div><div class="note">랙별 창 평균의 최고</div></div>
+    <div class="kpi"><div class="label">흡기 평균</div><div class="value" id="iavg">-</div><div class="note" id="inote">랙별 창 평균의 평균</div></div>
+  </div>
+
+  <div class="tabs" role="tablist">
+    <button type="button" role="tab" id="tab-btn-summary" aria-selected="true" data-tab="summary">요약</button>
+    <button type="button" role="tab" id="tab-btn-racks" aria-selected="false" data-tab="racks">랙</button>
+    <button type="button" role="tab" id="tab-btn-ab" aria-selected="false" data-tab="ab">A/B 비교</button>
+  </div>
+
+  <section id="tab-ab" class="ab" hidden>
+    <div class="panel">
+      <div class="pick">
+        <label>A <select id="abA"></select></label>
+        <label>B <select id="abB"></select></label>
+        <span id="abnote">저장한 리포트 두 개를 고른다(Saved/Reports). 배치를 바꾸기 전후에 저장하면 장비 이동도 보인다.</span>
+      </div>
+      <div id="abwarn"></div>
+      <div class="scroll"><table id="abtable"></table></div>
+    </div>
+    <div class="panel" style="margin-top:12px">
+      <div class="head" style="display:flex;gap:16px;align-items:flex-end;flex-wrap:wrap">
+        <div style="flex:1;min-width:220px">
+          <h2 style="font-size:13px;margin:0;font-weight:600">흡기 차이 평면도 (B − A) <span class="tag">계산값</span></h2>
+          <div style="color:var(--faint);font-size:11px;margin-top:2px" id="absub">랙·스파인 색 = 흡기 창 평균 차</div>
+        </div>
+        <div class="scale">
+          <div class="bar" id="abbar"></div>
+          <div class="ends" id="abends"></div>
+          <div class="note">±0.5 K 이내는 회색 = 구분 불가(같은 설정도 실행마다 약 0.5 K 흔들린다) · 점선 = A 위치, 화살표 = 이동, 굵은 테 = B에만 있음</div>
+        </div>
+      </div>
+      <svg id="abplan"></svg>
+      <div class="tablebar"><button id="abtbtn" type="button">랙별 표 보기</button></div>
+      <div id="abrtable" hidden></div>
+    </div>
+  </section>
+
+  <section id="tab-racks" hidden>
+    <div class="panel">
+      <h2 style="font-size:13px;margin:0;font-weight:600">랙 목록 <span class="tag">계산값</span></h2>
+      <div class="sub" style="color:var(--faint);font-size:11px;margin:2px 0 6px" id="racksub">마지막 스텝 값 · 행을 누르면 아래에 슬롯·부품이 나온다</div>
+      <div class="scroll"><table id="racktable"></table></div>
+    </div>
+    <div class="panel detail" style="margin-top:12px" id="rackdetail">
+      <div class="mode">평면도나 목록에서 랙을 고르면 슬롯과 부품이 여기 나온다.</div>
+    </div>
+  </section>
+
+  <section id="tab-summary">
+  <div class="panel view3d">
+    <h2 style="font-size:13px;margin:0;font-weight:600">3D 방 보기 <span class="tag">계산값</span></h2>
+    <div style="color:var(--faint);font-size:11px;margin:2px 0 8px" id="sub3d">장비 상자와 흡기 창 평균 색(아래 평면도와 같은 색 범위) · 벽 = 공기 격자 경계</div>
+    <canvas id="c3d" aria-label="3D 방 보기: 드래그 회전, 휠 확대, 우클릭 드래그 이동. 같은 내용은 아래 평면도와 흡기 표에 있다."></canvas>
+    <div class="over">드래그: 회전 · 휠: 확대 · 우클릭 드래그: 이동 · 랙 클릭: 랙 탭</div>
+    <div class="err" id="err3d" hidden></div>
+    <div class="tablebar" style="align-items:center;flex-wrap:wrap">
+      <button id="pipebtn" type="button" aria-pressed="true">냉각수 배관: 켜짐</button>
+      <button id="pipetbtn" type="button">배관 표 보기</button>
+      <span id="pipelegend" style="display:inline-flex;align-items:center;gap:6px;font-size:11px;color:var(--faint)">
+        냉각수 온도 <span id="pipebar" style="display:inline-block;width:120px;height:8px;border-radius:2px"></span><span id="pipeends"></span>
+        · <span style="display:inline-block;width:14px;height:8px;border-radius:2px;background:#7b8494"></span> 모델 값 없음(헤더·펌프 연결) · 원뿔 = 계산된 유량 방향</span>
+    </div>
+    <div id="pipetable" hidden></div>
+    <div class="tablebar" style="align-items:center;flex-wrap:wrap">
+      <button id="airbtn" type="button" aria-pressed="false">기류: 꺼짐</button>
+      <label style="font-size:11px;color:var(--faint)">높이 <select id="airlayer" disabled><option value="all">모든 층</option></select></label>
+      <label style="font-size:11px;color:var(--faint)">길이 기준 <select id="airscale" disabled>
+        <option value="p95" selected>95 분위수 (지금 표본)</option><option value="max">최대 (지금 표본)</option>
+        <option value="0.25">고정 0.25 m/s</option><option value="1">고정 1 m/s</option></select></label>
+      <span id="airlegend" hidden style="display:inline-flex;align-items:center;gap:6px;font-size:11px;color:var(--faint)">
+        속력 <span id="airbar" style="display:inline-block;width:120px;height:8px;border-radius:2px"></span><span id="airends"></span></span>
+    </div>
+    <div id="airnote" style="font-size:11px;color:var(--faint);margin-top:4px" hidden></div>
+  </div>
+  <div class="panel plan">
+    <div class="head">
+      <div>
+        <h2 style="font-size:13px;margin:0;font-weight:600">흡기 평면도 <span class="tag">계산값</span></h2>
+        <div class="sub" style="color:var(--faint);font-size:11px;margin-top:2px" id="plansub">위에서 본 장비 발자국 · 랙·스파인 색 = 흡기 창 평균</div>
+      </div>
+      <div class="scale">
+        <div class="bar" id="pbar"></div>
+        <div class="ends" id="pends"></div>
+        <div class="note"><span style="color:#f0b43c">▲</span> 27 °C 권장 상한 초과 · 회색 = CDU·CRAH·벽 (점선 = 자동 배치 CRAH, 화살표 = 토출)</div>
+      </div>
+    </div>
+    <svg id="plansvg"></svg>
+    <div class="tablebar"><button id="pbtn" type="button">흡기 표 보기</button>
+      <button id="prange" type="button" aria-pressed="false">색 범위: 고정 21~29 °C</button></div>
+    <div id="ptable" hidden></div>
+  </div>
+
+  <div class="charts">
+    <div class="panel chart" id="c-inlet">
+      <h2>흡기 온도</h2><div class="sub">랙별 1 s 평균의 최고·평균 · °C</div>
+      <div class="legend"></div><svg></svg>
+    </div>
+    <div class="panel chart" id="c-heat">
+      <h2>IT 전력 대 제거열</h2><div class="sub">1 s 평균 · kW · 제거열 = 냉각수 방출 + 공기 코일</div>
+      <div class="legend"></div><svg></svg>
+    </div>
+    <div class="panel chart" id="c-pue">
+      <h2>부분 PUE</h2><div class="sub">1 s 평균 · (IT + CRAH 팬 + 펌프) / IT · 시설 PUE 아님</div>
+      <div class="legend"></div><svg></svg>
+    </div>
+  </div>
+
+  <div class="tablebar"><button id="tbtn" type="button">표 보기</button><span class="mode" id="tnote"></span></div>
+  <div id="table" hidden></div>
+
+  </section>
+
+  <div class="foot">보정되지 않은 모델의 계산값이다. 보존 잔차가 작다는 것은 장부가 맞는다는 뜻이지 실제 설비 온도가 맞는다는 뜻이 아니다.
+    칠러·냉각탑·UPS·배전 손실·조명은 모델에 없다. 점선 세로선은 <code>vrg.Eval.Event</code> 시각이다(적용 전이면 "예정").
+    최근 600 s를 1 s 간격으로 보관하며 1초마다 읽는다(읽기 전용).</div>
+</div>
+<div class="tip" id="tip"></div>
+
+<script>
+const $ = id => document.getElementById(id);
+const toC = k => k - 273.15;                       // 규약 2: K로 받고 화면에서만 °C
+const kw = w => (w / 1000).toFixed(1) + ' kW';
+const LENGTH_S = 600;
+
+// ---- 요약 카드 (1단계) ----
+async function pollSnapshot() {
+  const r = await fetch('/api/snapshot', { cache:'no-store' });
+  if (!r.ok) throw new Error(r.status === 503 ? '시뮬레이션 액터가 아직 값을 내지 않았다' : 'HTTP ' + r.status);
+  const s = await r.json();
+  $('t').textContent = s.simTimeS.toFixed(2) + ' s';
+  $('mode').textContent = s.mode === 'simulation' ? '시뮬레이션 모드' : '배치 모드 (물리 정지)';
+  if (s.evalReady) {
+    $('it').textContent = kw(s.itWindowW);
+    $('itnote').textContent = '창 평균 ' + s.windowS.toFixed(0) + ' s · 현재 ' + kw(s.itNowW);
+    $('rm').textContent = kw(s.removedNowW);
+    $('rmnote').textContent = '냉각수 ' + kw(s.coolantRemovedNowW) + ' + 공기 ' + kw(s.airRemovedNowW);
+    $('pue').textContent = s.partialPueWindow === null ? '계산 불가' : s.partialPueWindow.toFixed(4);
+    $('imax').textContent = toC(s.inletWindowMeanMaxK).toFixed(2) + ' °C';
+    $('iavg').textContent = toC(s.inletWindowMeanAvgK).toFixed(2) + ' °C';
+    $('inote').textContent = '흡기 ' + s.inletCount + '곳, 창 평균';
+  } else {
+    for (const id of ['it', 'rm', 'pue', 'imax', 'iavg']) $(id).textContent = '-';
+  }
+}
+
+// ---- 시계열 (2단계) ----
+let points = [], events = [], generation = null, lastT = -1;
+async function pollSeries() {
+  const r = await fetch('/api/series?since=' + lastT, { cache:'no-store' });
+  if (!r.ok) throw new Error('시계열 HTTP ' + r.status);
+  const s = await r.json();
+  if (s.generation !== generation || s.simTimeS < lastT) {
+    // 실행을 다시 시작했다: 쌓은 점을 버리고 처음부터 받는다.
+    if (generation !== null && lastT >= 0) { generation = s.generation; lastT = -1; points = []; return pollSeries(); }
+    generation = s.generation;
+  }
+  for (const p of s.points) if (p.t > lastT) { points.push(p); lastT = p.t; }
+  if (points.length > LENGTH_S) points = points.slice(points.length - LENGTH_S);
+  events = s.events;
+}
+
+const charts = [
+  { id:'c-inlet', series:[
+      { name:'최고', color:'var(--s1)', get:p => toC(p.inletMaxK) },
+      { name:'평균', color:'var(--s2)', get:p => toC(p.inletMeanK) } ], fmt:v => v.toFixed(2) + ' °C' },
+  { id:'c-heat', series:[
+      { name:'IT 전력', color:'var(--s1)', get:p => p.itW / 1000 },
+      { name:'제거열', color:'var(--s2)', get:p => (p.coolantRemovedW + p.airRemovedW) / 1000 } ], fmt:v => v.toFixed(1) + ' kW' },
+  { id:'c-pue', series:[
+      { name:'부분 PUE', color:'var(--s1)', get:p => p.partialPue } ], fmt:v => v.toFixed(4) },
+];
+for (const c of charts) {
+  const el = $(c.id);
+  c.svg = el.querySelector('svg');
+  c.legend = el.querySelector('.legend');
+  // 시리즈가 2개 이상일 때만 범례(1개는 제목이 이름이다).
+  if (c.series.length > 1) c.legend.innerHTML = c.series.map(s => `<span><i style="background:${s.color}"></i>${s.name}</span>`).join('');
+}
+
+const NS = 'http://www.w3.org/2000/svg';
+const mk = (tag, attrs, parent) => { const e = document.createElementNS(NS, tag); for (const k in attrs) e.setAttribute(k, attrs[k]); parent && parent.appendChild(e); return e; };
+function niceTicks(lo, hi, n) {
+  const span = hi - lo || 1, step0 = span / n, mag = Math.pow(10, Math.floor(Math.log10(step0)));
+  const step = [1, 2, 2.5, 5, 10].map(m => m * mag).find(s => span / s <= n) || 10 * mag;
+  const out = []; for (let v = Math.ceil(lo / step) * step; v <= hi + step * 1e-9; v += step) out.push(+v.toFixed(10));
+  return out;
+}
+
+function draw(c) {
+  const svg = c.svg, W = svg.clientWidth || 340, H = 190, L = 48, R = 46, T = 14, B = 22;
+  svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
+  svg.replaceChildren();
+  const pts = points.filter(p => c.series.every(s => Number.isFinite(s.get(p))));
+  if (pts.length < 2) { mk('text', { x:L, y:H / 2 }, svg).textContent = '시계열을 모으는 중…'; c.geom = null; return; }
+  const t1 = pts[pts.length - 1].t, t0 = Math.max(pts[0].t, t1 - LENGTH_S);
+  let lo = Infinity, hi = -Infinity;
+  for (const p of pts) for (const s of c.series) { const v = s.get(p); lo = Math.min(lo, v); hi = Math.max(hi, v); }
+  const pad = (hi - lo) * 0.08 || Math.abs(hi) * 0.001 || 1; lo -= pad; hi += pad;
+  const x = t => L + (t - t0) / Math.max(t1 - t0, 1) * (W - L - R);
+  const y = v => T + (hi - v) / (hi - lo) * (H - T - B);
+  const g = mk('g', { class:'grid' }, svg);
+  for (const v of niceTicks(lo, hi, 4)) {
+    mk('line', { x1:L, x2:W - R, y1:y(v), y2:y(v) }, g);
+    mk('text', { x:L - 6, y:y(v) + 3.5, 'text-anchor':'end' }, svg).textContent = c.fmt(v).replace(/ .*/, '');
+  }
+  for (const t of niceTicks(t0, t1, 5)) mk('text', { x:x(t), y:H - 6, 'text-anchor':'middle' }, svg).textContent = t + ' s';
+  // 이벤트 세로선: 보이는 시간 구간 안의 것만.
+  for (const e of events) {
+    if (e.t < t0 || e.t > t1) continue;
+    const eg = mk('g', { class:'event' }, svg);
+    mk('line', { x1:x(e.t), x2:x(e.t), y1:T, y2:H - B }, eg);
+    const what = e.kind === 'util' ? `부하 ${e.value}` : e.kind === 'rackutil' ? `랙 ${e.index} 부하 ${e.value}` : e.kind;
+    mk('text', { x:x(e.t) + 4, y:T + 9 }, eg).textContent = `${e.t} s ${what}${e.applied ? '' : ' (예정)'}`;
+  }
+  for (const s of c.series) {
+    const d = pts.map((p, i) => (i ? 'L' : 'M') + x(p.t).toFixed(1) + ' ' + y(s.get(p)).toFixed(1)).join('');
+    mk('path', { d, class:'series', stroke:s.color }, svg);
+  }
+  // 2개 시리즈는 선 끝에 직접 라벨(4개 이하).
+  if (c.series.length > 1) {
+    const last = pts[pts.length - 1];
+    const ys = c.series.map(s => y(s.get(last)));
+    if (Math.abs(ys[0] - ys[1]) < 12) {          // 두 라벨이 겹치면 가운데에서 위아래로 벌린다
+      const m = (ys[0] + ys[1]) / 2, up = ys[0] <= ys[1];
+      ys[0] = m + (up ? -6 : 6); ys[1] = m + (up ? 6 : -6);
+    }
+    c.series.forEach((s, i) => { mk('text', { x:W - R + 6, y:ys[i] + 3.5 }, svg).textContent = s.name; });
+  }
+  c.geom = { pts, x, y, L, R, T, B, W, H };
+  c.cross = mk('line', { class:'cross', y1:T, y2:H - B, visibility:'hidden' }, svg);
+  c.dots = c.series.map(s => mk('circle', { r:4, class:'dot', fill:s.color, visibility:'hidden' }, svg));
+}
+
+// 크로스헤어 + 툴팁: 세 차트가 같은 SimTime을 가리킨다.
+const tip = $('tip');
+function hover(t, ev) {
+  if (t === null) { tip.style.display = 'none'; for (const c of charts) if (c.geom) { c.cross.setAttribute('visibility', 'hidden'); c.dots.forEach(d => d.setAttribute('visibility', 'hidden')); } return; }
+  let rows = '', when = null;
+  for (const c of charts) {
+    if (!c.geom) continue;
+    const { pts, x, y } = c.geom;
+    let best = pts[0]; for (const p of pts) if (Math.abs(p.t - t) < Math.abs(best.t - t)) best = p;
+    when = best.t;
+    c.cross.setAttribute('x1', x(best.t)); c.cross.setAttribute('x2', x(best.t)); c.cross.setAttribute('visibility', 'visible');
+    c.series.forEach((s, i) => { c.dots[i].setAttribute('cx', x(best.t)); c.dots[i].setAttribute('cy', y(s.get(best))); c.dots[i].setAttribute('visibility', 'visible');
+      rows += `<div><span class="k">${s.name}</span> ${c.fmt(s.get(best))}</div>`; });
+  }
+  tip.innerHTML = `<div class="k">SimTime ${when} s</div>` + rows;
+  tip.style.display = 'block';
+  const left = Math.min(ev.clientX + 14, window.innerWidth - tip.offsetWidth - 8);
+  tip.style.left = left + 'px'; tip.style.top = (ev.clientY + 14) + 'px';
+}
+for (const c of charts) {
+  c.svg.addEventListener('mousemove', ev => {
+    if (!c.geom) return;
+    const r = c.svg.getBoundingClientRect(), px = (ev.clientX - r.left) / r.width * c.geom.W;
+    const { pts, L, R, W } = c.geom, t0 = pts[0].t, t1 = pts[pts.length - 1].t;
+    hover(t0 + (px - L) / (W - L - R) * Math.max(t1 - t0, 1), ev);
+  });
+  c.svg.addEventListener('mouseleave', () => hover(null));
+}
+
+// 표 보기: 색 없이도 값을 읽을 수 있게(최근 30점).
+$('tbtn').addEventListener('click', () => { $('table').hidden = !$('table').hidden; $('tbtn').textContent = $('table').hidden ? '표 보기' : '표 닫기'; renderTable(); });
+function renderTable() {
+  if ($('table').hidden) return;
+  const rows = points.slice(-30).reverse().map(p => `<tr><td>${p.t}</td><td>${toC(p.inletMaxK).toFixed(2)}</td><td>${toC(p.inletMeanK).toFixed(2)}</td>`
+    + `<td>${(p.itW / 1000).toFixed(1)}</td><td>${((p.coolantRemovedW + p.airRemovedW) / 1000).toFixed(1)}</td><td>${p.partialPue === null ? '-' : p.partialPue.toFixed(4)}</td></tr>`).join('');
+  $('table').innerHTML = `<table><thead><tr><th>SimTime s</th><th>흡기 최고 °C</th><th>흡기 평균 °C</th><th>IT kW</th><th>제거열 kW</th><th>부분 PUE</th></tr></thead><tbody>${rows}</tbody></table>`;
+  $('tnote').textContent = '최근 30 s, 1 s 평균';
+}
+
+// ---- 평면도 (3단계) ----
+// 단일 색조 순차(파랑). 어두운 배경이라 낮은 값 = 배경 쪽 어두운 단계, 높은 값 = 밝은 단계(참조 팔레트 700 -> 100).
+// 범위는 데모처럼 21~29 °C 고정: 실행·배치끼리 같은 색이 같은 온도다. 범위 밖은 끝 색으로 자르고 툴팁에 적는다.
+const SEQ = ['#0d366b', '#104281', '#184f95', '#1c5cab', '#256abf', '#2a78d6', '#3987e5', '#5598e7', '#6da7ec', '#86b6ef', '#9ec5f4', '#b7d3f6', '#cde2fb'];
+// 기본은 고정(실행끼리 비교 가능). "현재 값"은 지금 흡기 최저~최고로 늘려 랙 사이 차이를 보이게 한다(실행끼리 비교 불가).
+const FIXED_MIN = 21, FIXED_MAX = 29;
+let TMIN = FIXED_MIN, TMAX = FIXED_MAX, autoRange = false;
+function updateRange() {
+  TMIN = FIXED_MIN; TMAX = FIXED_MAX;
+  if (autoRange && layout && layout.inletWindowMeanK.length > 0) {
+    const cs = layout.inletWindowMeanK.map(toC);
+    TMIN = Math.floor(Math.min(...cs) * 10) / 10; TMAX = Math.ceil(Math.max(...cs) * 10) / 10;
+    if (TMAX - TMIN < 0.5) TMAX = TMIN + 0.5;
+  }
+  // 끝 라벨은 막대 안쪽으로 붙이고(겹침 방지), 27 °C 눈금은 숫자만(뜻은 아래 설명 줄에 있다).
+  const marks = [[TMIN, TMIN.toFixed(1) + ' °C', 'translateX(0)'], [TMAX, TMAX.toFixed(1) + ' °C', 'translateX(-100%)']];
+  if (27 > TMIN + 0.15 * (TMAX - TMIN) && 27 < TMAX - 0.15 * (TMAX - TMIN)) marks.splice(1, 0, [27, '▲27', 'translateX(-50%)']);
+  $('pends').innerHTML = marks.map(([v, s, tf]) => `<span style="left:${(v - TMIN) / (TMAX - TMIN) * 100}%;transform:${tf}">${s}</span>`).join('');
+}
+$('prange').addEventListener('click', () => {
+  autoRange = !autoRange;
+  $('prange').setAttribute('aria-pressed', String(autoRange));
+  $('prange').textContent = autoRange ? '색 범위: 현재 값 (실행끼리 비교 불가)' : '색 범위: 고정 21~29 °C';
+  drawPlan();
+  update3D();
+});
+function seqColor(c) {
+  const t = Math.max(0, Math.min(1, (c - TMIN) / (TMAX - TMIN))) * (SEQ.length - 1), i = Math.min(Math.floor(t), SEQ.length - 2), f = t - i;
+  const a = SEQ[i].match(/\w\w/g).map(h => parseInt(h, 16)), b = SEQ[i + 1].match(/\w\w/g).map(h => parseInt(h, 16));
+  return 'rgb(' + a.map((v, k) => Math.round(v + (b[k] - v) * f)).join(',') + ')';
+}
+$('pbar').style.background = 'linear-gradient(90deg,' + SEQ.join(',') + ')';
+
+const KIND = { rack:'랙', spine:'스파인', cdu:'CDU', crah:'CRAH', barrier:'벽·차단막' };
+let layout = null;
+async function pollLayout() {
+  const r = await fetch('/api/layout', { cache:'no-store' });
+  if (!r.ok) throw new Error('평면도 HTTP ' + r.status);
+  layout = await r.json();
+}
+const inletC = e => (layout && e.inlet >= 0 && e.inlet < layout.inletWindowMeanK.length) ? toC(layout.inletWindowMeanK[e.inlet]) : null;
+function drawPlan() {
+  const svg = $('plansvg');
+  svg.replaceChildren();
+  updateRange();
+  if (!layout || layout.equipment.length === 0) { mk('text', { x:10, y:20 }, svg).textContent = '장비가 없다'; return; }
+  // 화면 x = 세계 X, 화면 y = 세계 Y(위에서 본 UE 좌표와 같은 방향, 거울 없음).
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  const grow = (x, y) => { x0 = Math.min(x0, x); x1 = Math.max(x1, x); y0 = Math.min(y0, y); y1 = Math.max(y1, y); };
+  if (layout.domain) { grow(layout.domain.minXM, layout.domain.minYM); grow(layout.domain.maxXM, layout.domain.maxYM); }
+  for (const e of layout.equipment) { const r = Math.hypot(e.depthM, e.widthM) / 2; grow(e.xM - r, e.yM - r); grow(e.xM + r, e.yM + r); }
+  const pad = 0.6; x0 -= pad; y0 -= pad; x1 += pad; y1 += pad;
+  const W = 1000, H = Math.max(200, Math.round(W * (y1 - y0) / (x1 - x0)));
+  svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
+  const s = W / (x1 - x0), X = x => (x - x0) * s, Y = y => (y - y0) * s;
+  if (layout.domain) mk('rect', { class:'domain', x:X(layout.domain.minXM), y:Y(layout.domain.minYM),
+    width:(layout.domain.maxXM - layout.domain.minXM) * s, height:(layout.domain.maxYM - layout.domain.minYM) * s }, svg);
+  const order = { barrier:0, cdu:1, crah:2, spine:3, rack:3 };
+  const items = layout.equipment.slice().sort((a, b) => order[a.kind] - order[b.kind]);
+  let hot = 0, colored = 0;
+  for (const e of items) {
+    const g = mk('g', { transform:`translate(${X(e.xM).toFixed(1)} ${Y(e.yM).toFixed(1)}) rotate(${e.yawDeg.toFixed(2)})` }, svg);
+    const w = e.depthM * s, h = e.widthM * s, c = inletC(e);
+    let cls = 'unit' + (e.auto ? ' auto' : ''), fill = null;
+    if (e.kind === 'rack' || e.kind === 'spine') { cls = 'cab' + (c === null ? ' none' : ''); if (c !== null) { fill = seqColor(c); ++colored; } }
+    else if (e.kind === 'barrier') cls = 'barrier';
+    const rect = mk('rect', { class:cls, x:-w / 2, y:-h / 2, width:w, height:h, rx:Math.min(2, w / 4) }, g);
+    if (fill) rect.setAttribute('fill', fill);
+    if (e.kind === 'crah') {                       // 토출 방향(+X) 화살표
+      const a = w / 2 + Math.min(18, 0.6 * s);
+      mk('path', { class:'arrow', d:`M ${w / 2} 0 L ${a} 0 M ${a - 5} -4 L ${a} 0 L ${a - 5} 4` }, g);
+    }
+    if (e.kind === 'cdu' || e.kind === 'crah') mk('text', { class:'lbl', x:X(e.xM), y:Y(e.yM) + 3.5 }, svg).textContent = KIND[e.kind];
+    if (c !== null && c > 27) { ++hot; mk('text', { class:'warn', x:X(e.xM), y:Y(e.yM) + 4 }, svg).textContent = '▲'; }
+    if (e.inlet >= 0) { rect.classList.add('pick'); rect.addEventListener('click', () => { selectRack(e.inlet); showTab('racks'); }); }
+    rect.addEventListener('mousemove', ev => planTip(e, c, ev, g));
+    rect.addEventListener('mouseleave', () => { tip.style.display = 'none'; svg.querySelectorAll('.hover').forEach(n => n.remove()); });
+  }
+  $('plansub').textContent = `위에서 본 장비 발자국 · 랙·스파인 색 = 흡기 창 평균 (${colored}곳` + (hot ? `, 27 °C 초과 ${hot}곳` : '') + ')'
+    + (colored === 0 ? ' · 시뮬레이션 스텝 전이라 흡기 값 없음' : '');
+  renderPlanTable();
+}
+function planTip(e, c, ev, g) {
+  const svg = $('plansvg');
+  svg.querySelectorAll('.hover').forEach(n => n.remove());
+  const r = g.querySelector('rect');
+  mk('rect', { class:'hover', x:r.getAttribute('x'), y:r.getAttribute('y'), width:r.getAttribute('width'), height:r.getAttribute('height') }, g);
+  const val = c === null ? '' : `<div><span class="k">흡기 창 평균</span> ${c.toFixed(2)} °C${c < TMIN || c > TMAX ? ' (색 범위 밖)' : ''}${c > 27 ? ' ▲' : ''}</div>`;
+  tip.innerHTML = `<div class="k">${KIND[e.kind]}${e.auto ? ' (자동 배치)' : ''}</div><div>${e.name}</div>`
+    + `<div><span class="k">위치</span> (${e.xM.toFixed(2)}, ${e.yM.toFixed(2)}) m · ${Math.round(e.yawDeg)}°</div>` + val;
+  tip.style.display = 'block';
+  tip.style.left = Math.min(ev.clientX + 14, window.innerWidth - tip.offsetWidth - 8) + 'px';
+  tip.style.top = (ev.clientY + 14) + 'px';
+}
+$('pbtn').addEventListener('click', () => { $('ptable').hidden = !$('ptable').hidden; $('pbtn').textContent = $('ptable').hidden ? '흡기 표 보기' : '흡기 표 닫기'; renderPlanTable(); });
+function renderPlanTable() {
+  if ($('ptable').hidden || !layout) return;
+  const rows = layout.equipment.filter(e => inletC(e) !== null).sort((a, b) => inletC(b) - inletC(a)).map(e => {
+    const c = inletC(e);
+    return `<tr><td style="text-align:left">${KIND[e.kind]} ${e.name}</td><td>${e.xM.toFixed(2)}</td><td>${e.yM.toFixed(2)}</td><td>${c.toFixed(2)}</td><td>${c > 27 ? '▲ 초과' : ''}</td></tr>`;
+  }).join('');
+  $('ptable').innerHTML = `<table><thead><tr><th style="text-align:left">장비</th><th>X m</th><th>Y m</th><th>흡기 창 평균 °C</th><th>27 °C</th></tr></thead><tbody>${rows}</tbody></table>`;
+}
+
+// ---- 3D 방 보기 (데모 참고: 비스듬히 위, 낮게 자른 벽, three.js 0.128) ----
+// 좌표: 세계 (X, Y, Z-위) [m] -> three (x, 높이, z) = (X, Z, Y). 위에서 보면 아래 2D 평면도와 같은 배치(거울 없음).
+// UE yaw(+X -> +Y)는 three에서 y축 -yaw 회전이다. 장면은 배치가 바뀔 때만 다시 만들고, 1초 갱신은 색만 바꾼다.
+const V3 = { ok: typeof THREE !== 'undefined' && !!THREE.OrbitControls, key:'', fitKey:'', cabinets:[], pickables:[] };
+const P3 = (x, y, z) => new THREE.Vector3(x, z, y);
+const KIND_COLOR = { cdu:0x59606e, crah:0x59606e, barrier:0x5c6475, none:0x2a3040 };
+function init3D() {
+  const canvas = $('c3d');
+  V3.renderer = new THREE.WebGLRenderer({ canvas, antialias:true });
+  V3.renderer.setPixelRatio(Math.min(2, window.devicePixelRatio || 1));
+  V3.scene = new THREE.Scene();
+  V3.scene.background = new THREE.Color(0x14171d);
+  V3.cam = new THREE.PerspectiveCamera(38, 2, 0.1, 400);
+  V3.ctl = new THREE.OrbitControls(V3.cam, canvas);
+  V3.ctl.enableDamping = true; V3.ctl.maxPolarAngle = Math.PI * 0.47;
+  V3.scene.add(new THREE.HemisphereLight(0xc8d2e6, 0x20242c, 0.9));
+  const sun = new THREE.DirectionalLight(0xffffff, 0.55); sun.position.set(-6, 14, -8); V3.scene.add(sun);
+  V3.room = new THREE.Group(); V3.items = new THREE.Group(); V3.pipes = new THREE.Group(); V3.scene.add(V3.room, V3.items, V3.pipes);
+  V3.pipePickables = []; V3.pipeMats = []; V3.pipeArrows = []; V3.pipeKey = '';
+  V3.air = new THREE.Group(); V3.air.visible = false; V3.scene.add(V3.air);
+  // ▲ 경고 표식(27 °C 권장 상한 초과): 색만으로 상태를 알리지 않도록 기호를 띄운다.
+  const c = document.createElement('canvas'); c.width = c.height = 64;
+  const g = c.getContext('2d'); g.fillStyle = '#f0b43c'; g.font = 'bold 52px sans-serif'; g.textAlign = 'center'; g.textBaseline = 'middle'; g.fillText('▲', 32, 36);
+  V3.warnTex = new THREE.CanvasTexture(c);
+  const ray = new THREE.Raycaster(), ndc = new THREE.Vector2();
+  const hit = ev => { const r = canvas.getBoundingClientRect(); ndc.set((ev.clientX - r.left) / r.width * 2 - 1, -(ev.clientY - r.top) / r.height * 2 + 1);
+    ray.setFromCamera(ndc, V3.cam);
+    const h = ray.intersectObjects(V3.pipes.visible ? V3.pickables.concat(V3.pipePickables) : V3.pickables, false)[0]; return h ? h.object.userData : null; };
+  let down = null;
+  canvas.addEventListener('pointerdown', ev => { down = { x:ev.clientX, y:ev.clientY }; });
+  canvas.addEventListener('pointerup', ev => {
+    if (down && Math.hypot(ev.clientX - down.x, ev.clientY - down.y) < 4) { const u = hit(ev), e = u && u.e; if (e && e.inlet >= 0) { selectRack(e.inlet); showTab('racks'); } }
+    down = null;
+  });
+  canvas.addEventListener('pointermove', ev => {
+    if (ev.buttons) { tip.style.display = 'none'; return; }
+    const u = hit(ev), e = u && u.e;
+    if (!u) { tip.style.display = 'none'; return; }
+    if (u.pipe !== undefined) tip.innerHTML = pipeTip(layout.pipes[u.pipe]);
+    else { const cv = inletC(e);
+    tip.innerHTML = `<div class="k">${KIND[e.kind]}${e.auto ? ' (자동 배치)' : ''}</div><div>${e.name}</div><div><span class="k">위치</span> (${e.xM.toFixed(2)}, ${e.yM.toFixed(2)}) m · 높이 ${(e.heightM || 0).toFixed(2)} m</div>`
+      + (cv === null ? '' : `<div><span class="k">흡기 창 평균</span> ${cv.toFixed(2)} °C${cv > 27 ? ' ▲' : ''}</div>`); }
+    tip.style.display = 'block';
+    tip.style.left = Math.min(ev.clientX + 14, window.innerWidth - tip.offsetWidth - 8) + 'px'; tip.style.top = (ev.clientY + 14) + 'px';
+  });
+  canvas.addEventListener('pointerleave', () => { tip.style.display = 'none'; });
+  const loop = () => {
+    requestAnimationFrame(loop);
+    if (tab !== 'summary' || document.hidden) return;     // 보이지 않으면 그리지 않는다
+    const w = canvas.clientWidth, h = canvas.clientHeight;
+    if (w > 0 && (canvas.width !== Math.floor(w * V3.renderer.getPixelRatio()) || canvas.height !== Math.floor(h * V3.renderer.getPixelRatio()))) {
+      V3.renderer.setSize(w, h, false); V3.cam.aspect = w / h; V3.cam.updateProjectionMatrix();
+    }
+    V3.ctl.update();
+    V3.renderer.render(V3.scene, V3.cam);
+  };
+  requestAnimationFrame(loop);   // 첫 프레임은 스크립트 전체(탭 상태 선언 포함)가 끝난 뒤
+}
+function clear3D(group) {
+  for (const o of [...group.children]) {
+    group.remove(o);
+    o.traverse(n => { if (n.geometry) n.geometry.dispose(); if (n.material && n.material.map !== V3.warnTex) n.material.dispose(); });
+  }
+}
+function build3D(L) {
+  clear3D(V3.room); clear3D(V3.items); V3.cabinets = []; V3.pickables = [];
+  let d = L.domain;
+  if (!d) {   // 도메인이 없으면 장비 범위로
+    const xs = L.equipment.map(e => e.xM), ys = L.equipment.map(e => e.yM);
+    d = { minXM:Math.min(...xs) - 1, maxXM:Math.max(...xs) + 1, minYM:Math.min(...ys) - 1, maxYM:Math.max(...ys) + 1, maxZM:3 };
+  }
+  const W = d.maxXM - d.minXM, D = d.maxYM - d.minYM, cx = (d.minXM + d.maxXM) / 2, cy = (d.minYM + d.maxYM) / 2;
+  const floor = new THREE.Mesh(new THREE.BoxGeometry(W, 0.12, D), new THREE.MeshStandardMaterial({ color:0x3a404c, roughness:.95 }));
+  floor.position.copy(P3(cx, cy, -0.06)); V3.room.add(floor);
+  const n = Math.ceil(Math.max(W, D)), grid = new THREE.GridHelper(n, n, 0x4a5260, 0x434a57);
+  grid.position.copy(P3(cx, cy, 0.005)); grid.material.opacity = .35; grid.material.transparent = true; V3.room.add(grid);
+  // 벽 = 공기 격자 경계(계산 영역). 카메라 쪽(X 최소·Y 최소) 두 면은 낮게 잘라 안이 보이게 한다(데모처럼).
+  const wallM = new THREE.MeshStandardMaterial({ color:0x4a515e, roughness:.9 });
+  const tall = Math.min(1.1, d.maxZM || 1.1), low = 0.35;
+  for (const [x0, y0, x1, y1, h] of [[d.minXM, d.minYM, d.maxXM, d.minYM, low], [d.minXM, d.maxYM, d.maxXM, d.maxYM, tall],
+                                     [d.minXM, d.minYM, d.minXM, d.maxYM, low], [d.maxXM, d.minYM, d.maxXM, d.maxYM, tall]]) {
+    const alongX = y0 === y1, len = alongX ? x1 - x0 : y1 - y0;
+    const w = new THREE.Mesh(new THREE.BoxGeometry(alongX ? len + 0.18 : 0.18, h, alongX ? 0.18 : len), wallM);
+    w.position.copy(P3((x0 + x1) / 2, (y0 + y1) / 2, h / 2)); V3.room.add(w);
+  }
+  const edgeM = new THREE.LineBasicMaterial({ color:0x14171d, transparent:true, opacity:.55 });
+  for (const e of L.equipment) {
+    const h = e.heightM > 0 ? e.heightM : 2.0;          // 옛 데이터에 높이가 없으면 2 m로만 그린다
+    const cabinet = e.kind === 'rack' || e.kind === 'spine';
+    const mat = new THREE.MeshStandardMaterial({ color:cabinet ? KIND_COLOR.none : KIND_COLOR[e.kind] || KIND_COLOR.cdu, roughness:.7,
+      transparent:e.kind === 'barrier' || e.auto, opacity:e.kind === 'barrier' ? .55 : e.auto ? .6 : 1 });
+    const box = new THREE.Mesh(new THREE.BoxGeometry(e.depthM, h, e.widthM), mat);
+    box.position.copy(P3(e.xM, e.yM, (e.baseZM || 0) + h / 2));
+    box.rotation.y = -e.yawDeg * Math.PI / 180;
+    box.userData.e = e;
+    box.add(new THREE.LineSegments(new THREE.EdgesGeometry(box.geometry), edgeM));
+    V3.items.add(box); V3.pickables.push(box);
+    if (e.kind === 'crah') {                            // 토출 방향(+X) 화살표
+      const dir = new THREE.Vector3(1, 0, 0).applyAxisAngle(new THREE.Vector3(0, 1, 0), box.rotation.y);
+      const tip3 = P3(e.xM, e.yM, (e.baseZM || 0) + h * 0.5).add(dir.clone().multiplyScalar(e.depthM / 2));
+      V3.items.add(new THREE.ArrowHelper(dir, tip3, 0.9, 0x8a93a3, 0.25, 0.16));
+    }
+    if (cabinet) {
+      const warn = new THREE.Sprite(new THREE.SpriteMaterial({ map:V3.warnTex, depthTest:false }));
+      warn.scale.set(0.5, 0.5, 1); warn.position.copy(P3(e.xM, e.yM, (e.baseZM || 0) + h + 0.4)); warn.visible = false;
+      V3.items.add(warn);
+      V3.cabinets.push({ e, mat, warn });
+    }
+  }
+  // 처음과 방 범위가 바뀌었을 때만 카메라를 맞춘다(사용자가 돌린 시점은 유지).
+  const fitKey = [d.minXM, d.minYM, d.maxXM, d.maxYM].map(v => v.toFixed(2)).join();
+  if (fitKey !== V3.fitKey) {
+    V3.fitKey = fitKey;
+    const R = Math.max(W, D);
+    V3.cam.position.copy(P3(cx - 0.55 * R, cy - 0.75 * R, 0.85 * R));
+    V3.ctl.target.copy(P3(cx, cy, 0.4));
+    V3.ctl.minDistance = 0.3 * R; V3.ctl.maxDistance = 3 * R;
+    V3.ctl.update();
+  }
+}
+function update3D() {
+  if (!V3.ok || !layout) return;
+  const key = JSON.stringify([layout.domain, layout.equipment.map(e => [e.name, e.xM, e.yM, e.yawDeg, e.depthM, e.widthM, e.heightM, e.baseZM, e.inlet])]);
+  if (key !== V3.key) { V3.key = key; build3D(layout); }
+  let hot = 0, colored = 0;
+  for (const c of V3.cabinets) {
+    const cv = inletC(c.e);
+    c.mat.color.set(cv === null ? KIND_COLOR.none : seqColor(cv));
+    c.warn.visible = cv !== null && cv > 27;
+    colored += cv === null ? 0 : 1; hot += c.warn.visible ? 1 : 0;
+  }
+  $('sub3d').textContent = `장비 ${layout.equipment.length}개 · 랙·스파인 색 = 흡기 창 평균 (${colored}곳, 아래 평면도와 같은 색 범위)` + (hot ? ` · ▲ 27 °C 초과 ${hot}곳` : '')
+    + ' · 벽 = 공기 격자 경계(가까운 두 면은 낮게 잘랐다)';
+  updatePipes3D();
+}
+
+// ---- 3D 2단계: 냉각수 배관 레이어 (2026-10-14) ----
+// 경로 = 방 액터가 배관 메시를 만든 경로(수력망이 푸는 배관 그대로, 도식 아님). 굵기 = 배관 지름(실제 m).
+// 색 = 그 배관의 계산된 냉각수 온도. 모델에 온도가 있는 곳은 랙 분기뿐이다(공급 = 랙 입구, 회수 = 랙 출구).
+// 헤더·펌프 연결은 관 지연·혼합을 모델에 두지 않으므로 값을 지어내지 않고 회색으로 둔다(vrg.Pipes.Temperature와 같은 규칙).
+// 원뿔 = 계산된 유량 방향(유량 0이면 없음). 색 범위 20~45 °C는 표시용 고정값이다(장비 사양·허용치 아님).
+const PIPE_SEQ = ['#4a2309', '#8a3f12', '#c95f1e', '#ef8a3c', '#f9c08a'];   // 한 색조(주황) 순차, 어두움 -> 밝음 = 차가움 -> 뜨거움
+const PIPE_TMIN = 20, PIPE_TMAX = 45, PIPE_UNKNOWN = 0x7b8494;
+function pipeColor(c) {
+  const t = Math.max(0, Math.min(1, (c - PIPE_TMIN) / (PIPE_TMAX - PIPE_TMIN))) * (PIPE_SEQ.length - 1), i = Math.min(Math.floor(t), PIPE_SEQ.length - 2), f = t - i;
+  const a = PIPE_SEQ[i].match(/\w\w/g).map(h => parseInt(h, 16)), b = PIPE_SEQ[i + 1].match(/\w\w/g).map(h => parseInt(h, 16));
+  return 'rgb(' + a.map((v, k) => Math.round(v + (b[k] - v) * f)).join(',') + ')';
+}
+$('pipebar').style.background = 'linear-gradient(90deg,' + PIPE_SEQ.join(',') + ')';
+$('pipeends').textContent = `${PIPE_TMIN}~${PIPE_TMAX} °C`;
+const pipeRole = p => (p.edge < 0 ? 'CDU→펌프 연결' : p.branch ? '랙 분기' : '헤더') + ' · ' + (p.supply ? '공급' : '회수');
+function pipeTip(p) {
+  if (!p) return '';
+  const t = p.tempK === null ? '모델 값 없음' : toC(p.tempK).toFixed(2) + ' °C';
+  return `<div class="k">냉각수 배관 (${pipeRole(p)})</div><div><span class="k">유량</span> ${(Math.abs(p.flowM3s) * 1e3).toFixed(3)} L/s${p.flowM3s < 0 ? ' (그린 방향과 반대)' : ''}</div>`
+    + `<div><span class="k">온도</span> ${t}</div><div><span class="k">지름</span> ${(p.diameterM * 1e3).toFixed(0)} mm` + (p.edge >= 0 ? ` · 수력망 배관 #${p.edge}` : '') + '</div>';
+}
+function buildPipes3D() {
+  clear3D(V3.pipes); V3.pipePickables = []; V3.pipeMats = []; V3.pipeArrows = [];
+  const up = new THREE.Vector3(0, 1, 0);
+  layout.pipes.forEach((p, idx) => {
+    const mat = new THREE.MeshStandardMaterial({ color:PIPE_UNKNOWN, roughness:.5 });
+    const r = Math.max(p.diameterM / 2, 0.015), pts = [];
+    for (let k = 0; k + 2 < p.pointsM.length; k += 3) pts.push(P3(p.pointsM[k], p.pointsM[k + 1], p.pointsM[k + 2]));
+    let longest = null;
+    for (let k = 0; k + 1 < pts.length; ++k) {
+      const a = pts[k], b = pts[k + 1], d = b.clone().sub(a), len = d.length();
+      if (len < 1e-6) continue;
+      const seg = new THREE.Mesh(new THREE.CylinderGeometry(r, r, len, 10, 1), mat);
+      seg.position.copy(a).add(b).multiplyScalar(.5);
+      seg.quaternion.setFromUnitVectors(up, d.clone().normalize());
+      seg.userData = { pipe:idx };
+      V3.pipes.add(seg); V3.pipePickables.push(seg);
+      if (!longest || len > longest.len) longest = { a, b, len };
+    }
+    V3.pipeMats.push(mat);
+    if (longest) {   // 흐름 방향 원뿔: 가장 긴 구간 가운데
+      const cone = new THREE.Mesh(new THREE.ConeGeometry(Math.max(r * 2.2, .06), Math.max(r * 4, .16), 12), mat);
+      cone.position.copy(longest.a).add(longest.b).multiplyScalar(.5);
+      cone.userData = { pipe:idx, dir:longest.b.clone().sub(longest.a).normalize() };
+      V3.pipes.add(cone); V3.pipeArrows.push(cone);
+    }
+  });
+}
+function updatePipes3D() {
+  if (!V3.ok || !layout) return;
+  const pipes = layout.pipes || [];
+  V3.pipes.visible = $('pipebtn').getAttribute('aria-pressed') === 'true';
+  const key = JSON.stringify(pipes.map(p => [p.edge, p.pointsM]));
+  if (key !== V3.pipeKey) { V3.pipeKey = key; buildPipes3D(); }
+  const up = new THREE.Vector3(0, 1, 0);
+  pipes.forEach((p, i) => { if (V3.pipeMats[i]) V3.pipeMats[i].color.set(p.tempK === null ? PIPE_UNKNOWN : pipeColor(toC(p.tempK))); });
+  for (const cone of V3.pipeArrows) {
+    const f = pipes[cone.userData.pipe].flowM3s;
+    cone.visible = f !== 0;
+    cone.quaternion.setFromUnitVectors(up, f < 0 ? cone.userData.dir.clone().negate() : cone.userData.dir);
+  }
+  const known = pipes.filter(p => p.tempK !== null).length;
+  $('pipelegend').hidden = !V3.pipes.visible;
+  if (!pipes.length) $('pipelegend').textContent = '냉각수 배관 데이터 없음(방 액터 없음)';
+  else if (!layout.hydraulicsConverged) $('pipelegend').title = '수력 수렴 실패: 유량을 믿지 말 것(D5)';
+  $('pipebtn').title = `배관 ${pipes.length}개 경로, 온도가 있는 배관 ${known}개` + (layout.hydraulicsConverged ? '' : ' · 수력 수렴 실패(D5)');
+  renderPipeTable();
+}
+function renderPipeTable() {
+  if ($('pipetable').hidden || !layout) return;
+  const rows = (layout.pipes || []).map(p => `<tr><td style="text-align:left">${p.edge >= 0 ? '#' + p.edge : '펌프'}</td><td style="text-align:left">${pipeRole(p)}</td>`
+    + `<td>${(p.flowM3s * 1e3).toFixed(3)}</td><td>${p.tempK === null ? '-' : toC(p.tempK).toFixed(2)}</td><td>${(p.diameterM * 1e3).toFixed(0)}</td></tr>`).join('');
+  $('pipetable').innerHTML = `<table><thead><tr><th style="text-align:left">배관</th><th style="text-align:left">역할</th><th>유량 L/s (그린 방향 +)</th><th>온도 °C</th><th>지름 mm</th></tr></thead><tbody>${rows}</tbody></table>`
+    + (layout.hydraulicsConverged ? '' : '<div style="color:#f0b43c;font-size:11px">수력 수렴 실패: 유량을 믿지 말 것(D5)</div>');
+}
+$('pipebtn').addEventListener('click', () => {
+  const on = $('pipebtn').getAttribute('aria-pressed') !== 'true';
+  $('pipebtn').setAttribute('aria-pressed', on); $('pipebtn').textContent = '냉각수 배관: ' + (on ? '켜짐' : '꺼짐');
+  updatePipes3D();
+});
+// ---- 3D 3단계: 기류 레이어 (2026-10-14) ----
+// /api/airflow = 공기 격자 셀 중심 속도(MAC 두 면 평균)를 X·Y로 strideCells칸마다, 정해진 높이에 가장 가까운 셀 층에서 뽑은 표본.
+// 화살표 하나 = 표본 셀 하나의 계산된 속도(방향 그대로, 수직 성분 포함). 흐름선이 아니다(적분하지 않는다).
+// 길이 = min(속력 / 기준, 1) × 표본 간격의 90 %, 색 = 같은 비율(청록 한 색조 순차). 기준(2026-10-14 선택 추가):
+//   95 분위수·최대 = 지금 보이는 표본(고른 층)의 속력 분포에서 매번 다시 정한다 → 실행·시각끼리 비교하지 않는다.
+//   고정 0.25 / 1 m/s = 바뀌지 않는다 → 같은 기준끼리는 비교할 수 있다. 0.25·1 m/s는 표시 선택값이며 설계·허용 기준이 아니다.
+//   기준을 넘는 화살표는 길이·색이 기준에서 멈춘다(포화). 몇 개가 포화했는지 화면에 적는다.
+const AIR_SEQ = ['#16413c', '#1f6b62', '#2f9a8c', '#5cc6b5', '#a8eadf'];
+let airflow = null;
+function airColor(t) {
+  t = Math.max(0, Math.min(1, t)) * (AIR_SEQ.length - 1); const i = Math.min(Math.floor(t), AIR_SEQ.length - 2), f = t - i;
+  const a = AIR_SEQ[i].match(/\w\w/g).map(h => parseInt(h, 16)), b = AIR_SEQ[i + 1].match(/\w\w/g).map(h => parseInt(h, 16));
+  return new THREE.Color('rgb(' + a.map((v, k) => Math.round(v + (b[k] - v) * f)).join(',') + ')');
+}
+$('airbar').style.background = 'linear-gradient(90deg,' + AIR_SEQ.join(',') + ')';
+const airOn = () => $('airbtn').getAttribute('aria-pressed') === 'true';
+async function pollAirflow() {
+  if (!airOn() || tab !== 'summary') return;
+  const r = await fetch('/api/airflow', { cache:'no-store' });
+  if (!r.ok) { airflow = null; return; }
+  airflow = await r.json();
+  const sel = $('airlayer'), want = airflow.layerHeightsM.map(h => h.toFixed(3)).join();
+  if (sel.dataset.layers !== want) {   // 층 목록은 격자가 바뀔 때만 다시 만든다
+    sel.dataset.layers = want;
+    const keep = sel.value;
+    sel.innerHTML = '<option value="all">모든 층</option>' + airflow.layerHeightsM.map(h => `<option value="${h}">${h.toFixed(2)} m</option>`).join('');
+    sel.value = [...sel.options].some(o => o.value === keep) ? keep : 'all';
+  }
+}
+function updateAir3D() {
+  if (!V3.ok) return;
+  V3.air.visible = airOn();
+  $('airlayer').disabled = !airOn(); $('airscale').disabled = !airOn(); $('airlegend').hidden = !airOn(); $('airnote').hidden = !airOn();
+  clear3D(V3.air);
+  if (!airOn()) return;
+  if (!airflow) { $('airnote').textContent = '기류 데이터 없음(시뮬레이션 액터·공기 격자가 아직 값을 내지 않았다)'; return; }
+  if (airflow.octree) { $('airnote').textContent = '옥트리 공기 경로라 균일 격자 표본을 보내지 않는다(균일 격자는 풀이 결과가 아니다).'; return; }
+  const layer = $('airlayer').value, n = airflow.positionsM.length / 3, step = airflow.cellM * airflow.strideCells;
+  const shown = [];   // 고른 층의 표본: [인덱스, 속력]
+  for (let i = 0; i < n; ++i) {
+    if (layer !== 'all' && Math.abs(airflow.positionsM[3 * i + 2] - Number(layer)) > 1e-6) continue;
+    shown.push([i, Math.hypot(airflow.velocitiesMs[3 * i], airflow.velocitiesMs[3 * i + 1], airflow.velocitiesMs[3 * i + 2])]);
+  }
+  const speeds = shown.map(e => e[1]).sort((x, y) => x - y), mode = $('airscale').value;
+  const pct = q => speeds.length ? speeds[Math.min(speeds.length - 1, Math.ceil(q * speeds.length) - 1)] : 0;   // 최근접 순위 분위수
+  const ref = mode === 'max' ? (speeds.length ? speeds[speeds.length - 1] : 0) : mode === 'p95' ? pct(.95) : Number(mode);
+  const refLabel = mode === 'max' ? '최대' : mode === 'p95' ? '95 분위수' : '고정';
+  const pos = [], col = [], heads = [];
+  let saturated = 0;
+  for (const [i, sp] of shown) {
+    if (!(sp > 0) || !(ref > 0)) continue;   // 속도 0인 셀은 방향이 없다
+    const v = [airflow.velocitiesMs[3 * i], airflow.velocitiesMs[3 * i + 1], airflow.velocitiesMs[3 * i + 2]], z = airflow.positionsM[3 * i + 2];
+    const t = Math.min(1, sp / ref); saturated += sp > ref ? 1 : 0;
+    const len = 0.9 * step * t, a = P3(airflow.positionsM[3 * i], airflow.positionsM[3 * i + 1], z);
+    const d = P3(v[0], v[1], v[2]).normalize(), b = a.clone().addScaledVector(d, len), c = airColor(t);
+    pos.push(a.x, a.y, a.z, b.x, b.y, b.z); col.push(c.r, c.g, c.b, c.r, c.g, c.b);
+    heads.push({ b, d, c, len });
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3)); g.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
+  V3.air.add(new THREE.LineSegments(g, new THREE.LineBasicMaterial({ vertexColors:true })));
+  if (heads.length) {   // 화살촉: 원뿔 하나를 인스턴스로 반복 (드로우 호출 1개)
+    const cone = new THREE.ConeGeometry(.035, .1, 6); cone.translate(0, -.05, 0);
+    const inst = new THREE.InstancedMesh(cone, new THREE.MeshBasicMaterial(), heads.length), m = new THREE.Matrix4(), q = new THREE.Quaternion(), up = new THREE.Vector3(0, 1, 0);
+    heads.forEach((h, k) => { const s1 = Math.min(1, h.len / .15); q.setFromUnitVectors(up, h.d); m.compose(h.b, q, new THREE.Vector3(s1, s1, s1)); inst.setMatrixAt(k, m); inst.setColorAt(k, h.c); });
+    V3.air.add(inst);
+  }
+  $('airends').textContent = `0 ~ ${ref.toFixed(3)} m/s (${refLabel}${mode === 'max' || mode === 'p95' ? ', 지금 표본' : ''}) · 넘으면 포화`;
+  $('airnote').textContent = `표본 ${heads.length}개${layer === 'all' ? '' : ' (이 층)'} · 셀 ${airflow.cellM} m, ${airflow.strideCells}칸마다 = ${step.toFixed(2)} m 간격 · 층 높이 `
+    + airflow.layerHeightsM.map(h => h.toFixed(2)).join(' / ') + ' m (셀 중심) · 화살표 = 그 셀의 계산된 속도(흐름선 아님)'
+    + ` · 길이·색 기준 ${refLabel} ${ref.toFixed(3)} m/s, 포화 ${saturated}개 · 이 표본 최대 ${(speeds.length ? speeds[speeds.length - 1] : 0).toFixed(3)} / 중앙값 ${pct(.5).toFixed(3)} m/s`
+    + (mode === 'max' || mode === 'p95' ? ' (기준이 매번 바뀌어 실행끼리 비교 불가)' : '')
+    + (airflow.mode === 'simulation' ? '' : ' · 배치 모드: 계산이 멈춰 있다');
+}
+$('airbtn').addEventListener('click', async () => {
+  const on = !airOn();
+  $('airbtn').setAttribute('aria-pressed', on); $('airbtn').textContent = '기류: ' + (on ? '켜짐' : '꺼짐');
+  if (on) { try { await pollAirflow(); } catch (e) { airflow = null; } }
+  updateAir3D();
+});
+$('airlayer').addEventListener('change', updateAir3D);
+$('airscale').addEventListener('change', updateAir3D);
+$('pipetbtn').addEventListener('click', () => { $('pipetable').hidden = !$('pipetable').hidden; $('pipetbtn').textContent = $('pipetable').hidden ? '배관 표 보기' : '배관 표 닫기'; renderPipeTable(); });
+if (V3.ok) { try { init3D(); } catch (err) { V3.ok = false; $('err3d').hidden = false; $('err3d').textContent = '3D를 시작하지 못했다: ' + err.message; } }
+else { $('err3d').hidden = false; $('err3d').textContent = 'three.js를 불러오지 못했다(CDN, 인터넷 연결 필요). 아래 2D 평면도는 그대로 쓸 수 있다.'; }
+
+// ---- 탭과 랙 탭 (4단계) ----
+let tab = 'summary', selected = -1, racks = null, detail = null, detailPending = false;
+const openSlots = new Set();                     // 1초마다 다시 그려도 펼친 슬롯을 유지한다
+function showTab(name) {
+  tab = name;
+  for (const b of document.querySelectorAll('.tabs button')) b.setAttribute('aria-selected', String(b.dataset.tab === name));
+  $('tab-summary').hidden = name !== 'summary';
+  $('tab-racks').hidden = name !== 'racks';
+  $('tab-ab').hidden = name !== 'ab';
+  history.replaceState(null, '', name === 'racks' ? (selected >= 0 ? '#rack=' + selected : '#racks') : name === 'ab' ? '#ab' : '#');
+  tick();
+}
+for (const b of document.querySelectorAll('.tabs button')) b.addEventListener('click', () => showTab(b.dataset.tab));
+function selectRack(i) {
+  if (i !== selected) { openSlots.clear(); detail = null; }
+  selected = i;
+  if (tab === 'racks') history.replaceState(null, '', '#rack=' + i);
+  renderRacks(); renderDetail();
+}
+async function pollRacks() {
+  const r = await fetch('/api/racks', { cache:'no-store' });
+  if (!r.ok) throw new Error('랙 목록 HTTP ' + r.status);
+  racks = await r.json();
+  if (selected < 0) return;
+  const d = await fetch('/api/rack?i=' + selected, { cache:'no-store' });
+  detailPending = d.status === 202;                 // 기록됨: 다음 발행(0.5 s 안)에 만든다
+  if (d.ok && d.status === 200) detail = await d.json();
+  else if (!detailPending) throw new Error('랙 상세 HTTP ' + d.status);
+}
+const NAME = r => (r.kind === 'spine' ? '스파인 ' : '랙 ') + (r.inlet + 1);
+function renderRacks() {
+  if (!racks) return;
+  if (racks.racks.length === 0) {
+    $('racktable').innerHTML = '';
+    $('racksub').textContent = racks.mode === 'simulation' ? '시뮬레이션 스텝 전이라 값이 없다' : '배치 모드: 물리 정지 중이라 랙 값이 없다(Enter로 시뮬레이션)';
+    return;
+  }
+  $('racksub').textContent = `마지막 스텝 값 · SimTime ${racks.simTimeS.toFixed(2)} s · ${racks.racks.length}대 · 행을 누르면 아래에 슬롯·부품이 나온다`;
+  const rows = racks.racks.map(r => {
+    const share = r.toCoolantW + r.toRoomAirW > 0 ? r.toCoolantW / (r.toCoolantW + r.toRoomAirW) * 100 : 0;
+    return `<tr data-i="${r.inlet}" class="${r.inlet === selected ? 'sel' : ''}"><td class="l">${NAME(r)}</td>`
+      + `<td>${r.xM.toFixed(2)}, ${r.yM.toFixed(2)}</td><td>${(r.utilization * 100).toFixed(0)}</td><td>${(r.heatW / 1000).toFixed(1)}</td>`
+      + `<td>${toC(r.inletNowK).toFixed(2)}${toC(r.inletNowK) > 27 ? ' ▲' : ''}</td>`
+      + `<td>${r.coolantFlowM3s > 0 ? toC(r.coolantInK).toFixed(1) + ' → ' + toC(r.coolantOutK).toFixed(1) : '-'}</td>`
+      + `<td>${r.coolantFlowM3s > 0 ? (r.coolantFlowM3s * 1000).toFixed(3) : '-'}</td><td>${share.toFixed(0)}</td>`
+      + `<td>${(r.fanSpeedMean * 100).toFixed(0)}</td><td>${r.fanPowerW.toFixed(0)}</td>`
+      + `<td>${toC(r.hottestPartK).toFixed(1)}</td><td class="l">${r.hottestPart}</td><td>${r.dockedSlots}/${r.numSlots}</td></tr>`;
+  }).join('');
+  $('racktable').innerHTML = `<thead><tr><th class="l">장비</th><th>위치 m</th><th>부하율 %</th><th>발열 kW</th><th>흡기 °C</th>`
+    + `<th>냉각수 입→출 °C</th><th>유량 L/s</th><th>냉각수 반출 %</th><th>팬 속도 %</th><th>팬 W</th><th>최고 부품 °C</th><th class="l">그 부품</th><th>도킹</th></tr></thead><tbody>${rows}</tbody>`;
+  for (const tr of $('racktable').querySelectorAll('tbody tr')) tr.addEventListener('click', () => selectRack(+tr.dataset.i));
+}
+function renderDetail() {
+  const el = $('rackdetail');
+  if (selected < 0) return;
+  const row = racks && racks.racks.find(r => r.inlet === selected);
+  if (!detail || detail.inlet !== selected) {
+    el.innerHTML = `<div class="mode">${row ? NAME(row) : '선택한 랙'}: ${detailPending ? '상세를 만드는 중…(다음 갱신)' : '불러오는 중…'}</div>`;
+    return;
+  }
+  const kw = w => (w / 1000).toFixed(2) + ' kW';
+  const pct = w => detail.totalHeatW > 0 ? (w / detail.totalHeatW * 100).toFixed(1) + ' %' : '-';
+  let html = `<h2>${row ? NAME(row) : '랙'} 상세 <span class="tag">계산값</span></h2>`
+    + `<div class="mode">${row ? row.name : ''} · SimTime ${detail.simTimeS.toFixed(2)} s · 반출은 이 스텝 값이라 합이 발열과 다를 수 있다(나머지는 축적)</div>`
+    + `<div class="split"><div><span>발열</span>${kw(detail.totalHeatW)}</div><div><span>냉각수로</span>${kw(detail.toCoolantW)} · ${pct(detail.toCoolantW)}</div>`
+    + `<div><span>강제 공랭</span>${kw(detail.toAirW)} · ${pct(detail.toAirW)}</div><div><span>케이스 자연대류</span>${kw(detail.toAmbientW)} · ${pct(detail.toAmbientW)}</div>`
+    + `<div><span>혼합 배기</span>${toC(detail.mixedAirOutletK).toFixed(2)} °C</div><div><span>냉각수 출구</span>${toC(detail.coolantOutletK).toFixed(2)} °C</div></div>`
+    + `<div class="slothead"><span>슬롯</span><span>장비</span><span class="r">높이 m</span><span class="r">흡기 °C</span><span class="r">발열 kW</span><span class="r">공기로 W</span><span class="r">배기 °C</span><span class="r">팬 %</span></div><div class="slots">`;
+  // 위가 먼저(랙을 앞에서 본 순서): 바닥 높이 내림차순.
+  for (const s of detail.slots.slice().sort((a, b) => b.bottomZM - a.bottomZM)) {
+    const parts = s.parts.slice().sort((a, b) => b.tempK - a.tempK).map(p => `<tr><td class="l">${p.name}</td><td class="l">${p.kind}</td>`
+      + `<td>${toC(p.tempK).toFixed(2)}</td><td>${p.heatW.toFixed(1)}</td><td>${p.toCoolantW.toFixed(1)}</td><td>${p.toAirW.toFixed(1)}</td></tr>`).join('');
+    html += `<details class="slot${s.docked ? '' : ' empty'}" data-s="${s.index}"${openSlots.has(s.index) ? ' open' : ''}><summary>`
+      + `<span>${s.index + 1}</span><span>${s.device}${s.docked ? '' : ' (빠짐)'}</span><span class="r">${s.bottomZM.toFixed(3)}</span>`
+      + `<span class="r">${toC(s.inletK).toFixed(2)}</span><span class="r">${(s.heatW / 1000).toFixed(2)}</span><span class="r">${s.heatToAirW.toFixed(0)}</span>`
+      + `<span class="r">${s.docked && s.airFlowKgs > 0 ? toC(s.outletAirK).toFixed(2) : '-'}</span><span class="r">${(s.fanSpeed * 100).toFixed(0)}</span></summary>`
+      + `<table><thead><tr><th class="l">부품 (뜨거운 순)</th><th class="l">종류</th><th>온도 °C</th><th>발열 W</th><th>냉각수로 W</th><th>공기로 W</th></tr></thead><tbody>${parts}</tbody></table></details>`;
+  }
+  el.innerHTML = html + '</div><div class="mode" style="margin-top:6px">부품 허용 온도는 모델에 없어 여유를 표시하지 않는다.</div>';
+  for (const d of el.querySelectorAll('details.slot')) d.addEventListener('toggle', () => d.open ? openSlots.add(+d.dataset.s) : openSlots.delete(+d.dataset.s));
+}
+{ const m = location.hash.match(/^#rack=(\d+)$/); if (m) { selected = +m[1]; tab = 'racks'; } else if (location.hash === '#racks') tab = 'racks'; else if (location.hash === '#ab') tab = 'ab'; }
+
+// ---- 리포트 저장 (5단계): 사이트가 하는 유일한 쓰기. 게임 스레드가 다음 발행(0.5 s 안)에 vrg.Eval.Report와 같은 함수로 쓴다. ----
+const NAME_OK = /^[A-Za-z0-9_\-가-힣]{1,64}$/;
+let reportList = null, lastListAt = 0, waitingSave = null;
+$('savebtn').addEventListener('click', async () => {
+  const name = $('savename').value.trim();
+  const msg = $('savemsg');
+  if (!NAME_OK.test(name)) { msg.textContent = '이름은 영문·숫자·_·-·한글 1~64자'; msg.className = 'msg err'; return; }
+  const r = await fetch('/api/report?name=' + encodeURIComponent(name), { method:'POST' });
+  if (r.status !== 202) { msg.textContent = '저장 요청 실패 HTTP ' + r.status; msg.className = 'msg err'; return; }
+  waitingSave = name; msg.textContent = name + ' 저장 중…'; msg.className = 'msg';
+  lastListAt = 0;                                // 다음 갱신에서 바로 결과를 읽는다
+});
+async function pollReports(force) {
+  if (!force && Date.now() - lastListAt < 3000) return;   // 목록은 파일을 훑으므로 3 s마다만
+  lastListAt = Date.now();
+  const r = await fetch('/api/reports', { cache:'no-store' });
+  if (!r.ok) throw new Error('리포트 목록 HTTP ' + r.status);
+  reportList = await r.json();
+  if (waitingSave && reportList.lastSave && reportList.lastSave.name === waitingSave && reportList.pending !== waitingSave) {
+    const ls = reportList.lastSave, msg = $('savemsg');
+    msg.textContent = (ls.ok ? '저장됨: ' : '저장 실패: ') + (ls.ok ? waitingSave : ls.message);
+    msg.title = ls.message; msg.className = ls.ok ? 'msg' : 'msg err';
+    // 방금 저장한 것을 B, 그 직전 최신 리포트를 A로 둔다(배치를 바꾸기 전후 저장 → 바로 비교).
+    if (ls.ok) { const others = reportList.reports.map(r => r.name).filter(n => n !== waitingSave); if (others.length) abPair = [others[0], waitingSave]; delete reportCache[waitingSave]; }
+    waitingSave = null;
+  }
+}
+
+// ---- A/B 비교 (5단계) ----
+const reportCache = {};
+async function loadReport(name) {
+  if (!name) return null;
+  if (!reportCache[name]) {
+    const r = await fetch('/api/reportfile?name=' + encodeURIComponent(name), { cache:'no-store' });
+    if (!r.ok) throw new Error('리포트 ' + name + ' HTTP ' + r.status);
+    reportCache[name] = await r.json();
+  }
+  return reportCache[name];
+}
+function fillSelect(sel, keep) {
+  const opts = (reportList ? reportList.reports : []).map(r => {
+    const it = r.itW !== undefined ? ` · IT ${(r.itW / 1000).toFixed(0)} kW` : '';
+    return `<option value="${r.name}">${r.name} · ${r.simTimeS !== undefined ? r.simTimeS.toFixed(0) + ' s' : ''}${it}${r.hasLayout ? '' : ' · 평면도 없음'}</option>`;
+  }).join('');
+  if (sel.dataset.opts !== opts) { sel.innerHTML = opts; sel.dataset.opts = opts; }
+  if (keep && [...sel.options].some(o => o.value === keep)) sel.value = keep;
+}
+let abPair = ['', ''];
+for (const id of ['abA', 'abB']) $(id).addEventListener('change', () => { abPair = [$('abA').value, $('abB').value]; renderAb(); });
+// 발산: 파랑(B가 더 시원함) ↔ 중립 회색 ↔ 빨강(B가 더 뜨거움). 범위 ±3 K 고정, ±0.5 K 이내는 회색(구분 불가).
+const DIV_NEG = [57, 135, 229], DIV_MID = [56, 56, 53], DIV_POS = [230, 103, 103], DIV_MAX = 3, DIV_DEAD = 0.5;
+function divColor(d) {
+  if (Math.abs(d) < DIV_DEAD) return `rgb(${DIV_MID})`;
+  const t = Math.min(1, Math.abs(d) / DIV_MAX), end = d > 0 ? DIV_POS : DIV_NEG;
+  return 'rgb(' + DIV_MID.map((v, k) => Math.round(v + (end[k] - v) * t)).join(',') + ')';
+}
+$('abbar').style.background = `linear-gradient(90deg, rgb(${DIV_NEG}), rgb(${DIV_MID}) 50%, rgb(${DIV_POS}))`;
+$('abends').innerHTML = `<span style="left:0;transform:translateX(0)">−${DIV_MAX} K</span><span style="left:50%;transform:translateX(-50%)">0</span><span style="left:100%;transform:translateX(-100%)">+${DIV_MAX} K</span>`;
+$('abtbtn').addEventListener('click', () => { $('abrtable').hidden = !$('abrtable').hidden; $('abtbtn').textContent = $('abrtable').hidden ? '랙별 표 보기' : '랙별 표 닫기'; });
+
+async function renderAb() {
+  fillSelect($('abA'), abPair[0]); fillSelect($('abB'), abPair[1]);
+  const names = reportList ? reportList.reports.map(r => r.name) : [];
+  if (names.length < 2) { $('abtable').innerHTML = ''; $('abwarn').innerHTML = ''; $('abnote').textContent = '비교하려면 리포트가 두 개 이상 필요하다. 위에서 이름을 넣고 "리포트 저장"을 누른다.'; $('abplan').replaceChildren(); return; }
+  if (!abPair[0] || !abPair[1]) { abPair = [names[1], names[0]]; fillSelect($('abA'), abPair[0]); fillSelect($('abB'), abPair[1]); }   // 기본: 이전 것 A, 최신 B
+  const [A, B] = [await loadReport(abPair[0]), await loadReport(abPair[1])];
+  if (!A || !B) return;
+  // D8: 같은 IT 부하에서만 비교한다. 0.1 % 넘게 다르면 경고.
+  const itDiff = (B.power.itW - A.power.itW) / A.power.itW;
+  $('abwarn').innerHTML = Math.abs(itDiff) > 0.001 ? `<div class="warnbox">IT 부하가 ${(itDiff * 100).toFixed(2)} % 다르다. 냉각 결과는 같은 IT 부하에서만 비교한다(D8). 흡기·제거열 차이에는 부하 차이가 섞여 있다.</div>` : '';
+  const f = (v, d, u) => v === undefined || v === null ? '-' : v.toFixed(d) + (u || '');
+  const rows = [
+    ['시뮬 시각 s', A.simTimeS, B.simTimeS, 1], ['평균 창 s', A.windowS, B.windowS, 0],
+    ['흡기 창 평균 최고 °C', A.summary.inletWindowMeanMaxC, B.summary.inletWindowMeanMaxC, 2], ['흡기 창 평균의 평균 °C', A.summary.inletWindowMeanAvgC, B.summary.inletWindowMeanAvgC, 2],
+    ['27 °C 초과 랙', A.summary.inletsAboveRecommended, B.summary.inletsAboveRecommended, 0], ['32 °C 초과 랙', A.summary.inletsAboveAllowable, B.summary.inletsAboveAllowable, 0],
+    ['IT kW', A.power.itW / 1e3, B.power.itW / 1e3, 1],
+    ['냉각수 제거열 kW', A.power.coolantRemovedW / 1e3, B.power.coolantRemovedW / 1e3, 1], ['공기 코일 제거열 kW', A.power.airRemovedW / 1e3, B.power.airRemovedW / 1e3, 1],
+    ['CRAH 팬 kW', A.power.crahFanW / 1e3, B.power.crahFanW / 1e3, 2], ['펌프 kW', A.power.pumpW / 1e3, B.power.pumpW / 1e3, 2],
+    ['부분 PUE', A.power.partialPue, B.power.partialPue, 4], ['전역 열수지 잔차', A.checks.globalNormalizedEnergyResidual, B.checks.globalNormalizedEnergyResidual, -1],
+  ].map(([k, a, b, d]) => {
+    const num = v => typeof v === 'number' && Number.isFinite(v);
+    const show = v => !num(v) ? '-' : d < 0 ? v.toExponential(2) : v.toFixed(d);
+    const diff = num(a) && num(b) && d >= 0 ? b - a : null;
+    return `<tr><td class="l">${k}</td><td>${show(a)}</td><td>${show(b)}</td><td>${diff === null ? '' : (diff > 0 ? '+' : '') + diff.toFixed(d)}</td></tr>`;
+  }).join('');
+  $('abtable').innerHTML = `<thead><tr><th class="l">항목 (창 평균)</th><th>A ${abPair[0]}</th><th>B ${abPair[1]}</th><th>B − A</th></tr></thead><tbody>${rows}</tbody>`;
+  $('abnote').textContent = '부분 PUE = (IT + CRAH 팬 + 펌프) / IT, 시설 PUE 아님. "-"는 옛 리포트에 없는 값.';
+  drawAbPlan(A, B);
+}
+
+function drawAbPlan(A, B) {
+  const svg = $('abplan');
+  svg.replaceChildren();
+  const inA = {}, inB = {};
+  for (const i of A.inlets) inA[i.name] = i;
+  for (const i of B.inlets) inB[i.name] = i;
+  // 평면도: B의 것(없으면 A), 둘 다 없으면 흡기 위치 점으로만(옛 리포트).
+  const LB = B.layout || null, LA = A.layout || null, base = LB || LA;
+  const eqA = {}; if (LA) for (const e of LA.equipment) eqA[e.name] = e;
+  const eqB = {}; if (LB) for (const e of LB.equipment) eqB[e.name] = e;
+  const items = base ? base.equipment.slice() : B.inlets.map(i => ({ kind:'rack', name:i.name, xM:i.x_m, yM:i.y_m, yawDeg:0, depthM:1.0, widthM:0.6, inlet:i.index }));
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  const grow = (x, y) => { x0 = Math.min(x0, x); x1 = Math.max(x1, x); y0 = Math.min(y0, y); y1 = Math.max(y1, y); };
+  if (base && base.domain) { grow(base.domain.minXM, base.domain.minYM); grow(base.domain.maxXM, base.domain.maxYM); }
+  for (const e of [...items, ...Object.values(eqA)]) { const r = Math.hypot(e.depthM, e.widthM) / 2; grow(e.xM - r, e.yM - r); grow(e.xM + r, e.yM + r); }
+  const pad = 0.6; x0 -= pad; y0 -= pad; x1 += pad; y1 += pad;
+  const W = 1000, H = Math.max(200, Math.round(W * (y1 - y0) / (x1 - x0)));
+  svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
+  const s = W / (x1 - x0), X = x => (x - x0) * s, Y = y => (y - y0) * s;
+  if (base && base.domain) mk('rect', { class:'domain', x:X(base.domain.minXM), y:Y(base.domain.minYM), width:(base.domain.maxXM - base.domain.minXM) * s, height:(base.domain.maxYM - base.domain.minYM) * s }, svg);
+  const box = (e, cls, parent) => { const g = mk('g', { transform:`translate(${X(e.xM).toFixed(1)} ${Y(e.yM).toFixed(1)}) rotate(${e.yawDeg.toFixed(2)})` }, parent);
+    return [g, mk('rect', { class:cls, x:-e.depthM * s / 2, y:-e.widthM * s / 2, width:e.depthM * s, height:e.widthM * s, rx:2 }, g)]; };
+  let moved = 0, added = 0, removed = 0, distinct = 0;
+  const table = [];
+  // A에만 있는 장비(삭제)와 옮긴 장비의 A 위치는 점선.
+  if (LA && LB) for (const e of LA.equipment) {
+    const b = eqB[e.name];
+    if (!b) { ++removed; box(e, 'ghost', svg); mk('text', { class:'tag2', x:X(e.xM), y:Y(e.yM) + 4 }, svg).textContent = '−'; continue; }
+    const dist = Math.hypot(b.xM - e.xM, b.yM - e.yM), turn = Math.abs(((b.yawDeg - e.yawDeg) % 360 + 540) % 360 - 180);
+    if (dist > 0.01 || turn > 0.5) { ++moved; box(e, 'ghost', svg); mk('path', { class:'move', d:`M ${X(e.xM)} ${Y(e.yM)} L ${X(b.xM)} ${Y(b.yM)}`, 'marker-end':'url(#abarrow)' }, svg); }
+  }
+  const defs = mk('defs', {}, svg), mark = mk('marker', { id:'abarrow', viewBox:'0 0 10 10', refX:9, refY:5, markerWidth:7, markerHeight:7, orient:'auto' }, defs);
+  mk('path', { d:'M 0 0 L 10 5 L 0 10 z', fill:'var(--text)' }, mark);
+  const order = { barrier:0, cdu:1, crah:2, spine:3, rack:3 };
+  for (const e of items.sort((a, b) => order[a.kind] - order[b.kind])) {
+    const a = inA[e.name], b = inB[e.name];
+    const d = a && b ? b.windowMeanC - a.windowMeanC : null;
+    const cabinet = e.kind === 'rack' || e.kind === 'spine';
+    const [g, rect] = box(e, cabinet ? 'cab' : e.kind === 'barrier' ? 'barrier' : 'unit', svg);
+    if (cabinet) rect.setAttribute('fill', d === null ? 'var(--panel2)' : divColor(d));
+    if (d !== null) { if (Math.abs(d) >= DIV_DEAD) ++distinct; table.push({ e, a:a.windowMeanC, b:b.windowMeanC, d }); }
+    if (LA && LB && !eqA[e.name]) { ++added; box(e, 'added', svg); }
+    if (e.kind === 'cdu' || e.kind === 'crah') mk('text', { class:'lbl', x:X(e.xM), y:Y(e.yM) + 3.5 }, svg).textContent = KIND[e.kind];
+    rect.addEventListener('mousemove', ev => {
+      const ea = eqA[e.name], mv = ea ? Math.hypot(e.xM - ea.xM, e.yM - ea.yM) : null;
+      tip.innerHTML = `<div class="k">${KIND[e.kind] || e.kind}</div><div>${e.name}</div>`
+        + (d === null ? '' : `<div><span class="k">흡기 창 평균</span> A ${a.windowMeanC.toFixed(2)} → B ${b.windowMeanC.toFixed(2)} °C</div><div><span class="k">B − A</span> ${(d > 0 ? '+' : '') + d.toFixed(2)} K${Math.abs(d) < DIV_DEAD ? ' (구분 불가)' : ''}</div>`)
+        + (mv !== null && mv > 0.01 ? `<div><span class="k">이동</span> ${mv.toFixed(2)} m</div>` : '') + (LA && LB && !ea ? '<div class="k">B에만 있음</div>' : '');
+      tip.style.display = 'block';
+      tip.style.left = Math.min(ev.clientX + 14, window.innerWidth - tip.offsetWidth - 8) + 'px'; tip.style.top = (ev.clientY + 14) + 'px';
+    });
+    rect.addEventListener('mouseleave', () => { tip.style.display = 'none'; });
+  }
+  $('absub').textContent = `랙·스파인 색 = 흡기 창 평균 B − A · ±${DIV_DEAD} K 넘게 달라진 곳 ${distinct} / ${table.length}`
+    + (LA && LB ? ` · 이동 ${moved} · 추가 ${added} · 삭제 ${removed}` : ' · 평면도가 없는 리포트라 흡기 위치만 그렸다');
+  table.sort((p, q) => Math.abs(q.d) - Math.abs(p.d));
+  $('abrtable').innerHTML = `<table><thead><tr><th class="l">장비</th><th>A °C</th><th>B °C</th><th>B − A K</th></tr></thead><tbody>`
+    + table.map(r => `<tr><td class="l">${KIND[r.e.kind] || ''} ${r.e.name}</td><td>${r.a.toFixed(2)}</td><td>${r.b.toFixed(2)}</td>`
+      + `<td class="${Math.abs(r.d) < DIV_DEAD ? '' : r.d > 0 ? 'pos' : 'neg'}">${(r.d > 0 ? '+' : '') + r.d.toFixed(2)}${Math.abs(r.d) < DIV_DEAD ? ' (구분 불가)' : ''}</td></tr>`).join('') + '</tbody></table>';
+}
+
+async function tick() {
+  try {
+    await pollSnapshot();
+    $('tab-summary').hidden = tab !== 'summary';
+    $('tab-racks').hidden = tab !== 'racks';
+    $('tab-ab').hidden = tab !== 'ab';
+    for (const b of document.querySelectorAll('.tabs button')) b.setAttribute('aria-selected', String(b.dataset.tab === tab));
+    if (tab === 'ab' || waitingSave) await pollReports(false);   // 저장 결과를 기다리는 동안은 어느 탭에서든
+    await pollSeries();                          // 시계열은 탭과 무관하게 계속 쌓는다(돌아왔을 때 빈틈 없게)
+    if (tab === 'summary') {
+      await pollLayout();
+      drawPlan();                                 // 색 범위(고정/현재 값)를 정한다
+      update3D();
+      if (airOn()) { await pollAirflow(); updateAir3D(); }   // 기류는 레이어가 켜져 있을 때만 받는다
+      for (const c of charts) draw(c);
+      renderTable();
+    } else if (tab === 'racks') {
+      await pollRacks();
+      renderRacks();
+      renderDetail();
+    } else {
+      await renderAb();
+    }
+    $('status').textContent = '갱신 ' + new Date().toLocaleTimeString() + ' · 점 ' + points.length;
+    $('status').className = 'status';
+  } catch (e) {
+    $('status').textContent = '읽기 실패: ' + e.message;
+    $('status').className = 'status err';
+  }
+}
+tick();
+setInterval(tick, 1000);
+window.addEventListener('resize', () => charts.forEach(draw));
+</script>
+</body>
+</html>
