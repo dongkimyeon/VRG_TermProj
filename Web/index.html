@@ -115,7 +115,16 @@
   #abplan .tag2 { fill:var(--text); font:600 11px var(--mono); text-anchor:middle; }
   #abplan .lbl { fill:var(--muted); font:10px var(--mono); text-anchor:middle; }
   td.pos { color:#e66767; } td.neg { color:#5598e7; }
+  /* 3D 방 보기 */
+  .view3d { position:relative; margin-bottom:12px; }
+  #c3d { display:block; width:100%; height:460px; border-radius:8px; background:var(--bg); cursor:grab; touch-action:none; }
+  #c3d:active { cursor:grabbing; }
+  .view3d .over { position:absolute; left:28px; bottom:22px; font-size:11px; color:var(--faint); pointer-events:none; }
+  .view3d .err { position:absolute; inset:60px 16px auto; color:#f0b43c; font-size:12px; }
 </style>
+<!-- 3D 보기: 데모와 같은 three.js 0.128 (전역 THREE + OrbitControls). 못 불러와도 나머지 화면은 동작한다. -->
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/build/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
 </head>
 <body>
 <div class="wrap">
@@ -185,6 +194,13 @@
   </section>
 
   <section id="tab-summary">
+  <div class="panel view3d">
+    <h2 style="font-size:13px;margin:0;font-weight:600">3D 방 보기 <span class="tag">계산값</span></h2>
+    <div style="color:var(--faint);font-size:11px;margin:2px 0 8px" id="sub3d">장비 상자와 흡기 창 평균 색(아래 평면도와 같은 색 범위) · 벽 = 공기 격자 경계</div>
+    <canvas id="c3d" aria-label="3D 방 보기: 드래그 회전, 휠 확대, 우클릭 드래그 이동. 같은 내용은 아래 평면도와 흡기 표에 있다."></canvas>
+    <div class="over">드래그: 회전 · 휠: 확대 · 우클릭 드래그: 이동 · 랙 클릭: 랙 탭</div>
+    <div class="err" id="err3d" hidden></div>
+  </div>
   <div class="panel plan">
     <div class="head">
       <div>
@@ -407,6 +423,7 @@ $('prange').addEventListener('click', () => {
   $('prange').setAttribute('aria-pressed', String(autoRange));
   $('prange').textContent = autoRange ? '색 범위: 현재 값 (실행끼리 비교 불가)' : '색 범위: 고정 21~29 °C';
   drawPlan();
+  update3D();
 });
 function seqColor(c) {
   const t = Math.max(0, Math.min(1, (c - TMIN) / (TMAX - TMIN))) * (SEQ.length - 1), i = Math.min(Math.floor(t), SEQ.length - 2), f = t - i;
@@ -485,6 +502,139 @@ function renderPlanTable() {
   }).join('');
   $('ptable').innerHTML = `<table><thead><tr><th style="text-align:left">장비</th><th>X m</th><th>Y m</th><th>흡기 창 평균 °C</th><th>27 °C</th></tr></thead><tbody>${rows}</tbody></table>`;
 }
+
+// ---- 3D 방 보기 (데모 참고: 비스듬히 위, 낮게 자른 벽, three.js 0.128) ----
+// 좌표: 세계 (X, Y, Z-위) [m] -> three (x, 높이, z) = (X, Z, Y). 위에서 보면 아래 2D 평면도와 같은 배치(거울 없음).
+// UE yaw(+X -> +Y)는 three에서 y축 -yaw 회전이다. 장면은 배치가 바뀔 때만 다시 만들고, 1초 갱신은 색만 바꾼다.
+const V3 = { ok: typeof THREE !== 'undefined' && !!THREE.OrbitControls, key:'', fitKey:'', cabinets:[], pickables:[] };
+const P3 = (x, y, z) => new THREE.Vector3(x, z, y);
+const KIND_COLOR = { cdu:0x59606e, crah:0x59606e, barrier:0x5c6475, none:0x2a3040 };
+function init3D() {
+  const canvas = $('c3d');
+  V3.renderer = new THREE.WebGLRenderer({ canvas, antialias:true });
+  V3.renderer.setPixelRatio(Math.min(2, window.devicePixelRatio || 1));
+  V3.scene = new THREE.Scene();
+  V3.scene.background = new THREE.Color(0x14171d);
+  V3.cam = new THREE.PerspectiveCamera(38, 2, 0.1, 400);
+  V3.ctl = new THREE.OrbitControls(V3.cam, canvas);
+  V3.ctl.enableDamping = true; V3.ctl.maxPolarAngle = Math.PI * 0.47;
+  V3.scene.add(new THREE.HemisphereLight(0xc8d2e6, 0x20242c, 0.9));
+  const sun = new THREE.DirectionalLight(0xffffff, 0.55); sun.position.set(-6, 14, -8); V3.scene.add(sun);
+  V3.room = new THREE.Group(); V3.items = new THREE.Group(); V3.scene.add(V3.room, V3.items);
+  // ▲ 경고 표식(27 °C 권장 상한 초과): 색만으로 상태를 알리지 않도록 기호를 띄운다.
+  const c = document.createElement('canvas'); c.width = c.height = 64;
+  const g = c.getContext('2d'); g.fillStyle = '#f0b43c'; g.font = 'bold 52px sans-serif'; g.textAlign = 'center'; g.textBaseline = 'middle'; g.fillText('▲', 32, 36);
+  V3.warnTex = new THREE.CanvasTexture(c);
+  const ray = new THREE.Raycaster(), ndc = new THREE.Vector2();
+  const hit = ev => { const r = canvas.getBoundingClientRect(); ndc.set((ev.clientX - r.left) / r.width * 2 - 1, -(ev.clientY - r.top) / r.height * 2 + 1);
+    ray.setFromCamera(ndc, V3.cam); const h = ray.intersectObjects(V3.pickables, false)[0]; return h ? h.object.userData.e : null; };
+  let down = null;
+  canvas.addEventListener('pointerdown', ev => { down = { x:ev.clientX, y:ev.clientY }; });
+  canvas.addEventListener('pointerup', ev => {
+    if (down && Math.hypot(ev.clientX - down.x, ev.clientY - down.y) < 4) { const e = hit(ev); if (e && e.inlet >= 0) { selectRack(e.inlet); showTab('racks'); } }
+    down = null;
+  });
+  canvas.addEventListener('pointermove', ev => {
+    if (ev.buttons) { tip.style.display = 'none'; return; }
+    const e = hit(ev);
+    if (!e) { tip.style.display = 'none'; return; }
+    const cv = inletC(e);
+    tip.innerHTML = `<div class="k">${KIND[e.kind]}${e.auto ? ' (자동 배치)' : ''}</div><div>${e.name}</div><div><span class="k">위치</span> (${e.xM.toFixed(2)}, ${e.yM.toFixed(2)}) m · 높이 ${(e.heightM || 0).toFixed(2)} m</div>`
+      + (cv === null ? '' : `<div><span class="k">흡기 창 평균</span> ${cv.toFixed(2)} °C${cv > 27 ? ' ▲' : ''}</div>`);
+    tip.style.display = 'block';
+    tip.style.left = Math.min(ev.clientX + 14, window.innerWidth - tip.offsetWidth - 8) + 'px'; tip.style.top = (ev.clientY + 14) + 'px';
+  });
+  canvas.addEventListener('pointerleave', () => { tip.style.display = 'none'; });
+  const loop = () => {
+    requestAnimationFrame(loop);
+    if (tab !== 'summary' || document.hidden) return;     // 보이지 않으면 그리지 않는다
+    const w = canvas.clientWidth, h = canvas.clientHeight;
+    if (w > 0 && (canvas.width !== Math.floor(w * V3.renderer.getPixelRatio()) || canvas.height !== Math.floor(h * V3.renderer.getPixelRatio()))) {
+      V3.renderer.setSize(w, h, false); V3.cam.aspect = w / h; V3.cam.updateProjectionMatrix();
+    }
+    V3.ctl.update();
+    V3.renderer.render(V3.scene, V3.cam);
+  };
+  requestAnimationFrame(loop);   // 첫 프레임은 스크립트 전체(탭 상태 선언 포함)가 끝난 뒤
+}
+function clear3D(group) {
+  for (const o of [...group.children]) {
+    group.remove(o);
+    o.traverse(n => { if (n.geometry) n.geometry.dispose(); if (n.material && n.material.map !== V3.warnTex) n.material.dispose(); });
+  }
+}
+function build3D(L) {
+  clear3D(V3.room); clear3D(V3.items); V3.cabinets = []; V3.pickables = [];
+  let d = L.domain;
+  if (!d) {   // 도메인이 없으면 장비 범위로
+    const xs = L.equipment.map(e => e.xM), ys = L.equipment.map(e => e.yM);
+    d = { minXM:Math.min(...xs) - 1, maxXM:Math.max(...xs) + 1, minYM:Math.min(...ys) - 1, maxYM:Math.max(...ys) + 1, maxZM:3 };
+  }
+  const W = d.maxXM - d.minXM, D = d.maxYM - d.minYM, cx = (d.minXM + d.maxXM) / 2, cy = (d.minYM + d.maxYM) / 2;
+  const floor = new THREE.Mesh(new THREE.BoxGeometry(W, 0.12, D), new THREE.MeshStandardMaterial({ color:0x3a404c, roughness:.95 }));
+  floor.position.copy(P3(cx, cy, -0.06)); V3.room.add(floor);
+  const n = Math.ceil(Math.max(W, D)), grid = new THREE.GridHelper(n, n, 0x4a5260, 0x434a57);
+  grid.position.copy(P3(cx, cy, 0.005)); grid.material.opacity = .35; grid.material.transparent = true; V3.room.add(grid);
+  // 벽 = 공기 격자 경계(계산 영역). 카메라 쪽(X 최소·Y 최소) 두 면은 낮게 잘라 안이 보이게 한다(데모처럼).
+  const wallM = new THREE.MeshStandardMaterial({ color:0x4a515e, roughness:.9 });
+  const tall = Math.min(1.1, d.maxZM || 1.1), low = 0.35;
+  for (const [x0, y0, x1, y1, h] of [[d.minXM, d.minYM, d.maxXM, d.minYM, low], [d.minXM, d.maxYM, d.maxXM, d.maxYM, tall],
+                                     [d.minXM, d.minYM, d.minXM, d.maxYM, low], [d.maxXM, d.minYM, d.maxXM, d.maxYM, tall]]) {
+    const alongX = y0 === y1, len = alongX ? x1 - x0 : y1 - y0;
+    const w = new THREE.Mesh(new THREE.BoxGeometry(alongX ? len + 0.18 : 0.18, h, alongX ? 0.18 : len), wallM);
+    w.position.copy(P3((x0 + x1) / 2, (y0 + y1) / 2, h / 2)); V3.room.add(w);
+  }
+  const edgeM = new THREE.LineBasicMaterial({ color:0x14171d, transparent:true, opacity:.55 });
+  for (const e of L.equipment) {
+    const h = e.heightM > 0 ? e.heightM : 2.0;          // 옛 데이터에 높이가 없으면 2 m로만 그린다
+    const cabinet = e.kind === 'rack' || e.kind === 'spine';
+    const mat = new THREE.MeshStandardMaterial({ color:cabinet ? KIND_COLOR.none : KIND_COLOR[e.kind] || KIND_COLOR.cdu, roughness:.7,
+      transparent:e.kind === 'barrier' || e.auto, opacity:e.kind === 'barrier' ? .55 : e.auto ? .6 : 1 });
+    const box = new THREE.Mesh(new THREE.BoxGeometry(e.depthM, h, e.widthM), mat);
+    box.position.copy(P3(e.xM, e.yM, (e.baseZM || 0) + h / 2));
+    box.rotation.y = -e.yawDeg * Math.PI / 180;
+    box.userData.e = e;
+    box.add(new THREE.LineSegments(new THREE.EdgesGeometry(box.geometry), edgeM));
+    V3.items.add(box); V3.pickables.push(box);
+    if (e.kind === 'crah') {                            // 토출 방향(+X) 화살표
+      const dir = new THREE.Vector3(1, 0, 0).applyAxisAngle(new THREE.Vector3(0, 1, 0), box.rotation.y);
+      const tip3 = P3(e.xM, e.yM, (e.baseZM || 0) + h * 0.5).add(dir.clone().multiplyScalar(e.depthM / 2));
+      V3.items.add(new THREE.ArrowHelper(dir, tip3, 0.9, 0x8a93a3, 0.25, 0.16));
+    }
+    if (cabinet) {
+      const warn = new THREE.Sprite(new THREE.SpriteMaterial({ map:V3.warnTex, depthTest:false }));
+      warn.scale.set(0.5, 0.5, 1); warn.position.copy(P3(e.xM, e.yM, (e.baseZM || 0) + h + 0.4)); warn.visible = false;
+      V3.items.add(warn);
+      V3.cabinets.push({ e, mat, warn });
+    }
+  }
+  // 처음과 방 범위가 바뀌었을 때만 카메라를 맞춘다(사용자가 돌린 시점은 유지).
+  const fitKey = [d.minXM, d.minYM, d.maxXM, d.maxYM].map(v => v.toFixed(2)).join();
+  if (fitKey !== V3.fitKey) {
+    V3.fitKey = fitKey;
+    const R = Math.max(W, D);
+    V3.cam.position.copy(P3(cx - 0.55 * R, cy - 0.75 * R, 0.85 * R));
+    V3.ctl.target.copy(P3(cx, cy, 0.4));
+    V3.ctl.minDistance = 0.3 * R; V3.ctl.maxDistance = 3 * R;
+    V3.ctl.update();
+  }
+}
+function update3D() {
+  if (!V3.ok || !layout) return;
+  const key = JSON.stringify([layout.domain, layout.equipment.map(e => [e.name, e.xM, e.yM, e.yawDeg, e.depthM, e.widthM, e.heightM, e.baseZM, e.inlet])]);
+  if (key !== V3.key) { V3.key = key; build3D(layout); }
+  let hot = 0, colored = 0;
+  for (const c of V3.cabinets) {
+    const cv = inletC(c.e);
+    c.mat.color.set(cv === null ? KIND_COLOR.none : seqColor(cv));
+    c.warn.visible = cv !== null && cv > 27;
+    colored += cv === null ? 0 : 1; hot += c.warn.visible ? 1 : 0;
+  }
+  $('sub3d').textContent = `장비 ${layout.equipment.length}개 · 랙·스파인 색 = 흡기 창 평균 (${colored}곳, 아래 평면도와 같은 색 범위)` + (hot ? ` · ▲ 27 °C 초과 ${hot}곳` : '')
+    + ' · 벽 = 공기 격자 경계(가까운 두 면은 낮게 잘랐다)';
+}
+if (V3.ok) { try { init3D(); } catch (err) { V3.ok = false; $('err3d').hidden = false; $('err3d').textContent = '3D를 시작하지 못했다: ' + err.message; } }
+else { $('err3d').hidden = false; $('err3d').textContent = 'three.js를 불러오지 못했다(CDN, 인터넷 연결 필요). 아래 2D 평면도는 그대로 쓸 수 있다.'; }
 
 // ---- 탭과 랙 탭 (4단계) ----
 let tab = 'summary', selected = -1, racks = null, detail = null, detailPending = false;
@@ -731,7 +881,8 @@ async function tick() {
     await pollSeries();                          // 시계열은 탭과 무관하게 계속 쌓는다(돌아왔을 때 빈틈 없게)
     if (tab === 'summary') {
       await pollLayout();
-      drawPlan();
+      drawPlan();                                 // 색 범위(고정/현재 값)를 정한다
+      update3D();
       for (const c of charts) draw(c);
       renderTable();
     } else if (tab === 'racks') {
