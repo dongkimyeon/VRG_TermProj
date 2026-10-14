@@ -307,6 +307,8 @@ public:
 	static void ComputeRoomShellVisibility(const FBox& BoundsM, const FVector& CameraM, bool bCutaway, bool OutVisible[NumRoomShellPieces]);
 	// Visible shell pieces after the last update (0 when off).
 	int32 GetNumVisibleRoomShellPieces() const;
+	// Automatic (actor-less) CRAH display meshes only; room shell and containment meshes are separate components.
+	int32 GetNumAutomaticCrahMeshes() const { return CrahMeshes.Num(); }
 	const FBox& GetDisplayedRoomShellBoundsM() const { return RoomShellBoundsM; }
 	void UpdateRoomShell();
 

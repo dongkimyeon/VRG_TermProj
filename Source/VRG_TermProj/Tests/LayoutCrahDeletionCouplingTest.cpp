@@ -33,7 +33,7 @@ bool FLayoutCrahDeletionCouplingTest::RunTest(const FString& Parameters)
  double MaxGlobal=0,MaxDiv=0,MaxDuct=0,MaxSize=0,MaxCoolant=0,MaxHydraulic=0;
  double MinInlet=1e9,MaxInlet=0,MinCoil=1e9,MaxCoil=0; double DesignFlow=0,DesignUA=0,DesignFan=0;
  auto Count=[&]() {int N=0; for(TActorIterator<ACrahUnitActor> It(W);It;++It) ++N; return N;};
- auto MeshCount=[&]() {TInlineComponentArray<UStaticMeshComponent*> Components(Sim); return Components.Num();};
+ auto MeshCount=[&]() {return Sim->GetNumAutomaticCrahMeshes();};  // not every mesh on Sim: the room shell adds its own
  auto Run=[&](int32 ExpectedUnits,bool Placed,const TCHAR* Stage) {
   // Equal authored initial input, not a copied live temperature/integral/clock.
   Rack->Input=InitialInput; Sim->EnterSimulationMode(); Sim->Tick(.021f); const auto First=Sim->GetSnapshot();
