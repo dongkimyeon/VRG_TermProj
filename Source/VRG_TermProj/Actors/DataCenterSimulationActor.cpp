@@ -1769,6 +1769,25 @@ FVrgDashboardLayout ADataCenterSimulationActor::BuildDashboardLayout() const
 			E.bAutoPlaced = true;
 		}
 	}
+	// 3D stage 2: the drawn coolant pipes with this step's solved flow; temperature only where the model has one
+	// (rack branches: rack inlet / outlet), never interpolated for headers (same rule as vrg.Pipes.Temperature).
+	if (Room != nullptr)
+	{
+		const FHydraulicNetwork& Net = Room->GetNetwork();
+		L.bHydraulicsConverged = Room->GetLastSolveResult().bConverged;
+		for (const FRoomPipeRoute& R : Room->GetPipeRoutesM())
+		{
+			FVrgDashboardPipe& P = L.Pipes.AddDefaulted_GetRef();
+			P.Edge = R.Edge; P.bSupply = R.bSupply; P.bBranch = R.bBranch; P.PointsM = R.PointsM;
+			P.DiameterM = R.bBranch ? Room->BranchDiameterM : Room->HeaderDiameterM;
+			if (R.Edge >= 0 && R.Edge < Net.GetNumPipes())
+			{
+				P.FlowM3s = Net.GetPipeFlowM3s(R.Edge);
+				P.bTempValid = Room->TryGetPipeTemperatureK(R.Edge, P.TempK);
+			}
+			else if (R.Edge < 0 && -1 - R.Edge < Net.GetNumPumps()) P.FlowM3s = Net.GetPumpFlowM3s(-1 - R.Edge);
+		}
+	}
 	return L;
 }
 

@@ -7,6 +7,10 @@
 #include "EngineUtils.h"
 #include "Interaction/DataCenterDebugController.h"
 #include "Actors/RackThermalActor.h"
+#include "Actors/DataCenterRoomActor.h"
+#include "Actors/CoolingDistributionUnitActor.h"
+#include "Engine/Engine.h"
+#include "Visualization/GjRackLayout.h"
 #include "Dom/JsonObject.h"
 #include "Engine/World.h"
 #include "HAL/IConsoleManager.h"
@@ -389,6 +393,86 @@ bool FWebDashboardSeriesAnalyticTest::RunTest(const FString& Parameters)
 	Eval.Reset(Settings, 2, { 300.0, 290.0 });
 	Eval.GetSeries(-1.0, Points);
 	TestTrue(TEXT("reset clears the series and bumps the generation"), Points.Num() == 0 && Eval.GetGeneration() == FirstGeneration + 1);
+	return true;
+}
+
+// 3D view stage 2 (2026-10-14): the dashboard pipes are the room actor's drawn paths for the solved network pipes,
+// with this step's solved flow and only the model's own temperatures (rack branches), in both mesh styles.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FWebDashboardPipesTest, "VRG.Web.PipesMatchNetwork",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::CommandletContext | EAutomationTestFlags::EngineFilter)
+bool FWebDashboardPipesTest::RunTest(const FString& Parameters)
+{
+	UWorld* World = UWorld::CreateWorld(EWorldType::Game, false);
+	GEngine->CreateNewWorldContext(EWorldType::Game).SetCurrentWorld(World);
+	ADataCenterSimulationActor* Sim = World->SpawnActor<ADataCenterSimulationActor>();
+	Sim->bShowSummary = false;
+	ADataCenterRoomActor* Room = World->SpawnActor<ADataCenterRoomActor>();
+	World->SpawnActor<AAirFieldDebugActor>()->bShowSummary = false;
+	TArray<ARackThermalActor*> Racks;
+	for (const double Y : { 0.0, 66.0 })   // one row of two racks (synthetic placement)
+	{
+		ARackThermalActor* Rack = World->SpawnActor<ARackThermalActor>(FVector(0, Y, 0), FRotator::ZeroRotator);
+		Rack->ApplyGb200Nvl72Preset(); Rack->bShowReadout = false;
+		Rack->RackSizeM = FVector(GjRackLayout::FrameDepthM, GjRackLayout::FrameWidthM, GjRackLayout::FrameHeightM);
+		Racks.Add(Rack);
+	}
+	World->SpawnActor<ACoolingDistributionUnitActor>(FVector(-300, 100, 0), FRotator::ZeroRotator);
+
+	for (const bool bGj : { false, true })
+	{
+		const TCHAR* Style = bGj ? TEXT("GJ") : TEXT("plain");
+		Room->bUseGjConnections = bGj;
+		Room->RebuildRoom();      // a style switch alone does not change the layout hash: ask for the rebuild
+		Room->RebuildRoomNow();
+		Sim->EnterSimulationMode(); Sim->Tick(.021f);
+		for (int32 I = 0; I < 10; ++I) Sim->Tick(.04f);
+		const FHydraulicNetwork& Net = Room->GetNetwork();
+		const FVrgDashboardLayout Direct = Sim->BuildDashboardLayout();
+		FVrgDashboardLayout Plan;
+		TestTrue(FString::Printf(TEXT("%s: layout with pipes round-trips"), Style), FVrgDashboardLayout::FromJson(Direct.ToJson(), Plan));
+		TestTrue(FString::Printf(TEXT("%s: hydraulics converged"), Style), Plan.bHydraulicsConverged);
+
+		// Every solved pipe is drawn exactly once; the pump links are the only extra paths.
+		TArray<int32> Drawn; Drawn.Init(0, Net.GetNumPipes());
+		bool bFlowExact = Plan.Pipes.Num() == Direct.Pipes.Num(), bPointsExact = bFlowExact, bTempRule = true;
+		int32 PumpLinks = 0, WithTemp = 0;
+		for (int32 I = 0; I < Plan.Pipes.Num(); ++I)
+		{
+			const FVrgDashboardPipe& P = Plan.Pipes[I];
+			bPointsExact &= P.PointsM.Num() >= 2 && I < Direct.Pipes.Num() && P.PointsM == Direct.Pipes[I].PointsM;
+			if (P.Edge < 0) { ++PumpLinks; bFlowExact &= P.FlowM3s == Net.GetPumpFlowM3s(-1 - P.Edge); bTempRule &= !P.bTempValid; continue; }
+			if (!Drawn.IsValidIndex(P.Edge)) { bFlowExact = false; continue; }
+			++Drawn[P.Edge];
+			bFlowExact &= P.FlowM3s == Net.GetPipeFlowM3s(P.Edge);
+			double T = 0.0;
+			const bool bModel = Room->TryGetPipeTemperatureK(P.Edge, T);
+			bTempRule &= P.bTempValid == bModel && (!bModel || P.TempK == T);
+			WithTemp += P.bTempValid ? 1 : 0;
+		}
+		int32 Missing = 0, Twice = 0;
+		for (const int32 C : Drawn) { Missing += C == 0; Twice += C > 1; }
+		TestEqual(FString::Printf(TEXT("%s: every network pipe drawn"), Style), Missing, 0);
+		TestEqual(FString::Printf(TEXT("%s: no pipe drawn twice"), Style), Twice, 0);
+		TestTrue(FString::Printf(TEXT("%s: flows = solved flows (exact)"), Style), bFlowExact);
+		TestTrue(FString::Printf(TEXT("%s: points survive JSON exactly"), Style), bPointsExact);
+		TestTrue(FString::Printf(TEXT("%s: temperature only where the model has one, equal to it"), Style), bTempRule);
+		TestEqual(FString::Printf(TEXT("%s: rack branch temperatures = 2 racks x supply/return"), Style), WithTemp, 4);
+		TestEqual(FString::Printf(TEXT("%s: pump links"), Style), PumpLinks, bGj ? Net.GetNumPumps() : 0);
+
+		// Supply branches carry the rack inlet, return branches the rack outlet (the model's values, K).
+		const TArray<ARackThermalActor*> Routed = Room->GetRoutedRacks();
+		const TArray<int32>& Branches = Room->GetRackBranchPipeIndices();
+		bool bBranchTemps = Routed.Num() == 2 && Branches.Num() == 2;
+		for (int32 R = 0; bBranchTemps && R < 2; ++R)
+			for (const FVrgDashboardPipe& P : Plan.Pipes)
+				if (P.Edge == Branches[R]) bBranchTemps &= P.bSupply && P.TempK == Routed[R]->GetCoolantDisplaySnapshot().InletTempK;
+		TestTrue(FString::Printf(TEXT("%s: supply branch = rack coolant inlet"), Style), bBranchTemps);
+		AddInfo(FString::Printf(TEXT("%s: %d drawn paths for %d pipes + %d pump links, %d with temperature"),
+			Style, Plan.Pipes.Num(), Net.GetNumPipes(), PumpLinks, WithTemp));
+		Sim->EnterLayoutMode();
+	}
+	GEngine->DestroyWorldContext(World);
+	World->DestroyWorld(false);
 	return true;
 }
 

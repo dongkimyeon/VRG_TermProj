@@ -67,6 +67,20 @@ struct FVrgDashboardEquipment
 	bool bAutoPlaced = false;                // automatic CRAH layout (no actor)
 };
 
+// 3D view stage 2 (2026-10-14): one drawn coolant pipe = the room actor's mesh path for a solved network pipe.
+// Flow and temperature are this step's solved values (SI: m^3/s, K); no pipe thermal lag exists in the model, so a
+// branch shows its rack's inlet (supply) or outlet (return) temperature and headers/pump links have none (unknown).
+struct FVrgDashboardPipe
+{
+	int32 Edge = INDEX_NONE;          // network pipe index, or -1 - pump for the CDU -> pump link
+	bool bSupply = false, bBranch = false;
+	double FlowM3s = 0.0;             // signed along PointsM (positive = first point to last)
+	double DiameterM = 0.0;
+	bool bTempValid = false;
+	double TempK = 0.0;
+	TArray<FVector> PointsM;          // world metres
+};
+
 struct VRG_TERMPROJ_API FVrgDashboardLayout
 {
 	double SimTimeS = 0.0;
@@ -76,6 +90,8 @@ struct VRG_TERMPROJ_API FVrgDashboardLayout
 	TArray<FVrgDashboardEquipment> Equipment;
 	TArray<double> InletWindowMeanK;         // by inlet index; empty before the first simulation step
 	double RecommendedInletK = 0.0;          // ASHRAE recommended inlet limit used by the evaluation
+	TArray<FVrgDashboardPipe> Pipes;         // empty without a room actor (optional in JSON: older reports lack it)
+	bool bHydraulicsConverged = false;
 
 	FString ToJson() const;
 	// The same object, for embedding (stage 5: a report stores the plan view at its SimTime).

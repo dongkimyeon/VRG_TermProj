@@ -174,6 +174,23 @@ TSharedRef<FJsonObject> FVrgDashboardLayout::ToJsonObject() const
 	for (const double K : InletWindowMeanK) Inlets.Add(MakeShared<FJsonValueNumber>(K));
 	Root->SetArrayField(TEXT("inletWindowMeanK"), Inlets);
 	Root->SetNumberField(TEXT("recommendedInletK"), RecommendedInletK);
+	Root->SetBoolField(TEXT("hydraulicsConverged"), bHydraulicsConverged);
+	TArray<TSharedPtr<FJsonValue>> PipeItems;
+	for (const FVrgDashboardPipe& P : Pipes)
+	{
+		TSharedRef<FJsonObject> O = MakeShared<FJsonObject>();
+		O->SetNumberField(TEXT("edge"), P.Edge);
+		O->SetBoolField(TEXT("supply"), P.bSupply);
+		O->SetBoolField(TEXT("branch"), P.bBranch);
+		O->SetNumberField(TEXT("flowM3s"), P.FlowM3s);
+		O->SetNumberField(TEXT("diameterM"), P.DiameterM);
+		if (P.bTempValid) O->SetNumberField(TEXT("tempK"), P.TempK); else O->SetField(TEXT("tempK"), MakeShared<FJsonValueNull>());
+		TArray<TSharedPtr<FJsonValue>> Xyz;
+		for (const FVector& V : P.PointsM) { Xyz.Add(MakeShared<FJsonValueNumber>(V.X)); Xyz.Add(MakeShared<FJsonValueNumber>(V.Y)); Xyz.Add(MakeShared<FJsonValueNumber>(V.Z)); }
+		O->SetArrayField(TEXT("pointsM"), Xyz);
+		PipeItems.Add(MakeShared<FJsonValueObject>(O));
+	}
+	Root->SetArrayField(TEXT("pipes"), PipeItems);
 	return Root;
 }
 
@@ -211,6 +228,25 @@ bool FVrgDashboardLayout::FromJson(const FString& Json, FVrgDashboardLayout& Out
 		L.Equipment.Add(E);
 	}
 	for (const TSharedPtr<FJsonValue>& V : *Inlets) L.InletWindowMeanK.Add(V->AsNumber());
+	// Pipes since 3D stage 2 (optional: older reports lack them).
+	Root->TryGetBoolField(TEXT("hydraulicsConverged"), L.bHydraulicsConverged);
+	const TArray<TSharedPtr<FJsonValue>>* PipeItems = nullptr;
+	if (Root->TryGetArrayField(TEXT("pipes"), PipeItems))
+		for (const TSharedPtr<FJsonValue>& V : *PipeItems)
+		{
+			const TSharedPtr<FJsonObject> O = V->AsObject();
+			FVrgDashboardPipe P;
+			double Edge = 0.0;
+			const TArray<TSharedPtr<FJsonValue>>* Xyz = nullptr;
+			if (!O.IsValid() || !O->TryGetNumberField(TEXT("edge"), Edge) || !O->TryGetBoolField(TEXT("supply"), P.bSupply)
+				|| !O->TryGetBoolField(TEXT("branch"), P.bBranch) || !O->TryGetNumberField(TEXT("flowM3s"), P.FlowM3s)
+				|| !O->TryGetNumberField(TEXT("diameterM"), P.DiameterM) || !O->TryGetArrayField(TEXT("pointsM"), Xyz) || Xyz->Num() % 3) return false;
+			P.Edge = int32(Edge);
+			P.bTempValid = O->TryGetNumberField(TEXT("tempK"), P.TempK);
+			for (int32 I = 0; I + 2 < Xyz->Num(); I += 3)
+				P.PointsM.Add(FVector((*Xyz)[I]->AsNumber(), (*Xyz)[I + 1]->AsNumber(), (*Xyz)[I + 2]->AsNumber()));
+			L.Pipes.Add(MoveTemp(P));
+		}
 	Out = MoveTemp(L);
 	return true;
 }
