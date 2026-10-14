@@ -218,6 +218,16 @@
         속력 <span id="airbar" style="display:inline-block;width:120px;height:8px;border-radius:2px"></span><span id="airends"></span></span>
     </div>
     <div id="airnote" style="font-size:11px;color:var(--faint);margin-top:4px" hidden></div>
+    <div class="tablebar" style="align-items:center;flex-wrap:wrap">
+      <button id="sensbtn" type="button" aria-pressed="false">센서: 꺼짐</button>
+      <button id="senstbtn" type="button">센서 표 보기</button>
+      <span id="senslegend" hidden style="display:inline-flex;align-items:center;gap:8px;font-size:11px;color:var(--faint)">
+        <span><span style="display:inline-block;width:9px;height:9px;border-radius:50%;background:#8fb4d8"></span> 정상</span>
+        <span><span style="display:inline-block;width:9px;height:9px;border-radius:50%;background:#f0b43c"></span> ▲ 경보</span>
+        <span><span style="display:inline-block;width:9px;height:9px;border-radius:50%;background:#7b8494"></span> 판독 없음</span></span>
+    </div>
+    <div id="sensnote" style="font-size:11px;color:var(--faint);margin-top:4px" hidden></div>
+    <div id="senstable" hidden></div>
   </div>
   <div class="panel plan">
     <div class="head">
@@ -541,6 +551,7 @@ function init3D() {
   V3.room = new THREE.Group(); V3.items = new THREE.Group(); V3.pipes = new THREE.Group(); V3.scene.add(V3.room, V3.items, V3.pipes);
   V3.pipePickables = []; V3.pipeMats = []; V3.pipeArrows = []; V3.pipeKey = '';
   V3.air = new THREE.Group(); V3.air.visible = false; V3.scene.add(V3.air);
+  V3.sens = new THREE.Group(); V3.sens.visible = false; V3.scene.add(V3.sens); V3.sensPickables = []; V3.sensKey = '';
   // ▲ 경고 표식(27 °C 권장 상한 초과): 색만으로 상태를 알리지 않도록 기호를 띄운다.
   const c = document.createElement('canvas'); c.width = c.height = 64;
   const g = c.getContext('2d'); g.fillStyle = '#f0b43c'; g.font = 'bold 52px sans-serif'; g.textAlign = 'center'; g.textBaseline = 'middle'; g.fillText('▲', 32, 36);
@@ -548,7 +559,8 @@ function init3D() {
   const ray = new THREE.Raycaster(), ndc = new THREE.Vector2();
   const hit = ev => { const r = canvas.getBoundingClientRect(); ndc.set((ev.clientX - r.left) / r.width * 2 - 1, -(ev.clientY - r.top) / r.height * 2 + 1);
     ray.setFromCamera(ndc, V3.cam);
-    const h = ray.intersectObjects(V3.pipes.visible ? V3.pickables.concat(V3.pipePickables) : V3.pickables, false)[0]; return h ? h.object.userData : null; };
+    const targets = (V3.sens.visible ? V3.sensPickables : []).concat(V3.pipes.visible ? V3.pipePickables : [], V3.pickables);
+    const h = ray.intersectObjects(targets, false)[0]; return h ? h.object.userData : null; };
   let down = null;
   canvas.addEventListener('pointerdown', ev => { down = { x:ev.clientX, y:ev.clientY }; });
   canvas.addEventListener('pointerup', ev => {
@@ -559,7 +571,8 @@ function init3D() {
     if (ev.buttons) { tip.style.display = 'none'; return; }
     const u = hit(ev), e = u && u.e;
     if (!u) { tip.style.display = 'none'; return; }
-    if (u.pipe !== undefined) tip.innerHTML = pipeTip(layout.pipes[u.pipe]);
+    if (u.sensor !== undefined) tip.innerHTML = sensorTip(u.sensor);
+    else if (u.pipe !== undefined) tip.innerHTML = pipeTip(layout.pipes[u.pipe]);
     else { const cv = inletC(e);
     tip.innerHTML = `<div class="k">${KIND[e.kind]}${e.auto ? ' (자동 배치)' : ''}</div><div>${e.name}</div><div><span class="k">위치</span> (${e.xM.toFixed(2)}, ${e.yM.toFixed(2)}) m · 높이 ${(e.heightM || 0).toFixed(2)} m</div>`
       + (cv === null ? '' : `<div><span class="k">흡기 창 평균</span> ${cv.toFixed(2)} °C${cv > 27 ? ' ▲' : ''}</div>`); }
@@ -819,6 +832,88 @@ $('airbtn').addEventListener('click', async () => {
 });
 $('airlayer').addEventListener('change', updateAir3D);
 $('airscale').addEventListener('change', updateAir3D);
+// ---- 3D 4단계: 센서 레이어 (2026-10-14) ----
+// /api/sensors = 평가(S6)의 가상 흡기 센서. 흡기 하나당 하나이며 값은 "모의 계측값"이다(D9, 신뢰도 100% 아님):
+// 1차 지연(시간 상수 tau) -> 샘플링 주기마다 판독 -> 가우스 잡음 -> 분해능 반올림, 경보는 판독값 기준(히스테리시스).
+// 위치 = 그 랙·스파인의 흡기면(로컬 +X) 가운데 높이. 센서가 재는 값은 흡기면 셀 평균이라 점 프로브 위치가 아니고,
+// 표식은 그 평균값을 놓을 대표 위치일 뿐이다(감지 반경 없음). 판독값 옆에 그 스텝의 실제 흡기 공기값을 함께 보여
+// 지연·오차를 숨기지 않는다. 색은 경보 상태(정상/경보/판독 없음), 경보는 ▲ 기호를 같이 띄운다.
+let sensors = null;
+const sensOn = () => $('sensbtn').getAttribute('aria-pressed') === 'true';
+const SENS_OK = 0x8fb4d8, SENS_ALARM = 0xf0b43c, SENS_NONE = 0x7b8494;
+async function pollSensors() {
+  if (!sensOn() || tab !== 'summary') return;
+  const r = await fetch('/api/sensors', { cache:'no-store' });
+  sensors = r.ok ? await r.json() : null;
+}
+const sensEquip = i => layout ? layout.equipment.find(e => e.inlet === i) : null;
+const fmtC = k => k === null || k === undefined ? '-' : toC(k).toFixed(2);
+function sensorTip(i) {
+  const s = sensors && sensors.sensors[i]; if (!s) return '';
+  const e = sensEquip(s.inlet), sp = sensors.spec;
+  const diff = s.readingK === null ? null : s.readingK - s.airNowK, age = s.readingK === null ? null : sensors.simTimeS - s.readingTimeS;
+  return `<div class="k">가상 흡기 센서 #${s.inlet} · 모의 계측값(D9)</div><div>${e ? e.name : ''}</div>`
+    + `<div><span class="k">판독값</span> ${s.readingK === null ? '아직 없음' : fmtC(s.readingK) + ' °C (' + age.toFixed(1) + ' s 전)'}</div>`
+    + `<div><span class="k">실제 흡기(이번 스텝)</span> ${fmtC(s.airNowK)} °C · <span class="k">판독 − 실제</span> ${diff === null ? '-' : (diff >= 0 ? '+' : '') + diff.toFixed(2) + ' K'}</div>`
+    + `<div><span class="k">경보</span> ${s.alarm ? '▲ 경보 중' : '정상'} · 문턱 ${fmtC(sp.alarmThresholdK)} °C (해제 −${sp.alarmHysteresisK} K)`
+    + (s.firstAlarmS === null ? '' : ` · 첫 감지 ${s.firstAlarmS.toFixed(1)} s, ${s.alarms}회`) + '</div>'
+    + `<div class="k">지연 τ ${sp.timeConstantS} s · 주기 ${sp.samplePeriodS} s · 잡음 σ ${sp.noiseStdK} K · 분해능 ${sp.resolutionK} K (일반 서미스터 가정값, 제품 사양 아님)</div>`;
+}
+function buildSensors3D() {
+  clear3D(V3.sens); V3.sensPickables = [];
+  if (!sensors || !layout) return;
+  sensors.sensors.forEach((s, i) => {
+    const e = sensEquip(s.inlet); if (!e) return;
+    const yaw = (e.yawDeg || 0) * Math.PI / 180, off = (e.depthM || 0) / 2 + 0.06;   // 흡기면 바로 앞
+    const z = (e.baseZM || 0) + (e.heightM || 2) * 0.5;
+    const m = new THREE.Mesh(new THREE.SphereGeometry(0.07, 14, 10), new THREE.MeshBasicMaterial({ color:SENS_NONE }));
+    m.position.copy(P3(e.xM + off * Math.cos(yaw), e.yM + off * Math.sin(yaw), z));
+    m.userData = { sensor:i };
+    const warn = new THREE.Sprite(new THREE.SpriteMaterial({ map:V3.warnTex, depthTest:false }));
+    warn.scale.set(.32, .32, .32); warn.position.copy(m.position).add(new THREE.Vector3(0, .22, 0)); warn.visible = false;
+    m.userData.warn = warn;
+    V3.sens.add(m, warn); V3.sensPickables.push(m);
+  });
+}
+function updateSensors3D() {
+  if (!V3.ok) return;
+  V3.sens.visible = sensOn();
+  $('senslegend').hidden = !sensOn(); $('sensnote').hidden = !sensOn();
+  if (!sensOn()) return;
+  if (!sensors || !layout) { $('sensnote').textContent = '센서 데이터 없음(시뮬레이션 액터가 아직 값을 내지 않았다)'; return; }
+  const key = JSON.stringify([sensors.sensors.length, layout.equipment.map(e => [e.inlet, e.xM, e.yM, e.yawDeg, e.depthM, e.heightM, e.baseZM])]);
+  if (key !== V3.sensKey) { V3.sensKey = key; buildSensors3D(); }
+  let alarm = 0, none = 0, maxAbs = 0;
+  for (const m of V3.sensPickables) {
+    const s = sensors.sensors[m.userData.sensor];
+    m.material.color.setHex(s.readingK === null ? SENS_NONE : s.alarm ? SENS_ALARM : SENS_OK);
+    m.userData.warn.visible = s.alarm;
+    alarm += s.alarm ? 1 : 0; none += s.readingK === null ? 1 : 0;
+    if (s.readingK !== null) maxAbs = Math.max(maxAbs, Math.abs(s.readingK - s.airNowK));
+  }
+  const sp = sensors.spec;
+  $('sensnote').textContent = `센서 ${sensors.sensors.length}개(흡기마다 하나) · 경보 ${alarm} · 판독 없음 ${none} · 판독 − 실제 최대 ${maxAbs.toFixed(2)} K`
+    + ` · 모의 계측값(D9): 지연 τ ${sp.timeConstantS} s, ${sp.samplePeriodS} s마다 판독, 잡음 σ ${sp.noiseStdK} K, 분해능 ${sp.resolutionK} K, 경보 ${fmtC(sp.alarmThresholdK)} °C`
+    + ' (일반 서미스터 가정값) · 표식 = 흡기면 평균값의 대표 위치(점 측정·감지 반경 아님)'
+    + (sensors.mode === 'simulation' ? '' : ' · 배치 모드: 계산이 멈춰 있다');
+  renderSensorTable();
+}
+function renderSensorTable() {
+  if ($('senstable').hidden || !sensors) return;
+  const rows = sensors.sensors.map(s => { const e = sensEquip(s.inlet), d = s.readingK === null ? null : s.readingK - s.airNowK;
+    return `<tr><td style="text-align:left">${s.inlet}</td><td style="text-align:left">${e ? e.name : '-'}</td><td>${fmtC(s.readingK)}</td><td>${fmtC(s.airNowK)}</td>`
+      + `<td>${d === null ? '-' : d.toFixed(2)}</td><td>${s.readingK === null ? '-' : (sensors.simTimeS - s.readingTimeS).toFixed(1)}</td>`
+      + `<td>${s.alarm ? '▲ 경보' : '정상'}</td><td>${s.firstAlarmS === null ? '-' : s.firstAlarmS.toFixed(1)}</td></tr>`; }).join('');
+  $('senstable').innerHTML = `<table><thead><tr><th style="text-align:left">흡기</th><th style="text-align:left">장비</th><th>판독 °C</th><th>실제 흡기 °C</th>`
+    + `<th>판독 − 실제 K</th><th>판독 경과 s</th><th>경보</th><th>첫 감지 s</th></tr></thead><tbody>${rows}</tbody></table>`;
+}
+$('sensbtn').addEventListener('click', async () => {
+  const on = !sensOn();
+  $('sensbtn').setAttribute('aria-pressed', on); $('sensbtn').textContent = '센서: ' + (on ? '켜짐' : '꺼짐');
+  if (on) { try { await pollSensors(); } catch (e) { sensors = null; } }
+  updateSensors3D();
+});
+$('senstbtn').addEventListener('click', () => { $('senstable').hidden = !$('senstable').hidden; $('senstbtn').textContent = $('senstable').hidden ? '센서 표 보기' : '센서 표 닫기'; renderSensorTable(); });
 $('pipetbtn').addEventListener('click', () => { $('pipetable').hidden = !$('pipetable').hidden; $('pipetbtn').textContent = $('pipetable').hidden ? '배관 표 보기' : '배관 표 닫기'; renderPipeTable(); });
 if (V3.ok) { try { init3D(); } catch (err) { V3.ok = false; $('err3d').hidden = false; $('err3d').textContent = '3D를 시작하지 못했다: ' + err.message; } }
 else { $('err3d').hidden = false; $('err3d').textContent = 'three.js를 불러오지 못했다(CDN, 인터넷 연결 필요). 아래 2D 평면도는 그대로 쓸 수 있다.'; }
@@ -1071,6 +1166,7 @@ async function tick() {
       drawPlan();                                 // 색 범위(고정/현재 값)를 정한다
       update3D();
       if (airOn()) { await pollAirflow(); updateAir3D(); }   // 기류는 레이어가 켜져 있을 때만 받는다
+      if (sensOn()) { await pollSensors(); updateSensors3D(); }
       for (const c of charts) draw(c);
       renderTable();
     } else if (tab === 'racks') {
