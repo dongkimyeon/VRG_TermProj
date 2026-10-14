@@ -401,6 +401,100 @@ bool FVrgDashboardAirflow::FromJson(const FString& Json, FVrgDashboardAirflow& O
 	return true;
 }
 
+FVrgDashboardSensors FVrgDashboardSensors::FromEvaluation(const FVrgEvaluation& Eval)
+{
+	FVrgDashboardSensors D;
+	D.SimTimeS = Eval.GetSimTimeS();
+	D.Spec = Eval.GetSettings().Sensor;
+	for (int32 I = 0; I < Eval.GetNumInlets(); ++I)
+	{
+		const FVrgEvaluation::FInletStats S = Eval.GetInlet(I);
+		FVrgDashboardSensor& R = D.Sensors.AddDefaulted_GetRef();
+		R.Inlet = I;
+		R.AirNowK = S.AirNowK;
+		R.ElementK = S.SensorElementK;
+		R.bHasReading = S.bSensorHasReading;
+		R.ReadingK = S.SensorLastK;
+		R.ReadingTimeS = S.SensorLastReadingTimeS;
+		R.Readings = S.SensorReadings;
+		R.bAlarm = S.bSensorAlarm;
+		R.FirstAlarmS = S.SensorFirstAlarmS;
+		R.Alarms = S.SensorAlarms;
+	}
+	return D;
+}
+
+FString FVrgDashboardSensors::ToJson() const
+{
+	FJsonText J;
+	J.S.Reserve(512 + Sensors.Num() * 220);
+	J.Raw(TEXT("{")); J.Key(TEXT("schema")); J.Int(1);
+	J.Raw(TEXT(",")); J.Key(TEXT("simTimeS")); J.Num(SimTimeS);
+	J.Raw(TEXT(",")); J.Key(TEXT("mode")); J.Str(bSimulating ? TEXT("simulation") : TEXT("layout"));
+	J.Raw(TEXT(",")); J.Key(TEXT("evalReady")); J.Bool(bEvalReady);
+	J.Raw(TEXT(",")); J.Key(TEXT("spec")); J.Raw(TEXT("{"));
+	J.Key(TEXT("samplePeriodS")); J.Num(Spec.SamplePeriodS);
+	J.Raw(TEXT(",")); J.Key(TEXT("timeConstantS")); J.Num(Spec.TimeConstantS);
+	J.Raw(TEXT(",")); J.Key(TEXT("noiseStdK")); J.Num(Spec.NoiseStdK);
+	J.Raw(TEXT(",")); J.Key(TEXT("resolutionK")); J.Num(Spec.ResolutionK);
+	J.Raw(TEXT(",")); J.Key(TEXT("alarmThresholdK")); J.Num(Spec.AlarmThresholdK);
+	J.Raw(TEXT(",")); J.Key(TEXT("alarmHysteresisK")); J.Num(Spec.AlarmHysteresisK);
+	J.Raw(TEXT("}"));
+	J.Raw(TEXT(",")); J.Key(TEXT("sensors")); J.Raw(TEXT("["));
+	for (int32 I = 0; I < Sensors.Num(); ++I)
+	{
+		const FVrgDashboardSensor& R = Sensors[I];
+		if (I) J.Raw(TEXT(","));
+		J.Raw(TEXT("{")); J.Key(TEXT("inlet")); J.Int(R.Inlet);
+		J.Raw(TEXT(",")); J.Key(TEXT("airNowK")); J.Num(R.AirNowK);
+		J.Raw(TEXT(",")); J.Key(TEXT("elementK")); J.Num(R.ElementK);
+		J.Raw(TEXT(",")); J.Key(TEXT("readingK")); if (R.bHasReading) J.Num(R.ReadingK); else J.Raw(TEXT("null"));
+		J.Raw(TEXT(",")); J.Key(TEXT("readingTimeS")); if (R.bHasReading) J.Num(R.ReadingTimeS); else J.Raw(TEXT("null"));
+		J.Raw(TEXT(",")); J.Key(TEXT("readings")); J.Int(R.Readings);
+		J.Raw(TEXT(",")); J.Key(TEXT("alarm")); J.Bool(R.bAlarm);
+		J.Raw(TEXT(",")); J.Key(TEXT("firstAlarmS")); if (R.FirstAlarmS >= 0.0) J.Num(R.FirstAlarmS); else J.Raw(TEXT("null"));
+		J.Raw(TEXT(",")); J.Key(TEXT("alarms")); J.Int(R.Alarms);
+		J.Raw(TEXT("}"));
+	}
+	J.Raw(TEXT("]}"));
+	return MoveTemp(J.S);
+}
+
+bool FVrgDashboardSensors::FromJson(const FString& Json, FVrgDashboardSensors& Out)
+{
+	TSharedPtr<FJsonObject> Root;
+	if (!FJsonSerializer::Deserialize(TJsonReaderFactory<>::Create(Json), Root) || !Root.IsValid()) return false;
+	FVrgDashboardSensors D;
+	FString Mode;
+	const TSharedPtr<FJsonObject>* Spec = nullptr;
+	const TArray<TSharedPtr<FJsonValue>>* Rows = nullptr;
+	if (!Root->TryGetNumberField(TEXT("simTimeS"), D.SimTimeS) || !Root->TryGetStringField(TEXT("mode"), Mode)
+		|| !Root->TryGetBoolField(TEXT("evalReady"), D.bEvalReady) || !Root->TryGetObjectField(TEXT("spec"), Spec)
+		|| !Root->TryGetArrayField(TEXT("sensors"), Rows)) return false;
+	D.bSimulating = Mode == TEXT("simulation");
+	const FJsonObject& S = **Spec;
+	if (!S.TryGetNumberField(TEXT("samplePeriodS"), D.Spec.SamplePeriodS) || !S.TryGetNumberField(TEXT("timeConstantS"), D.Spec.TimeConstantS)
+		|| !S.TryGetNumberField(TEXT("noiseStdK"), D.Spec.NoiseStdK) || !S.TryGetNumberField(TEXT("resolutionK"), D.Spec.ResolutionK)
+		|| !S.TryGetNumberField(TEXT("alarmThresholdK"), D.Spec.AlarmThresholdK)
+		|| !S.TryGetNumberField(TEXT("alarmHysteresisK"), D.Spec.AlarmHysteresisK)) return false;
+	for (const TSharedPtr<FJsonValue>& V : *Rows)
+	{
+		const TSharedPtr<FJsonObject>* O = nullptr;
+		if (!V->TryGetObject(O)) return false;
+		FVrgDashboardSensor& R = D.Sensors.AddDefaulted_GetRef();
+		double Inlet = 0.0, Readings = 0.0, Alarms = 0.0;
+		if (!(*O)->TryGetNumberField(TEXT("inlet"), Inlet) || !(*O)->TryGetNumberField(TEXT("airNowK"), R.AirNowK)
+			|| !(*O)->TryGetNumberField(TEXT("elementK"), R.ElementK) || !(*O)->TryGetNumberField(TEXT("readings"), Readings)
+			|| !(*O)->TryGetBoolField(TEXT("alarm"), R.bAlarm) || !(*O)->TryGetNumberField(TEXT("alarms"), Alarms)) return false;
+		R.Inlet = int32(Inlet); R.Readings = int32(Readings); R.Alarms = int32(Alarms);
+		R.bHasReading = (*O)->TryGetNumberField(TEXT("readingK"), R.ReadingK);
+		if (R.bHasReading) (*O)->TryGetNumberField(TEXT("readingTimeS"), R.ReadingTimeS); else R.ReadingTimeS = -1.0;
+		if (!(*O)->TryGetNumberField(TEXT("firstAlarmS"), R.FirstAlarmS)) R.FirstAlarmS = -1.0;
+	}
+	Out = MoveTemp(D);
+	return true;
+}
+
 FString FVrgDashboardRacks::RowsToJson() const
 {
 	FJsonText J;

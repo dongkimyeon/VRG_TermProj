@@ -53,6 +53,12 @@ public:
 		double SensorLastK = 0.0, SensorFirstAlarmS = -1.0;
 		int32 SensorAlarms = 0;
 		bool bSensorAlarm = false;
+		// Web dashboard sensor layer (2026-10-14): the true air the sensor saw last step next to what it reports (D9).
+		double AirNowK = 0.0;                  // inlet air of the last step (the field value, not a measurement)
+		double SensorElementK = 0.0;           // lagged sensing element before noise / rounding
+		bool bSensorHasReading = false;
+		double SensorLastReadingTimeS = -1.0;  // sim time of the last reading (quantised to the solver step)
+		int32 SensorReadings = 0;
 	};
 	FInletStats GetInlet(int32 Index) const;
 	int32 GetNumInlets() const { return Inlets.Num(); }
@@ -88,6 +94,7 @@ private:
 	{
 		FWindowed Temperature;
 		double PeakK = 0.0, AboveRecommendedS = 0.0, AboveAllowableS = 0.0;
+		double LastAirK = 0.0;
 		FVirtualSensor Sensor;
 	};
 	FVrgEvaluationSettings Settings;

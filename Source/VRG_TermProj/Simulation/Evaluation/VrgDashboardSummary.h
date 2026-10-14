@@ -122,6 +122,35 @@ struct VRG_TERMPROJ_API FVrgDashboardAirflow
 	static bool FromJson(const FString& Json, FVrgDashboardAirflow& Out);
 };
 
+// 3D view stage 4 (2026-10-14): sensor layer. One virtual inlet sensor per evaluation inlet (S6, D9): a simulated
+// measurement with a first-order lag, sampling period, Gaussian noise, rounding and an alarm with hysteresis. Each row
+// carries the reading next to the true inlet air of the last step so the page can show the lag/error, never only the
+// reading as if it were exact. Positions come from the plan view (inlet index); SI units (K, s).
+struct FVrgDashboardSensor
+{
+	int32 Inlet = INDEX_NONE;
+	double AirNowK = 0.0, ElementK = 0.0;
+	bool bHasReading = false;
+	double ReadingK = 0.0, ReadingTimeS = -1.0;
+	int32 Readings = 0;
+	bool bAlarm = false;
+	double FirstAlarmS = -1.0;
+	int32 Alarms = 0;
+};
+
+struct VRG_TERMPROJ_API FVrgDashboardSensors
+{
+	double SimTimeS = 0.0;
+	bool bSimulating = false;
+	bool bEvalReady = false;
+	FVirtualSensorSpec Spec;
+	TArray<FVrgDashboardSensor> Sensors;
+
+	static FVrgDashboardSensors FromEvaluation(const FVrgEvaluation& Eval);
+	FString ToJson() const;
+	static bool FromJson(const FString& Json, FVrgDashboardSensors& Out);
+};
+
 // Web dashboard stage 4 (2026-10-13): rack tab. One row per evaluation inlet (racks, then spines), from the thermal
 // model's state and last-step totals; SI units (W, K, kg/s, m^3/s). Built cheaply every publish (no snapshots).
 struct FVrgDashboardRackRow

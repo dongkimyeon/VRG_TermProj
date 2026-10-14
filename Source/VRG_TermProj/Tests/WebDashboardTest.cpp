@@ -522,4 +522,62 @@ bool FWebDashboardAirflowTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+// 3D view stage 4 (2026-10-14): the sensor layer copies the evaluation's virtual sensors (D9) without changing them, and
+// keeps the true inlet air next to the reading. Synthetic step input: inlet 0 jumps 297.15 -> 307.15 K at t = 0, inlet 1 stays.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FWebDashboardSensorsTest, "VRG.Web.SensorsMatchEvaluation",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::CommandletContext | EAutomationTestFlags::EngineFilter)
+bool FWebDashboardSensorsTest::RunTest(const FString& Parameters)
+{
+	FVrgEvaluationSettings Settings;
+	Settings.Sensor.SamplePeriodS = 1.0; Settings.Sensor.TimeConstantS = 8.0; Settings.Sensor.NoiseStdK = .2;
+	Settings.Sensor.ResolutionK = .1; Settings.Sensor.AlarmThresholdK = 300.0; Settings.Sensor.AlarmHysteresisK = .5;
+	FVrgEvaluation Eval;
+	Eval.Reset(Settings, 2, { 297.15, 297.15 });
+	{
+		const FVrgDashboardSensors Before = FVrgDashboardSensors::FromEvaluation(Eval);
+		FVrgDashboardSensors Back;
+		TestTrue(TEXT("before the first step: no reading, JSON null round-trip"), Before.Sensors.Num() == 2 && !Before.Sensors[0].bHasReading
+			&& FVrgDashboardSensors::FromJson(Before.ToJson(), Back) && !Back.Sensors[0].bHasReading && Back.Sensors[0].FirstAlarmS < 0.0);
+	}
+	const double Dt = .02;
+	double T = 0.0;
+	for (int32 Step = 0; Step < 1500; ++Step) { T += Dt; Eval.AfterStep(T, Dt, { 307.15, 297.15 }, FVrgEvaluationSample()); }
+	FVrgDashboardSensors D = FVrgDashboardSensors::FromEvaluation(Eval);
+	bool bCopy = D.Sensors.Num() == 2 && D.SimTimeS == Eval.GetSimTimeS() && D.Spec.TimeConstantS == 8.0 && D.Spec.NoiseStdK == .2;
+	for (int32 I = 0; bCopy && I < 2; ++I)
+	{
+		const FVrgEvaluation::FInletStats S = Eval.GetInlet(I);
+		const FVrgDashboardSensor& R = D.Sensors[I];
+		bCopy = R.Inlet == I && R.AirNowK == S.AirNowK && R.ElementK == S.SensorElementK && R.ReadingK == S.SensorLastK
+			&& R.ReadingTimeS == S.SensorLastReadingTimeS && R.Readings == S.SensorReadings && R.bAlarm == S.bSensorAlarm
+			&& R.FirstAlarmS == S.SensorFirstAlarmS && R.Alarms == S.SensorAlarms && R.bHasReading == S.bSensorHasReading;
+	}
+	TestTrue(TEXT("rows = evaluation sensors (exact copy)"), bCopy);
+	const FVrgDashboardSensor& Hot = D.Sensors[0];
+	const FVrgDashboardSensor& Cold = D.Sensors[1];
+	TestEqual(TEXT("true air = last inlet input"), Hot.AirNowK, 307.15);
+	// First-order lag integrated exactly per step: element = T1 - (T1 - T0) exp(-t / tau).
+	const double Analytic = 307.15 - 10.0 * FMath::Exp(-T / 8.0);
+	const double LagErr = FMath::Abs(Hot.ElementK - Analytic);
+	AddInfo(FString::Printf(TEXT("sensor layer: t %.2f s, element %.6f K (analytic %.6f, err %.2e K), reading %.2f K at %.2f s, %d readings, first alarm %.2f s"),
+		T, Hot.ElementK, Analytic, LagErr, Hot.ReadingK, Hot.ReadingTimeS, Hot.Readings, Hot.FirstAlarmS));
+	TestTrue(TEXT("element follows the analytic lag (< 1e-9 K)"), LagErr < 1e-9);
+	TestTrue(TEXT("readings every sample period (30 in 30 s)"), Hot.bHasReading && Hot.Readings == 30 && FMath::Abs(Hot.ReadingTimeS - 30.0) < 1e-9);
+	TestTrue(TEXT("reading within noise + rounding of the element (5 sigma)"), FMath::Abs(Hot.ReadingK - Hot.ElementK) < 5.0 * .2 + .1);
+	TestTrue(TEXT("hot inlet alarmed after a delay, cold inlet did not"), Hot.bAlarm && Hot.FirstAlarmS > 0.0 && Hot.Alarms >= 1
+		&& !Cold.bAlarm && Cold.FirstAlarmS < 0.0);
+	D.bSimulating = true; D.bEvalReady = true;
+	FVrgDashboardSensors Back;
+	bool bRound = FVrgDashboardSensors::FromJson(D.ToJson(), Back) && Back.Sensors.Num() == 2 && Back.bSimulating && Back.bEvalReady
+		&& Back.Spec.AlarmThresholdK == 300.0 && Back.Spec.AlarmHysteresisK == .5 && Back.Spec.ResolutionK == .1 && Back.Spec.SamplePeriodS == 1.0;
+	for (int32 I = 0; bRound && I < 2; ++I)
+	{
+		const FVrgDashboardSensor& A = D.Sensors[I]; const FVrgDashboardSensor& B = Back.Sensors[I];
+		bRound = A.AirNowK == B.AirNowK && A.ElementK == B.ElementK && A.ReadingK == B.ReadingK && A.ReadingTimeS == B.ReadingTimeS
+			&& A.Readings == B.Readings && A.bAlarm == B.bAlarm && A.FirstAlarmS == B.FirstAlarmS && A.Alarms == B.Alarms;
+	}
+	TestTrue(TEXT("JSON round-trip exact"), bRound);
+	return true;
+}
+
 #endif

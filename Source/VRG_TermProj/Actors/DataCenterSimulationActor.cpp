@@ -1976,6 +1976,15 @@ void ADataCenterSimulationActor::PublishDashboard()
 	Web.PublishSeries(MoveTemp(Series));
 	Web.PublishLayout(BuildDashboardLayout());   // struct copy; JSON is built per request (it was most of the publish cost)
 	Web.PublishRacks(BuildDashboardRacks(Web.GetRequestedRack()));
+	{
+		// 3D sensor layer: the same evaluation sensors the report uses (D9 simulated measurements).
+		FVrgDashboardSensors Sensors;
+		if (bEvalReady) Sensors = FVrgDashboardSensors::FromEvaluation(Eval);
+		Sensors.SimTimeS = Clock.GetSimTimeS();
+		Sensors.bSimulating = Mode == ESimMode::Simulation;
+		Sensors.bEvalReady = bEvalReady;
+		Web.PublishSensors(MoveTemp(Sensors));
+	}
 	if (AirField != nullptr)
 	{
 		// 3D airflow layer sampling (display choice, not a physics setting): every 2nd cell in X and Y (0.5 m at the

@@ -13,6 +13,7 @@ void FVrgEvaluation::Reset(const FVrgEvaluationSettings& InSettings, int32 NumIn
 		In.Temperature.Reset(NumBuckets);
 		const double T0 = InitialInletK.IsValidIndex(I) ? InitialInletK[I] : Settings.RecommendedInletK;
 		In.PeakK = T0;
+		In.LastAirK = T0;
 		In.AboveRecommendedS = In.AboveAllowableS = 0.0;
 		In.Sensor.Reset(Settings.Sensor, T0, Settings.Seed + I);
 	}
@@ -38,6 +39,7 @@ void FVrgEvaluation::AfterStep(double InSimTimeS, double DtS, const TArray<doubl
 		if (T > Settings.RecommendedInletK) In.AboveRecommendedS += DtS;
 		if (T > Settings.AllowableInletK) In.AboveAllowableS += DtS;
 		In.Sensor.Advance(SimTimeS, DtS, T);
+		In.LastAirK = T;
 	}
 	It.Add(Power.ItW, DtS); ServerFan.Add(Power.ServerFanW, DtS); CrahFan.Add(Power.CrahFanW, DtS); Pump.Add(Power.PumpW, DtS);
 	CoolantRemoved.Add(Power.CoolantRemovedW, DtS); AirRemoved.Add(Power.AirRemovedW, DtS);
@@ -88,6 +90,11 @@ FVrgEvaluation::FInletStats FVrgEvaluation::GetInlet(int32 Index) const
 	S.SensorFirstAlarmS = In.Sensor.GetFirstAlarmTimeS();
 	S.SensorAlarms = In.Sensor.GetNumAlarms();
 	S.bSensorAlarm = In.Sensor.IsAlarm();
+	S.AirNowK = In.LastAirK;
+	S.SensorElementK = In.Sensor.GetElementK();
+	S.bSensorHasReading = In.Sensor.HasReading();
+	S.SensorLastReadingTimeS = In.Sensor.GetLastReadingTimeS();
+	S.SensorReadings = In.Sensor.GetNumReadings();
 	return S;
 }
 
