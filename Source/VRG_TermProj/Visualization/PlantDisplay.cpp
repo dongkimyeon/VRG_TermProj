@@ -9,7 +9,7 @@ namespace
 	constexpr double LaneGapM = 2.0, UnitPitchM = 2.8, PumpPitchM = 0.9, HeaderZM = 3.0;
 	constexpr int32 UnitColumns = 6;
 
-	struct FLane
+	struct FPlantLane
 	{
 		EPlantLoopId Id = EPlantLoopId::Fws;
 		const FFacilityWaterLoop* Loop = nullptr;
@@ -18,7 +18,7 @@ namespace
 		int32 ExtraUnits = 0;              // trim chillers (FWS lane) after the dry coolers
 	};
 
-	FVector UnitPosition(double X0, const FLane& L, int32 K)
+	FVector UnitPosition(double X0, const FPlantLane& L, int32 K)
 	{
 		return FVector(X0 + 6.0 + (K % UnitColumns) * UnitPitchM, L.Y0 + 1.5 + (K / UnitColumns) * UnitPitchM, 0.7);
 	}
@@ -36,13 +36,13 @@ FPlantDisplaySnapshot PlantDisplay::Build(const FFacilityPlant& Plant, const FPl
 	const int32 NTrim = Plant.IsTrimActive() ? FMath::Max(Th.TrimDutyChillers, 1) + FMath::Max(Th.TrimStandbyChillers, 0) : 0;
 
 	// Lanes beside the room, one per built loop.
-	TArray<FLane> Lanes;
+	TArray<FPlantLane> Lanes;
 	double Y = Room.Min.Y;
 	for (const EPlantLoopId Id : { EPlantLoopId::Fws, EPlantLoopId::Chw, EPlantLoopId::Cw })
 	{
 		const FFacilityWaterLoop* L = Plant.GetLoopFor(Id);
 		if (L == nullptr) continue;
-		FLane& Lane = Lanes.AddDefaulted_GetRef();
+		FPlantLane& Lane = Lanes.AddDefaulted_GetRef();
 		Lane.Id = Id; Lane.Loop = L; Lane.Y0 = Y;
 		Lane.Units = Id == EPlantLoopId::Fws ? Plant.GetNumDryCoolers() : Id == EPlantLoopId::Chw ? NChw : Plant.GetNumCwDryCoolers();
 		Lane.ExtraUnits = Id == EPlantLoopId::Fws ? NTrim : 0;
@@ -50,13 +50,13 @@ FPlantDisplaySnapshot PlantDisplay::Build(const FFacilityPlant& Plant, const FPl
 		Lane.Width = FMath::Max(6.0, 3.0 + Rows * UnitPitchM);
 		Y += Lane.Width + LaneGapM;
 	}
-	auto LaneOf = [&](EPlantLoopId Id) -> const FLane* { for (const FLane& L : Lanes) if (L.Id == Id) return &L; return nullptr; };
-	const FLane* ChwLane = LaneOf(EPlantLoopId::Chw);
-	const FLane* FwsLane = LaneOf(EPlantLoopId::Fws);
+	auto LaneOf = [&](EPlantLoopId Id) -> const FPlantLane* { for (const FPlantLane& L : Lanes) if (L.Id == Id) return &L; return nullptr; };
+	const FPlantLane* ChwLane = LaneOf(EPlantLoopId::Chw);
+	const FPlantLane* FwsLane = LaneOf(EPlantLoopId::Fws);
 
 	// Equipment of the lanes (built first: condenser and evaporator branches run to these boxes).
 	TArray<FVector> ChillerPos, TrimPos;
-	for (const FLane& L : Lanes)
+	for (const FPlantLane& L : Lanes)
 	{
 		const FFacilityLoopHandles& H = L.Loop->GetHandles();
 		for (int32 P = 0; P < H.Pumps.Num(); ++P)
@@ -111,7 +111,7 @@ FPlantDisplaySnapshot PlantDisplay::Build(const FFacilityPlant& Plant, const FPl
 
 	// Network nodes and pipes of every lane.
 	uint32 Hash = GetTypeHash(int32(Plant.GetTopology()));
-	for (const FLane& L : Lanes)
+	for (const FPlantLane& L : Lanes)
 	{
 		const FFacilityWaterLoop& Loop = *L.Loop;
 		const FHydraulicNetwork& N = Loop.GetNetwork();
