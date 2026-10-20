@@ -27,7 +27,12 @@
 // octree); the plant hands it the EQUIVALENT UA with the same air-side effectiveness, UA_eq = -C_air ln(1 - eps_air),
 // and the chilled water supply temperature. The air side is then exact, and the chilled water return follows from the
 // solver's total coil heat (all units share one supply temperature).
-// F3 keeps the CRAH valves fully open (supply air temperature control on the valves comes after this commit).
+// CRAH valve control (F3, 2026-10-20): each CRAH's 2-way valve holds its coil leaving air at a setpoint (design: chilled
+// water supply + design approach). Model-based steady inverse from the unit's mixed intake of the last step: the
+// required air-side effectiveness -> the chilled water flow giving it (monotonic, bisection) -> the valve opening giving
+// that flow at the controlled header differential (Q = sqrt(dp / R_branch), equal-percentage inverse) -> stroke-rate
+// limit. The CHW network is then re-solved. Per-unit intake temperatures exist only on the CPU uniform air path; on the
+// GPU / octree paths the valves hold their position and the plant says so.
 
 USTRUCT(BlueprintType)
 struct FFacilityThermalSpec
@@ -71,6 +76,10 @@ struct FFacilityThermalSpec
 	// Condenser water: fans hold the chiller's entering condenser water at 85 F (29.44 C), the AHRI 550/590 standard
 	// rating condition for water-cooled chillers (ESTIMATE as a control setpoint; original standard not re-checked here).
 	UPROPERTY(EditAnywhere, Category = "Plant") double CwSupplySetpointK = 302.594;
+	// CRAH valve control on the coil leaving air (see above). Full stroke time 60 s: ESTIMATE (no public figure found
+	// in the Liebert PCW catalog, which only says the actuator is managed proportionally).
+	UPROPERTY(EditAnywhere, Category = "Plant") bool bCrahValveControl = true;
+	UPROPERTY(EditAnywhere, Category = "Plant") double ValveStrokeS = 60.0;
 };
 
 // One CRAH coil handed to the plant (sized by the integrated actor at its design air flow).
@@ -80,6 +89,7 @@ struct FPlantCrahCoil
 	double DesignAirEps = 0.0;     // air-side effectiveness of the old infinite-water coil at design
 	double DesignDutyW = 0.0;      // AirWK * design air temperature drop
 	double OldUAWK = 0.0;          // the infinite-water UA (for reference)
+	double CoilLeavingSetpointK = 0.0;   // valve control target (0 = no control for this unit)
 };
 
 // Two well-mixed water volumes of one loop (see the header comment).
@@ -128,6 +138,8 @@ struct FFacilityPlantState
 	double CrahDutyW = 0.0, ChillerLoadW = 0.0, ChillerPowerW = 0.0, ChillerCondenserW = 0.0, CwDryCoolerHeatW = 0.0;
 	int32 ChillersRunning = 0;
 	bool bChillerCapacityLimited = false, bChillerOutsideCurves = false;
+	int32 CrahValvesFullOpen = 0, CrahValvesShut = 0;
+	bool bCrahReadingsMissing = false;   // valves held: no per-unit intake temperatures on this air path
 	double ChillerLimitedS = 0.0, ChillerOutsideCurvesS = 0.0;
 	// Plant ledger since the start of the run [J].
 	double DutyInJ = 0.0, DryCoolerOutJ = 0.0, CrahInJ = 0.0, CompressorInJ = 0.0, CwDryCoolerOutJ = 0.0;
@@ -153,6 +165,16 @@ public:
 	double GetCrahEquivalentUAWK(int32 Unit) const { return CrahEqUA.IsValidIndex(Unit) ? CrahEqUA[Unit] : 0.0; }
 	double GetCrahCounterflowUAWK(int32 Unit) const { return CrahCfUA.IsValidIndex(Unit) ? CrahCfUA[Unit] : 0.0; }
 	double GetCrahWaterKgs(int32 Unit) const { return CrahWaterKgs.IsValidIndex(Unit) ? CrahWaterKgs[Unit] : 0.0; }
+	// CRAH valve control from the units' mixed intake temperatures of the last step (one per CRAH). Returns true when
+	// any opening changed (then the CHW network was re-solved and the equivalent UAs updated).
+	bool ControlCrahValves(double DtS, const TArray<double>& IntakeMixK);
+	void MarkCrahReadingsMissing() { State.bCrahReadingsMissing = true; }
+	double GetCrahOpening(int32 Unit) const { return ChwLoop.GetValveOpening(Unit); }
+	// Opening that makes the unit's coil leave at TargetK from IntakeK (inverse used by the control; no ramp).
+	double CrahOpeningFor(int32 Unit, double IntakeK, double TargetK, bool& bSaturated) const;
+	// Air-side effectiveness of a CRAH coil at a water flow [kg/s] (counterflow, UA_cf).
+	double CrahAirEffectiveness(int32 Unit, double WaterKgs) const;
+	const FFacilityLoopResult& GetChwResult() const { return ChwResult; }
 	// Advances the plant over DtS with the CDU duties (one per FWS branch) and the CRAH coils' total heat of this step.
 	void Step(double DtS, const TArray<double>& BranchDutyW, double CrahDutyW = 0.0);
 	void SetAmbientK(double AmbientK) { Thermal.AmbientK = AmbientK; }
@@ -197,6 +219,9 @@ private:
 	FWaterVolumes Fws, Chw, Cw;
 	FDryCoolerBank FwsBank, CwBank;
 	TArray<double> BranchKgs, CrahWaterKgs, CrahCfUA, CrahEqUA;
+	TArray<FPlantCrahCoil> CrahCoils;
+	FHydraulicSolveSettings SolveSettings;
+	void RefreshChwFlows();
 	double TotalKgs = 0.0, WaterCp = 4180.0, WaterRho = 997.0, DesignHeatW = 0.0;
 	double ChwKgs = 0.0, CwKgs = 0.0, DesignChwW = 0.0, DesignCondW = 0.0, ChwSetpointK = 291.15;
 	double ChillerCapRefW = 0.0, ChillerMaxCop = 0.0;

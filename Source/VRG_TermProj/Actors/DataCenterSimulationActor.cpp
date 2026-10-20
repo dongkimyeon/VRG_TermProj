@@ -1185,6 +1185,7 @@ void ADataCenterSimulationActor::BuildFacilityLoop(TArray<FCduCouplingGroup>& Gr
 			C.DesignAirEps = DesignEps;
 			C.DesignDutyW = C.AirWK * CrahDesignAirDeltaTK;
 			C.OldUAWK = U.CoilUAWK;
+			C.CoilLeavingSetpointK = CoilSupplyTempK + CrahDesignApproachK;   // design coil leaving air (water + approach)
 		}
 	}
 	if (Groups.Num() == 0 || !Plant.Build(Spec, PlantThermalSpec, DesignHeatW, CoolantDensityKgM3, WaterCp, FHydraulicSolveSettings(), Coils, CoilSupplyTempK))
@@ -1238,7 +1239,13 @@ void ADataCenterSimulationActor::PlantBeforeStep()
 	if (!bPlantActive || !Plant.IsThermalActive()) return;
 	for (int32 G = 0; G < Bridge.GetNumCduGroups(); ++G) Bridge.SetCduFacilitySupplyTempK(G, Plant.GetSupplyTempK());
 	if (Plant.IsChilledWaterActive())
+	{
+		// CRAH valves from the units' mixed intake of the last step (CPU uniform path records it; others hold).
+		TArray<double> RemovedW, MixK, SupplyK;
+		if (Bridge.GetLastCrahUnitReadings(RemovedW, MixK, SupplyK)) Plant.ControlCrahValves(Clock.GetFixedStepS(), MixK);
+		else Plant.MarkCrahReadingsMissing();
 		for (int32 U = 0; U < Bridge.GetCrahUnits().Num(); ++U) Bridge.SetCrahCoil(U, Plant.GetCrahEquivalentUAWK(U), Plant.GetChwSupplyTempK());
+	}
 }
 
 void ADataCenterSimulationActor::PlantAfterStep(double DtS)
@@ -1258,8 +1265,10 @@ void ADataCenterSimulationActor::PlantAfterStep(double DtS)
 		S.DutyW * 1e-3, S.DryCoolerHeatW * 1e-3, S.FanRatio, S.FanTargetRatio, Plant.GetFanElectricW() * 1e-3, *NotMet, Plant.GetLedgerResidual());
 	if (Plant.IsChilledWaterActive())
 	{
-		UE_LOG(LogTemp, Display, TEXT("[Plant]   CHW 공급 %.3f C(설정 %.2f) 회수 %.3f C | CRAH %.1f kW, 칠러 %d대 %.1f kW, 압축기 %.1f kW(COP %.2f)%s%s | CW 공급 %.3f 회수 %.3f C, 드라이쿨러 %.1f kW, 팬 %.2f kW"),
-			S.ChwSupplyK - 273.15, Plant.GetChwSetpointK() - 273.15, S.ChwReturnK - 273.15, S.CrahDutyW * 1e-3, S.ChillersRunning, S.ChillerLoadW * 1e-3,
+		UE_LOG(LogTemp, Display, TEXT("[Plant]   CHW 공급 %.3f C(설정 %.2f) 회수 %.3f C, 유량 %.2f L/s(밸브 전개 %d·닫힘 %d%s) | CRAH %.1f kW, 칠러 %d대 %.1f kW, 압축기 %.1f kW(COP %.2f)%s%s | CW 공급 %.3f 회수 %.3f C, 드라이쿨러 %.1f kW, 팬 %.2f kW"),
+			S.ChwSupplyK - 273.15, Plant.GetChwSetpointK() - 273.15, S.ChwReturnK - 273.15, Plant.GetChwLoop().GetTotalPumpFlowM3s() * 1e3,
+			S.CrahValvesFullOpen, S.CrahValvesShut, S.bCrahReadingsMissing ? TEXT(", 유닛별 흡입 온도 없음: 밸브 유지") : TEXT(""),
+			S.CrahDutyW * 1e-3, S.ChillersRunning, S.ChillerLoadW * 1e-3,
 			S.ChillerPowerW * 1e-3, S.ChillerPowerW > 0.0 ? S.ChillerLoadW / S.ChillerPowerW : 0.0,
 			S.bChillerCapacityLimited ? TEXT(" | 칠러 용량 부족") : TEXT(""), S.bChillerOutsideCurves ? TEXT(" | 곡선 범위 밖(카르노 외삽, 추정)") : TEXT(""),
 			S.CwSupplyK - 273.15, S.CwReturnK - 273.15, S.CwDryCoolerHeatW * 1e-3, Plant.GetCwFanElectricW() * 1e-3);

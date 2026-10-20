@@ -235,4 +235,103 @@ bool FChwCoupledRoomTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FChwValveInverseTest, "VRG.Plant.Chw.ValveInverseExact", VrgChillerFlags)
+bool FChwValveInverseTest::RunTest(const FString& Parameters)
+{
+	// Same plant as above with a coil leaving setpoint 23 C (18 C water + 5 K approach) on every unit.
+	FFacilityLoopSpec Loop;
+	Loop.BranchDesignFlowM3s = { 0.8e6 / (ChwCp * 10.0) / ChwRho };
+	FFacilityThermalSpec Th;
+	Th.AmbientK = 298.15;
+	TArray<FPlantCrahCoil> Coils;
+	for (int32 U = 0; U < 4; ++U)
+	{
+		FPlantCrahCoil& C = Coils.AddDefaulted_GetRef();
+		C.AirWK = 1.184 * 5.0 * 1005.0; C.DesignAirEps = 12.0 / 17.0; C.DesignDutyW = C.AirWK * 12.0;
+		C.OldUAWK = -FMath::Loge(1.0 - C.DesignAirEps) * C.AirWK;
+		C.CoilLeavingSetpointK = 296.15;
+	}
+	FFacilityPlant Plant;
+	TestTrue(TEXT("built"), Plant.Build(Loop, Th, 0.8e6, ChwRho, ChwCp, FHydraulicSolveSettings(), Coils, 291.15));
+	// Intakes: 30 C (throttles), 35 C (design: full open), 40 C (above design: saturated), 22 C (below target: shut).
+	const TArray<double> Mix = { 303.15, 308.15, 313.15, 295.15 };
+	bool bSat[4] = {};
+	double Target[4];
+	for (int32 U = 0; U < 4; ++U) Target[U] = Plant.CrahOpeningFor(U, Mix[U], 296.15, bSat[U]);
+	Plant.ControlCrahValves(1e6, Mix);   // a huge step: no stroke limit
+	const double Dp = Plant.GetChwResult().HeaderDeltaPPa;
+	const double Leave0 = Mix[0] - Plant.CrahAirEffectiveness(0, Plant.GetCrahWaterKgs(0)) * (Mix[0] - Plant.GetChwSupplyTempK());
+	const double Leave1 = Mix[1] - Plant.CrahAirEffectiveness(1, Plant.GetCrahWaterKgs(1)) * (Mix[1] - Plant.GetChwSupplyTempK());
+	const double EqRel = FMath::Abs(Plant.GetCrahEquivalentUAWK(0) - (-Coils[0].AirWK * FMath::Loge(1.0 - Plant.CrahAirEffectiveness(0, Plant.GetCrahWaterKgs(0))))) / Plant.GetCrahEquivalentUAWK(0);
+	AddInfo(FString::Printf(TEXT("흡입 30/35/40/22 C -> 열림 %.4f / %.4f / %.4f / %.4f (포화 %d%d%d%d), 출구 30 C 유닛 %.9f C(설정 23), 35 C 유닛 %.6f C, 냉수 %.3f / %.3f / %.3f / %.3e kg/s, 헤더 %.1f kPa(설정 %.1f), 제어 수렴 %d"),
+		Plant.GetCrahOpening(0), Plant.GetCrahOpening(1), Plant.GetCrahOpening(2), Plant.GetCrahOpening(3), bSat[0], bSat[1], bSat[2], bSat[3], Leave0 - 273.15, Leave1 - 273.15,
+		Plant.GetCrahWaterKgs(0), Plant.GetCrahWaterKgs(1), Plant.GetCrahWaterKgs(2), Plant.GetCrahWaterKgs(3), Dp * 1e-3, Plant.GetChwResult().SetpointPa * 1e-3, Plant.GetChwResult().bControlConverged ? 1 : 0));
+	TestTrue(TEXT("CHW header differential held"), Plant.GetChwResult().bControlConverged);
+	TestTrue(TEXT("throttled unit leaves at the setpoint (< 1e-6 K)"), Target[0] > 0.0 && Target[0] < 1.0 && FMath::Abs(Leave0 - 296.15) < 1e-6);
+	TestTrue(TEXT("design intake: valve fully open, leaves at the setpoint (design point, < 1e-6 K)"), Plant.GetCrahOpening(1) >= 1.0 - 1e-9 && FMath::Abs(Leave1 - 296.15) < 1e-6);
+	TestTrue(TEXT("above design: saturated open"), bSat[2] && Plant.GetCrahOpening(2) == 1.0);
+	TestTrue(TEXT("intake below the target: valve shut, no water"), Plant.GetCrahOpening(3) == 0.0 && Plant.GetCrahWaterKgs(3) == 0.0 && Plant.GetCrahEquivalentUAWK(3) == 0.0);
+	TestTrue(TEXT("equivalent UA follows the new flow (rel < 1e-12)"), EqRel < 1e-12);
+	// Stroke limit: from fully open, one 1 s step moves at most 1/60.
+	FFacilityPlant Ramp;
+	Ramp.Build(Loop, Th, 0.8e6, ChwRho, ChwCp, FHydraulicSolveSettings(), Coils, 291.15);
+	Ramp.ControlCrahValves(1.0, Mix);
+	TestTrue(TEXT("stroke rate: 1 s moves 1/60 of the travel"), FMath::Abs(Ramp.GetCrahOpening(0) - (1.0 - 1.0 / 60.0)) < 1e-12 && Ramp.GetCrahOpening(3) == 1.0 - 1.0 / 60.0);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FChwValveRoomTest, "VRG.Plant.Chw.ValveControlCoupledRoom", VrgChillerFlags)
+bool FChwValveRoomTest::RunTest(const FString& Parameters)
+{
+	UWorld* World = UWorld::CreateWorld(EWorldType::Game, false);
+	GEngine->CreateNewWorldContext(EWorldType::Game).SetCurrentWorld(World);
+	ADataCenterSimulationActor* Sim = World->SpawnActor<ADataCenterSimulationActor>();
+	Sim->bShowSummary = false;
+	Sim->MaxStepsPerFrame = 16;
+	Sim->bFacilityPlant = true;
+	Sim->PlantThermalSpec.AmbientK = 298.15;
+	Sim->PlantThermalSpec.SupplySideTransitS = Sim->PlantThermalSpec.ReturnSideTransitS = 5.0;
+	Sim->PlantThermalSpec.ValveStrokeS = 5.0;   // short stroke so 60 s settles (test setting)
+	ADataCenterRoomActor* Room = World->SpawnActor<ADataCenterRoomActor>();
+	AAirFieldDebugActor* AirActor = World->SpawnActor<AAirFieldDebugActor>();
+	AirActor->bShowSummary = false;
+	for (const double X : { 0.0, 400.0 })
+		for (const double Y : { 0.0, 66.0 })
+		{
+			ARackThermalActor* Rack = World->SpawnActor<ARackThermalActor>(FVector(X, Y, 0), FRotator::ZeroRotator);
+			Rack->ApplyGb200Nvl72Preset(); Rack->bShowReadout = false;
+			Rack->RackSizeM = FVector(GjRackLayout::FrameDepthM, GjRackLayout::FrameWidthM, GjRackLayout::FrameHeightM);
+		}
+	World->SpawnActor<ACoolingDistributionUnitActor>(FVector(-300, 100, 0), FRotator::ZeroRotator);
+	Room->RebuildRoomNow();
+	Sim->EnterSimulationMode();
+	for (int32 F = 0; F < 600; ++F) Sim->Tick(.1f);   // 60 s
+	const FFacilityPlant& Plant = Sim->GetFacilityPlant();
+	TArray<double> RemovedW, MixK, SupplyK;
+	const bool bReadings = Sim->GetCouplingBridge().GetLastCrahUnitReadings(RemovedW, MixK, SupplyK);
+	const FAirGridParams& Air = AirActor->GetSolver().GetGrid().GetParams();
+	double WorstThrottled = 0.0;
+	int32 Throttled = 0;
+	FString Units;
+	const TArray<FCrahCouplingUnit>& CrahUnits = Sim->GetCouplingBridge().GetCrahUnits();
+	for (int32 U = 0; bReadings && U < CrahUnits.Num(); ++U)
+	{
+		const double AirWK = Air.DensityKgM3 * CrahUnits[U].VolumeFlowM3s * Air.SpecificHeatJKgK;
+		const double LeaveK = MixK[U] - RemovedW[U] / AirWK;
+		const double X = Plant.GetCrahOpening(U);
+		Units += FString::Printf(TEXT(" [흡입 %.2f 출구 %.3f 열림 %.3f]"), MixK[U] - 273.15, LeaveK - 273.15, X);
+		if (X > 0.0 && X < 1.0) { ++Throttled; WorstThrottled = FMath::Max(WorstThrottled, FMath::Abs(LeaveK - (Sim->CoilSupplyTempK + Sim->CrahDesignApproachK))); }
+	}
+	const double Global = Sim->GetSnapshot().NormalizedEnergyResidual;
+	AddInfo(FString::Printf(TEXT("60 s: CRAH%s | 조절 중 %d대 출구-설정 최대 %.3f K, CHW %.2f L/s(설계 %.2f), 설비 장부 %.3e, 전역 %.3e"),
+		*Units, Throttled, WorstThrottled, Plant.GetChwLoop().GetTotalPumpFlowM3s() * 1e3, Plant.GetChwLoop().GetDesignTotalFlowM3s() * 1e3, Plant.GetLedgerResidual(), Global));
+	TestTrue(TEXT("CPU path records per-unit intakes"), bReadings);
+	TestTrue(TEXT("throttled units leave within 0.3 K of the setpoint (one step of lag, plausibility)"), WorstThrottled < 0.3);
+	TestTrue(TEXT("ledgers: plant (rel < 1e-12), global (< 1e-9)"), FMath::Abs(Plant.GetLedgerResidual()) < 1e-12 && FMath::Abs(Global) < 1e-9);
+	Sim->EnterLayoutMode();
+	GEngine->DestroyWorldContext(World);
+	World->DestroyWorld(false);
+	return true;
+}
+
 #endif

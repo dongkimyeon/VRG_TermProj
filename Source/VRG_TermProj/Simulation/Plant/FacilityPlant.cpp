@@ -39,7 +39,8 @@ bool FFacilityPlant::Build(const FFacilityLoopSpec& LoopSpec, const FFacilityThe
 	State = FFacilityPlantState();
 	Fws = Chw = Cw = FWaterVolumes();
 	FwsBank = CwBank = FDryCoolerBank();
-	CrahWaterKgs.Reset(); CrahCfUA.Reset(); CrahEqUA.Reset();
+	CrahWaterKgs.Reset(); CrahCfUA.Reset(); CrahEqUA.Reset(); CrahCoils.Reset();
+	SolveSettings = Settings;
 	if (!Loop.Build(LoopSpec)) return false;
 	Loop.GetMutableNetwork().SetFluidDensityKgM3(WaterDensityKgM3);
 	LoopResult = Loop.Solve(Settings);
@@ -111,19 +112,8 @@ bool FFacilityPlant::BuildChilledWater(const TArray<FPlantCrahCoil>& Crahs, cons
 	ChwLoop.GetMutableNetwork().SetFluidDensityKgM3(WaterRho);
 	ChwResult = ChwLoop.Solve(Settings);
 	if (!ChwResult.bControlConverged) return false;
-	ChwKgs = 0.0;
-	for (int32 U = 0; U < Crahs.Num(); ++U)
-	{
-		const double Kgs = FMath::Max(ChwLoop.GetBranchFlowM3s(U), 0.0) * WaterRho;
-		CrahWaterKgs.Add(Kgs);
-		ChwKgs += Kgs;
-		// Equivalent UA for the solver's eps = 1 - exp(-UA/C_air): the same air-side effectiveness as the real coil.
-		const double WaterWK = Kgs * WaterCp, AirWK = Crahs[U].AirWK;
-		const double CMin = FMath::Min(AirWK, WaterWK), CMax = FMath::Max(AirWK, WaterWK);
-		const double EpsCf = CMin > 0.0 ? CduHeatExchanger::CounterflowEffectiveness(CrahCfUA[U] / CMin, CMin / CMax) : 0.0;
-		const double EpsAir = FMath::Min(EpsCf * CMin / AirWK, 1.0 - 1e-12);
-		CrahEqUA.Add(-AirWK * FMath::Loge(1.0 - EpsAir));
-	}
+	CrahCoils = Crahs;
+	RefreshChwFlows();
 
 	// Condenser water design: the CW dry coolers are rated at EFT = air + ITD (48.9 C at 35 C); the chiller's design
 	// condenser rise comes from the dataset reference flows (Q_cond_ref / (rho cp V_cond_ref)).
@@ -158,7 +148,6 @@ bool FFacilityPlant::BuildChilledWater(const TArray<FPlantCrahCoil>& Crahs, cons
 	const double TransitS = FMath::Max(Thermal.SupplySideTransitS, 1.0), TransitR = FMath::Max(Thermal.ReturnSideTransitS, 1.0);
 	Chw.SupplyCapJK = ChwTotalM3s * WaterRho * WaterCp * TransitS;
 	Chw.ReturnCapJK = ChwTotalM3s * WaterRho * WaterCp * TransitR;
-	Chw.FlowWK = ChwKgs * WaterCp;
 	Chw.Init(ChwSetpointK);
 	const double CwDesignKgs = CwLoop.GetDesignTotalFlowM3s() * WaterRho;
 	Cw.SupplyCapJK = CwDesignKgs * WaterCp * TransitS;
@@ -167,6 +156,82 @@ bool FFacilityPlant::BuildChilledWater(const TArray<FPlantCrahCoil>& Crahs, cons
 	Cw.Init(Thermal.CwSupplySetpointK);
 	bChw = true;
 	return true;
+}
+
+double FFacilityPlant::CrahAirEffectiveness(int32 Unit, double WaterKgs) const
+{
+	if (!CrahCoils.IsValidIndex(Unit) || !CrahCfUA.IsValidIndex(Unit)) return 0.0;
+	const double WaterWK = FMath::Max(WaterKgs, 0.0) * WaterCp, AirWK = CrahCoils[Unit].AirWK;
+	const double CMin = FMath::Min(AirWK, WaterWK), CMax = FMath::Max(AirWK, WaterWK);
+	if (CMin <= UE_DOUBLE_SMALL_NUMBER || AirWK <= 0.0) return 0.0;   // D2: no water, the coil does nothing
+	return CduHeatExchanger::CounterflowEffectiveness(CrahCfUA[Unit] / CMin, CMin / CMax) * CMin / AirWK;
+}
+
+void FFacilityPlant::RefreshChwFlows()
+{
+	CrahWaterKgs.Reset(); CrahEqUA.Reset();
+	ChwKgs = 0.0;
+	for (int32 U = 0; U < CrahCoils.Num(); ++U)
+	{
+		const double Kgs = FMath::Max(ChwLoop.GetBranchFlowM3s(U), 0.0) * WaterRho;
+		CrahWaterKgs.Add(Kgs);
+		ChwKgs += Kgs;
+		// Equivalent UA for the solver's eps = 1 - exp(-UA/C_air): the same air-side effectiveness as the real coil.
+		const double EpsAir = FMath::Min(CrahAirEffectiveness(U, Kgs), 1.0 - 1e-12);
+		CrahEqUA.Add(-CrahCoils[U].AirWK * FMath::Loge(1.0 - EpsAir));
+	}
+	Chw.FlowWK = ChwKgs * WaterCp;
+}
+
+double FFacilityPlant::CrahOpeningFor(int32 Unit, double IntakeK, double TargetK, bool& bSaturated) const
+{
+	bSaturated = false;
+	const double SupplyK = Chw.SupplyK;
+	if (IntakeK <= TargetK || IntakeK <= SupplyK) return 0.0;          // already at or below target: no cooling wanted
+	const double Need = (IntakeK - TargetK) / (IntakeK - SupplyK);
+	// Full-open flow under ideal header differential control: Q = sqrt(dp / R_branch(1)).
+	const double Dp = ChwLoop.GetDifferentialSetpointPa();
+	const double RFull = ChwLoop.BranchResistancePaS2M6(Unit, 1.0);
+	const double MaxKgs = FMath::Sqrt(Dp / RFull) * WaterRho;
+	if (CrahAirEffectiveness(Unit, MaxKgs) <= Need) { bSaturated = true; return 1.0; }
+	double Lo = 0.0, Hi = MaxKgs;
+	for (int32 I = 0; I < 100; ++I) { const double Mid = 0.5 * (Lo + Hi); (CrahAirEffectiveness(Unit, Mid) < Need ? Lo : Hi) = Mid; }
+	const double Q = 0.5 * (Lo + Hi) / WaterRho;
+	if (Q <= 0.0) return 0.0;
+	// R_valve(x) = R_branch - R_rest = dp / Q^2 - R_rest;  R_valve(x) = R_open Rv^(2 (1 - x))  ->  x.
+	const double ROpen = ChwLoop.ValveResistancePaS2M6(Unit, 1.0);
+	const double RRest = RFull - ROpen;
+	const double RValve = Dp / (Q * Q) - RRest;
+	if (RValve <= ROpen) return 1.0;
+	const double Rv = FMath::Max(ChwLoop.GetSpec().ValveRangeability, 1.0 + 1e-9);
+	return FMath::Clamp(1.0 - FMath::Loge(RValve / ROpen) / (2.0 * FMath::Loge(Rv)), 0.0, 1.0);
+}
+
+bool FFacilityPlant::ControlCrahValves(double DtS, const TArray<double>& IntakeMixK)
+{
+	State.bCrahReadingsMissing = false;
+	if (!IsChilledWaterActive() || !Thermal.bCrahValveControl || IntakeMixK.Num() != CrahCoils.Num()) return false;
+	const double MaxStep = Thermal.ValveStrokeS > 0.0 ? DtS / Thermal.ValveStrokeS : 1.0;
+	bool bChanged = false;
+	int32 Full = 0, Shut = 0;
+	for (int32 U = 0; U < CrahCoils.Num(); ++U)
+	{
+		if (CrahCoils[U].CoilLeavingSetpointK <= 0.0) continue;
+		bool bSat = false;
+		const double Target = CrahOpeningFor(U, IntakeMixK[U], CrahCoils[U].CoilLeavingSetpointK, bSat);
+		const double Now = ChwLoop.GetValveOpening(U);
+		const double Next = FMath::Clamp(Target, Now - MaxStep, Now + MaxStep);
+		if (Next != Now) { ChwLoop.SetValveOpening(U, Next); bChanged = true; }
+		Full += Next >= 1.0 ? 1 : 0;
+		Shut += Next <= 0.0 ? 1 : 0;
+	}
+	State.CrahValvesFullOpen = Full; State.CrahValvesShut = Shut;
+	if (bChanged)
+	{
+		ChwResult = ChwLoop.Solve(SolveSettings);
+		RefreshChwFlows();
+	}
+	return bChanged;
 }
 
 void FFacilityPlant::SyncFwsState()
