@@ -297,4 +297,143 @@ bool FCoolantRoomCouplingTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+namespace
+{
+	// One row of two GB200 racks + one CDU + air (synthetic placement), as in RoomLeakCoupling.
+	struct FLeakRoom
+	{
+		UWorld* World = nullptr;
+		ADataCenterSimulationActor* Sim = nullptr;
+		ADataCenterRoomActor* Room = nullptr;
+		TArray<ARackThermalActor*> Routed;
+
+		FLeakRoom()
+		{
+			World = UWorld::CreateWorld(EWorldType::Game, false);
+			GEngine->CreateNewWorldContext(EWorldType::Game).SetCurrentWorld(World);
+			Sim = World->SpawnActor<ADataCenterSimulationActor>();
+			Sim->bShowSummary = false;
+			Sim->MaxStepsPerFrame = 16;
+			Room = World->SpawnActor<ADataCenterRoomActor>();
+			World->SpawnActor<AAirFieldDebugActor>()->bShowSummary = false;
+			for (const double Y : { 0.0, 66.0 })
+			{
+				ARackThermalActor* Rack = World->SpawnActor<ARackThermalActor>(FVector(0, Y, 0), FRotator::ZeroRotator);
+				Rack->ApplyGb200Nvl72Preset(); Rack->bShowReadout = false;
+				Rack->RackSizeM = FVector(GjRackLayout::FrameDepthM, GjRackLayout::FrameWidthM, GjRackLayout::FrameHeightM);
+			}
+			World->SpawnActor<ACoolingDistributionUnitActor>(FVector(-300, 100, 0), FRotator::ZeroRotator);
+			Room->RebuildRoomNow();
+			Routed = Room->GetRoutedRacks();
+		}
+		~FLeakRoom()
+		{
+			Sim->EnterLayoutMode();
+			GEngine->DestroyWorldContext(World);
+			World->DestroyWorld(false);
+		}
+		void Run(double Seconds) { for (int32 F = 0; F < FMath::RoundToInt32(Seconds / 0.1); ++F) Sim->Tick(.1f); }
+	};
+
+	double CoolantLedgerError(const FCouplingSnapshot& S)
+	{
+		const double Out = S.CoolantRejectedJ + S.CoolantLeakHeatJ;
+		return Out > 0.0 ? FMath::Abs(S.RackCoolantOutJ - Out) / Out : FMath::Abs(S.RackCoolantOutJ);
+	}
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCoolantLeakHeatTest, "VRG.Hydraulics.Inventory.LeakHeatLedger", VrgInventoryTestFlags)
+bool FCoolantLeakHeatTest::RunTest(const FString& Parameters)
+{
+	// (a) No leak: the leak heat term is exactly zero and the loop ledger closes as before.
+	double NoLeakOutletK = 0.0;
+	{
+		FLeakRoom R;
+		R.Sim->EnterSimulationMode();
+		R.Run(1.0);
+		const FCouplingSnapshot S = R.Sim->GetSnapshot();
+		NoLeakOutletK = R.Routed[0]->GetMutableModel().GetState().CoolantTempK;
+		AddInfo(FString::Printf(TEXT("(a) 누수 없음 1 s: 누수 열 %.3e W / %.3e J, 루프 장부 %.3e, 전역 %.3e"), S.CoolantLeakHeatW, S.CoolantLeakHeatJ, CoolantLedgerError(S), S.NormalizedEnergyResidual));
+		TestTrue(TEXT("(a) no leak: leak heat exactly 0"), S.CoolantLeakHeatW == 0.0 && S.CoolantLeakHeatJ == 0.0);
+		TestTrue(TEXT("(a) loop ledger rack = rejected (rel < 1e-12)"), CoolantLedgerError(S) < 1e-12);
+	}
+
+	// (b) Return leak 5 mm on rack 0 and supply leak 5 mm on rack 1 (synthetic sizes).
+	{
+		FLeakRoom R;
+		R.Room->AddLeak(R.Routed[0], true, 5.0e-3);
+		R.Room->AddLeak(R.Routed[1], false, 5.0e-3);
+		R.Room->RebuildRoomNow();
+		R.Sim->EnterSimulationMode();
+		R.Run(0.5);
+		// One more single step: the leak heat must equal m_leak*cp*(T_leak - T_tank) from the values the step used.
+		FRackThermalModel& M0 = R.Routed[0]->GetMutableModel();
+		const double CpJKgK = M0.GetParams().CoolantCpJKgK;
+		const double TankK = R.Routed[0]->GetMutableInput().CoolantInletTempK;   // previous supply = tank water
+		const double Return0K = M0.GetState().CoolantTempK;                       // rack 0 outlet at the step start
+		const double TimeBefore = R.Sim->GetSnapshot().SimTimeS;
+		R.Sim->Tick(.021f);
+		const FCouplingSnapshot S1 = R.Sim->GetSnapshot();
+		const double SupplyK = R.Routed[1]->GetMutableInput().CoolantInletTempK;
+		const double ExpectedW = S1.RackReturnLeakKgs[0] * CpJKgK * (Return0K - TankK) + S1.RackSupplyLeakKgs[1] * CpJKgK * (SupplyK - TankK);
+		const double TermErr = FMath::Abs(S1.CoolantLeakHeatW - ExpectedW) / FMath::Abs(ExpectedW);
+		AddInfo(FString::Printf(TEXT("(b) 한 스텝(%.2f -> %.2f s): 누수 회수 %.4f / 공급 %.4f kg/s, T_tank %.3f / 회수 %.3f / 공급 %.3f K, 누수 열 %.3f W (직접 %.3f), 상대 %.3e"),
+			TimeBefore, S1.SimTimeS, S1.RackReturnLeakKgs[0], S1.RackSupplyLeakKgs[1], TankK, Return0K, SupplyK, S1.CoolantLeakHeatW, ExpectedW, TermErr));
+		TestTrue(TEXT("(b) exactly one step"), FMath::IsNearlyEqual(S1.SimTimeS - TimeBefore, R.Sim->FixedStepS, 1e-9));
+		TestTrue(TEXT("(b) leaks flow on both branches"), S1.RackReturnLeakKgs[0] > 0.0 && S1.RackSupplyLeakKgs[1] > 0.0);
+		TestTrue(TEXT("(b) leak heat = m*cp*(T_leak - T_tank) (rel < 1e-12)"), TermErr < 1e-12);
+
+		R.Run(1.0);
+		const FCouplingSnapshot S = R.Sim->GetSnapshot();
+		const double LoopErr = CoolantLedgerError(S);
+		AddInfo(FString::Printf(TEXT("(b) t=%.2f s: 랙 반출 %.6e J = 방출 %.6e + 누수 열 %.6e J, 루프 상대 %.3e, 전역 %.3e, 수력 %d / 공기 압력 %d"),
+			S.SimTimeS, S.RackCoolantOutJ, S.CoolantRejectedJ, S.CoolantLeakHeatJ, LoopErr, S.NormalizedEnergyResidual, S.bHydraulicsConverged ? 1 : 0, S.bAirPressureConverged ? 1 : 0));
+		TestTrue(TEXT("(b) loop ledger rack = rejected + leak heat (rel < 1e-12)"), LoopErr < 1e-12);
+		TestTrue(TEXT("(b) leak heat is booked (> 0)"), S.CoolantLeakHeatJ > 0.0);
+		TestTrue(TEXT("(b) global ledger closes with the leak outflow (|residual| < 1e-9)"), FMath::Abs(S.NormalizedEnergyResidual) < 1e-9);
+		TestTrue(TEXT("(b) hydraulics and air pressure converged"), S.bHydraulicsConverged && S.bAirPressureConverged);
+	}
+
+	// (c) Supply leak on rack 0 only: the leaking rack's outlet runs hotter than without a leak (less coolant flow).
+	{
+		FLeakRoom R;
+		R.Room->AddLeak(R.Routed[0], false, 5.0e-3);
+		R.Room->RebuildRoomNow();
+		R.Sim->EnterSimulationMode();
+		R.Run(1.0);
+		const double OutletK = R.Routed[0]->GetMutableModel().GetState().CoolantTempK;
+		AddInfo(FString::Printf(TEXT("(c) 랙0 냉각수 출구 1 s: 누수 없음 %.4f K / 공급 누수 %.4f K"), NoLeakOutletK, OutletK));
+		TestTrue(TEXT("(c) supply leak: leaking rack's coolant outlet rises"), OutletK > NoLeakOutletK);
+	}
+
+	// (d) 10 mm return leak until the tank is empty, then 3 s more: the loop stops, the racks keep heating through
+	//     their own heat capacity (D2), and both ledgers still close.
+	{
+		FLeakRoom R;
+		R.Room->AddLeak(R.Routed[0], true, 10.0e-3);
+		R.Room->RebuildRoomNow();
+		R.Sim->EnterSimulationMode();
+		double T = 0.0;
+		while (T < 10.0 && !R.Room->GetCoolantInventory().GetTanks()[0].State.bDepleted) { R.Run(0.1); T += 0.1; }
+		R.Run(0.2);
+		const FCouplingSnapshot S0 = R.Sim->GetSnapshot();
+		const double Coolant0K = R.Routed[0]->GetMutableModel().GetState().CoolantTempK;
+		R.Run(3.0);
+		const FCouplingSnapshot S = R.Sim->GetSnapshot();
+		const double Coolant1K = R.Routed[0]->GetMutableModel().GetState().CoolantTempK;
+		const FCoolantInventory::FTank& Tank = R.Room->GetCoolantInventory().GetTanks()[0];
+		const double Duty = S.CduDutyW.Num() > 0 ? S.CduDutyW[0] : -1.0;
+		AddInfo(FString::Printf(TEXT("(d) 고갈 t=%.2f s; t=%.2f s: 랙 유량 %.3e / %.3e kg/s, CDU %.3e W, 누수 열 %.3e W, 랙0 냉각수 %.3f -> %.3f K, 루프 %.3e, 전역 %.3e"),
+			Tank.State.DepletedAtS, S.SimTimeS, S.RackCoolantMassFlowKgs[0], S.RackCoolantMassFlowKgs[1], Duty, S.CoolantLeakHeatW,
+			Coolant0K, Coolant1K, CoolantLedgerError(S), S.NormalizedEnergyResidual));
+		TestTrue(TEXT("(d) tank depleted"), Tank.State.bDepleted);
+		TestTrue(TEXT("(d) depleted loop: no coolant flow, no CDU duty, no leak heat"),
+			FMath::Abs(S.RackCoolantMassFlowKgs[0]) < 1e-6 && FMath::Abs(S.RackCoolantMassFlowKgs[1]) < 1e-6 && FMath::Abs(Duty) < 1e-3 && S.CoolantLeakHeatW == 0.0);
+		TestTrue(TEXT("(d) rack coolant node keeps heating, finite (D2)"), FMath::IsFinite(Coolant1K) && Coolant1K > Coolant0K);
+		TestTrue(TEXT("(d) loop ledger still closes (rel < 1e-12)"), CoolantLedgerError(S) < 1e-12 && CoolantLedgerError(S0) < 1e-12);
+		TestTrue(TEXT("(d) global ledger still closes (|residual| < 1e-9)"), FMath::Abs(S.NormalizedEnergyResidual) < 1e-9);
+	}
+	return true;
+}
+
 #endif

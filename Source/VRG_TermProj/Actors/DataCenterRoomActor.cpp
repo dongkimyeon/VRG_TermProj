@@ -153,6 +153,14 @@ bool ADataCenterRoomActor::SetLeakHoleDiameterM(int32 LeakSpec, double HoleDiame
 	return true;
 }
 
+void ADataCenterRoomActor::GetRackLeakIndices(const ARackThermalActor* Rack, TArray<int32>& OutSupply, TArray<int32>& OutReturn) const
+{
+	OutSupply.Reset();
+	OutReturn.Reset();
+	for (const FRoomLeakSpec& Spec : LeakSpecs)
+		if (Spec.Rack.Get() == Rack && Spec.NetworkLeak != INDEX_NONE) (Spec.bReturnBranch ? OutReturn : OutSupply).Add(Spec.NetworkLeak);
+}
+
 void ADataCenterRoomActor::StepCoolantInventory(double DtS, double NowS)
 {
 	FHydraulicSolveResult Result;

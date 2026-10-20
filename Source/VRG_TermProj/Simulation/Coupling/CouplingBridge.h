@@ -63,6 +63,14 @@ struct FRackCouplingLink
 	UPROPERTY(BlueprintReadOnly, Category = "Coupling")
 	int32 BranchPipeIndex = INDEX_NONE;
 
+	// S2b step 3: network leak indices on this rack's supply / return branch (hole upstream / downstream of the
+	// rack). The bridge reads their flows from the hydraulic solution and books the heat the leaked water carries.
+	UPROPERTY(BlueprintReadOnly, Category = "Coupling")
+	TArray<int32> SupplyLeakIndices;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Coupling")
+	TArray<int32> ReturnLeakIndices;
+
 	// 랙 흡기 쪽 공기 셀들. 여기 온도를 평균해 랙 흡기 온도로 준다.
 	UPROPERTY(BlueprintReadOnly, Category = "Coupling")
 	TArray<int32> InletCellIndices;
@@ -191,6 +199,27 @@ struct FCouplingSnapshot
 
 	UPROPERTY(BlueprintReadOnly, Category = "Coupling")
 	double TotalAirCoolingRemovedW = 0.0;
+
+	// S2b step 3: heat carried out of the coolant loops by leaked water [W], m_leak*cp*(T_leak - T_tank), and the
+	// coolant loop ledger since the baseline [J]: rack heat into coolant = rejected (radiators, CDUs) + leak heat.
+	UPROPERTY(BlueprintReadOnly, Category = "Coupling")
+	double CoolantLeakHeatW = 0.0;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Coupling")
+	double RackCoolantOutJ = 0.0;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Coupling")
+	double CoolantRejectedJ = 0.0;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Coupling")
+	double CoolantLeakHeatJ = 0.0;
+
+	// Per rack: leaked water mass flow on its supply / return branch [kg/s] this step.
+	UPROPERTY(BlueprintReadOnly, Category = "Coupling")
+	TArray<double> RackSupplyLeakKgs;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Coupling")
+	TArray<double> RackReturnLeakKgs;
 
 	// Part of TotalAirCoolingRemovedW taken by CRAH unit coils [W], and their total airflow [m^3/s].
 	UPROPERTY(BlueprintReadOnly, Category = "Coupling")
@@ -326,6 +355,9 @@ private:
 
 	// 라디에이터가 버린 누적 열 [J]. 공기 쪽 유출은 공기 솔버가 따로 센다.
 	double RadiatorRejectedJ = 0.0;
+	double LeakHeatJ = 0.0;  // S2b step 3: heat carried out by leaked coolant since the baseline
+	double LastLeakHeatW = 0.0;
+	TArray<double> LastSupplyLeakKgs, LastReturnLeakKgs;
 
 	// 마지막 스텝에 오간 값. 스냅샷에 그대로 싣는다.
 	TArray<double> LastCoolantMassFlowKgs;

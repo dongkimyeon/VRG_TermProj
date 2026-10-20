@@ -274,6 +274,8 @@ public:
 	int32 AddLeak(ARackThermalActor* Rack, bool bReturnBranch, double HoleDiameterM, double DischargeCoefficient = 0.61);
 	void ClearLeaks();
 	int32 GetNumLeakSpecs() const { return LeakSpecs.Num(); }
+	// S2b step 3: network leak indices on a rack's supply / return branch (for the coupling's leak heat).
+	void GetRackLeakIndices(const ARackThermalActor* Rack, TArray<int32>& OutSupply, TArray<int32>& OutReturn) const;
 	bool SetLeakHoleDiameterM(int32 LeakSpec, double HoleDiameterM);
 	// Network leak index of a leak spec (INDEX_NONE until the room is rebuilt with it).
 	int32 GetLeakNetworkIndex(int32 LeakSpec) const { return LeakSpecs.IsValidIndex(LeakSpec) ? LeakSpecs[LeakSpec].NetworkLeak : INDEX_NONE; }

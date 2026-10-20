@@ -832,6 +832,7 @@ void ADataCenterSimulationActor::BuildCoupling()
 		FRackCouplingLink Link;
 		Link.BranchPipeIndex = Rack && BranchIndices.IsValidIndex(RackIndex) ? BranchIndices[RackIndex] : INDEX_NONE;
 		Link.FallbackCoolantMassFlowKgs = Target.Input->CoolantMassFlowKgs;
+		if (Rack != nullptr && Room != nullptr) Room->GetRackLeakIndices(Rack, Link.SupplyLeakIndices, Link.ReturnLeakIndices);
 
 		if (bHasAir)
 		{
