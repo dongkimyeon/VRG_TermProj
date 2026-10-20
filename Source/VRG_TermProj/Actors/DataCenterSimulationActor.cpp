@@ -111,6 +111,24 @@ static FAutoConsoleCommand GVrgSimCoolantCommand(
 		}
 	}));
 
+static FAutoConsoleCommand GVrgPlantEnableCommand(
+	TEXT("vrg.Plant.Enable"),
+	TEXT("S8 설비수(FWS) 수력망. 0 = CDU 설비수 유량 고정(기본), 1 = FWS 망 해(펌프 N+1·차압 제어·밸브). 다음 시뮬레이션 진입 때 적용. vrg.Plant.Enable <0|1>"),
+	FConsoleCommandWithArgsDelegate::CreateLambda([](const TArray<FString>& Args)
+	{
+		if (Args.Num() == 0 || GEngine == nullptr) return;
+		for (const FWorldContext& Context : GEngine->GetWorldContexts())
+		{
+			UWorld* World = Context.World();
+			if (World == nullptr || !World->IsGameWorld()) continue;
+			for (TActorIterator<ADataCenterSimulationActor> It(World); It; ++It)
+			{
+				It->bFacilityPlant = FCString::Atoi(*Args[0]) != 0;
+				UE_LOG(LogTemp, Display, TEXT("[Plant] 설비수 수력망 %s (다음 시뮬레이션 진입 때 적용)"), It->bFacilityPlant ? TEXT("켬") : TEXT("끔"));
+			}
+		}
+	}));
+
 static FAutoConsoleCommand GVrgSimContainmentCommand(
 	TEXT("vrg.Sim.Containment"),
 	TEXT("공기 차단. 0 = 없음, 1 = 블랭킹(줄 틈 막기), 2 = 블랭킹 + 콜드 아일 지붕. vrg.Sim.Containment <0|1|2>"),
@@ -1112,8 +1130,44 @@ void ADataCenterSimulationActor::BuildCduGroups()
 			S.UAWK = Hx.UAWK;
 			S.FacilityMassFlowKgs = Hx.FacilityMassFlowKgs;
 		}
+		if (bFacilityPlant) BuildFacilityLoop(Groups);
 	}
 	Bridge.SetCduGroups(Groups);
+}
+
+void ADataCenterSimulationActor::BuildFacilityLoop(TArray<FCduCouplingGroup>& Groups)
+{
+	FacilityLoopResult = FFacilityLoopResult();
+	// The design primary flow of every branch is the exchanger's sized facility flow (one density, rule 3: the
+	// coupling's coolant density converts m^3/s <-> kg/s, so enabling the plant at design changes nothing).
+	FFacilityLoopSpec Spec = PlantSpec;
+	Spec.CduDesignFlowM3s.Reset();
+	for (const FCduCouplingGroup& G : Groups) Spec.CduDesignFlowM3s.Add(G.Hx.FacilityMassFlowKgs / CoolantDensityKgM3);
+	if (Groups.Num() == 0 || !FacilityLoop.Build(Spec))
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[Plant] FWS 망을 만들지 못했다(CDU 분기 %d개). 고정 설비수 유량을 쓴다."), Groups.Num());
+		return;
+	}
+	FacilityLoop.GetMutableNetwork().SetFluidDensityKgM3(CoolantDensityKgM3);
+	FacilityLoopResult = FacilityLoop.Solve(FHydraulicSolveSettings());
+	const FFacilityLoopResult& R = FacilityLoopResult;
+	if (!R.bControlConverged)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[Plant] FWS 차압 제어 미수렴(수력 %s, 잔차 %.3e, 속도 %.4f%s%s). 고정 설비수 유량을 쓴다."),
+			R.Hydraulics.bConverged ? TEXT("수렴") : TEXT("실패"), R.ControlResidual, R.PumpSpeedRatio,
+			R.bSpeedSaturatedHigh ? TEXT(", 최고 속도에서 차압 미달") : TEXT(""), R.bSpeedSaturatedLow ? TEXT(", 최저 속도에서 차압 초과") : TEXT(""));
+		return;
+	}
+	for (int32 G = 0; G < Groups.Num(); ++G)
+	{
+		Groups[G].Hx.FacilityMassFlowKgs = FMath::Max(FacilityLoop.GetBranchFlowM3s(G), 0.0) * CoolantDensityKgM3;
+		if (CduSummaries.IsValidIndex(G)) CduSummaries[G].FacilityMassFlowKgs = Groups[G].Hx.FacilityMassFlowKgs;
+	}
+	const FFacilityLoopHandles& H = FacilityLoop.GetHandles();
+	UE_LOG(LogTemp, Display, TEXT("[Plant] FWS: CDU 분기 %d, 펌프 %d+%d(속도 %.6f), 차압 %.1f kPa(설정 %.1f), 총 유량 %.3f L/s(설계 %.3f), 드라이쿨러 코일 %d, 펌프 전력 %.2f kW, 제어 %d회, 수력 반복 %d"),
+		Groups.Num(), FacilityLoop.GetSpec().DutyPumps, FacilityLoop.GetSpec().StandbyPumps, R.PumpSpeedRatio, R.HeaderDeltaPPa * 1e-3, R.SetpointPa * 1e-3,
+		FacilityLoop.GetTotalPumpFlowM3s() * 1e3, FacilityLoop.GetDesignTotalFlowM3s() * 1e3, H.DryCoolerPipes.Num(), FacilityLoop.GetTotalPumpElectricW() * 1e-3,
+		R.ControlIterations, R.Hydraulics.IterationsUsed);
 }
 
 void ADataCenterSimulationActor::GroupCabinetRows()
