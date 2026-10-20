@@ -55,6 +55,12 @@ struct FHydraulicPipe
 	// 저항 계수 [Pa*s^2/m^6]. 완전 난류 영역의 2차 손실을 가정한다.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hydraulics")
 	double ResistancePaS2M6 = 2.0e6;
+
+	// S2b step 4: a closed valve on this pipe. The pipe is left out of the solve (as if removed from the network,
+	// not a large resistance) and carries exactly 0. Nodes it cuts off from every fixed-pressure node are no longer
+	// unknowns: their pressure is not modelled and is shown vented (piezometric 0 Pa(g)), so their leaks stop.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hydraulics")
+	bool bClosed = false;
 };
 
 // 능동 요소. 유량이 보조 미지수로 들어간다 (D3).

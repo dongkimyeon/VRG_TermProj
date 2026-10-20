@@ -436,4 +436,147 @@ bool FCoolantLeakHeatTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+// ---- S2b step 4: isolation valves ----
+
+namespace
+{
+	// NVL72 row with the room's plain heights; rack ClosedRack docked with 0 units when bRemoved (reference network
+	// without that branch). Optional supply leak on rack 3.
+	FInRowLoopHandles BuildValveRow(FHydraulicNetwork& Net, bool bRemoveRack3, double LeakDiameterM, int32& OutLeak)
+	{
+		FInRowLoopSpec Spec;
+		Spec.NumRacks = 8;
+		if (bRemoveRack3) { Spec.DockedSledsPerRack.Init(Spec.SledsPerRack, 8); Spec.DockedSledsPerRack[3] = 0; }
+		const FInRowLoopHandles H = InRowLoopBuilder::AddLoop(Net, Spec);
+		for (int32 N = 0; N < Net.GetNumNodes(); ++N) Net.SetNodeElevationM(N, 0.25);
+		Net.SetNodeElevationM(H.CduNodeIndex, 0.6);
+		for (const int32 Node : H.RackNodeIndices) if (Node != INDEX_NONE) Net.SetNodeElevationM(Node, 1.1);
+		OutLeak = INDEX_NONE;
+		if (LeakDiameterM > 0.0)
+		{
+			const int32 Hole = Net.SplitPipe(H.RackBranchPipeIndices[3], 0.5, 0.675);   // original keeps the header end
+			FHydraulicLeak Leak;
+			Leak.NodeIndex = Hole; Leak.HoleDiameterM = LeakDiameterM;
+			OutLeak = Net.AddLeak(Leak);
+		}
+		return H;
+	}
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FHydraulicValveIsolationTest, "VRG.Hydraulics.Valve.IsolateBranchMatchesRemoved", VrgInventoryTestFlags)
+bool FHydraulicValveIsolationTest::RunTest(const FString& Parameters)
+{
+	FHydraulicNetwork Net, Removed;
+	int32 Leak, Unused;
+	const FInRowLoopHandles H = BuildValveRow(Net, false, 3.0e-3, Leak);
+	const FInRowLoopHandles HR = BuildValveRow(Removed, true, 0.0, Unused);
+	const FHydraulicSolveResult R0 = Net.Solve(FHydraulicSolveSettings());
+	const FHydraulicSolveResult RR = Removed.Solve(FHydraulicSolveSettings());
+	TArray<double> Before;
+	for (const int32 P : H.RackBranchPipeIndices) Before.Add(Net.GetPipeFlowM3s(P));
+	const double Pump0 = Net.GetPumpFlowM3s(H.PumpIndex), Leak0 = Net.GetLeakFlowM3s(Leak);
+
+	// Close rack 3's valves: supply pipe at the supply header (the original half of the split branch) and return pipe.
+	Net.SetPipeClosed(H.RackBranchPipeIndices[3], true);
+	Net.SetPipeClosed(H.RackReturnPipeIndices[3], true);
+	const FHydraulicSolveResult R1 = Net.Solve(FHydraulicSolveSettings());
+	double MaxDiff = 0.0, MaxChange = 0.0;
+	for (int32 J = 0; J < 8; ++J)
+	{
+		if (J == 3) continue;
+		MaxDiff = FMath::Max(MaxDiff, FMath::Abs(Net.GetPipeFlowM3s(H.RackBranchPipeIndices[J]) - Removed.GetPipeFlowM3s(HR.RackBranchPipeIndices[J])) / FMath::Abs(Removed.GetPipeFlowM3s(HR.RackBranchPipeIndices[J])));
+		MaxChange = FMath::Max(MaxChange, FMath::Abs(Net.GetPipeFlowM3s(H.RackBranchPipeIndices[J]) - Before[J]) / FMath::Abs(Before[J]));
+	}
+	const double PumpDiff = FMath::Abs(Net.GetPumpFlowM3s(H.PumpIndex) - Removed.GetPumpFlowM3s(HR.PumpIndex)) / Removed.GetPumpFlowM3s(HR.PumpIndex);
+	int32 NumIsolated = 0;
+	for (int32 N = 0; N < Net.GetNumNodes(); ++N) NumIsolated += Net.IsNodeIsolated(N) ? 1 : 0;
+	AddInfo(FString::Printf(TEXT("누수 3 mm 분기 밸브 닫음: 누수 %.4f -> %.3e L/s, 펌프 %.4f -> %.4f L/s (분기 제거 망 %.4f), 다른 분기 제거 망 대비 최대 %.3e / 펌프 %.3e, 다른 랙 유량 변화 최대 %.3e, 고립 노드 %d개, 반복 %d"),
+		Leak0 * 1e3, Net.GetLeakFlowM3s(Leak) * 1e3, Pump0 * 1e3, Net.GetPumpFlowM3s(H.PumpIndex) * 1e3, Removed.GetPumpFlowM3s(HR.PumpIndex) * 1e3,
+		MaxDiff, PumpDiff, MaxChange, NumIsolated, R1.IterationsUsed));
+	TestTrue(TEXT("solves converge"), R0.bConverged && RR.bConverged && R1.bConverged);
+	TestTrue(TEXT("leak upstream valve closed: leak flow exactly 0"), Leak0 > 0.0 && Net.GetLeakFlowM3s(Leak) == 0.0);
+	TestTrue(TEXT("closed pipes carry exactly 0"), Net.GetPipeFlowM3s(H.RackBranchPipeIndices[3]) == 0.0 && Net.GetPipeFlowM3s(H.RackReturnPipeIndices[3]) == 0.0);
+	TestTrue(TEXT("isolation scope: rack 3 node and hole node only (2 nodes)"), Net.IsNodeIsolated(H.RackNodeIndices[3]) && NumIsolated == 2);
+	TestTrue(TEXT("closed = branch removed from the start: other branches and pump (rel < 1e-9)"), MaxDiff < 1e-9 && PumpDiff < 1e-9);
+	TestTrue(TEXT("hydraulic impact differs from isolation: other racks' flows change (> 1e-3)"), MaxChange > 1e-3);
+	TestTrue(TEXT("mass balance at the CDU node with the valve closed (rel < 1e-9)"),
+		FMath::Abs(Net.GetPumpFlowM3s(H.PumpIndex) - Net.GetPipeFlowM3s(H.ReturnToCduPipeIndex)) / Net.GetPumpFlowM3s(H.PumpIndex) < 1e-9);
+
+	// Reopen: back to the solution before closing.
+	Net.SetPipeClosed(H.RackBranchPipeIndices[3], false);
+	Net.SetPipeClosed(H.RackReturnPipeIndices[3], false);
+	Net.Solve(FHydraulicSolveSettings());
+	double MaxBack = FMath::Abs(Net.GetLeakFlowM3s(Leak) - Leak0) / Leak0;
+	for (int32 J = 0; J < 8; ++J) MaxBack = FMath::Max(MaxBack, FMath::Abs(Net.GetPipeFlowM3s(H.RackBranchPipeIndices[J]) - Before[J]) / FMath::Abs(Before[J]));
+	AddInfo(FString::Printf(TEXT("다시 엶: 닫기 전 해 대비 최대 %.3e, 고립 노드 %d"), MaxBack, Net.IsNodeIsolated(H.RackNodeIndices[3]) ? 1 : 0));
+	TestTrue(TEXT("reopen: back to the solution before closing (rel < 1e-9)"), MaxBack < 1e-9 && !Net.IsNodeIsolated(H.RackNodeIndices[3]));
+
+	// A valve set that cuts a pump off from every fixed node is reported, not solved.
+	FHydraulicNetwork Bad;
+	int32 BadLeak;
+	const FInRowLoopHandles HB = BuildValveRow(Bad, false, 0.0, BadLeak);
+	for (int32 P = 0; P < Bad.GetNumPipes(); ++P) Bad.SetPipeClosed(P, true);
+	Bad.SetNodeSetPressurePa(HB.CduNodeIndex, Bad.GetNodeSetPressurePa(HB.CduNodeIndex));
+	// The pump still touches the CDU node, so it is not isolated: this closes everything downstream instead.
+	const FHydraulicSolveResult RB = Bad.Solve(FHydraulicSolveSettings());
+	AddInfo(FString::Printf(TEXT("모든 배관 닫음: 수렴 %d, ill-posed %d, 펌프 %.3e L/s"), RB.bConverged ? 1 : 0, RB.bIllPosed ? 1 : 0, Bad.GetPumpFlowM3s(HB.PumpIndex) * 1e3));
+	TestTrue(TEXT("everything closed: reported (ill-posed) or a converged zero-flow pump, never a silent wrong flow"),
+		RB.bIllPosed || (RB.bConverged && FMath::Abs(Bad.GetPumpFlowM3s(HB.PumpIndex)) < 1e-9));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FHydraulicValveRoomTest, "VRG.Hydraulics.Valve.RoomEventScopesAndLedger", VrgInventoryTestFlags)
+bool FHydraulicValveRoomTest::RunTest(const FString& Parameters)
+{
+	FLeakRoom R;
+	R.Room->AddLeak(R.Routed[0], false, 5.0e-3);   // supply leak upstream of rack 0 (synthetic size)
+	R.Room->RebuildRoomNow();
+	auto AddEvent = [&R](double T, bool bClose)
+	{
+		ADataCenterSimulationActor::FEvalEvent E;
+		E.TimeS = T; E.Kind = TEXT("valve"); E.Index = 0; E.Value = bClose ? 1.0 : 0.0;
+		R.Sim->EvalEvents.Add(E);
+	};
+	AddEvent(0.5, true);
+	AddEvent(1.5, false);
+	R.Sim->EnterSimulationMode();
+	R.Run(0.4);
+	const FCouplingSnapshot S0 = R.Sim->GetSnapshot();
+	R.Run(0.3);   // the close event fired at t = 0.5 s
+	const ADataCenterRoomActor::FValveReport Report = R.Room->GetLastValveReport();
+	const FCoolantInventory::FTank& Tank = R.Room->GetCoolantInventory().GetTanks()[0];
+	const double Leaked1 = Tank.State.LeakedM3;
+	R.Run(0.6);
+	const FCouplingSnapshot S1 = R.Sim->GetSnapshot();
+	const double Leaked2 = Tank.State.LeakedM3;
+	const double Rack1Change = FMath::Abs(Report.FlowAfterM3s[1] - Report.FlowBeforeM3s[1]) / FMath::Abs(Report.FlowBeforeM3s[1]);
+	const double InvLedger = FMath::Abs(Tank.State.InitialWaterM3 - Tank.State.WaterVolumeM3 - Tank.State.LeakedM3) / Tank.State.LeakedM3;
+	auto CoolantErr = [](const FCouplingSnapshot& S) { const double Out = S.CoolantRejectedJ + S.CoolantLeakHeatJ; return FMath::Abs(S.RackCoolantOutJ - Out) / Out; };
+	AddInfo(FString::Printf(TEXT("t=%.2f s 밸브 닫힘(랙0): 격리 [%s] / 영향 [%s], 랙1 분기 %.4f -> %.4f L/s (%.3e); 랙0 유량 %.4f -> %.3e kg/s, 누수 %.4f -> %.3e kg/s, 누적 누수 %.5f -> %.5f L, 루프 장부 %.3e, 재고 장부 %.3e, 전역 %.3e"),
+		S1.SimTimeS, Report.IsolatedRacks.Num() == 1 ? TEXT("0") : TEXT("?"), Report.ImpactedRacks.Contains(1) ? TEXT("1") : TEXT("-"),
+		Report.FlowBeforeM3s[1] * 1e3, Report.FlowAfterM3s[1] * 1e3, Rack1Change,
+		S0.RackCoolantMassFlowKgs[0], S1.RackCoolantMassFlowKgs[0], S0.RackSupplyLeakKgs[0], S1.RackSupplyLeakKgs[0],
+		Leaked1 * 1e3, Leaked2 * 1e3, CoolantErr(S1), InvLedger, S1.NormalizedEnergyResidual));
+	TestTrue(TEXT("event applied: rack 0 valves closed, converged"), R.Room->IsRackValveClosed(R.Routed[0]) && Report.bClosed && Report.bConverged);
+	TestTrue(TEXT("isolation scope = rack 0 only; hydraulic impact scope = rack 1 (a different set)"),
+		Report.IsolatedRacks.Num() == 1 && Report.IsolatedRacks[0] == 0 && Report.ImpactedRacks.Num() == 1 && Report.ImpactedRacks[0] == 1);
+	TestTrue(TEXT("valved rack: no coolant flow, no leak, tank stops draining"),
+		S1.RackCoolantMassFlowKgs[0] == 0.0 && S1.RackSupplyLeakKgs[0] == 0.0 && Leaked2 == Leaked1);
+	TestTrue(TEXT("ledgers close across the valve operation (loop < 1e-12, inventory < 1e-12, global < 1e-9)"),
+		CoolantErr(S1) < 1e-12 && InvLedger < 1e-12 && FMath::Abs(S1.NormalizedEnergyResidual) < 1e-9);
+
+	R.Run(0.5);   // the open event fired at t = 1.5 s
+	const FCouplingSnapshot S2 = R.Sim->GetSnapshot();
+	AddInfo(FString::Printf(TEXT("t=%.2f s 다시 엶: 랙0 유량 %.4f kg/s, 누수 %.4f kg/s, 전역 %.3e"), S2.SimTimeS, S2.RackCoolantMassFlowKgs[0], S2.RackSupplyLeakKgs[0], S2.NormalizedEnergyResidual));
+	TestTrue(TEXT("reopened: flow and leak resume, ledgers close"), !R.Room->IsRackValveClosed(R.Routed[0])
+		&& S2.RackCoolantMassFlowKgs[0] > 0.0 && S2.RackSupplyLeakKgs[0] > 0.0 && CoolantErr(S2) < 1e-12 && FMath::Abs(S2.NormalizedEnergyResidual) < 1e-9);
+
+	// A new run starts with every valve open and the events again.
+	R.Room->SetRackValveClosed(R.Routed[1], true);
+	R.Sim->EnterLayoutMode();
+	R.Sim->EnterSimulationMode();
+	TestTrue(TEXT("re-entry: all valves open"), !R.Room->IsRackValveClosed(R.Routed[0]) && !R.Room->IsRackValveClosed(R.Routed[1]));
+	return true;
+}
+
 #endif

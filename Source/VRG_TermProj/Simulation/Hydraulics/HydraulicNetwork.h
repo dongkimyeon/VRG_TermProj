@@ -115,6 +115,14 @@ private:
 
 	// 자유 노드 -> 미지수 인덱스. 고정 압력 노드는 INDEX_NONE.
 	TArray<int32> NodeToUnknown;
+	// S2b step 4: nodes cut off from every fixed-pressure node by closed valves (filled by Solve).
+	TArray<bool> NodeIsolated;
+public:
+	void SetPipeClosed(int32 PipeIndex, bool bClosed) { if (Pipes.IsValidIndex(PipeIndex)) Pipes[PipeIndex].bClosed = bClosed; }
+	bool IsPipeClosed(int32 PipeIndex) const { return Pipes.IsValidIndex(PipeIndex) && Pipes[PipeIndex].bClosed; }
+	// Isolated by closed valves at the last solve (isolation scope, D4: topology, not the hydraulic effect).
+	bool IsNodeIsolated(int32 NodeIndex) const { return NodeIsolated.IsValidIndex(NodeIndex) && NodeIsolated[NodeIndex]; }
+private:
 
 	void BuildUnknownMap(int32& OutNumFreeNodes);
 	void SeedInitialGuess();

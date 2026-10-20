@@ -274,6 +274,34 @@ public:
 	int32 AddLeak(ARackThermalActor* Rack, bool bReturnBranch, double HoleDiameterM, double DischargeCoefficient = 0.61);
 	void ClearLeaks();
 	int32 GetNumLeakSpecs() const { return LeakSpecs.Num(); }
+
+	// ---- S2b step 4: isolation valves (Tools/S2b_누수_계획.md) ----
+	// Every rack branch has a supply valve at the supply header and a return valve at the return header. Closing a
+	// rack's valves takes both pipes out of the network and re-solves (not a large resistance). The result keeps two
+	// different scopes apart (D4): racks cut off from the CDU by the closed valves (isolation, graph topology) and
+	// racks whose branch flow changed by more than ValveImpactThreshold (hydraulic impact, from the re-solve).
+	struct FValveReport
+	{
+		int32 RackIndex = INDEX_NONE;         // routed order
+		bool bClosed = false;
+		TArray<int32> IsolatedRacks;          // routed indices whose rack node is cut off
+		TArray<int32> ImpactedRacks;          // routed indices with |dFlow|/Flow_before > threshold (not isolated)
+		TArray<double> FlowBeforeM3s, FlowAfterM3s;   // every routed rack's branch flow, before / after
+		bool bConverged = false;
+	};
+	// Returns false if the rack has no branch (no units, not routed) or nothing changed.
+	bool SetRackValveClosed(const ARackThermalActor* Rack, bool bClosed);
+	bool IsRackValveClosed(const ARackThermalActor* Rack) const;
+	const FValveReport& GetLastValveReport() const { return LastValveReport; }
+	int32 GetRackSupplyValvePipe(int32 RoutedIndex) const { return RackSupplyValvePipe.IsValidIndex(RoutedIndex) ? RackSupplyValvePipe[RoutedIndex] : INDEX_NONE; }
+	int32 GetRackReturnValvePipe(int32 RoutedIndex) const { return RackReturnValvePipe.IsValidIndex(RoutedIndex) ? RackReturnValvePipe[RoutedIndex] : INDEX_NONE; }
+	// Opens every valve (a new simulation run starts with all valves open; valve events re-apply them).
+	void OpenAllValves();
+
+	// Relative branch flow change above which a rack is listed in the hydraulic impact scope. Display threshold
+	// only: the report keeps every rack's before / after flow.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Room|Leak", meta = (ClampMin = "0.0"))
+	double ValveImpactThreshold = 1.0e-3;
 	// S2b step 3: network leak indices on a rack's supply / return branch (for the coupling's leak heat).
 	void GetRackLeakIndices(const ARackThermalActor* Rack, TArray<int32>& OutSupply, TArray<int32>& OutReturn) const;
 	bool SetLeakHoleDiameterM(int32 LeakSpec, double HoleDiameterM);
@@ -330,6 +358,9 @@ private:
 	// 랙 자리별 공급 분기 파이프 인덱스. 줄 순서대로 펼친 평탄 배열.
 	TArray<int32> RackBranchPipeIndices;
 	TArray<int32> RackReturnPipeIndices;
+	TArray<int32> RackSupplyValvePipe, RackReturnValvePipe;   // S2b step 4, routed order
+	TArray<TWeakObjectPtr<const ARackThermalActor>> ClosedValveRacks;
+	FValveReport LastValveReport;
 
 	// 파이프마다 공급 쪽인지. 표시용이며 계산에 쓰이지 않는다.
 	TArray<bool> bPipeIsSupplySide;

@@ -70,6 +70,7 @@ double FHydraulicNetwork::GetLeakFlowM3s(int32 LeakIndex) const
 		return 0.0;
 	}
 	const FHydraulicLeak& Leak = Leaks[LeakIndex];
+	if (IsNodeIsolated(Leak.NodeIndex)) return 0.0;  // S2b step 4: valved off, nothing feeds the hole
 	const double R = LeakResistancePaS2M6(Leak, FluidDensityKgM3);
 	const double DeltaPPa = NodePressurePa[Leak.NodeIndex] - Leak.AmbientPressurePa;
 	return R > 0.0 && DeltaPPa > 0.0 ? PipeFlowM3s(DeltaPPa, R) : 0.0;   // no inflow from the ambient
@@ -133,6 +134,7 @@ double FHydraulicNetwork::GetPipeFlowM3s(int32 PipeIndex) const
 		return 0.0;
 	}
 	const FHydraulicPipe& Pipe = Pipes[PipeIndex];
+	if (Pipe.bClosed) return 0.0;  // S2b step 4: closed valve
 	const double DeltaPPa = GetNodePiezometricPa(Pipe.FromNodeIndex) - GetNodePiezometricPa(Pipe.ToNodeIndex);
 	return PipeFlowM3s(DeltaPPa, Pipe.ResistancePaS2M6);
 }
@@ -230,6 +232,10 @@ void FHydraulicNetwork::BuildUnknownMap(int32& OutNumFreeNodes)
 			NodeToUnknown[NodeIndex] = INDEX_NONE;
 			NodePressurePa[NodeIndex] = Nodes[NodeIndex].PressurePa;
 		}
+		else if (NodeIsolated.IsValidIndex(NodeIndex) && NodeIsolated[NodeIndex])
+		{
+			NodeToUnknown[NodeIndex] = INDEX_NONE;  // S2b step 4: cut off by closed valves, not an unknown
+		}
 		else
 		{
 			NodeToUnknown[NodeIndex] = OutNumFreeNodes++;
@@ -263,7 +269,7 @@ void FHydraulicNetwork::SeedInitialGuess()
 	for (int32 NodeIndex = 0; NodeIndex < Nodes.Num(); ++NodeIndex) Parent[NodeIndex] = NodeIndex;
 	auto Find = [&Parent](int32 X) { while (Parent[X] != X) { Parent[X] = Parent[Parent[X]]; X = Parent[X]; } return X; };
 	auto Unite = [&](int32 A, int32 B) { if (Parent.IsValidIndex(A) && Parent.IsValidIndex(B)) Parent[Find(A)] = Find(B); };
-	for (const FHydraulicPipe& Pipe : Pipes) Unite(Pipe.FromNodeIndex, Pipe.ToNodeIndex);
+	for (const FHydraulicPipe& Pipe : Pipes) if (!Pipe.bClosed) Unite(Pipe.FromNodeIndex, Pipe.ToNodeIndex);
 	for (const FHydraulicPump& Pump : Pumps) Unite(Pump.FromNodeIndex, Pump.ToNodeIndex);
 	TArray<double> LoopSumPa;
 	TArray<int32> LoopCount;
@@ -320,6 +326,7 @@ double FHydraulicNetwork::EvaluateResidual(const FHydraulicSolveSettings& Settin
 	for (int32 PipeIndex = 0; PipeIndex < Pipes.Num(); ++PipeIndex)
 	{
 		const FHydraulicPipe& Pipe = Pipes[PipeIndex];
+		if (Pipe.bClosed) continue;
 		const double DeltaPPa = GetNodePiezometricPa(Pipe.FromNodeIndex) - GetNodePiezometricPa(Pipe.ToNodeIndex);
 		const double FlowM3s = PipeFlowM3s(DeltaPPa, Pipe.ResistancePaS2M6);
 		MaxFlowMagnitudeM3s = FMath::Max(MaxFlowMagnitudeM3s, FMath::Abs(FlowM3s));
@@ -448,9 +455,35 @@ FHydraulicSolveResult FHydraulicNetwork::Solve(const FHydraulicSolveSettings& Se
 		return Result;
 	}
 
+	// S2b step 4: closed valves. A node joined to no fixed-pressure node through open pipes and pumps is isolated;
+	// a pump in such a part has no defined operating point, so that case is reported as ill-posed.
+	{
+		TArray<int32> Parent;
+		Parent.SetNum(Nodes.Num());
+		for (int32 N = 0; N < Nodes.Num(); ++N) Parent[N] = N;
+		auto Find = [&Parent](int32 X) { while (Parent[X] != X) { Parent[X] = Parent[Parent[X]]; X = Parent[X]; } return X; };
+		for (const FHydraulicPipe& Pipe : Pipes) if (!Pipe.bClosed) Parent[Find(Pipe.FromNodeIndex)] = Find(Pipe.ToNodeIndex);
+		for (const FHydraulicPump& Pump : Pumps) Parent[Find(Pump.FromNodeIndex)] = Find(Pump.ToNodeIndex);
+		TArray<bool> RootHasFixed;
+		RootHasFixed.Init(false, Nodes.Num());
+		for (int32 N = 0; N < Nodes.Num(); ++N) if (Nodes[N].bFixedPressure) RootHasFixed[Find(N)] = true;
+		NodeIsolated.Init(false, Nodes.Num());
+		for (int32 N = 0; N < Nodes.Num(); ++N) NodeIsolated[N] = !RootHasFixed[Find(N)];
+		for (const FHydraulicPump& Pump : Pumps)
+		{
+			if (NodeIsolated[Pump.FromNodeIndex])
+			{
+				Result.bIllPosed = true;
+				return Result;
+			}
+		}
+	}
+
 	int32 NumFreeNodes = 0;
 	BuildUnknownMap(NumFreeNodes);
 	SeedInitialGuess();
+	for (int32 N = 0; N < Nodes.Num(); ++N)
+		if (NodeIsolated[N]) NodePressurePa[N] = -NodeHydrostaticPa(N);  // vented: piezometric 0 Pa(g), no flow
 
 	const int32 NumUnknowns = NumFreeNodes + Pumps.Num();
 
@@ -486,6 +519,7 @@ FHydraulicSolveResult FHydraulicNetwork::Solve(const FHydraulicSolveSettings& Se
 		// 파이프: Δp에 대한 도함수가 Δp=0에서 발산하므로 여기에만 하한을 건다.
 		for (const FHydraulicPipe& Pipe : Pipes)
 		{
+			if (Pipe.bClosed) continue;
 			const double DeltaPPa = GetNodePiezometricPa(Pipe.FromNodeIndex) - GetNodePiezometricPa(Pipe.ToNodeIndex);
 			const double ClampedDeltaPPa = FMath::Max(FMath::Abs(DeltaPPa), Settings.JacobianDeltaPFloorPa);
 			const double ConductanceM3sPa = 1.0 / (2.0 * FMath::Sqrt(Pipe.ResistancePaS2M6 * ClampedDeltaPPa));

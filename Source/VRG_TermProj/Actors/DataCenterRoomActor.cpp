@@ -197,8 +197,75 @@ void ADataCenterRoomActor::StepCoolantInventory(double DtS, double NowS)
 	}
 }
 
+bool ADataCenterRoomActor::IsRackValveClosed(const ARackThermalActor* Rack) const
+{
+	for (const TWeakObjectPtr<const ARackThermalActor>& R : ClosedValveRacks) if (R.Get() == Rack) return true;
+	return false;
+}
+
+bool ADataCenterRoomActor::SetRackValveClosed(const ARackThermalActor* Rack, bool bClosed)
+{
+	const TArray<ARackThermalActor*> Routed = GetRoutedRacks();
+	const int32 Index = Routed.IndexOfByKey(Rack);
+	if (Index == INDEX_NONE || !RackSupplyValvePipe.IsValidIndex(Index)
+		|| RackSupplyValvePipe[Index] == INDEX_NONE || RackReturnValvePipe[Index] == INDEX_NONE) return false;
+	if (IsRackValveClosed(Rack) == bClosed) return false;
+
+	FValveReport Report;
+	Report.RackIndex = Index;
+	Report.bClosed = bClosed;
+	for (const int32 Pipe : RackBranchPipeIndices) Report.FlowBeforeM3s.Add(Network.GetPipeFlowM3s(Pipe));
+
+	if (bClosed) ClosedValveRacks.Add(Rack);
+	else ClosedValveRacks.RemoveAll([Rack](const TWeakObjectPtr<const ARackThermalActor>& R) { return R.Get() == Rack; });
+	Network.SetPipeClosed(RackSupplyValvePipe[Index], bClosed);
+	Network.SetPipeClosed(RackReturnValvePipe[Index], bClosed);
+	LastResult = Network.Solve(SolveSettings);
+	bPipeColorsDirty = true;
+	Report.bConverged = LastResult.bConverged;
+
+	for (int32 J = 0; J < RackBranchPipeIndices.Num(); ++J)
+	{
+		const int32 Pipe = RackBranchPipeIndices[J];
+		Report.FlowAfterM3s.Add(Network.GetPipeFlowM3s(Pipe));
+		const int32 RackNode = Pipe != INDEX_NONE ? Network.GetPipeToNodeIndex(Pipe) : INDEX_NONE;
+		if (RackNode != INDEX_NONE && Network.IsNodeIsolated(RackNode)) { Report.IsolatedRacks.Add(J); continue; }
+		const double Before = FMath::Abs(Report.FlowBeforeM3s[J]);
+		const double Change = FMath::Abs(Report.FlowAfterM3s[J] - Report.FlowBeforeM3s[J]);
+		if (Before > 0.0 ? Change / Before > ValveImpactThreshold : Change > 0.0) Report.ImpactedRacks.Add(J);
+	}
+	LastValveReport = Report;
+
+	auto Join = [](const TArray<int32>& A) { FString S; for (const int32 V : A) S += FString::Printf(TEXT("%s%d"), S.IsEmpty() ? TEXT("") : TEXT(","), V); return S.IsEmpty() ? FString(TEXT("없음")) : S; };
+	UE_LOG(LogTemp, Display, TEXT("[Valve] 랙 %d 밸브 %s: 수력 %s | 격리 범위(위상) 랙 [%s] | 수력 영향 범위(유량 변화 > %.1e) 랙 [%s]"),
+		Index, bClosed ? TEXT("닫음") : TEXT("엶"), LastResult.bConverged ? TEXT("수렴") : TEXT("수렴 실패"),
+		*Join(Report.IsolatedRacks), ValveImpactThreshold, *Join(Report.ImpactedRacks));
+	for (int32 J = 0; J < RackBranchPipeIndices.Num(); ++J)
+		UE_LOG(LogTemp, Display, TEXT("[Valve]   랙 %d 분기 %.4f -> %.4f L/s"), J, Report.FlowBeforeM3s[J] * 1e3, Report.FlowAfterM3s[J] * 1e3);
+	return true;
+}
+
+void ADataCenterRoomActor::OpenAllValves()
+{
+	bool bChanged = false;
+	for (int32 I = 0; I < RackSupplyValvePipe.Num(); ++I)
+	{
+		bChanged |= Network.IsPipeClosed(RackSupplyValvePipe[I]) || Network.IsPipeClosed(RackReturnValvePipe[I]);
+		Network.SetPipeClosed(RackSupplyValvePipe[I], false);
+		Network.SetPipeClosed(RackReturnValvePipe[I], false);
+	}
+	ClosedValveRacks.Reset();
+	LastValveReport = FValveReport();
+	if (bChanged && Network.GetNumNodes() > 0)
+	{
+		LastResult = Network.Solve(SolveSettings);
+		bPipeColorsDirty = true;
+	}
+}
+
 void ADataCenterRoomActor::RestartCoolantInventory()
 {
+	OpenAllValves();
 	FHydraulicSolveResult Result;
 	if (Inventory.Restart(Network, SolveSettings, Result))
 	{
@@ -431,6 +498,8 @@ void ADataCenterRoomActor::BuildNetwork()
 	NodePositionM.Reset();
 	RackBranchPipeIndices.Reset();
 	RackReturnPipeIndices.Reset();
+	RackSupplyValvePipe.Reset();
+	RackReturnValvePipe.Reset();
 	bPipeIsSupplySide.Reset();
 	PipeStartOverrideCm.Reset();
 	PipeEndOverrideCm.Reset();
@@ -523,6 +592,8 @@ void ADataCenterRoomActor::BuildNetwork()
 
 			RackBranchPipeIndices.Add(Handles.RackBranchPipeIndices[ColumnIndex]);
 			RackReturnPipeIndices.Add(Handles.RackReturnPipeIndices[ColumnIndex]);
+			RackSupplyValvePipe.Add(Handles.RackBranchPipeIndices[ColumnIndex]);   // starts at the supply header
+			RackReturnValvePipe.Add(Handles.RackReturnPipeIndices[ColumnIndex]);   // ends at the return header
 			if (bUseGjConnections && Rack->bUseGjModels && Handles.RackNodeIndices[ColumnIndex] != INDEX_NONE)
 			{
 				// The single lumped rack node has two distinct visual manifold ports.
@@ -571,6 +642,12 @@ void ADataCenterRoomActor::BuildNetwork()
 			bPipeIsSupplySide[NewPipe] = bPipeIsSupplySide[Pipe];
 			LeakBranchPipes.Add(Pipe); LeakBranchPipes.Add(NewPipe);
 			if (Handles.RackReturnPipeIndices[Column] != INDEX_NONE) LeakBranchPipes.Add(Handles.RackReturnPipeIndices[Column]);
+			if (Leak.bReturnBranch)
+			{
+				// The half that reaches the return header now carries the return valve.
+				const int32 Slot = RackReturnValvePipe.IndexOfByKey(Pipe);
+				if (Slot != INDEX_NONE) RackReturnValvePipe[Slot] = NewPipe;
+			}
 			if (!Leak.bReturnBranch)
 			{
 				const int32 Slot = RackBranchPipeIndices.IndexOfByKey(Pipe);
@@ -595,6 +672,18 @@ void ADataCenterRoomActor::BuildNetwork()
 
 	AssignNodeElevationsFromRoutes();
 
+	// S2b step 4: valves closed during this run stay closed across a rebuild (layout changes are not allowed while
+	// simulating, so this only matters for rebuilds the room triggers itself).
+	{
+		const TArray<ARackThermalActor*> Routed = GetRoutedRacks();
+		for (int32 V = ClosedValveRacks.Num() - 1; V >= 0; --V)
+		{
+			const int32 I = Routed.IndexOfByKey(ClosedValveRacks[V].Get());
+			if (I == INDEX_NONE || !RackSupplyValvePipe.IsValidIndex(I)) { ClosedValveRacks.RemoveAt(V); continue; }
+			Network.SetPipeClosed(RackSupplyValvePipe[I], true);
+			Network.SetPipeClosed(RackReturnValvePipe[I], true);
+		}
+	}
 
 	LastResult = Network.Solve(SolveSettings);
 	bPipeColorsDirty = true;
@@ -1476,5 +1565,20 @@ static FAutoConsoleCommand GVrgLeakStatusCommand(
 						L, Net.GetLeak(L).HoleDiameterM * 1e3, Net.GetLeak(L).DischargeCoefficient, Net.GetNodePressurePa(Net.GetLeak(L).NodeIndex) * 1e-3,
 						Net.GetNodeElevationM(Net.GetLeak(L).NodeIndex), Net.GetLeakFlowM3s(L) * 1e3);
 			}
+		}
+	}));
+
+static FAutoConsoleCommand GVrgValveCommand(
+	TEXT("vrg.Valve"),
+	TEXT("랙 분기 격리 밸브(공급·회수 한 쌍)를 바로 닫거나 연다(망에서 빼고 다시 푼다). vrg.Valve <랙 번호(줄 순서)> close|open"),
+	FConsoleCommandWithArgsDelegate::CreateLambda([](const TArray<FString>& Args)
+	{
+		for (ADataCenterRoomActor* Room : LeakRoomActors())
+		{
+			if (Args.Num() < 2) { UE_LOG(LogTemp, Warning, TEXT("[Valve] 사용법: vrg.Valve <랙 번호> close|open")); return; }
+			const TArray<ARackThermalActor*> Racks = Room->GetRoutedRacks();
+			const int32 Index = FCString::Atoi(*Args[0]);
+			if (!Racks.IsValidIndex(Index) || !Room->SetRackValveClosed(Racks[Index], Args[1].ToLower() == TEXT("close")))
+				UE_LOG(LogTemp, Warning, TEXT("[Valve] 랙 %d 밸브를 바꾸지 못함(번호 범위 0~%d, 분기 없음 또는 이미 그 상태)"), Index, Racks.Num() - 1);
 		}
 	}));
