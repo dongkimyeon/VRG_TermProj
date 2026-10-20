@@ -116,11 +116,13 @@ struct FWaterVolumes
 	double SupplyCapJK = 0.0, ReturnCapJK = 0.0, FlowWK = 0.0;
 	double SupplyK = 0.0, ReturnK = 0.0, InitialSupplyK = 0.0, InitialReturnK = 0.0;
 	void Init(double TempK) { SupplyK = ReturnK = InitialSupplyK = InitialReturnK = TempK; }
-	void Advance(double H, double InW, double OutW)
+	// InW enters the return volume (the loads), OutW leaves between return and supply (the sink), SupplyInW enters the
+	// supply volume (F5: pump hydraulic power, the pumps sit on the supply side).
+	void Advance(double H, double InW, double OutW, double SupplyInW = 0.0)
 	{
 		const double Ts = SupplyK, Tr = ReturnK;
 		ReturnK = Tr + H / ReturnCapJK * (FlowWK * Ts + InW - FlowWK * Tr);
-		SupplyK = Ts + H / SupplyCapJK * (FlowWK * Tr - OutW - FlowWK * Ts);
+		SupplyK = Ts + H / SupplyCapJK * (FlowWK * Tr - OutW + SupplyInW - FlowWK * Ts);
 	}
 	double StorageJ() const { return SupplyCapJK * (SupplyK - InitialSupplyK) + ReturnCapJK * (ReturnK - InitialReturnK); }
 	double TauS() const { return FlowWK > 0.0 ? FMath::Min(SupplyCapJK, ReturnCapJK) / FlowWK : TNumericLimits<double>::Max(); }
@@ -167,6 +169,10 @@ struct FFacilityPlantState
 	double ChillerLimitedS = 0.0, ChillerOutsideCurvesS = 0.0;
 	// Plant ledger since the start of the run [J].
 	double DutyInJ = 0.0, DryCoolerOutJ = 0.0, CrahInJ = 0.0, CompressorInJ = 0.0, CwDryCoolerOutJ = 0.0;
+	// F5: plant pumps: electric input, its hydraulic part becomes heat in the water, the rest (pump + motor losses in the
+	// plant room) leaves to the outdoor air directly.
+	double PumpInJ = 0.0, PumpLossOutJ = 0.0, PumpHydraulicW = 0.0;
+	double FwsPumpHydraulicW = 0.0, ChwPumpHydraulicW = 0.0, CwPumpHydraulicW = 0.0;
 	double InitialSupplyK = 0.0, InitialReturnK = 0.0;
 };
 
@@ -218,6 +224,11 @@ public:
 	double GetStorageJ() const;
 	// (in - out - storage) / max(in, |out|, 1 J): the plant ledger residual (rule: in, out, sources AND storage).
 	double GetLedgerResidual() const;
+	double GetLedgerResidualJ() const;
+	// External energy the plant adds beyond the room's handover (compressors + plant pumps) since the start [J].
+	double GetExternalInJ() const { return State.CompressorInJ + State.PumpInJ; }
+	// Electric input of all plant equipment now [W]: plant pumps + both dry cooler banks' fans + compressors.
+	double GetPlantElectricW() const;
 	double GetBranchMassFlowKgs(int32 Branch) const { return BranchKgs.IsValidIndex(Branch) ? BranchKgs[Branch] : 0.0; }
 	double GetTotalMassFlowKgs() const { return TotalKgs; }
 	double GetSupplyCapacityJK() const { return Fws.SupplyCapJK; }

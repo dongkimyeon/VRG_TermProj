@@ -154,7 +154,7 @@ bool FChwPlantTest::RunTest(const FString& Parameters)
 		S.ChwSupplyK - 273.15, S.ChwReturnK - 273.15, S.ChillersRunning, S.ChillerLoadW * 1e-3, CopCool, S.CwSupplyK - 273.15, Cool.GetLedgerResidual(), WorstUA,
 		Cool.GetChillerRefCapacityW() * 1e-3, Cool.GetNumCwDryCoolers()));
 	TestTrue(TEXT("chillers hold the CHW setpoint (< 1e-6 K)"), FMath::Abs(S.ChwSupplyK - 291.15) < 1e-6 && !S.bChillerCapacityLimited);
-	TestTrue(TEXT("steady: chillers take the CRAH load (rel < 1e-6)"), FMath::Abs(S.ChillerLoadW - CrahW) / CrahW < 1e-6);
+	TestTrue(TEXT("steady: chillers take the CRAH load + CHW pump heat (rel < 1e-6)"), FMath::Abs(S.ChillerLoadW - CrahW - S.ChwPumpHydraulicW) / CrahW < 1e-6);
 	TestTrue(TEXT("condenser = load + work, plant ledger closes (rel < 1e-12)"), S.ChillerCondenserW == S.ChillerLoadW + S.ChillerPowerW
 		&& FMath::Abs(Cool.GetLedgerResidual()) < 1e-12);
 	TestTrue(TEXT("plausibility: chiller COP between 2 and the cap times the dataset's best part-load gain"), CopCool > 2.0 && CopCool <= Cool.GetChillerMaxCop() * PartLoadGain());

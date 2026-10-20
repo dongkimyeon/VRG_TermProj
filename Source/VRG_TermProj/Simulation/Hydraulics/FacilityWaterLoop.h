@@ -151,6 +151,7 @@ public:
 	double GetBranchFlowM3s(int32 Branch) const;
 	double GetTotalPumpFlowM3s() const;
 	double GetTotalPumpElectricW() const;
+	double GetTotalPumpHydraulicW() const;   // dp * Q of the running pumps (becomes heat in the water)
 	// Branch resistance at an opening (runs + valve + exchanger) [Pa s^2/m^6]; infinite when shut.
 	double BranchResistancePaS2M6(int32 Branch, double Opening) const;
 	// Valve resistance at an opening; R(x) = R_open * Rv^(2 (1 - x)) (equal percentage: Kv ~ Rv^(x-1), R ~ 1/Kv^2).

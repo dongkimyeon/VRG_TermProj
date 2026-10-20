@@ -1090,6 +1090,7 @@ void ADataCenterSimulationActor::BuildFanFaces(int32 CabinetIndex, const AActor&
 void ADataCenterSimulationActor::BuildCduGroups()
 {
 	CduSummaries.Reset();
+	CduGroupRows.Reset();
 	TArray<FCduCouplingGroup> Groups;
 	if (CoolantRejection == ECoolantRejection::CduHeatExchanger && Room != nullptr)
 	{
@@ -1113,6 +1114,7 @@ void ADataCenterSimulationActor::BuildCduGroups()
 				S.FacilitySupplyTempK = Cdu->FacilitySupplyTempK;
 			}
 			Groups[G].RackIndices.Add(R);
+			if (!Found) CduGroupRows.Add(RackRows[R]);
 			CduSummaries[G].NumRacks += 1;
 			CduSummaries[G].DesignDutyW += FRackThermalModel::DesignHeatToCoolantW(Rack->Params, Rack->Input);
 			HotWK[G] += Rack->Input.CoolantMassFlowKgs * Rack->Params.CoolantCpJKgK;
@@ -1244,6 +1246,16 @@ void ADataCenterSimulationActor::PlantBeforeStep()
 {
 	if (!bPlantActive || !Plant.IsThermalActive()) return;
 	for (int32 G = 0; G < Bridge.GetNumCduGroups(); ++G) Bridge.SetCduFacilitySupplyTempK(G, Plant.GetSupplyTempK());
+	// F5: each CDU's pump input becomes heat in its group's coolant (operating point of this step's network solution).
+	if (Room != nullptr)
+	{
+		const FHydraulicNetwork& Net = Room->GetNetwork();
+		for (int32 G = 0; G < Bridge.GetNumCduGroups(); ++G)
+		{
+			const int32 Pump = CduGroupRows.IsValidIndex(G) ? Room->GetRowPumpIndex(CduGroupRows[G]) : INDEX_NONE;
+			Bridge.SetCduPumpHeatW(G, Pump != INDEX_NONE ? Net.GetPumpElectricalInputPowerW(Pump) : 0.0);
+		}
+	}
 	if (Plant.IsChilledWaterActive())
 	{
 		// CRAH valves from the units' mixed intake of the last step (CPU uniform path records it; others hold).
@@ -1266,6 +1278,9 @@ void ADataCenterSimulationActor::PlantAfterStep(double DtS)
 	const FFacilityPlantState& S = Plant.GetState();
 	const FString NotMet = S.bSetpointNotMet ? FString::Printf(TEXT(" | 드라이쿨러 단독으로는 설정 미달(누적 %.1f s)%s"), S.SetpointNotMetS, Plant.IsTrimActive() ? TEXT(", 나머지는 트림 칠러") : TEXT(""))
 		: S.bOverCooling ? FString(TEXT(" | 과냉: 팬이 멈춰도 설정점 아래(회수가 설정보다 차다)")) : FString();
+	UE_LOG(LogTemp, Display, TEXT("[Plant] t=%.2f s 설비 전력 %.1f kW(펌프 %.1f, 팬 %.1f, 압축기 %.1f), CDU 펌프 열 %.1f kW, 외기까지 장부 %.3e"),
+		Clock.GetSimTimeS(), Plant.GetPlantElectricW() * 1e-3, Plant.GetPumpElectricW() * 1e-3, (Plant.GetFanElectricW() + Plant.GetCwFanElectricW()) * 1e-3,
+		(S.ChillerPowerW + S.TrimPowerW) * 1e-3, Bridge.GetLastCduPumpHeatW() * 1e-3, GetSiteEnergyResidual());
 	UE_LOG(LogTemp, Display, TEXT("[Plant] t=%.2f s 외기 %.2f C | 공급 %.3f C(설정 %.2f) 회수 %.3f C | CDU 듀티 %.1f kW, 드라이쿨러 %.1f kW, 팬 %.3f(목표 %.3f) %.2f kW%s | 설비 장부 %.3e"),
 		Clock.GetSimTimeS(), Plant.GetAmbientK() - 273.15, S.SupplyK - 273.15, PlantThermalSpec.SupplySetpointK - 273.15, S.ReturnK - 273.15,
 		S.DutyW * 1e-3, S.DryCoolerHeatW * 1e-3, S.FanRatio, S.FanTargetRatio, Plant.GetFanElectricW() * 1e-3, *NotMet, Plant.GetLedgerResidual());
@@ -2793,7 +2808,22 @@ void ADataCenterSimulationActor::EvalAfterStep()
 	Power.PumpW = Room != nullptr ? Room->GetTotalPumpElectricalW() : 0.0;
 	Power.CoolantRemovedW = Bridge.GetTotalRadiatorRejectedW();
 	Power.AirRemovedW = Bridge.GetLastAirCoolingRemovedW();
+	// S8 F5: plant pumps, dry cooler fans, compressors (only with the plant model; the fixed boundary has none).
+	Power.bPlant = bPlantActive && Plant.IsThermalActive();
+	Power.PlantW = Power.bPlant ? Plant.GetPlantElectricW() : 0.0;
 	Eval.AfterStep(Clock.GetSimTimeS(), Clock.GetFixedStepS(), Inlets, Power);
+}
+
+double ADataCenterSimulationActor::GetSiteEnergyInJ() const
+{
+	return Bridge.GetEnergyInJ() + (bPlantActive && Plant.IsThermalActive() ? Plant.GetExternalInJ() : 0.0);
+}
+
+double ADataCenterSimulationActor::GetSiteEnergyResidual() const
+{
+	if (!bPlantActive || !Plant.IsThermalActive()) return 0.0;
+	const double InJ = GetSiteEnergyInJ();
+	return FMath::Abs(InJ) > UE_DOUBLE_SMALL_NUMBER ? (Bridge.GetEnergyResidualJ() + Plant.GetLedgerResidualJ()) / InJ : 0.0;
 }
 
 bool ADataCenterSimulationActor::WriteEvaluationReport(const FString& Name, FString& OutSummary) const
@@ -2838,7 +2868,12 @@ bool ADataCenterSimulationActor::WriteEvaluationReport(const FString& Name, FStr
 	double Pue = 0.0;
 	const bool bPue = Eval.GetPartialPue(Pue);
 	if (bPue) Power->SetNumberField(TEXT("partialPue"), Pue); else Power->SetField(TEXT("partialPue"), MakeShared<FJsonValueNull>());
+	// S8 F5 (optional fields; older reports and fixed-boundary runs lack them): plant electric input and cooling PUE.
+	double CoolingPue = 0.0;
+	if (P.bPlant) Power->SetNumberField(TEXT("plantW"), P.PlantW);
+	if (Eval.GetCoolingPue(CoolingPue)) Power->SetNumberField(TEXT("coolingPue"), CoolingPue);
 	Power->SetStringField(TEXT("partialPueScope"), TEXT("(IT + CRAH fans + pumps) / IT; chillers, cooling towers, UPS/distribution losses and lighting are not modelled"));
+	if (P.bPlant) Power->SetStringField(TEXT("coolingPueScope"), TEXT("(IT + CRAH fans + CDU pumps + plant pumps + dry cooler fans + chiller compressors) / IT; UPS/distribution losses and lighting are not modelled, so not a facility PUE"));
 	Root->SetObjectField(TEXT("power"), Power);
 
 	TArray<TSharedPtr<FJsonValue>> InletItems;

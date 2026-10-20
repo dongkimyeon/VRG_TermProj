@@ -17,7 +17,7 @@ void FVrgEvaluation::Reset(const FVrgEvaluationSettings& InSettings, int32 NumIn
 		In.AboveRecommendedS = In.AboveAllowableS = 0.0;
 		In.Sensor.Reset(Settings.Sensor, T0, Settings.Seed + I);
 	}
-	for (FWindowed* W : { &It, &ServerFan, &CrahFan, &Pump, &CoolantRemoved, &AirRemoved }) W->Reset(NumBuckets);
+	for (FWindowed* W : { &It, &ServerFan, &CrahFan, &Pump, &CoolantRemoved, &AirRemoved, &Plant, &PlantOn }) W->Reset(NumBuckets);
 	Series.SetNum(FMath::Max(1, FMath::RoundToInt32(Settings.SeriesLengthS)));
 	SeriesNext = SeriesFilled = 0;
 	++Generation;
@@ -43,6 +43,7 @@ void FVrgEvaluation::AfterStep(double InSimTimeS, double DtS, const TArray<doubl
 	}
 	It.Add(Power.ItW, DtS); ServerFan.Add(Power.ServerFanW, DtS); CrahFan.Add(Power.CrahFanW, DtS); Pump.Add(Power.PumpW, DtS);
 	CoolantRemoved.Add(Power.CoolantRemovedW, DtS); AirRemoved.Add(Power.AirRemovedW, DtS);
+	Plant.Add(Power.bPlant ? Power.PlantW : 0.0, DtS); PlantOn.Add(Power.bPlant ? 1.0 : 0.0, DtS);
 	// Close every whole second that ended (a small tolerance for the accumulated step times).
 	while (SimTimeS - SecondStartS >= 1.0 - 1e-9)
 	{
@@ -64,7 +65,7 @@ void FVrgEvaluation::AfterStep(double InSimTimeS, double DtS, const TArray<doubl
 		SeriesFilled = FMath::Min(SeriesFilled + 1, Series.Num());
 
 		for (FInlet& In : Inlets) In.Temperature.CloseSecond();
-		for (FWindowed* W : { &It, &ServerFan, &CrahFan, &Pump, &CoolantRemoved, &AirRemoved }) W->CloseSecond();
+		for (FWindowed* W : { &It, &ServerFan, &CrahFan, &Pump, &CoolantRemoved, &AirRemoved, &Plant, &PlantOn }) W->CloseSecond();
 		SecondStartS += 1.0;
 		++SecondsClosed;
 	}
@@ -109,6 +110,8 @@ FVrgEvaluationSample FVrgEvaluation::GetWindowPower() const
 	P.PumpW = Pump.WindowIntegral() / Covered;
 	P.CoolantRemovedW = CoolantRemoved.WindowIntegral() / Covered;
 	P.AirRemovedW = AirRemoved.WindowIntegral() / Covered;
+	P.PlantW = Plant.WindowIntegral() / Covered;
+	P.bPlant = PlantOn.WindowIntegral() >= Covered * (1.0 - 1e-9);
 	return P;
 }
 
@@ -144,4 +147,12 @@ void FVrgEvaluation::GetSeries(double SinceS, TArray<FVrgSeriesPoint>& Out) cons
 		const FVrgSeriesPoint& P = Series[(SeriesNext - SeriesFilled + K + N) % N];
 		if (P.TimeS > SinceS) Out.Add(P);
 	}
+}
+
+bool FVrgEvaluation::GetCoolingPue(double& OutPue) const
+{
+	const FVrgEvaluationSample P = GetWindowPower();
+	if (P.ItW <= 0.0 || !P.bPlant) return false;   // plant model over the whole window only
+	OutPue = (P.ItW + P.CrahFanW + P.PumpW + P.PlantW) / P.ItW;
+	return true;
 }

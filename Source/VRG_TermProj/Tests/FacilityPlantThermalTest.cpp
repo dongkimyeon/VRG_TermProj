@@ -79,8 +79,9 @@ bool FFwsThermalControlledTest::RunTest(const FString& Parameters)
 	const FFacilityPlantState& S = Plant.GetState();
 	const double WaterWK = Plant.GetTotalMassFlowKgs() * TestCpJKgK;
 	const double SupplyErrK = FMath::Abs(S.SupplyK - Plant.GetThermalSpec().SupplySetpointK);
+	// F5: the FWS pumps' hydraulic power also ends up in the water (supply side), so the dry coolers reject duty + pump heat.
 	const double ReturnErrK = FMath::Abs(S.ReturnK - (S.SupplyK + Duty / WaterWK));
-	const double HeatRel = FMath::Abs(S.DryCoolerHeatW - Duty) / Duty;
+	const double HeatRel = FMath::Abs(S.DryCoolerHeatW - (Duty + S.FwsPumpHydraulicW)) / Duty;
 	AddInfo(FString::Printf(TEXT("외기 15 C, 듀티 %.0f kW, 드라이쿨러 %d대: 공급 %.6f C(설정 32) 회수 %.6f C, 팬 %.4f, 방열 %.3f kW, 장부 %.3e, 미달 %d, 과냉 %d"),
 		Duty * 1e-3, Plant.GetNumDryCoolers(), S.SupplyK - 273.15, S.ReturnK - 273.15, S.FanRatio, S.DryCoolerHeatW * 1e-3, Plant.GetLedgerResidual(),
 		S.bSetpointNotMet ? 1 : 0, S.bOverCooling ? 1 : 0));
@@ -104,7 +105,9 @@ bool FFwsThermalSaturatedTest::RunTest(const FString& Parameters)
 		const FFacilityPlantState& S = Plant.GetState();
 		const double WaterWK = Plant.GetTotalMassFlowKgs() * TestCpJKgK;
 		double Lo = Plant.GetAmbientK(), Hi = Plant.GetAmbientK() + 200.0;
-		for (int32 I = 0; I < 200; ++I) { const double Mid = 0.5 * (Lo + Hi); (Plant.GetDryCoolerHeatW(1.0, Mid) < Duty ? Lo : Hi) = Mid; }
+		// F5: the pumps' hydraulic power enters the supply side: N HeatW(1, T_r) = Duty + P_h, T_s = T_r - Duty / (m cp).
+		const double PumpH = S.FwsPumpHydraulicW;
+		for (int32 I = 0; I < 200; ++I) { const double Mid = 0.5 * (Lo + Hi); (Plant.GetDryCoolerHeatW(1.0, Mid) < Duty + PumpH ? Lo : Hi) = Mid; }
 		const double ReturnK = 0.5 * (Lo + Hi), SupplyK = ReturnK - Duty / WaterWK;
 		AddInfo(FString::Printf(TEXT("외기 %.0f C: 공급 %.6f C(해석 %.6f), 회수 %.6f C(해석 %.6f), 팬 %.3f, 미달 %d(누적 %.0f s), 장부 %.3e"),
 			AmbientC, S.SupplyK - 273.15, SupplyK - 273.15, S.ReturnK - 273.15, ReturnK - 273.15, S.FanRatio, S.bSetpointNotMet ? 1 : 0, S.SetpointNotMetS, Plant.GetLedgerResidual()));

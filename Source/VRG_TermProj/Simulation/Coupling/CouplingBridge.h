@@ -214,6 +214,10 @@ struct FCouplingSnapshot
 	UPROPERTY(BlueprintReadOnly, Category = "Coupling")
 	double CoolantLeakHeatJ = 0.0;
 
+	// S8 F5: CDU pump input carried into the coolant since the baseline [J] (a ledger input; 0 unless the plant sets it).
+	UPROPERTY(BlueprintReadOnly, Category = "Coupling")
+	double CoolantPumpHeatJ = 0.0;
+
 	// Per rack: leaked water mass flow on its supply / return branch [kg/s] this step.
 	UPROPERTY(BlueprintReadOnly, Category = "Coupling")
 	TArray<double> RackSupplyLeakKgs;
@@ -345,6 +349,12 @@ public:
 	double GetLastLeakHeatW() const { return LastLeakHeatW; }
 	// S8 F2: the facility water supply temperature a CDU exchanger sees this step (the plant's supply volume).
 	void SetCduFacilitySupplyTempK(int32 Group, double TempK) { if (CduGroups.IsValidIndex(Group)) CduGroups[Group].Hx.FacilitySupplyTempK = TempK; }
+	// S8 F5: CDU pump input [W] that becomes heat in group G's coolant this step (all of the electric input: the CDU sits in
+	// the room and its motor losses would partly reach the room air - ESTIMATE, conservative for the coolant). A global
+	// ledger input. Never set without the plant model, so the fixed-boundary runs are unchanged.
+	void SetCduPumpHeatW(int32 Group, double W) { if (CduPumpHeatW.Num() != CduGroups.Num()) CduPumpHeatW.Init(0.0, CduGroups.Num()); if (CduPumpHeatW.IsValidIndex(Group)) CduPumpHeatW[Group] = FMath::Max(W, 0.0); }
+	double GetLastCduPumpHeatW() const { return LastCduPumpHeatW; }
+	double GetCduPumpHeatJ() const { return CduPumpHeatJ; }
 	// S8 F3: a CRAH coil's (equivalent) conductance and chilled water inlet for the next step.
 	void SetCrahCoil(int32 Unit, double UAWK, double WaterK)
 	{
@@ -372,6 +382,8 @@ private:
 	// 라디에이터가 버린 누적 열 [J]. 공기 쪽 유출은 공기 솔버가 따로 센다.
 	double RadiatorRejectedJ = 0.0;
 	double LeakHeatJ = 0.0;  // S2b step 3: heat carried out by leaked coolant since the baseline
+	TArray<double> CduPumpHeatW;
+	double CduPumpHeatJ = 0.0, LastCduPumpHeatW = 0.0;
 	double LastLeakHeatW = 0.0;
 	TArray<double> LastSupplyLeakKgs, LastReturnLeakKgs;
 

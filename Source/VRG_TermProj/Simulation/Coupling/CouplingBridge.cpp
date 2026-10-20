@@ -39,6 +39,8 @@ void FCouplingBridge::Initialize(const TArray<FRackCouplingTarget>& InTargets,
 	LastSupplyLeakKgs.Init(0.0, NumRacks);
 	LastReturnLeakKgs.Init(0.0, NumRacks);
 	LeakHeatJ = LastLeakHeatW = 0.0;
+	CduPumpHeatJ = LastCduPumpHeatW = 0.0;
+	CduPumpHeatW.Reset();
 	LastAirInletTempK.Init(0.0, NumRacks);
 	LastHeatToAirW.Init(0.0, NumRacks);
 	LastRackAirMassFlowKgs.Init(0.0, NumRacks);
@@ -360,12 +362,14 @@ void FCouplingBridge::SetCduGroups(const TArray<FCduCouplingGroup>& InGroups)
 	LastCduDutyW.Init(0.0, CduGroups.Num()); LastCduReturnK.Init(0.0, CduGroups.Num());
 	LastCduSupplyK.Init(0.0, CduGroups.Num()); LastCduFacilityReturnK.Init(0.0, CduGroups.Num());
 	LastCduHotWK.Init(0.0, CduGroups.Num()); LastCduCoolantKgs.Init(0.0, CduGroups.Num());
+	CduPumpHeatW.Init(0.0, CduGroups.Num());
 }
 
 void FCouplingBridge::CloseCoolantLoop(double DeltaTimeS)
 {
 	double RejectedW = 0.0;
 	double LeakW = 0.0;
+	double PumpW = 0.0;
 
 	// S2b step 3, leaks (Tools/S2b_누수_계획.md). Water leaving through a hole is replaced by the expansion tank,
 	// which sits on the CDU supply side; its water enters at T_tank = the loop supply temperature of the previous
@@ -405,6 +409,10 @@ void FCouplingBridge::CloseCoolantLoop(double DeltaTimeS)
 			LastCduDutyW[G] = 0.0;
 			continue;
 		}
+		// S8 F5: the CDU pump's input enters the mixed return once (+0.0 without the plant model: bit-identical).
+		const double GroupPumpW = CduPumpHeatW.IsValidIndex(G) ? CduPumpHeatW[G] : 0.0;
+		MixSum += GroupPumpW;
+		PumpW += GroupPumpW;
 		const double MixK = MixSum / HotWK;
 		const double DutyW = CduHeatExchanger::DutyW(Group.Hx, HotWK, MixK);
 		const double SupplyK = MixK - DutyW / HotWK;
@@ -472,6 +480,8 @@ void FCouplingBridge::CloseCoolantLoop(double DeltaTimeS)
 	RadiatorRejectedJ += RejectedW * DeltaTimeS;
 	LastLeakHeatW = LeakW;
 	LeakHeatJ += LeakW * DeltaTimeS;
+	LastCduPumpHeatW = PumpW;
+	CduPumpHeatJ += PumpW * DeltaTimeS;
 }
 
 void FCouplingBridge::PushHeatToAir()
@@ -579,6 +589,7 @@ void FCouplingBridge::Step(double DeltaTimeS, bool bHydraulicsResolved, bool bHy
 		BaselineAirOutJ = AirSolver ? AirSolver->GetEnergyOutJ() : 0.0;
 		BaselineFanHeatJ = AirSolver ? AirSolver->GetDuctFanHeatJ() : 0.0;
 		RadiatorRejectedJ = RackCoolantOutJ = RackAirOutJ = DroppedAirHeatJ = 0.0;
+		CduPumpHeatJ = 0.0;
 		LeakHeatJ = 0.0;
 		bLedgerBaselineTaken = true;
 	}
@@ -655,6 +666,8 @@ void FCouplingBridge::Step(double DeltaTimeS, bool bHydraulicsResolved, bool bHy
 
 	// CRAH fan heat is an input too: electric power that ends up in the room air (not IT heat).
 	if (AirSolver != nullptr) EnergyInJ += AirSolver->GetDuctFanHeatJ() - BaselineFanHeatJ;
+	// S8 F5: CDU pump input carried into the coolant (0 without the plant model).
+	EnergyInJ += CduPumpHeatJ;
 
 	// 유출은 계 밖으로 나간 것만이다: 라디에이터(냉각수)와 CRAH 코일(공기).
 	// 랙에서 공기로 넘어간 열은 계 안에서의 이동이라 여기 넣지 않는다.
@@ -723,6 +736,7 @@ FCouplingSnapshot FCouplingBridge::MakeSnapshot(double SimTimeS) const
 	Snapshot.CoolantLeakHeatW = LastLeakHeatW;
 	Snapshot.RackCoolantOutJ = RackCoolantOutJ;
 	Snapshot.CoolantRejectedJ = RadiatorRejectedJ;
+	Snapshot.CoolantPumpHeatJ = CduPumpHeatJ;
 	Snapshot.CoolantLeakHeatJ = LeakHeatJ;
 	Snapshot.RackSupplyLeakKgs = LastSupplyLeakKgs;
 	Snapshot.RackReturnLeakKgs = LastReturnLeakKgs;
@@ -752,9 +766,9 @@ FString FCouplingBridge::DescribeEnergyLedger() const
 	for (const FRackCouplingTarget& Target : Targets) if (Target.Model) RackResidualJ += Target.Model->GetEnergyResidualJ();
 	const double AirResidualJ = AirSolver ? AirSolver->GetEnergyResidualJ() : 0.0;
 	const double AirInJ = AirSolver ? AirSolver->GetEnergyInJ() - AirSolver->GetDuctFanHeatJ() : 0.0;  // rack heat only
-	return FString::Printf(TEXT("전역 잔차 %.3e J = 랙 %.3e + 공기 %.3e + 결합 %.3e | 결합: 냉각수(랙 반출 %.6e - 방출(라디에이터·CDU) %.6e - 누수 열 %.6e = %.3e), ")
+	return FString::Printf(TEXT("전역 잔차 %.3e J = 랙 %.3e + 공기 %.3e + 결합 %.3e | 결합: 냉각수(랙 반출 %.6e + CDU 펌프 %.6e - 방출(라디에이터·CDU) %.6e - 누수 열 %.6e = %.3e), ")
 		TEXT("공기(랙 반출 %.6e - 공기 주입 %.6e = %.3e, 고체 셀 버림 %.3e)"),
 		GetEnergyResidualJ(), RackResidualJ, AirResidualJ, GetEnergyResidualJ() - RackResidualJ - AirResidualJ,
-		RackCoolantOutJ, RadiatorRejectedJ, LeakHeatJ, RackCoolantOutJ - RadiatorRejectedJ - LeakHeatJ, RackAirOutJ, AirInJ, RackAirOutJ - AirInJ, DroppedAirHeatJ);
+		RackCoolantOutJ, CduPumpHeatJ, RadiatorRejectedJ, LeakHeatJ, RackCoolantOutJ + CduPumpHeatJ - RadiatorRejectedJ - LeakHeatJ, RackAirOutJ, AirInJ, RackAirOutJ - AirInJ, DroppedAirHeatJ);
 }
 

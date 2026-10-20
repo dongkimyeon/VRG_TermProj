@@ -25,6 +25,9 @@ struct FVrgEvaluationSettings
 struct FVrgEvaluationSample
 {
 	double ItW = 0.0, ServerFanW = 0.0, CrahFanW = 0.0, PumpW = 0.0;
+	// S8 F5: plant equipment electric input [W] (plant pumps, dry cooler fans, compressors); valid only with the plant.
+	double PlantW = 0.0;
+	bool bPlant = false;
 	// Heat leaving the model [W]: coolant to facility water (radiators / CDU) and air coils (time series only).
 	double CoolantRemovedW = 0.0, AirRemovedW = 0.0;
 };
@@ -69,6 +72,10 @@ public:
 	FVrgEvaluationSample GetWindowPower() const;
 	// (IT + CRAH fans + pumps) / IT over the window; false when IT is zero.
 	bool GetPartialPue(double& OutPue) const;
+	// S8 F5: cooling PUE = (IT + CRAH fans + CDU pumps + plant pumps + dry cooler fans + compressors) / IT over the window;
+	// false without the plant model over the whole window or without IT. Still not a facility PUE (no UPS, distribution,
+	// lighting).
+	bool GetCoolingPue(double& OutPue) const;
 	double GetSimTimeS() const { return SimTimeS; }
 	double GetWindowCoveredS() const;
 	const FVrgEvaluationSettings& GetSettings() const { return Settings; }
@@ -99,7 +106,7 @@ private:
 	};
 	FVrgEvaluationSettings Settings;
 	TArray<FInlet> Inlets;
-	FWindowed It, ServerFan, CrahFan, Pump, CoolantRemoved, AirRemoved;
+	FWindowed It, ServerFan, CrahFan, Pump, CoolantRemoved, AirRemoved, Plant, PlantOn;
 	TArray<FVrgSeriesPoint> Series;   // ring
 	int32 SeriesNext = 0, SeriesFilled = 0, Generation = 0;
 	double SimTimeS = 0.0, SecondStartS = 0.0, RunTimeS = 0.0;

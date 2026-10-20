@@ -230,3 +230,10 @@ double FFacilityWaterLoop::GetTotalPumpElectricW() const
 	for (int32 I = 0; I < Handles.Pumps.Num(); ++I) if (Running[I]) Sum += Network.GetPumpElectricalInputPowerW(Handles.Pumps[I]);
 	return Sum;
 }
+
+double FFacilityWaterLoop::GetTotalPumpHydraulicW() const
+{
+	double Sum = 0.0;
+	for (int32 I = 0; I < Handles.Pumps.Num(); ++I) if (Running[I]) Sum += Network.GetPumpHydraulicPowerW(Handles.Pumps[I]);
+	return Sum;
+}

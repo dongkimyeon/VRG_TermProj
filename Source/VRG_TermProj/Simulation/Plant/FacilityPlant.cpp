@@ -91,7 +91,9 @@ bool FFacilityPlant::Build(const FFacilityLoopSpec& LoopSpec, const FFacilityThe
 			Thermal.AmbientK = Thermal.DesignAmbientK;
 			const double OutD = Fws.FlowWK > 0.0 ? ReturnD - GetDryCoolerHeatW(1.0, ReturnD) / Fws.FlowWK : ReturnD;
 			Thermal.AmbientK = SaveAmbient;
-			DesignTrimW = FMath::Max(Fws.FlowWK * (OutD - Thermal.SupplySetpointK), 0.0);
+			// The coolers aim below the setpoint by the FWS pumps' rise (F5: the pumps heat the supply after them).
+			const double SinkSpK = Thermal.SupplySetpointK - (Fws.FlowWK > 0.0 ? Loop.GetTotalPumpHydraulicW() / Fws.FlowWK : 0.0);
+			DesignTrimW = FMath::Max(Fws.FlowWK * (OutD - SinkSpK), 0.0);
 			if (DesignTrimW > 0.0)
 			{
 				const int32 N = FMath::Max(Thermal.TrimDutyChillers, 1);
@@ -149,8 +151,9 @@ bool FFacilityPlant::BuildChilledWater(const TArray<FPlantCrahCoil>& Crahs, cons
 	CrahCoils = Crahs;
 	RefreshChwFlows();
 
-	// Size the reference capacity so the duty chillers together make exactly the design load at the design point.
-	ChillerCapRefW = DesignChwW / (NDuty * FMath::Max(Chiller::Biquadratic(K.CapFt,
+	// Size the reference capacity so the duty chillers together make exactly the design load at the design point:
+	// the CRAH design heat plus the CHW pumps' hydraulic power that ends up in the same water (F5).
+	ChillerCapRefW = (DesignChwW + ChwLoop.GetTotalPumpHydraulicW()) / (NDuty * FMath::Max(Chiller::Biquadratic(K.CapFt,
 		FMath::Clamp(ChwSetpointK - 273.15, K.MinX, K.MaxX), FMath::Clamp(CwDesignInK - 273.15, K.MinY, K.MaxY)), 1e-6));
 	const double TransitS = FMath::Max(Thermal.SupplySideTransitS, 1.0), TransitR = FMath::Max(Thermal.ReturnSideTransitS, 1.0);
 	Chw.SupplyCapJK = ChwTotalM3s * WaterRho * WaterCp * TransitS;
@@ -166,7 +169,7 @@ bool FFacilityPlant::BuildCondenser(const FHydraulicSolveSettings& Settings)
 	bool bOutside = false;
 	const int32 NChw = bChw ? FMath::Max(Thermal.DutyChillers, 1) : 0;
 	const int32 NTrim = bTrim ? FMath::Max(Thermal.TrimDutyChillers, 1) : 0;
-	const double ChwCondW = bChw ? DesignChwW * (1.0 + Chiller::FullLoadEir(K, ChwSetpointK - 273.15, CwDesignInK - 273.15, ChillerMaxCop, bOutside) * Chiller::Quadratic(K.EirFplr, 1.0)) : 0.0;
+	const double ChwCondW = bChw ? (DesignChwW + ChwLoop.GetTotalPumpHydraulicW()) * (1.0 + Chiller::FullLoadEir(K, ChwSetpointK - 273.15, CwDesignInK - 273.15, ChillerMaxCop, bOutside) * Chiller::Quadratic(K.EirFplr, 1.0)) : 0.0;
 	const double TrimCondW = bTrim ? DesignTrimW * (1.0 + Chiller::FullLoadEir(K, Thermal.SupplySetpointK - 273.15, CwDesignInK - 273.15, ChillerMaxCop, bOutside) * Chiller::Quadratic(K.EirFplr, 1.0)) : 0.0;
 	DesignCondW = ChwCondW + TrimCondW;
 	if (DesignCondW <= 0.0) return false;
@@ -308,7 +311,20 @@ void FFacilityPlant::Step(double DtS, const TArray<double>& BranchDutyW, double 
 	for (int32 G = 0; G < BranchDutyW.Num() && G < BranchKgs.Num(); ++G) DutyW += BranchDutyW[G];
 	const double CrahW = bChw ? CrahDutyW : 0.0;
 
+	// F5: plant pumps (operating points fixed between control changes): hydraulic power into each loop's supply volume.
+	const double FwsPumpE = Loop.GetTotalPumpElectricW(), FwsPumpH = Loop.GetTotalPumpHydraulicW();
+	const double ChwPumpE = bChw ? ChwLoop.GetTotalPumpElectricW() : 0.0, ChwPumpH = bChw ? ChwLoop.GetTotalPumpHydraulicW() : 0.0;
+	const double CwPumpE = bCw ? CwLoop.GetTotalPumpElectricW() : 0.0, CwPumpH = bCw ? CwLoop.GetTotalPumpHydraulicW() : 0.0;
+	const double PumpE = FwsPumpE + ChwPumpE + CwPumpE, PumpH = FwsPumpH + ChwPumpH + CwPumpH;
+	State.PumpHydraulicW = PumpH;
+	State.FwsPumpHydraulicW = FwsPumpH; State.ChwPumpHydraulicW = ChwPumpH; State.CwPumpHydraulicW = CwPumpH;
+	// The setpoints are for the supply AFTER the pumps (where a plant measures it): the coolers aim below by the pumps' rise.
+	const double FwsSinkSpK = Thermal.SupplySetpointK - (Fws.FlowWK > 0.0 ? FwsPumpH / Fws.FlowWK : 0.0);
+	const double ChwSinkSpK = ChwSetpointK - (bChw && Chw.FlowWK > 0.0 ? ChwPumpH / Chw.FlowWK : 0.0);
+	const double CwPumpRiseK = bCw && Cw.FlowWK > 0.0 ? CwPumpH / Cw.FlowWK : 0.0;
+
 	// Controls from the state at the start of the step.
+	FwsBank.SetpointK = FwsSinkSpK;
 	FwsBank.Control(DtS, Fws.ReturnK, TotalKgs, WaterCp, Thermal.AmbientK);
 	// Economizer switch with hysteresis; while on, the CW fans aim below the CHW setpoint (as cold as is useful).
 	if (bChw && bCw && Thermal.bEconomizer)
@@ -325,7 +341,9 @@ void FFacilityPlant::Step(double DtS, const TArray<double>& BranchDutyW, double 
 	else bEconOn = false;
 	if (bCw)
 	{
-		CwBank.SetpointK = bEconOn ? ChwSetpointK - Thermal.EconomizerApproachK : Thermal.CwSupplySetpointK;
+		// Economizer on: CW aimed below the CHW target by the approach plus the switch-on margin (room for the exchanger to
+		// carry the whole load when the air allows it; the chillers trim only what the air cannot give).
+		CwBank.SetpointK = (bEconOn ? ChwSinkSpK - Thermal.EconomizerApproachK - Thermal.EconomizerOnMarginK : Thermal.CwSupplySetpointK) - CwPumpRiseK;
 		CwBank.Control(DtS, Cw.ReturnK, CwKgs, WaterCp, Thermal.AmbientK);
 	}
 	// A chiller starts for a request above 0.1 % of one unit's capacity (deadband against numerical crumbs; ESTIMATE).
@@ -334,14 +352,14 @@ void FFacilityPlant::Step(double DtS, const TArray<double>& BranchDutyW, double 
 	if (bChw)
 	{
 		const double After = Chw.ReturnK - (bEconOn ? EconomizerHeatW(Chw.ReturnK, Cw.SupplyK) / FMath::Max(Chw.FlowWK, 1e-30) : 0.0);
-		Running = Stage(FMath::Max(Chw.FlowWK * (After - ChwSetpointK), 0.0),
-			Chiller::CapacityW(Thermal.Chiller, ChillerCapRefW, ChwSetpointK - 273.15, Cw.SupplyK - 273.15), Thermal.DutyChillers);
+		Running = Stage(FMath::Max(Chw.FlowWK * (After - ChwSinkSpK), 0.0),
+			Chiller::CapacityW(Thermal.Chiller, ChillerCapRefW, ChwSinkSpK - 273.15, Cw.SupplyK - 273.15), Thermal.DutyChillers);
 	}
 	if (bTrim)
 	{
 		const double After = Fws.FlowWK > 0.0 ? Fws.ReturnK - GetDryCoolerHeatW(FwsBank.Fan, Fws.ReturnK) / Fws.FlowWK : Fws.ReturnK;
-		Trim = Stage(FMath::Max(Fws.FlowWK * (After - Thermal.SupplySetpointK), 0.0),
-			Chiller::CapacityW(Thermal.Chiller, TrimCapRefW, Thermal.SupplySetpointK - 273.15, Cw.SupplyK - 273.15), Thermal.TrimDutyChillers);
+		Trim = Stage(FMath::Max(Fws.FlowWK * (After - FwsSinkSpK), 0.0),
+			Chiller::CapacityW(Thermal.Chiller, TrimCapRefW, FwsSinkSpK - 273.15, Cw.SupplyK - 273.15), Thermal.TrimDutyChillers);
 	}
 
 	// Explicit Euler for all volumes, sub-stepped below a fifth of the shortest time constant.
@@ -363,23 +381,24 @@ void FFacilityPlant::Step(double DtS, const TArray<double>& BranchDutyW, double 
 		if (bChw && Running > 0)
 		{
 			const double InK = Chw.ReturnK - Qhx / FMath::Max(Chw.FlowWK, 1e-30);
-			const FChillerOperatingPoint Op = Chiller::Evaluate(Thermal.Chiller, ChillerCapRefW, ChillerMaxCop, InK, Chw.FlowWK / Running, ChwSetpointK, CwInK);
+			const FChillerOperatingPoint Op = Chiller::Evaluate(Thermal.Chiller, ChillerCapRefW, ChillerMaxCop, InK, Chw.FlowWK / Running, ChwSinkSpK, CwInK);
 			Qe = Running * Op.LoadW; W = Running * Op.PowerW;
 			bLimited |= Op.bCapacityLimited; bOutside |= Op.bOutsideCurves;
 		}
 		if (bTrim && Trim > 0)
 		{
 			const double InK = Fws.FlowWK > 0.0 ? Fws.ReturnK - Qf / Fws.FlowWK : Fws.ReturnK;
-			const FChillerOperatingPoint Op = Chiller::Evaluate(Thermal.Chiller, TrimCapRefW, ChillerMaxCop, InK, Fws.FlowWK / Trim, Thermal.SupplySetpointK, CwInK);
+			const FChillerOperatingPoint Op = Chiller::Evaluate(Thermal.Chiller, TrimCapRefW, ChillerMaxCop, InK, Fws.FlowWK / Trim, FwsSinkSpK, CwInK);
 			Qt = Trim * Op.LoadW; Wt = Trim * Op.PowerW;
 			bTrimLimited |= Op.bCapacityLimited; bOutside |= Op.bOutsideCurves;
 		}
 		if (bCw) Qw = CwBank.Heat(CwBank.Fan, Cw.ReturnK, CwKgs, WaterCp, Thermal.AmbientK);
-		if (bChw) Chw.Advance(H, CrahW, Qhx + Qe);
-		if (bCw) Cw.Advance(H, Qhx + Qe + W + Qt + Wt, Qw);   // condenser heat = Q_evap + W, computed once (rule 6)
+		if (bChw) Chw.Advance(H, CrahW, Qhx + Qe, ChwPumpH);
+		if (bCw) Cw.Advance(H, Qhx + Qe + W + Qt + Wt, Qw, CwPumpH);   // condenser heat = Q_evap + W, computed once (rule 6)
 		const double FwsOutK = Fws.FlowWK > 0.0 ? Fws.ReturnK - (Qf + Qt) / Fws.FlowWK : Fws.ReturnK;
-		bFwsNotMet |= FwsOutK > Thermal.SupplySetpointK + 1e-6;
-		Fws.Advance(H, DutyW, Qf + Qt);
+		bFwsNotMet |= FwsOutK > FwsSinkSpK + 1e-6;
+		Fws.Advance(H, DutyW, Qf + Qt, FwsPumpH);
+		State.PumpInJ += PumpE * H; State.PumpLossOutJ += (PumpE - PumpH) * H;
 		State.DutyInJ += DutyW * H; State.DryCoolerOutJ += Qf * H;
 		State.CrahInJ += CrahW * H; State.CompressorInJ += (W + Wt) * H; State.CwDryCoolerOutJ += Qw * H;
 		FwsW += Qf / Sub; CwW += Qw / Sub; LoadW += Qe / Sub; PowerW += W / Sub; TrimW += Qt / Sub; TrimPW += Wt / Sub; EconW += Qhx / Sub;
@@ -420,10 +439,23 @@ double FFacilityPlant::GetStorageJ() const
 	return Fws.StorageJ() + (bChw ? Chw.StorageJ() : 0.0) + (bCw ? Cw.StorageJ() : 0.0);
 }
 
+double FFacilityPlant::GetLedgerResidualJ() const
+{
+	const double In = State.DutyInJ + State.CrahInJ + State.CompressorInJ + State.PumpInJ;
+	const double Out = State.DryCoolerOutJ + State.CwDryCoolerOutJ + State.PumpLossOutJ;
+	return In - Out - GetStorageJ();
+}
+
 double FFacilityPlant::GetLedgerResidual() const
 {
-	const double In = State.DutyInJ + State.CrahInJ + State.CompressorInJ;
-	const double Out = State.DryCoolerOutJ + State.CwDryCoolerOutJ;
+	const double In = State.DutyInJ + State.CrahInJ + State.CompressorInJ + State.PumpInJ;
+	const double Out = State.DryCoolerOutJ + State.CwDryCoolerOutJ + State.PumpLossOutJ;
 	const double Scale = FMath::Max3(FMath::Abs(In), FMath::Abs(Out), 1.0);
-	return (In - Out - GetStorageJ()) / Scale;
+	return GetLedgerResidualJ() / Scale;
+}
+
+double FFacilityPlant::GetPlantElectricW() const
+{
+	if (!IsThermalActive()) return 0.0;
+	return GetPumpElectricW() + GetFanElectricW() + GetCwFanElectricW() + State.ChillerPowerW + State.TrimPowerW;
 }

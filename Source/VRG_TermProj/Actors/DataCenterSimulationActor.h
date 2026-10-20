@@ -289,6 +289,12 @@ public:
 	const FFacilityWaterLoop& GetFacilityLoop() const { return Plant.GetLoop(); }
 	const FCouplingBridge& GetCouplingBridge() const { return Bridge; }
 	const FFacilityLoopResult& GetFacilityLoopResult() const { return Plant.GetLoopResult(); }
+	// S8 F5: the room ledger and the plant ledger together, out to the outdoor air. The CDU duties and the CRAH coil heat
+	// are the room's outflow and the plant's inflow (the same values, rule 6), so they cancel; what is left: inputs =
+	// IT + CRAH fans + CDU pumps + compressors + plant pumps, outputs = dry coolers + plant pump losses, storage = racks,
+	// air, coolant and plant water. (residual J) / (all inputs J); 0 without the plant model.
+	double GetSiteEnergyResidual() const;
+	double GetSiteEnergyInJ() const;
 
 	// Blanking / cold-aisle roof. Default off: the level's own layout (gaps and all) is the reference.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Cooling|Containment")
@@ -472,6 +478,7 @@ private:
 	TArray<FCduSummary> CduSummaries;
 	FFacilityPlant Plant;
 	bool bPlantActive = false;
+	TArray<int32> CduGroupRows;   // S8 F5: room row of every CDU group (its pump feeds the group's coolant)
 	int32 LastPlantLogSecond = -1;
 	// S8 F1: builds and solves the FWS network from the sized CDU groups and hands each exchanger its branch flow.
 	void BuildFacilityLoop(TArray<FCduCouplingGroup>& Groups);

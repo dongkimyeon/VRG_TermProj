@@ -59,7 +59,7 @@ bool FTrimChillerTest::RunTest(const FString& Parameters)
 		Design.GetDesignTrimW() * 1e-3, D.TrimRunning, D.TrimLoadW * 1e-3, D.TrimPowerW * 1e-3, D.SupplyK - 273.15, D.FanRatio, D.CwSupplyK - 273.15, Design.GetLedgerResidual()));
 	TestTrue(TEXT("design air: trim holds the FWS supply at 32 C (< 1e-6 K), dry coolers at full fans"), FMath::Abs(D.SupplyK - 305.15) < 1e-6 && D.TrimRunning > 0
 		&& D.FanRatio == 1.0 && !D.bTrimLimited);
-	TestTrue(TEXT("steady: dry coolers + trim take the duty (rel < 1e-6)"), FMath::Abs(D.DryCoolerHeatW + D.TrimLoadW - Design.GetDesignHeatW()) / Design.GetDesignHeatW() < 1e-6);
+	TestTrue(TEXT("steady: dry coolers + trim take the duty + FWS pump heat (rel < 1e-6)"), FMath::Abs(D.DryCoolerHeatW + D.TrimLoadW - Design.GetDesignHeatW() - D.FwsPumpHydraulicW) / Design.GetDesignHeatW() < 1e-6);
 	TestTrue(TEXT("plant ledger with the trim compressor (rel < 1e-12)"), FMath::Abs(Design.GetLedgerResidual()) < 1e-12);
 
 	FFacilityPlant Cool = MakeFullPlant(20.0, false);
@@ -87,7 +87,7 @@ bool FEconomizerModesTest::RunTest(const FString& Parameters)
 		C.bEconomizerOn ? 1 : 0, C.EconomizerW * 1e-3, C.ChillersRunning, ColdWork, C.ChwSupplyK - 273.15, C.CwSupplyK - 273.15, Cold.GetLedgerResidual()));
 	TestTrue(TEXT("cold air: economizer on, chillers off, no compressor work (plan: extreme case)"), C.bEconomizerOn && C.ChillersRunning == 0 && ColdWork == 0.0);
 	TestTrue(TEXT("cold air: the economizer carries the CRAH load (rel < 1e-6), CHW at the setpoint within its approach"),
-		FMath::Abs(C.EconomizerW - Cold.GetDesignChwLoadW()) / Cold.GetDesignChwLoadW() < 1e-6 && FMath::Abs(C.ChwSupplyK - 291.15) < Cold.GetThermalSpec().EconomizerApproachK);
+		FMath::Abs(C.EconomizerW - Cold.GetDesignChwLoadW() - C.ChwPumpHydraulicW) / Cold.GetDesignChwLoadW() < 1e-6 && FMath::Abs(C.ChwSupplyK - 291.15) < Cold.GetThermalSpec().EconomizerApproachK);
 	TestTrue(TEXT("ledger in economizer mode (rel < 1e-12)"), FMath::Abs(Cold.GetLedgerResidual()) < 1e-12);
 
 	FFacilityPlant Warm = MakeFullPlant(25.0, true);
