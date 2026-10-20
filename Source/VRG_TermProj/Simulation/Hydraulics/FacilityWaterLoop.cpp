@@ -7,16 +7,23 @@ bool FFacilityWaterLoop::Build(const FFacilityLoopSpec& InSpec)
 	bBuilt = false;
 	Network.Reset();
 	Handles = FFacilityLoopHandles();
-	Openings.Reset(); Running.Reset(); ValveOpenResistance.Reset();
+	Openings.Reset(); Running.Reset(); Tripped.Reset(); ValveOpenResistance.Reset(); LoopLeaks.Reset();
 	Spec = InSpec;
-	double TotalM3s = 0.0;
+	double FirstM3s = 0.0, SecondM3s = 0.0;
 	for (const double Q : Spec.BranchDesignFlowM3s)
 	{
 		if (!(Q > 0.0)) return false;   // every branch needs a design flow to be sized
-		TotalM3s += Q;
+		FirstM3s += Q;
 	}
-	// F1 builds the separate FWS only; the shared and series topologies join this builder in F6.
-	if (TotalM3s <= 0.0 || Spec.Topology != EPlantTopology::Separate || Spec.DutyPumps < 1) return false;
+	for (const double Q : Spec.SecondStageDesignFlowM3s)
+	{
+		if (!(Q > 0.0)) return false;
+		SecondM3s += Q;
+	}
+	const bool bSeries = Spec.SecondStageDesignFlowM3s.Num() > 0;
+	// Every topology uses this one builder (F6): one stage of branches (separate / shared) or two in series.
+	const double TotalM3s = bSeries ? FMath::Max(FirstM3s, SecondM3s) : FirstM3s;
+	if (TotalM3s <= 0.0 || Spec.DutyPumps < 1) return false;
 	DesignTotalFlowM3s = TotalM3s;
 
 	auto AddNode = [this](bool bFixed, double PressurePa)
@@ -38,22 +45,40 @@ bool FFacilityWaterLoop::Build(const FFacilityLoopSpec& InSpec)
 	Handles.SupplyHeaderNode = AddNode(false, Spec.SuctionPressurePa);
 	Handles.ReturnHeaderNode = AddNode(false, Spec.SuctionPressurePa);
 	Handles.PlantReturnNode = AddNode(false, Spec.SuctionPressurePa);
+	if (bSeries) Handles.MiddleNode = AddNode(false, Spec.SuctionPressurePa);
 
-	// CDU branches: every element's resistance from its design drop at the branch design flow (dp = R Q^2).
+	// Branches: every element's resistance from its design drop at the branch design flow (dp = R Q^2).
 	const double Authority = FMath::Clamp(Spec.ValveAuthority, 0.05, 0.95);
 	const double RestDropPa = Spec.BranchRunDesignDropPa + Spec.BranchHxDesignDropPa;
 	const double ValveOpenDropPa = Authority / (1.0 - Authority) * RestDropPa;
 	const double BranchDropPa = RestDropPa + ValveOpenDropPa;
-	for (const double Q : Spec.BranchDesignFlowM3s)
+	auto AddBranch = [&](double Q, int32 From, int32 To)
 	{
 		const double Q2 = Q * Q;
 		const int32 A = AddNode(false, Spec.SuctionPressurePa), B = AddNode(false, Spec.SuctionPressurePa), C = AddNode(false, Spec.SuctionPressurePa);
-		Handles.BranchSupplyRunPipes.Add(AddPipe(Handles.SupplyHeaderNode, A, 0.5 * Spec.BranchRunDesignDropPa / Q2));
+		Handles.BranchSupplyRunPipes.Add(AddPipe(From, A, 0.5 * Spec.BranchRunDesignDropPa / Q2));
 		ValveOpenResistance.Add(ValveOpenDropPa / Q2);
 		Handles.ValvePipes.Add(AddPipe(A, B, ValveOpenDropPa / Q2));
 		Handles.HxPipes.Add(AddPipe(B, C, Spec.BranchHxDesignDropPa / Q2));
-		Handles.BranchReturnRunPipes.Add(AddPipe(C, Handles.ReturnHeaderNode, 0.5 * Spec.BranchRunDesignDropPa / Q2));
+		Handles.BranchReturnRunPipes.Add(AddPipe(C, To, 0.5 * Spec.BranchRunDesignDropPa / Q2));
 		Openings.Add(1.0);
+	};
+	const int32 FirstTo = bSeries ? Handles.MiddleNode : Handles.ReturnHeaderNode;
+	for (const double Q : Spec.BranchDesignFlowM3s) AddBranch(Q, Handles.SupplyHeaderNode, FirstTo);
+	Handles.NumFirstStage = Spec.BranchDesignFlowM3s.Num();
+	double SeriesSecondDropPa = 0.0;
+	if (bSeries)
+	{
+		// The second stage carries the whole loop flow; at design each of its branches runs at its share of it.
+		for (const double Q : Spec.SecondStageDesignFlowM3s) AddBranch(Q, Handles.MiddleNode, Handles.ReturnHeaderNode);
+		const double Scale = TotalM3s / SecondM3s;
+		SeriesSecondDropPa = BranchDropPa * Scale * Scale;
+		// Bypass around the first stage for what the second stage needs beyond it (fixed, sized open at design).
+		if (SecondM3s > FirstM3s)
+		{
+			const double Qb = SecondM3s - FirstM3s;
+			Handles.BypassPipe = AddPipe(Handles.SupplyHeaderNode, Handles.MiddleNode, BranchDropPa / (Qb * Qb));
+		}
 	}
 
 	// Mains between the plant and the headers.
@@ -74,7 +99,7 @@ bool FFacilityWaterLoop::Build(const FFacilityLoopSpec& InSpec)
 	//   C = (H0 - H_design) / Q_pump^2 with Q_pump = total / duty pumps.
 	const double PumpQ = TotalM3s / Spec.DutyPumps;
 	const double CheckR = Spec.CheckValveDesignDropPa / (PumpQ * PumpQ);
-	DesignPumpHeadPa = Spec.CheckValveDesignDropPa + Spec.MainDesignDropPa + BranchDropPa + DryDropPa;
+	DesignPumpHeadPa = Spec.CheckValveDesignDropPa + Spec.MainDesignDropPa + BranchDropPa + SeriesSecondDropPa + DryDropPa;
 	PumpShutoffPa = Spec.PumpShutoffToDesignHead * DesignPumpHeadPa;
 	PumpCurveCoeff = (PumpShutoffPa - DesignPumpHeadPa) / (PumpQ * PumpQ);
 	for (int32 I = 0; I < Spec.DutyPumps + Spec.StandbyPumps; ++I)
@@ -87,10 +112,12 @@ bool FFacilityWaterLoop::Build(const FFacilityLoopSpec& InSpec)
 		Handles.Pumps.Add(Network.AddPump(P));
 		Handles.PumpCheckPipes.Add(AddPipe(Discharge, Handles.PlantSupplyNode, CheckR));
 		Running.Add(I < Spec.DutyPumps);
+		Tripped.Add(false);
 		if (I >= Spec.DutyPumps) Network.SetPipeClosed(Handles.PumpCheckPipes.Last(), true);
 	}
-	// The differential-pressure setpoint is the branch drop at design (every branch has the same design drop).
-	DpSetpointPa = BranchDropPa;
+	// The differential-pressure setpoint is the header-to-header drop at design (every branch of a stage has the same
+	// design drop; the series topology adds its second stage).
+	DpSetpointPa = BranchDropPa + SeriesSecondDropPa;
 	bBuilt = true;
 	return true;
 }
@@ -127,9 +154,93 @@ void FFacilityWaterLoop::SetValveOpening(int32 Branch, double Opening)
 
 void FFacilityWaterLoop::SetPumpRunning(int32 Pump, bool bRunning)
 {
-	if (!Running.IsValidIndex(Pump)) return;
+	if (!Running.IsValidIndex(Pump) || (bRunning && Tripped[Pump])) return;   // a tripped pump does not restart
 	Running[Pump] = bRunning;
 	Network.SetPipeClosed(Handles.PumpCheckPipes[Pump], !bRunning);
+}
+
+int32 FFacilityWaterLoop::TripPump(int32 Pump)
+{
+	if (!Running.IsValidIndex(Pump) || Tripped[Pump]) return INDEX_NONE;
+	const bool bWasRunning = Running[Pump];
+	Tripped[Pump] = true;
+	SetPumpRunning(Pump, false);
+	if (!bWasRunning) return INDEX_NONE;   // an idle standby failed: nothing to replace
+	for (int32 I = 0; I < Running.Num(); ++I)
+	{
+		if (!Running[I] && !Tripped[I]) { SetPumpRunning(I, true); return I; }
+	}
+	return INDEX_NONE;
+}
+
+int32 FFacilityWaterLoop::GetNumRunningPumps() const
+{
+	int32 N = 0;
+	for (const bool B : Running) N += B ? 1 : 0;
+	return N;
+}
+
+int32 FFacilityWaterLoop::AddLeak(EPlantLeakSite Site, int32 Branch, double HoleDiameterM, double DischargeCoefficient)
+{
+	if (!bBuilt) return INDEX_NONE;
+	int32 Node = INDEX_NONE;
+	switch (Site)
+	{
+	case EPlantLeakSite::SupplyHeader: Node = Handles.SupplyHeaderNode; break;
+	case EPlantLeakSite::ReturnHeader: Node = Handles.ReturnHeaderNode; break;
+	case EPlantLeakSite::BranchSupply:
+		if (Handles.BranchSupplyRunPipes.IsValidIndex(Branch)) Node = Network.GetPipeToNodeIndex(Handles.BranchSupplyRunPipes[Branch]);
+		break;
+	case EPlantLeakSite::BranchReturn:
+		if (Handles.BranchReturnRunPipes.IsValidIndex(Branch)) Node = Network.GetPipeFromNodeIndex(Handles.BranchReturnRunPipes[Branch]);
+		break;
+	}
+	if (Node == INDEX_NONE) return INDEX_NONE;
+	FHydraulicLeak L;
+	L.NodeIndex = Node;
+	L.HoleDiameterM = FMath::Max(HoleDiameterM, 0.0);
+	L.DischargeCoefficient = FMath::Clamp(DischargeCoefficient, 0.01, 1.0);
+	FPlantLeak P;
+	P.Site = Site;
+	P.Branch = (Site == EPlantLeakSite::BranchSupply || Site == EPlantLeakSite::BranchReturn) ? Branch : INDEX_NONE;
+	P.NetworkLeak = Network.AddLeak(L);
+	P.bSupplySide = Site == EPlantLeakSite::SupplyHeader || Site == EPlantLeakSite::BranchSupply;
+	return LoopLeaks.Add(P);
+}
+
+void FFacilityWaterLoop::SetLeakDiameterM(int32 Leak, double HoleDiameterM)
+{
+	if (LoopLeaks.IsValidIndex(Leak)) Network.SetLeakHoleDiameterM(LoopLeaks[Leak].NetworkLeak, HoleDiameterM);
+}
+
+void FFacilityWaterLoop::ClearLeaks()
+{
+	for (const FPlantLeak& L : LoopLeaks) Network.SetLeakHoleDiameterM(L.NetworkLeak, 0.0);
+}
+
+double FFacilityWaterLoop::GetLeakFlowM3s(int32 Leak) const
+{
+	return LoopLeaks.IsValidIndex(Leak) ? Network.GetLeakFlowM3s(LoopLeaks[Leak].NetworkLeak) : 0.0;
+}
+
+double FFacilityWaterLoop::GetSupplySideLeakM3s() const
+{
+	double Sum = 0.0;
+	for (const FPlantLeak& L : LoopLeaks) if (L.bSupplySide) Sum += Network.GetLeakFlowM3s(L.NetworkLeak);
+	return Sum;
+}
+
+double FFacilityWaterLoop::GetReturnSideLeakM3s() const
+{
+	double Sum = 0.0;
+	for (const FPlantLeak& L : LoopLeaks) if (!L.bSupplySide) Sum += Network.GetLeakFlowM3s(L.NetworkLeak);
+	return Sum;
+}
+
+bool FFacilityWaterLoop::HasOpenLeak() const
+{
+	for (const FPlantLeak& L : LoopLeaks) if (Network.GetLeak(L.NetworkLeak).HoleDiameterM > 0.0) return true;
+	return false;
 }
 
 double FFacilityWaterLoop::HeaderDeltaPa() const
@@ -215,6 +326,13 @@ FFacilityLoopResult FFacilityWaterLoop::Solve(const FHydraulicSolveSettings& Set
 double FFacilityWaterLoop::GetBranchFlowM3s(int32 Branch) const
 {
 	return Handles.ValvePipes.IsValidIndex(Branch) ? Network.GetPipeFlowM3s(Handles.ValvePipes[Branch]) : 0.0;
+}
+
+double FFacilityWaterLoop::GetBranchDeltaPPa(int32 Branch) const
+{
+	if (!Handles.BranchSupplyRunPipes.IsValidIndex(Branch)) return 0.0;
+	return Network.GetNodePiezometricPa(Network.GetPipeFromNodeIndex(Handles.BranchSupplyRunPipes[Branch]))
+		- Network.GetNodePiezometricPa(Network.GetPipeToNodeIndex(Handles.BranchReturnRunPipes[Branch]));
 }
 
 double FFacilityWaterLoop::GetTotalPumpFlowM3s() const

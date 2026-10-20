@@ -20,7 +20,7 @@ S2b 냉각수·누수·장애 1~6단계(높이·누수 오리피스·팽창탱�
 2. **배치 모드 완전 검증**: 배치 편집 전체(설비 장비 포함 여부는 F8 결정에 따름)의 자동화와 직접 확인 절차를 빠짐없이 통과.
 3. **웹 대시보드 연결 (맨 마지막)**: 냉각 설비·전력 탭(서버 `/api/cooling`만 있음), S8 설비 값, 방 공기·센서·검증 탭, 패키징
    (`Tools/웹대시보드_계획.md`). F7의 대시보드 부분도 여기로 옮긴다. 그 전까지 웹 쪽은 새 값 때문에 깨지지 않게만 유지한다.
-F0(근거 수집)·F1(FWS 수력망)·F2(드라이쿨러·설비수 열)·F3(냉수·응축수·칠러·CRAH 밸브)·F4(트림 칠러·수측 이코노마이저)·F5(외기까지 장부·냉각 PUE) 완료(`vrg.Plant.Enable`, 기본 끔), 다음 F6. 결정: FWS 공급 32 °C(W32), 칠러는 카르노 비 외삽(추정), 설계 외기 35 °C, F8(설비 장비 배치 편집) 한다(2026-10-20 사용자).
+F0(근거 수집)·F1(FWS 수력망)·F2(드라이쿨러·설비수 열)·F3(냉수·응축수·칠러·CRAH 밸브)·F4(트림 칠러·수측 이코노마이저)·F5(외기까지 장부·냉각 PUE)·F6(설비 구성 세 가지·A/B)·F6b(설비 배관 누수·장애 재판정, D4)·F7(설비 마당 표시, 화면 확인 안 함) 완료(`vrg.Plant.Enable`, 기본 끔), 다음 F8(설비 장비 배치 편집). 결정: FWS 공급 32 °C(W32), 칠러는 카르노 비 외삽(추정), 설계 외기 35 °C, F8(설비 장비 배치 편집) 한다(2026-10-20 사용자).
 
 **팀 결정:** VR(HMD)은 구현하지 않는다 (2026-09-27). 랙은 공개 사양 기반 GB200 NVL72와 Quantum 스파인만 쓴다
 (15 kW 하이브리드 랙은 2026-09-27에 제거). 정밀 해석은 GPU 균일 격자를 쓰고 옥트리는 검증·실험용으로 유지한다
@@ -46,6 +46,8 @@ F0(근거 수집)·F1(FWS 수력망)·F2(드라이쿨러·설비수 열)·F3(냉
   공급·회수 두 물 체적, 팬으로 공급 32 °C 제어(미달·과냉 표시). `vrg.Plant.Enable 1`일 때만 CDU가 이 유량·온도를 받는다. 외기 `vrg.Plant.Ambient`·이벤트 `ambient`.
   F3: 냉수(CHW) 루프와 칠러(DOE-2 곡선, 범위 밖 카르노 외삽·전부하 COP 상한, N+1 단계), 응축수(CW) + 드라이쿨러, CRAH 코일은 유한 냉수(공기 솔버에 등가 UA).
   F5: 외기까지 장부(`GetSiteEnergyResidual`), CDU 펌프 열(설비 모드), 냉각 PUE(리포트 `coolingPue`).
+  F6: 구성 분리·공용 냉수·직렬을 같은 빌더로(`vrg.Plant.Topology 0|1|2`), 리포트·A/B에 구성과 설계점. F6b: 설비 세 루프의 누수 오리피스(보충수 무제한·15 °C 추정)·
+  누수 열 장부, 펌프 고장/대기 전환, 칠러·드라이쿨러 팬 고장, 영향 범위는 망 재풀이(`vrg.Plant.Fault`, 이벤트 `plant`).
 - **공기:** 균일 MAC 격자(기본 h 0.25 m), 투영법, 압력 MG-PCG(CPU FP64, 셀 10만 이상이면 GPU FP64 자동), 결정적 멀티코어,
   Chen-Xu 0-방정식 난류, Boussinesq 부력, 랙 팬 관통 덕트, 고체 셀(장비·벽·컨테인먼트·천장 판).
 - **CRAH:** 덕트 + 코일(ε-NTU) + 팬 전력(D8). 배치 = 인로우(기본)·벽면·천장 뭉친 코일(비교용). 자동 배치 → 직접 추가 시 실제 액터로 전환.
@@ -61,8 +63,9 @@ F0(근거 수집)·F1(FWS 수력망)·F2(드라이쿨러·설비수 열)·F3(냉
 
 ### 모델에 없는 것 (알려진 한계)
 
-- **설비 쪽 계통 전체** — CDU 설비수 공급 22 °C·CRAH 냉수 18 °C가 고정 경계(무한 열원). 칠러·드라이쿨러·냉각탑·외기·설비 펌프 없음.
-  그래서 PUE는 부분 PUE다. S8에서 다룬다(다음 작업).
+- **설비 쪽(S8)** — 기본은 여전히 고정 경계(CDU 설비수 22 °C·CRAH 냉수 18 °C, `vrg.Plant.Enable 0`). 켜면 FWS·CHW·CW·드라이쿨러·칠러가 있지만
+  냉각탑·UPS·배전·조명이 없어 냉각 PUE이지 시설 PUE가 아니다. 칠러 운전점은 늘 공개 곡선 범위 밖(카르노 외삽, 추정), 설비 물 체적·밸브 행정·보충수 온도는 추정,
+  직렬의 바이패스는 고정 저항, 역류 분기는 열에서 유량 0, 보충수 공급 무제한. 설비 마당 표시(F7)는 도식 위치이고 화면 확인 전이다.
 - CDU 펌프 손실열의 냉각수/공기 분배, CDU·헤더 냉각수 체적의 열 지연.
 - S2b: 과열 판정 문턱 85 °C는 추정값(공개 Tj 최대 미확인). 재고 고갈은 "냉각수 유량 0"까지만(2상 거동·루프 열용량 감소 없음), 탱크 열용량 없음.
   탱크·사전 충전·보충 기본값은 추정값. 누수·밸브 상태는 저장하지 않는다.
@@ -90,7 +93,7 @@ RTX 4060 Laptop 노트북(Ryzen 7 8845HS, 15 GiB), 패키지 DX12 1280×720, L_T
   `9/0` 부하율, `E` 바라보는 유닛 하나 뽑기/꽂기, `R` 현재 배치로 t=0 재시작. 발열 손잡이는 각 부품 기본값에 배율로 적용한다.
 - **주요 콘솔:** `vrg.Air.RunSteps <N>`, `vrg.Air.CellSize <h> 0.25`, `vrg.Air.Gpu -1|0|1`, `vrg.Air.Turbulence`, `vrg.Sim.CrahLayout 0|1|2`,
   `vrg.Sim.Containment 0|1|2`, `vrg.Sim.CoolantRejection 0|1`, `vrg.Eval.Event/Report/ReportWhenDone/Compare`, `vrg.Layout.Save/Load`,
-  `vrg.Perf.Capture <초> [라벨] [quit]`, `vrg.Leak.Add/Size/Clear/Status`, `vrg.Valve`(이벤트 `valve`·`leak`), `vrg.Pipes.Temperature`, `vrg.Room.Shell`, `vrg.Patch.Map`, `vrg.Web.Enable`, `vrg.Hud.Debug`.
+  `vrg.Perf.Capture <초> [라벨] [quit]`, `vrg.Leak.Add/Size/Clear/Status`, `vrg.Valve`(이벤트 `valve`·`leak`), `vrg.Plant.Enable/Topology/Ambient/Fault/Show`(이벤트 `ambient`·`plant`), `vrg.Pipes.Temperature`, `vrg.Room.Shell`, `vrg.Patch.Map`, `vrg.Web.Enable`, `vrg.Hud.Debug`.
   `-ExecCmds`로 여러 명령을 줄 때는 **쉼표**로 나눈다.
 
 화면에는 단축키 안내만 둔다. 요약·디버그 문구는 `vrg.Hud.Debug 1`에서만 보이고 확인은 로그로 한다.

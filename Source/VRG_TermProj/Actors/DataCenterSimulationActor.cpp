@@ -1,6 +1,7 @@
 // Fill out your copyright notice in the Description page of Project Settings.
 
 #include "Actors/DataCenterSimulationActor.h"
+#include "Actors/FacilityPlantDisplayActor.h"
 #include "Dom/JsonObject.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
@@ -129,6 +130,57 @@ static FAutoConsoleCommand GVrgPlantEnableCommand(
 		}
 	}));
 
+static FAutoConsoleCommand GVrgPlantTopologyCommand(
+	TEXT("vrg.Plant.Topology"),
+	TEXT("S8 설비 구성. 0 = 분리(FWS 온수 + 냉수, 기본), 1 = 공용 냉수(CDU가 냉수 루프에 CRAH와 병렬), 2 = 직렬(CRAH 회수가 CDU로). 다음 시뮬레이션 진입 때 적용. vrg.Plant.Topology <0|1|2>"),
+	FConsoleCommandWithArgsDelegate::CreateLambda([](const TArray<FString>& Args)
+	{
+		if (Args.Num() == 0 || GEngine == nullptr) return;
+		const EPlantTopology T = static_cast<EPlantTopology>(FMath::Clamp(FCString::Atoi(*Args[0]), 0, 2));
+		for (const FWorldContext& Context : GEngine->GetWorldContexts())
+		{
+			UWorld* World = Context.World();
+			if (World == nullptr || !World->IsGameWorld()) continue;
+			for (TActorIterator<ADataCenterSimulationActor> It(World); It; ++It)
+			{
+				It->PlantThermalSpec.Topology = T;
+				UE_LOG(LogTemp, Display, TEXT("[Plant] 구성 %s (다음 시뮬레이션 진입 때 적용)"), FFacilityPlant::TopologyName(T));
+			}
+		}
+	}));
+
+static FAutoConsoleCommand GVrgPlantFaultCommand(
+	TEXT("vrg.Plant.Fault"),
+	TEXT("S8 설비 장애를 지금 넣는다(시뮬레이션 모드, 설비 켬). 시각을 정하려면 vrg.Eval.Event <t> plant <인자>. vrg.Plant.Fault leak <fws|chw|cw> <supply|return|branchsupply|branchreturn> <분기> <mm> | leakclear | pump <루프> <번호> | chiller <대수> | trim <대수> | drycooler <fws|cw> <대수>"),
+	FConsoleCommandWithArgsDelegate::CreateLambda([](const TArray<FString>& Args)
+	{
+		if (GEngine == nullptr) return;
+		for (const FWorldContext& Context : GEngine->GetWorldContexts())
+		{
+			UWorld* World = Context.World();
+			if (World == nullptr || !World->IsGameWorld()) continue;
+			for (TActorIterator<ADataCenterSimulationActor> It(World); It; ++It) It->ApplyPlantFault(Args);
+		}
+	}));
+
+static FAutoConsoleCommand GVrgPlantShowCommand(
+	TEXT("vrg.Plant.Show"),
+	TEXT("S8 설비 마당(장비·설비 배관) 표시. 0 = 숨김, 1 = 표시(기본, 설비가 도는 시뮬레이션 모드에서만). 색은 유량, vrg.Pipes.Temperature 1이면 온도. vrg.Plant.Show <0|1>"),
+	FConsoleCommandWithArgsDelegate::CreateLambda([](const TArray<FString>& Args)
+	{
+		if (Args.Num() == 0 || GEngine == nullptr) return;
+		for (const FWorldContext& Context : GEngine->GetWorldContexts())
+		{
+			UWorld* World = Context.World();
+			if (World == nullptr || !World->IsGameWorld()) continue;
+			for (TActorIterator<ADataCenterSimulationActor> It(World); It; ++It)
+			{
+				It->bShowPlant = FCString::Atoi(*Args[0]) != 0;
+				It->UpdatePlantDisplay(true);
+			}
+		}
+	}));
+
 static FAutoConsoleCommand GVrgPlantAmbientCommand(
 	TEXT("vrg.Plant.Ambient"),
 	TEXT("S8 외기 건구온도 [C]를 바로 바꾼다(드라이쿨러). 시각을 정하려면 vrg.Eval.Event <t> ambient <C>. vrg.Plant.Ambient <C>"),
@@ -213,6 +265,7 @@ void ADataCenterSimulationActor::EnterLayoutMode()
 	PendingWarmupSteps = 0;
 	VrgPerf::PendingWarmupSteps() = 0;
 	HoldModelsForLayout();
+	UpdatePlantDisplay(true);   // S8 F7: the plant yard is a simulation-mode display
 	UE_LOG(LogTemp, Display, TEXT("[VrgSim] 배치 모드: 물리 정지. 배치를 바꾼 뒤 시뮬레이션 모드로 들어가면 새로 구성한다."));
 }
 
@@ -1211,10 +1264,21 @@ void ADataCenterSimulationActor::BuildFacilityLoop(TArray<FCduCouplingGroup>& Gr
 	}
 	const FFacilityWaterLoop& Loop = Plant.GetLoop();
 	const FFacilityLoopResult& R = Plant.GetLoopResult();
-	UE_LOG(LogTemp, Display, TEXT("[Plant] FWS: CDU 분기 %d, 펌프 %d+%d(속도 %.6f), 차압 %.1f kPa(설정 %.1f), 총 유량 %.3f L/s(설계 %.3f), 펌프 전력 %.2f kW, 제어 %d회, 수력 반복 %d"),
-		Groups.Num(), Loop.GetSpec().DutyPumps, Loop.GetSpec().StandbyPumps, R.PumpSpeedRatio, R.HeaderDeltaPPa * 1e-3, R.SetpointPa * 1e-3,
-		Loop.GetTotalPumpFlowM3s() * 1e3, Loop.GetDesignTotalFlowM3s() * 1e3, Loop.GetTotalPumpElectricW() * 1e-3, R.ControlIterations, R.Hydraulics.IterationsUsed);
-	if (Plant.IsThermalActive())
+	UE_LOG(LogTemp, Display, TEXT("[Plant] 구성 %s%s"), FFacilityPlant::TopologyName(Plant.GetTopology()),
+		Plant.GetTopology() != PlantThermalSpec.Topology ? TEXT(" (요청 구성은 CRAH 유닛이 있어야 한다: 분리로 대체)") : TEXT(""));
+	if (Plant.GetTopology() == EPlantTopology::Separate)
+	{
+		UE_LOG(LogTemp, Display, TEXT("[Plant] FWS: CDU 분기 %d, 펌프 %d+%d(속도 %.6f), 차압 %.1f kPa(설정 %.1f), 총 유량 %.3f L/s(설계 %.3f), 펌프 전력 %.2f kW, 제어 %d회, 수력 반복 %d"),
+			Groups.Num(), Loop.GetSpec().DutyPumps, Loop.GetSpec().StandbyPumps, R.PumpSpeedRatio, R.HeaderDeltaPPa * 1e-3, R.SetpointPa * 1e-3,
+			Loop.GetTotalPumpFlowM3s() * 1e3, Loop.GetDesignTotalFlowM3s() * 1e3, Loop.GetTotalPumpElectricW() * 1e-3, R.ControlIterations, R.Hydraulics.IterationsUsed);
+	}
+	else
+	{
+		UE_LOG(LogTemp, Display, TEXT("[Plant] CDU 1차측 %d분기가 냉수 루프에 있다(%s): 설계 CDU 열 %.1f kW, 냉수 루프 총 유량 %.3f L/s, 바이패스 %.3f L/s"),
+			Groups.Num(), Plant.GetTopology() == EPlantTopology::Series ? TEXT("CRAH 뒤 직렬") : TEXT("CRAH와 병렬"), DesignHeatW * 1e-3,
+			Plant.GetChwLoop().GetTotalPumpFlowM3s() * 1e3, Plant.GetChwLoop().GetBypassFlowM3s() * 1e3);
+	}
+	if (Plant.IsThermalActive() && Plant.GetTopology() == EPlantTopology::Separate)
 	{
 		UE_LOG(LogTemp, Display, TEXT("[Plant] 드라이쿨러 %d대(UA %.1f kW/K, 정격 풍량 %.2f m3/s, 팬 %.2f kW 각), 설계 열 %.1f kW, 공급 설정 %.2f C, 외기 %.2f C(설계 %.2f C), 물 열용량 공급 %.1f / 회수 %.1f MJ/K"),
 			Plant.GetNumDryCoolers(), Plant.GetDryCoolerParams().RatedUAWK * 1e-3, Plant.GetDryCoolerParams().RatedAirFlowM3s, Plant.GetDryCoolerParams().RatedFanElectricW * 1e-3,
@@ -1245,7 +1309,11 @@ void ADataCenterSimulationActor::BuildFacilityLoop(TArray<FCduCouplingGroup>& Gr
 void ADataCenterSimulationActor::PlantBeforeStep()
 {
 	if (!bPlantActive || !Plant.IsThermalActive()) return;
-	for (int32 G = 0; G < Bridge.GetNumCduGroups(); ++G) Bridge.SetCduFacilitySupplyTempK(G, Plant.GetSupplyTempK());
+	for (int32 G = 0; G < Bridge.GetNumCduGroups(); ++G)
+	{
+		Bridge.SetCduFacilitySupplyTempK(G, Plant.GetSupplyTempK());
+		Bridge.SetCduFacilityFlowKgs(G, Plant.GetBranchMassFlowKgs(G));   // F6: series flows follow the CRAH valves
+	}
 	// F5: each CDU's pump input becomes heat in its group's coolant (operating point of this step's network solution).
 	if (Room != nullptr)
 	{
@@ -1281,9 +1349,24 @@ void ADataCenterSimulationActor::PlantAfterStep(double DtS)
 	UE_LOG(LogTemp, Display, TEXT("[Plant] t=%.2f s 설비 전력 %.1f kW(펌프 %.1f, 팬 %.1f, 압축기 %.1f), CDU 펌프 열 %.1f kW, 외기까지 장부 %.3e"),
 		Clock.GetSimTimeS(), Plant.GetPlantElectricW() * 1e-3, Plant.GetPumpElectricW() * 1e-3, (Plant.GetFanElectricW() + Plant.GetCwFanElectricW()) * 1e-3,
 		(S.ChillerPowerW + S.TrimPowerW) * 1e-3, Bridge.GetLastCduPumpHeatW() * 1e-3, GetSiteEnergyResidual());
-	UE_LOG(LogTemp, Display, TEXT("[Plant] t=%.2f s 외기 %.2f C | 공급 %.3f C(설정 %.2f) 회수 %.3f C | CDU 듀티 %.1f kW, 드라이쿨러 %.1f kW, 팬 %.3f(목표 %.3f) %.2f kW%s | 설비 장부 %.3e"),
-		Clock.GetSimTimeS(), Plant.GetAmbientK() - 273.15, S.SupplyK - 273.15, PlantThermalSpec.SupplySetpointK - 273.15, S.ReturnK - 273.15,
-		S.DutyW * 1e-3, S.DryCoolerHeatW * 1e-3, S.FanRatio, S.FanTargetRatio, Plant.GetFanElectricW() * 1e-3, *NotMet, Plant.GetLedgerResidual());
+	if (Plant.GetTopology() == EPlantTopology::Separate)
+	{
+		UE_LOG(LogTemp, Display, TEXT("[Plant] t=%.2f s 외기 %.2f C | 공급 %.3f C(설정 %.2f) 회수 %.3f C | CDU 듀티 %.1f kW, 드라이쿨러 %.1f kW, 팬 %.3f(목표 %.3f) %.2f kW%s | 설비 장부 %.3e"),
+			Clock.GetSimTimeS(), Plant.GetAmbientK() - 273.15, S.SupplyK - 273.15, PlantThermalSpec.SupplySetpointK - 273.15, S.ReturnK - 273.15,
+			S.DutyW * 1e-3, S.DryCoolerHeatW * 1e-3, S.FanRatio, S.FanTargetRatio, Plant.GetFanElectricW() * 1e-3, *NotMet, Plant.GetLedgerResidual());
+	}
+	else
+	{
+		// Shared / series: no FWS loop; the CDU primaries take chilled water (their inlet is the plant's CDU supply).
+		UE_LOG(LogTemp, Display, TEXT("[Plant] t=%.2f s 외기 %.2f C | 구성 %s: CDU 1차측 입구 %.3f C | CDU 듀티 %.1f kW | 설비 장부 %.3e"),
+			Clock.GetSimTimeS(), Plant.GetAmbientK() - 273.15, FFacilityPlant::TopologyName(Plant.GetTopology()), Plant.GetSupplyTempK() - 273.15,
+			S.DutyW * 1e-3, Plant.GetLedgerResidual());
+	}
+	if (S.LeakKgs > 0.0)
+	{
+		UE_LOG(LogTemp, Display, TEXT("[Plant]   설비 누수 %.3f kg/s(누적 %.1f kg), 누수 열 %.1f kW(보충수 %.1f C 기준)"),
+			S.LeakKgs, S.LeakMassKg, S.LeakHeatW * 1e-3, PlantThermalSpec.MakeupWaterK - 273.15);
+	}
 	if (Plant.IsChilledWaterActive())
 	{
 		UE_LOG(LogTemp, Display, TEXT("[Plant]   CHW 공급 %.3f C(설정 %.2f) 회수 %.3f C, 유량 %.2f L/s(밸브 전개 %d·닫힘 %d%s) | CRAH %.1f kW, 칠러 %d대 %.1f kW, 압축기 %.1f kW(COP %.2f)%s%s | CW 공급 %.3f 회수 %.3f C, 드라이쿨러 %.1f kW, 팬 %.2f kW"),
@@ -1882,8 +1965,46 @@ void ADataCenterSimulationActor::Tick(float DeltaTime)
 	{
 		DrawSummary();
 	}
+	UpdatePlantDisplay(false);
 	// After the steps so the published copy is the state at this frame's SimTime.
 	PublishDashboard();
+}
+
+FPlantDisplayInput ADataCenterSimulationActor::MakePlantDisplayInput() const
+{
+	FPlantDisplayInput In;
+	In.RoomM = AirField != nullptr ? AirField->GetDomainBoundsM() : Room != nullptr ? Room->GetRoomBoundsM() : FBox(ForceInit);
+	for (int32 G = 0; G < CduGroupRows.Num(); ++G)
+	{
+		const ACoolingDistributionUnitActor* Cdu = Room != nullptr ? Room->GetRowCdu(CduGroupRows[G]) : nullptr;
+		In.CduPositionsM.Add(Cdu != nullptr ? SimUnits::UnrealToMeters(Cdu->GetActorLocation()) : FVector::ZeroVector);
+	}
+	for (const FCrahUnitLabel& L : CrahUnitLabels) In.CrahPositionsM.Add(FVector(L.XYM.X, L.XYM.Y, 0.0));
+	return In;
+}
+
+void ADataCenterSimulationActor::UpdatePlantDisplay(bool bForce)
+{
+	const bool bWant = Mode != ESimMode::Layout && bShowPlant && bPlantActive && Plant.IsThermalActive() && GetWorld() != nullptr;
+	if (!bWant)
+	{
+		if (PlantDisplay != nullptr) PlantDisplay->Destroy();
+		PlantDisplay = nullptr;
+		return;
+	}
+	if (PlantDisplay == nullptr)
+	{
+		FActorSpawnParameters Params;
+		Params.ObjectFlags |= RF_Transient;
+		Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+		PlantDisplay = GetWorld()->SpawnActor<AFacilityPlantDisplayActor>(FVector::ZeroVector, FRotator::ZeroRotator, Params);
+		bForce = true;
+	}
+	// Wall time throttles the display upload only; it never advances or changes the simulation clock.
+	const double NowS = FPlatformTime::Seconds();
+	if (!bForce && NowS - LastPlantDisplayWallS < 0.25) return;
+	LastPlantDisplayWallS = NowS;
+	if (PlantDisplay != nullptr) PlantDisplay->ShowSnapshot(PlantDisplay::Build(Plant, MakePlantDisplayInput()));
 }
 
 const FCouplingSnapshot& ADataCenterSimulationActor::GetCachedDisplaySnapshot() const
@@ -2737,8 +2858,71 @@ void ADataCenterSimulationActor::EvalBeforeStep()
 			}
 			else UE_LOG(LogTemp, Warning, TEXT("[VrgEval] t=%.2f s 누수 이벤트(랙 %d)를 적용하지 못함: 진입 때 준비된 구멍이 없다(랙 번호 확인)"), NowS, E.Index);
 		}
+		else if (E.Kind == TEXT("plant"))
+		{
+			// S8 F6b: facility leak / trip at this step's start (rule 4), before PlantBeforeStep hands the flows over.
+			ApplyPlantFault(E.Args);
+		}
 		UE_LOG(LogTemp, Display, TEXT("[VrgEval] t=%.2f s 이벤트 %s %d %.3f"), NowS, *E.Kind, E.Index, E.Value);
 	}
+}
+
+bool ADataCenterSimulationActor::ApplyPlantFault(const TArray<FString>& Args)
+{
+	if (!bPlantActive || !Plant.IsThermalActive())
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[Plant] 설비 장애는 설비 열 모델이 도는 시뮬레이션 모드에서만 넣는다(vrg.Plant.Enable 1 후 진입)"));
+		return false;
+	}
+	auto LoopOf = [](const FString& Text, EPlantLoopId& Out)
+	{
+		const FString L = Text.ToLower();
+		if (L == TEXT("fws")) Out = EPlantLoopId::Fws;
+		else if (L == TEXT("chw")) Out = EPlantLoopId::Chw;
+		else if (L == TEXT("cw")) Out = EPlantLoopId::Cw;
+		else return false;
+		return true;
+	};
+	const FString Cmd = Args.Num() > 0 ? Args[0].ToLower() : FString();
+	const double NowS = Clock.GetSimTimeS();
+	const int32 Before = Plant.GetFaultLog().Num();
+	EPlantLoopId Id = EPlantLoopId::Fws;
+	bool bOk = false;
+	if (Cmd == TEXT("leak") && Args.Num() >= 5 && LoopOf(Args[1], Id))
+	{
+		const FString Site = Args[2].ToLower();
+		const EPlantLeakSite S = Site == TEXT("return") ? EPlantLeakSite::ReturnHeader : Site == TEXT("branchsupply") ? EPlantLeakSite::BranchSupply
+			: Site == TEXT("branchreturn") ? EPlantLeakSite::BranchReturn : EPlantLeakSite::SupplyHeader;
+		bOk = (Site == TEXT("supply") || Site == TEXT("return") || Site == TEXT("branchsupply") || Site == TEXT("branchreturn"))
+			&& Plant.AddLeak(Id, S, FCString::Atoi(*Args[3]), FCString::Atod(*Args[4]) * 1e-3, NowS) != INDEX_NONE;
+	}
+	else if (Cmd == TEXT("leakclear")) { Plant.ClearLeaks(NowS); bOk = true; }
+	else if (Cmd == TEXT("pump") && Args.Num() >= 3 && LoopOf(Args[1], Id)) bOk = Plant.TripPump(Id, FCString::Atoi(*Args[2]), NowS);
+	else if ((Cmd == TEXT("chiller") || Cmd == TEXT("trim")) && Args.Num() >= 2) { Plant.SetTrippedChillers(FCString::Atoi(*Args[1]), Cmd == TEXT("trim"), NowS); bOk = true; }
+	else if (Cmd == TEXT("drycooler") && Args.Num() >= 3 && LoopOf(Args[1], Id)) bOk = Plant.SetTrippedDryCoolers(Id, FCString::Atoi(*Args[2]), NowS);
+	if (!bOk)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[Plant] 장애를 적용하지 못함(%s): 구성 %s에 그 루프·분기·펌프가 없거나 인자가 틀렸다. 사용법: leak <fws|chw|cw> <supply|return|branchsupply|branchreturn> <분기> <mm> | leakclear | pump <루프> <번호> | chiller <대수> | trim <대수> | drycooler <fws|cw> <대수>"),
+			*FString::Join(Args, TEXT(" ")), FFacilityPlant::TopologyName(Plant.GetTopology()));
+		return false;
+	}
+	UpdatePlantDisplay(true);   // F7: leak markers and failed equipment show at once
+	for (int32 I = Before; I < Plant.GetFaultLog().Num(); ++I)
+	{
+		const FPlantFaultReport& R = Plant.GetFaultLog()[I];
+		FString Rows;
+		for (int32 B = 0; B < R.BranchAfterM3s.Num(); ++B)
+		{
+			const double A = R.BranchBeforeM3s.IsValidIndex(B) ? R.BranchBeforeM3s[B] : 0.0;
+			if (FMath::Abs(R.BranchAfterM3s[B] - A) > 1e-6 * FMath::Max(FMath::Abs(A), 1e-9))
+				Rows += FString::Printf(TEXT(" [분기 %d: %.3f -> %.3f L/s]"), B, A * 1e3, R.BranchAfterM3s[B] * 1e3);
+		}
+		UE_LOG(LogTemp, Display, TEXT("[Plant] 장애 t=%.2f s %s: 누수 %.3f L/s, 펌프 %d -> %d대(속도 %.4f -> %.4f)%s%s, 유량이 바뀐 분기 %d/%d%s"),
+			R.TimeS, *R.What, R.LeakM3s * 1e3, R.PumpsRunningBefore, R.PumpsRunningAfter, R.PumpSpeedBefore, R.PumpSpeedAfter,
+			R.bPumpsSaturated ? TEXT(" | 차압 설정 미달(펌프 포화)") : TEXT(""), (R.BranchAfterM3s.Num() > 0 && !R.bControlConverged) ? TEXT(" | 제어 수렴 실패") : TEXT(""),
+			R.AffectedBranches, R.BranchAfterM3s.Num(), *Rows);
+	}
+	return true;
 }
 
 FVrgFaultInput ADataCenterSimulationActor::MakeFaultInput() const
@@ -2868,6 +3052,52 @@ bool ADataCenterSimulationActor::WriteEvaluationReport(const FString& Name, FStr
 	double Pue = 0.0;
 	const bool bPue = Eval.GetPartialPue(Pue);
 	if (bPue) Power->SetNumberField(TEXT("partialPue"), Pue); else Power->SetField(TEXT("partialPue"), MakeShared<FJsonValueNull>());
+	// S8 F6: the plant topology and its design point, so an A/B comparison can show whether both runs were sized alike.
+	if (P.bPlant && bPlantActive)
+	{
+		TSharedRef<FJsonObject> PlantJ = MakeShared<FJsonObject>();
+		PlantJ->SetStringField(TEXT("topology"), FFacilityPlant::TopologyName(Plant.GetTopology()));
+		PlantJ->SetNumberField(TEXT("designAmbientK"), PlantThermalSpec.DesignAmbientK);
+		PlantJ->SetNumberField(TEXT("ambientK"), Plant.GetAmbientK());
+		PlantJ->SetNumberField(TEXT("designCduHeatW"), Plant.GetDesignHeatW());
+		PlantJ->SetNumberField(TEXT("designChwLoadW"), Plant.GetDesignChwLoadW());
+		PlantJ->SetNumberField(TEXT("designCondenserW"), Plant.GetDesignCondenserW());
+		PlantJ->SetNumberField(TEXT("chillerRefCapacityW"), Plant.GetChillerRefCapacityW());
+		PlantJ->SetNumberField(TEXT("trimRefCapacityW"), Plant.GetTrimRefCapacityW());
+		PlantJ->SetNumberField(TEXT("fwsDryCoolers"), Plant.GetNumDryCoolers());
+		PlantJ->SetNumberField(TEXT("cwDryCoolers"), Plant.GetNumCwDryCoolers());
+		PlantJ->SetNumberField(TEXT("economizerOnS"), Plant.GetState().EconomizerOnS);
+		PlantJ->SetNumberField(TEXT("compressorJ"), Plant.GetState().CompressorInJ);
+		PlantJ->SetNumberField(TEXT("siteLedgerResidual"), GetSiteEnergyResidual());
+		// S8 F6b: facility leaks and faults of this run (optional fields).
+		PlantJ->SetNumberField(TEXT("leakMassKg"), Plant.GetState().LeakMassKg);
+		PlantJ->SetNumberField(TEXT("leakOutJ"), Plant.GetState().LeakOutJ);
+		// F6 comparison items (plan): end-of-run CDU secondary supply (TCS, mean over CDUs), hottest component, and the
+		// time the plant missed a setpoint (FWS supply after the trim chiller, chiller capacity).
+		double TcsK = 0.0;
+		for (const double K : Snap.CduSupplyTempK) TcsK += K / FMath::Max(Snap.CduSupplyTempK.Num(), 1);
+		PlantJ->SetNumberField(TEXT("cduSecondarySupplyK"), TcsK);
+		double MaxCompK = 0.0;
+		for (const double K : MakeFaultInput().MaxComponentTempK) MaxCompK = FMath::Max(MaxCompK, K);
+		PlantJ->SetNumberField(TEXT("maxComponentK"), MaxCompK);
+		PlantJ->SetNumberField(TEXT("fwsSupplyNotMetS"), Plant.GetState().FwsSupplyNotMetS);
+		PlantJ->SetNumberField(TEXT("chillerLimitedS"), Plant.GetState().ChillerLimitedS);
+		TArray<TSharedPtr<FJsonValue>> Faults;
+		for (const FPlantFaultReport& F : Plant.GetFaultLog())
+		{
+			TSharedRef<FJsonObject> FJ = MakeShared<FJsonObject>();
+			FJ->SetNumberField(TEXT("t"), F.TimeS);
+			FJ->SetStringField(TEXT("what"), F.What);
+			FJ->SetStringField(TEXT("loop"), FFacilityPlant::LoopName(F.Loop));
+			FJ->SetNumberField(TEXT("leakM3s"), F.LeakM3s);
+			FJ->SetNumberField(TEXT("affectedBranches"), F.AffectedBranches);
+			FJ->SetNumberField(TEXT("branches"), F.BranchAfterM3s.Num());
+			FJ->SetBoolField(TEXT("pumpsSaturated"), F.bPumpsSaturated);
+			Faults.Add(MakeShared<FJsonValueObject>(FJ));
+		}
+		PlantJ->SetArrayField(TEXT("faults"), Faults);
+		Root->SetObjectField(TEXT("plant"), PlantJ);
+	}
 	// S8 F5 (optional fields; older reports and fixed-boundary runs lack them): plant electric input and cooling PUE.
 	double CoolingPue = 0.0;
 	if (P.bPlant) Power->SetNumberField(TEXT("plantW"), P.PlantW);
@@ -3015,6 +3245,33 @@ namespace
 		Row(TEXT("CRAH 팬"), PA, PB, TEXT("crahFanW"), 1e-3, TEXT("kW"));
 		Row(TEXT("펌프"), PA, PB, TEXT("pumpW"), 1e-3, TEXT("kW"));
 		Row(TEXT("부분 PUE"), PA, PB, TEXT("partialPue"), 1.0, TEXT(""));
+		// S8 F5/F6 (optional: fixed-boundary reports lack them): plant power, cooling PUE and the topology / design point,
+		// so a topology comparison shows whether both sides were sized by the same rule (D8).
+		Row(TEXT("설비 전력(펌프·팬·압축기)"), PA, PB, TEXT("plantW"), 1e-3, TEXT("kW"));
+		Row(TEXT("냉각 PUE"), PA, PB, TEXT("coolingPue"), 1.0, TEXT(""));
+		const TSharedPtr<FJsonObject>* PlantA = nullptr; const TSharedPtr<FJsonObject>* PlantB = nullptr;
+		const bool bPlantA = A->TryGetObjectField(TEXT("plant"), PlantA), bPlantB = B->TryGetObjectField(TEXT("plant"), PlantB);
+		if (bPlantA || bPlantB)
+		{
+			const TSharedPtr<FJsonObject> Empty = MakeShared<FJsonObject>();
+			const TSharedPtr<FJsonObject>& XA = bPlantA ? *PlantA : Empty;
+			const TSharedPtr<FJsonObject>& XB = bPlantB ? *PlantB : Empty;
+			FString TA = TEXT("-"), TB = TEXT("-");
+			XA->TryGetStringField(TEXT("topology"), TA); XB->TryGetStringField(TEXT("topology"), TB);
+			Md += FString::Printf(TEXT("| 설비 구성 | %s | %s | %s |\n"), *TA, *TB, TA == TB ? TEXT("같음") : TEXT("다름"));
+			Row(TEXT("설계 외기"), XA, XB, TEXT("designAmbientK"), 1.0, TEXT("K"));
+			Row(TEXT("외기(끝)"), XA, XB, TEXT("ambientK"), 1.0, TEXT("K"));
+			Row(TEXT("설계 CDU 열"), XA, XB, TEXT("designCduHeatW"), 1e-3, TEXT("kW"));
+			Row(TEXT("설계 냉수 부하(CRAH)"), XA, XB, TEXT("designChwLoadW"), 1e-3, TEXT("kW"));
+			Row(TEXT("칠러 기준 용량(대당)"), XA, XB, TEXT("chillerRefCapacityW"), 1e-3, TEXT("kW"));
+			Row(TEXT("트림 칠러 기준 용량"), XA, XB, TEXT("trimRefCapacityW"), 1e-3, TEXT("kW"));
+			Row(TEXT("이코노마이저 운전"), XA, XB, TEXT("economizerOnS"), 1.0, TEXT("s"));
+			Row(TEXT("압축기 누적 일"), XA, XB, TEXT("compressorJ"), 1e-6, TEXT("MJ"));
+			Row(TEXT("CDU 2차측 공급(끝, 평균)"), XA, XB, TEXT("cduSecondarySupplyK"), 1.0, TEXT("K"));
+			Row(TEXT("부품 최고 온도(끝)"), XA, XB, TEXT("maxComponentK"), 1.0, TEXT("K"));
+			Row(TEXT("FWS 공급 설정 미달"), XA, XB, TEXT("fwsSupplyNotMetS"), 1.0, TEXT("s"));
+			Row(TEXT("칠러 용량 부족"), XA, XB, TEXT("chillerLimitedS"), 1.0, TEXT("s"));
+		}
 		double ItA = 0.0, ItB = 0.0;
 		PA->TryGetNumberField(TEXT("itW"), ItA); PB->TryGetNumberField(TEXT("itW"), ItB);
 		if (FMath::Abs(ItA - ItB) > 1e-3 * FMath::Max(FMath::Abs(ItA), 1.0))
@@ -3066,7 +3323,7 @@ static FAutoConsoleCommand GVrgEvalReportCommand(
 
 static FAutoConsoleCommand GVrgEvalEventCommand(
 	TEXT("vrg.Eval.Event"),
-	TEXT("시각 이벤트를 넣는다(시뮬레이션 진입마다 다시 적용). vrg.Eval.Event <t s> util <0~1> | <t s> rackutil <랙 번호> <0~1> | <t s> valve <랙 번호> close|open | <t s> leak <랙 번호> <supply|return> <mm> | <t s> ambient <외기 C> | clear"),
+	TEXT("시각 이벤트를 넣는다(시뮬레이션 진입마다 다시 적용). vrg.Eval.Event <t s> util <0~1> | <t s> rackutil <랙 번호> <0~1> | <t s> valve <랙 번호> close|open | <t s> leak <랙 번호> <supply|return> <mm> | <t s> ambient <외기 C> | <t s> plant <vrg.Plant.Fault 인자> | clear"),
 	FConsoleCommandWithArgsDelegate::CreateLambda([](const TArray<FString>& Args)
 	{
 		for (ADataCenterSimulationActor* Sim : EvalSimActors())
@@ -3081,6 +3338,7 @@ static FAutoConsoleCommand GVrgEvalEventCommand(
 			else if (E.Kind == TEXT("valve") && Args.Num() >= 4) { E.Index = FCString::Atoi(*Args[2]); E.Value = Args[3].ToLower() == TEXT("close") ? 1.0 : 0.0; }
 			else if (E.Kind == TEXT("util")) { E.Value = FCString::Atod(*Args[2]); }
 			else if (E.Kind == TEXT("ambient")) { E.Value = FCString::Atod(*Args[2]) + 273.15; }   // S8 F2: outdoor dry bulb [C] -> K
+			else if (E.Kind == TEXT("plant")) { for (int32 I = 2; I < Args.Num(); ++I) E.Args.Add(Args[I]); }   // S8 F6b: vrg.Plant.Fault arguments
 			else { UE_LOG(LogTemp, Warning, TEXT("[VrgEval] 모르는 이벤트: %s"), *E.Kind); continue; }
 			Sim->EvalEvents.Add(E);
 			Sim->EvalEvents.StableSort([](const ADataCenterSimulationActor::FEvalEvent& L, const ADataCenterSimulationActor::FEvalEvent& R) { return L.TimeS < R.TimeS; });

@@ -277,6 +277,13 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Cooling|Plant")
 	bool bFacilityPlant = false;
 
+	// S8 F7: draw the plant yard (equipment and the plant networks' pipes) while the plant runs (vrg.Plant.Show).
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Cooling|Plant")
+	bool bShowPlant = true;
+	class AFacilityPlantDisplayActor* GetPlantDisplay() const { return PlantDisplay.Get(); }
+	// Spawns / refreshes / removes the plant display (4 Hz wall time unless forced; never touches the clock).
+	void UpdatePlantDisplay(bool bForce);
+
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Cooling|Plant")
 	FFacilityLoopSpec PlantSpec;
 
@@ -285,6 +292,12 @@ public:
 
 	const FFacilityPlant& GetFacilityPlant() const { return Plant; }
 	FFacilityPlant& GetMutableFacilityPlant() { return Plant; }
+	// S8 F6b: one facility fault (console vrg.Plant.Fault, event "plant"), applied now at the current SimTime:
+	//   leak <fws|chw|cw> <supply|return|branchsupply|branchreturn> <branch> <mm> | leakclear | pump <loop> <n> |
+	//   chiller <count> | trim <count> | drycooler <fws|cw> <count>
+	// The reach is the re-solved network's (D4); the room's fault judgement then follows the temperatures as before.
+	// False (with a warning) when the plant thermal model is not running or the arguments do not apply.
+	bool ApplyPlantFault(const TArray<FString>& Args);
 	bool IsFacilityPlantActive() const { return bPlantActive; }
 	const FFacilityWaterLoop& GetFacilityLoop() const { return Plant.GetLoop(); }
 	const FCouplingBridge& GetCouplingBridge() const { return Bridge; }
@@ -356,7 +369,7 @@ public:
 	// ---- S6 evaluation (2026-09-27) ----
 	FVrgEvaluationSettings EvalSettings;
 	// bFlag: leak event on the return branch (S2b step 5).
-	struct FEvalEvent { double TimeS = 0.0; FString Kind; int32 Index = INDEX_NONE; double Value = 0.0; bool bApplied = false; bool bFlag = false; };
+	struct FEvalEvent { double TimeS = 0.0; FString Kind; int32 Index = INDEX_NONE; double Value = 0.0; bool bApplied = false; bool bFlag = false; TArray<FString> Args; };
 	// S2b step 5: fault judgement, leak / valve record and tank history of the current run (reset at entry).
 	FVrgFaultSettings FaultSettings;
 	const FVrgFaultMonitor& GetFaultMonitor() const { return FaultMonitor; }
@@ -478,6 +491,10 @@ private:
 	TArray<FCduSummary> CduSummaries;
 	FFacilityPlant Plant;
 	bool bPlantActive = false;
+	UPROPERTY(Transient)
+	TObjectPtr<class AFacilityPlantDisplayActor> PlantDisplay;
+	double LastPlantDisplayWallS = -1.0;
+	struct FPlantDisplayInput MakePlantDisplayInput() const;
 	TArray<int32> CduGroupRows;   // S8 F5: room row of every CDU group (its pump feeds the group's coolant)
 	int32 LastPlantLogSecond = -1;
 	// S8 F1: builds and solves the FWS network from the sized CDU groups and hands each exchanger its branch flow.

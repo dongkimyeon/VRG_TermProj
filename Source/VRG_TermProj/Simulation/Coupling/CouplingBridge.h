@@ -355,6 +355,8 @@ public:
 	void SetCduPumpHeatW(int32 Group, double W) { if (CduPumpHeatW.Num() != CduGroups.Num()) CduPumpHeatW.Init(0.0, CduGroups.Num()); if (CduPumpHeatW.IsValidIndex(Group)) CduPumpHeatW[Group] = FMath::Max(W, 0.0); }
 	double GetLastCduPumpHeatW() const { return LastCduPumpHeatW; }
 	double GetCduPumpHeatJ() const { return CduPumpHeatJ; }
+	// S8 F6: a CDU exchanger's facility-side mass flow for the next step (series topology: it follows the CRAH valves).
+	void SetCduFacilityFlowKgs(int32 Group, double Kgs) { if (CduGroups.IsValidIndex(Group)) CduGroups[Group].Hx.FacilityMassFlowKgs = FMath::Max(Kgs, 0.0); }
 	// S8 F3: a CRAH coil's (equivalent) conductance and chilled water inlet for the next step.
 	void SetCrahCoil(int32 Unit, double UAWK, double WaterK)
 	{

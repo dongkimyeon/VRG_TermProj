@@ -32,14 +32,40 @@ enum class EPlantTopology : uint8
 	Series = 2,       // CRAH coil return feeds the CDU primaries (cascade, F6)
 };
 
+// S8 F6b: where a facility leak sits. Its reach (which branches lose flow, whether the pumps saturate) comes from the
+// network solve, never from this label (D4). Supply-side water leaves at the supply temperature, return-side at the
+// return temperature (the plant's two volumes).
+UENUM()
+enum class EPlantLeakSite : uint8
+{
+	SupplyHeader = 0,   // the supply header node
+	ReturnHeader = 1,   // the return header node
+	BranchSupply = 2,   // a branch between its supply run and its valve
+	BranchReturn = 3,   // a branch between its exchanger and its return run
+};
+
+struct FPlantLeak
+{
+	EPlantLeakSite Site = EPlantLeakSite::SupplyHeader;
+	int32 Branch = INDEX_NONE;
+	int32 NetworkLeak = INDEX_NONE;
+	bool bSupplySide = true;
+};
+
 USTRUCT(BlueprintType)
 struct FFacilityLoopSpec
 {
 	GENERATED_BODY()
 
-	// Design primary flow of every CDU branch [m^3/s], in CDU group order. Sets the branch count.
+	// Design flow of every branch [m^3/s] (CDU primaries, CRAH coils, condensers ...). Sets the branch count.
 	UPROPERTY(EditAnywhere, Category = "Plant")
 	TArray<double> BranchDesignFlowM3s;
+
+	// S8 F6 series (cascade) topology: a second stage of branches between a middle header and the return header, fed by
+	// the first stage's return plus a fixed bypass from the supply header that carries the design difference when the
+	// second stage needs more flow (sized open at the design point). Empty = one stage (separate and shared topologies).
+	UPROPERTY(EditAnywhere, Category = "Plant")
+	TArray<double> SecondStageDesignFlowM3s;
 
 	UPROPERTY(EditAnywhere, Category = "Plant", meta = (ClampMin = "1", ClampMax = "16"))
 	int32 DutyPumps = 2;
@@ -99,6 +125,7 @@ struct FFacilityLoopSpec
 struct FFacilityLoopHandles
 {
 	int32 SuctionNode = INDEX_NONE, PlantSupplyNode = INDEX_NONE, SupplyHeaderNode = INDEX_NONE;
+	int32 MiddleNode = INDEX_NONE, BypassPipe = INDEX_NONE, NumFirstStage = 0;   // F6 series topology
 	int32 ReturnHeaderNode = INDEX_NONE, PlantReturnNode = INDEX_NONE;
 	TArray<int32> Pumps, PumpCheckPipes;             // duty pumps first, then standby
 	int32 SupplyMainPipe = INDEX_NONE, ReturnMainPipe = INDEX_NONE;
@@ -134,6 +161,25 @@ public:
 	// Duty / standby state of a pump (failure or switchover). An off pump's check valve is closed.
 	void SetPumpRunning(int32 Pump, bool bRunning);
 	bool IsPumpRunning(int32 Pump) const { return Running.IsValidIndex(Pump) && Running[Pump]; }
+	// F6b: a pump trips (marked failed, its check valve closes) and the first idle, healthy pump starts in its place
+	// (automatic standby switchover, instantaneous: ESTIMATE). Returns the pump that started or INDEX_NONE (no standby
+	// left). Takes effect at the next Solve.
+	int32 TripPump(int32 Pump);
+	bool IsPumpTripped(int32 Pump) const { return Tripped.IsValidIndex(Pump) && Tripped[Pump]; }
+	int32 GetNumRunningPumps() const;
+	// F6b leaks (orifice Cd A sqrt(2 dp / rho) at the node's gauge pressure, S2b model). The suction stays at its fixed
+	// pressure: the make-up (pressurisation) system replaces whatever leaks, without a rate limit (limitation).
+	// Returns the leak index or INDEX_NONE (bad site / branch). Takes effect at the next Solve.
+	int32 AddLeak(EPlantLeakSite Site, int32 Branch, double HoleDiameterM, double DischargeCoefficient = 0.61);
+	void SetLeakDiameterM(int32 Leak, double HoleDiameterM);
+	// Every hole to zero diameter (the orifices stay so indices hold; a zero hole adds exactly nothing to the solve).
+	void ClearLeaks();
+	int32 GetNumLeaks() const { return LoopLeaks.Num(); }
+	const FPlantLeak& GetLeak(int32 Leak) const { return LoopLeaks[Leak]; }
+	double GetLeakFlowM3s(int32 Leak) const;
+	double GetSupplySideLeakM3s() const;
+	double GetReturnSideLeakM3s() const;
+	bool HasOpenLeak() const;
 	void SetDifferentialSetpointPa(double SetpointPa) { DpSetpointPa = SetpointPa; }
 	double GetDifferentialSetpointPa() const { return DpSetpointPa; }
 
@@ -149,6 +195,10 @@ public:
 	int32 GetNumBranches() const { return Handles.ValvePipes.Num(); }
 	// Primary flow through a CDU branch [m^3/s] (the valve pipe, >= 0 in normal operation).
 	double GetBranchFlowM3s(int32 Branch) const;
+	// Piezometric drop across a branch (supply-run start to return-run end) at the last solve [Pa]. Equals the header
+	// differential for a one-stage loop; in the series topology each stage sees its own part.
+	double GetBranchDeltaPPa(int32 Branch) const;
+	double GetBypassFlowM3s() const { return Handles.BypassPipe != INDEX_NONE ? Network.GetPipeFlowM3s(Handles.BypassPipe) : 0.0; }
 	double GetTotalPumpFlowM3s() const;
 	double GetTotalPumpElectricW() const;
 	double GetTotalPumpHydraulicW() const;   // dp * Q of the running pumps (becomes heat in the water)
@@ -166,8 +216,9 @@ private:
 	FFacilityLoopHandles Handles;
 	FHydraulicNetwork Network;
 	TArray<double> Openings;
-	TArray<bool> Running;
+	TArray<bool> Running, Tripped;
 	TArray<double> ValveOpenResistance;
+	TArray<FPlantLeak> LoopLeaks;
 	double DpSetpointPa = 0.0;
 	double PumpShutoffPa = 0.0, PumpCurveCoeff = 0.0, DesignPumpHeadPa = 0.0, DesignTotalFlowM3s = 0.0;
 	bool bBuilt = false;
