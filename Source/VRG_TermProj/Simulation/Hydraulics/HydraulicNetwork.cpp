@@ -127,6 +127,15 @@ int32 FHydraulicNetwork::GetPipeToNodeIndex(int32 PipeIndex) const
 	return Pipes.IsValidIndex(PipeIndex) ? Pipes[PipeIndex].ToNodeIndex : INDEX_NONE;
 }
 
+// S2b step 5: the piezometric drop of a pipe, with a difference below the rounding of its two operands taken as 0.
+// Such a difference carries no information; turned into a flow it kept a stopped (depleted) loop from ever meeting
+// the normalized residual target. Above that level the value is the plain difference (bit-identical results).
+double FHydraulicNetwork::PiezometricDropPa(int32 FromNode, int32 ToNode) const
+{
+	const double A = GetNodePiezometricPa(FromNode), B = GetNodePiezometricPa(ToNode);
+	const double Drop = A - B;
+	return FMath::Abs(Drop) <= 8.0 * DBL_EPSILON * FMath::Max(FMath::Abs(A), FMath::Abs(B)) ? 0.0 : Drop;
+}
 double FHydraulicNetwork::GetPipeFlowM3s(int32 PipeIndex) const
 {
 	if (!Pipes.IsValidIndex(PipeIndex))
@@ -135,7 +144,7 @@ double FHydraulicNetwork::GetPipeFlowM3s(int32 PipeIndex) const
 	}
 	const FHydraulicPipe& Pipe = Pipes[PipeIndex];
 	if (Pipe.bClosed) return 0.0;  // S2b step 4: closed valve
-	const double DeltaPPa = GetNodePiezometricPa(Pipe.FromNodeIndex) - GetNodePiezometricPa(Pipe.ToNodeIndex);
+	const double DeltaPPa = PiezometricDropPa(Pipe.FromNodeIndex, Pipe.ToNodeIndex);
 	return PipeFlowM3s(DeltaPPa, Pipe.ResistancePaS2M6);
 }
 
@@ -327,7 +336,7 @@ double FHydraulicNetwork::EvaluateResidual(const FHydraulicSolveSettings& Settin
 	{
 		const FHydraulicPipe& Pipe = Pipes[PipeIndex];
 		if (Pipe.bClosed) continue;
-		const double DeltaPPa = GetNodePiezometricPa(Pipe.FromNodeIndex) - GetNodePiezometricPa(Pipe.ToNodeIndex);
+		const double DeltaPPa = PiezometricDropPa(Pipe.FromNodeIndex, Pipe.ToNodeIndex);
 		const double FlowM3s = PipeFlowM3s(DeltaPPa, Pipe.ResistancePaS2M6);
 		MaxFlowMagnitudeM3s = FMath::Max(MaxFlowMagnitudeM3s, FMath::Abs(FlowM3s));
 

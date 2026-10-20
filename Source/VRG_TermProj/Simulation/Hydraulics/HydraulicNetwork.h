@@ -70,6 +70,7 @@ public:
 	// rho * g * z of a node [Pa].
 	double NodeHydrostaticPa(int32 NodeIndex) const { return FluidDensityKgM3 * GravityMS2 * Nodes[NodeIndex].ElevationM; }
 	// Static pressure + rho*g*z [Pa].
+	double PiezometricDropPa(int32 FromNode, int32 ToNode) const;
 	double GetNodePiezometricPa(int32 NodeIndex) const
 	{
 		return NodePressurePa.IsValidIndex(NodeIndex) ? NodePressurePa[NodeIndex] + NodeHydrostaticPa(NodeIndex) : 0.0;

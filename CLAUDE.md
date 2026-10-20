@@ -868,6 +868,8 @@ IT 발열 1684.8 kW = 라디에이터 1262.8 kW + CRAH 28.43 kW + 축적
 | `Hydraulics.Inventory.LeakHeatLedger` 누수 열 항 / 루프 장부 / 전역 | 0 / 7.8e-16 / -1.36e-14 | 누수 열 W / (방출 + 누수 열) J / 누적 입력 J 기준, 무차원 | < 1e-12 / < 1e-12 / < 1e-9 |
 | `Hydraulics.Valve.IsolateBranchMatchesRemoved` 분기 제거 망 대비 / 다시 엶 | 0 / 0 | 각 분기 유량 기준, 무차원 (누수 유량 정확히 0) | < 1e-9 / < 1e-9 |
 | `Hydraulics.Valve.RoomEventScopesAndLedger` 루프 / 재고 / 전역 | 3.5e-16 / 6.3e-15 / -5.1e-14 | (방출 + 누수 열) J / 누적 누수 부피 / 누적 입력 J 기준 | < 1e-12 / < 1e-12 / < 1e-9 |
+| `Hydraulics.Fault.MonitorAndReportJson` 리포트 왕복 | 정확 일치 | 판정·누수·밸브·탱크 기록 전체 | == |
+| `Hydraulics.Fault.RoomEventsDeterministicNotHardcoded` 재실행 / 이벤트 시각 | 정확 일치 / 0.5000 s | 같은 이벤트 두 실행 / 이벤트 0.5 s | == / 한 스텝 이내 |
 
 **수력 솔버의 오차 하한은 수렴 목표가 정한다.** `SinglePipe`/`Parallel`의 해석해 오차
 3.5e-11은 방법의 정확도 한계가 아니라 `NormalizedResidualTarget`(기본 1e-10)에서
@@ -4613,3 +4615,10 @@ L_Test -game(회수 3 mm): t=25.56 s 고갈, 30 s 누수 열 50.3 kJ, 루프 장
 랙 분기마다 공급·회수 밸브 한 쌍(`SetRackValveClosed`, `vrg.Valve`, 이벤트 `vrg.Eval.Event <t> valve <i> close|open`). 보고서가 **격리 범위**(위상)와 **수력 영향 범위**(재계산 유량 변화 > 표시 문턱 1e-3)를 따로 낸다(D4).
 닫은 해는 그 분기를 처음부터 뺀 망과 상대 차 0, 다시 열면 원래 해. 새 진입 때 모든 밸브를 연다. 신규 `VRG.Hydraulics.Valve.*` 2건 포함 영향 49건 성공, 수치는 오차 기준표.
 L_Test -game: 5 s 이벤트로 랙 3 닫음 → 격리 [3], 영향 = 같은 줄 7대(+7%), 다른 줄 변화 0, 펌프 17.365 L/s(기존 "랙 3 비움" 기록과 같음), 누수 정지, 전역 3.28e-14. 화면 확인 안 함. 상세 `Tools/S2b_누수_계획.md` "4단계 결과".
+
+## 2026-10-20 S2b 5단계: 장애 판정·이벤트·리포트
+
+`FVrgFaultMonitor`가 스텝마다 **계산 결과로만** 판정한다(D4): 저유량(설계 유량 = 누수 닫고 밸브 연 수력 해, 비율 0.5는 표시용), 과열(부품 최고 온도 > 85 °C **추정값**, 공개 Tj 최대 못 찾음), 재고 고갈, 수력 실패. (랙, 종류)별 첫 시각만 기록, 탱크 이력 1 s 표본.
+이벤트 `vrg.Eval.Event <t> leak <랙> <supply|return> <mm>`(진입 때 닫힌 구멍을 미리 만들어 t에 엶). 리포트 JSON 선택 필드 `s2b`(옛 리포트 호환).
+곁가지 수정: 줄이 완전히 멈추면 반올림 수준 압력차 때문에 수력이 수렴 실패로 남았다 → 피연산자 8 ULP 이하의 피에조 압력차는 0(`PiezometricDropPa`).
+신규 `VRG.Hydraulics.Fault.*` 2건 포함 영향 57건 성공. L_Test -game: 2 s 누수 → 10 s 밸브 → 10.02 s 랙 3 저유량 판정, 리포트 s2b 기록, 전역 2.28e-14. 화면 확인 안 함. 상세 `Tools/S2b_누수_계획.md` "5단계 결과".

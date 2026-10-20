@@ -7,6 +7,7 @@
 #include "Simulation/Core/SimClock.h"
 #include "Simulation/Coupling/CouplingBridge.h"
 #include "Simulation/Evaluation/VrgEvaluation.h"
+#include "Simulation/Evaluation/VrgFaultMonitor.h"
 #include "Simulation/Evaluation/VrgDashboardSummary.h"
 #include "Interaction/VrgCrahLifecycle.h"
 #include "Simulation/Air/RoomAirDomain.h"
@@ -325,7 +326,11 @@ protected:
 public:
 	// ---- S6 evaluation (2026-09-27) ----
 	FVrgEvaluationSettings EvalSettings;
-	struct FEvalEvent { double TimeS = 0.0; FString Kind; int32 Index = INDEX_NONE; double Value = 0.0; bool bApplied = false; };
+	// bFlag: leak event on the return branch (S2b step 5).
+	struct FEvalEvent { double TimeS = 0.0; FString Kind; int32 Index = INDEX_NONE; double Value = 0.0; bool bApplied = false; bool bFlag = false; };
+	// S2b step 5: fault judgement, leak / valve record and tank history of the current run (reset at entry).
+	FVrgFaultSettings FaultSettings;
+	const FVrgFaultMonitor& GetFaultMonitor() const { return FaultMonitor; }
 	TArray<FEvalEvent> EvalEvents;
 	// Written when the queued warm-up steps finish (vrg.Eval.ReportWhenDone), then cleared.
 	FString PendingReportName;
@@ -358,6 +363,9 @@ private:
 	UPROPERTY() TArray<FRoomCeilingPlate> RoomCeilingPlates;
 	FString RoomAirDomainMessage;
 	FVrgEvaluation Eval;
+	FVrgFaultMonitor FaultMonitor;
+	int32 LastTankSampleSecond = -1;
+	void FaultAfterStep();
 	bool bEvalReady = false;
 	void EvalBeforeStep();
 	void EvalAfterStep();

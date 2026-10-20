@@ -190,9 +190,19 @@ void ADataCenterSimulationActor::EnterSimulationMode()
 	bDisplaySnapshotValid = false;
 	bEvalReady = false;  // the evaluation starts with the run (reset at the first step, when the inlets exist)
 	for (FEvalEvent& E : EvalEvents) E.bApplied = false;
+	FaultMonitor.Reset(FaultSettings);
+	LastTankSampleSecond = -1;
 	Mode = ESimMode::Simulation;
 	FindTargetActors();
 	// Rows and hydraulics first: the coupling reads the routed racks and branch pipes.
+	// S2b step 5: leak events open holes that exist from the start of the run (built closed, so the topology and
+	// the design flows do not change when they open).
+	if (Room != nullptr)
+	{
+		const TArray<ARackThermalActor*> Routed = Room->GetRoutedRacks();
+		for (const FEvalEvent& E : EvalEvents)
+			if (E.Kind == TEXT("leak") && Routed.IsValidIndex(E.Index)) Room->EnsureLeakSpec(Routed[E.Index], E.bFlag);
+	}
 	if (Room != nullptr) { Room->RebuildRoomNow(); Room->RestartCoolantInventory(); }   // S2b: tanks start full
 	FindTargetActors();
 	if (AirField != nullptr)
@@ -2387,14 +2397,76 @@ void ADataCenterSimulationActor::EvalBeforeStep()
 			// S2b step 4: Index = rack in the room's routed order, Value 1 = close, 0 = open. Re-solves now, before
 			// this step's coupling reads the flows (rule 4: the change happens at this step's start time).
 			const TArray<ARackThermalActor*> Routed = Room->GetRoutedRacks();
-			if (Routed.IsValidIndex(E.Index)) Room->SetRackValveClosed(Routed[E.Index], E.Value > 0.5);
+			if (Routed.IsValidIndex(E.Index) && Room->SetRackValveClosed(Routed[E.Index], E.Value > 0.5))
+			{
+				const ADataCenterRoomActor::FValveReport& V = Room->GetLastValveReport();
+				FVrgValveRecord R;
+				R.TimeS = NowS; R.Rack = E.Index; R.bClosed = V.bClosed; R.IsolatedRacks = V.IsolatedRacks; R.ImpactedRacks = V.ImpactedRacks;
+				FaultMonitor.AddValve(R);
+			}
+		}
+		else if (E.Kind == TEXT("leak") && Room != nullptr)
+		{
+			// S2b step 5: opens the hole prepared at entry, at this step's start (rule 4).
+			const TArray<ARackThermalActor*> Routed = Room->GetRoutedRacks();
+			if (Routed.IsValidIndex(E.Index) && Room->SetLeakHoleDiameterM(Room->EnsureLeakSpec(Routed[E.Index], E.bFlag), E.Value))
+			{
+				FVrgLeakRecord R;
+				R.TimeS = NowS; R.Rack = E.Index; R.bReturnBranch = E.bFlag; R.HoleDiameterM = E.Value;
+				FaultMonitor.AddLeak(R);
+			}
 		}
 		UE_LOG(LogTemp, Display, TEXT("[VrgEval] t=%.2f s 이벤트 %s %d %.3f"), NowS, *E.Kind, E.Index, E.Value);
 	}
 }
 
+void ADataCenterSimulationActor::FaultAfterStep()
+{
+	if (Room == nullptr) return;
+	const TArray<ARackThermalActor*> Routed = Room->GetRoutedRacks();
+	const TArray<double>& Design = Room->GetRackDesignFlowM3s();
+	const TArray<double>& Flow = Bridge.GetLastCoolantMassFlowKgs();
+	FVrgFaultInput In;
+	In.TimeS = Clock.GetSimTimeS();
+	In.bHydraulicsConverged = Room->GetLastSolveResult().bConverged;
+	In.HydraulicResidual = Room->GetLastSolveResult().NormalizedResidual;
+	for (int32 I = 0; I < Routed.Num(); ++I)
+	{
+		const int32 J = Racks.IndexOfByKey(Routed[I]);
+		In.CoolantMassFlowKgs.Add(Flow.IsValidIndex(J) ? Flow[J] : 0.0);
+		In.DesignMassFlowKgs.Add(Design.IsValidIndex(I) ? Design[I] * CoolantDensityKgM3 : 0.0);
+		double MaxK = 0.0;
+		if (Routed[I] != nullptr) for (const double K : Routed[I]->GetMutableModel().GetState().ComponentTempK) MaxK = FMath::Max(MaxK, K);
+		In.MaxComponentTempK.Add(MaxK);
+		In.LoopDepleted.Add(Room->IsRackLoopDepleted(I));
+	}
+	const int32 Before = FaultMonitor.GetFaults().Num();
+	if (FaultMonitor.Update(In) > 0)
+		for (int32 F = Before; F < FaultMonitor.GetFaults().Num(); ++F)
+		{
+			const FVrgFaultRecord& R = FaultMonitor.GetFaults()[F];
+			UE_LOG(LogTemp, Display, TEXT("[Fault] t=%.2f s 랙 %d %s (값 %.4g) — 계산된 유량·온도로 판정(D4)"), R.TimeS, R.Rack, FVrgFaultMonitor::KindName(R.Kind), R.Value);
+		}
+	// Tank history: one sample per simulated second per row.
+	const int32 Second = FMath::FloorToInt32(In.TimeS + 1e-9);
+	if (Second != LastTankSampleSecond)
+	{
+		LastTankSampleSecond = Second;
+		const FCoolantInventory& Inv = Room->GetCoolantInventory();
+		for (int32 T = 0; T < Inv.GetTanks().Num(); ++T)
+		{
+			const FCoolantInventory::FTank& Tank = Inv.GetTanks()[T];
+			FVrgTankSample S;
+			S.TimeS = In.TimeS; S.Row = T; S.PressurePa = Inv.GetTankGaugePressurePa(T);
+			S.WaterM3 = Tank.State.WaterVolumeM3; S.LeakedM3 = Tank.State.LeakedM3; S.bDepleted = Tank.State.bDepleted;
+			FaultMonitor.AddTankSample(S);
+		}
+	}
+}
+
 void ADataCenterSimulationActor::EvalAfterStep()
 {
+	FaultAfterStep();
 	const TArray<double>& Inlets = Bridge.GetLastAirInletTempK();
 	if (!bEvalReady || Eval.GetNumInlets() != Inlets.Num())
 	{
@@ -2512,11 +2584,14 @@ bool ADataCenterSimulationActor::WriteEvaluationReport(const FString& Name, FStr
 		TSharedRef<FJsonObject> Item = MakeShared<FJsonObject>();
 		Item->SetNumberField(TEXT("timeS"), E.TimeS); Item->SetStringField(TEXT("kind"), E.Kind);
 		Item->SetNumberField(TEXT("index"), E.Index); Item->SetNumberField(TEXT("value"), E.Value); Item->SetBoolField(TEXT("applied"), E.bApplied);
+		if (E.Kind == TEXT("leak")) Item->SetBoolField(TEXT("returnBranch"), E.bFlag);
 		EventItems.Add(MakeShared<FJsonValueObject>(Item));
 	}
 	Root->SetArrayField(TEXT("events"), EventItems);
 	// Stage 5: the plan view at this SimTime (equipment footprints in metres), so an A/B comparison can show what moved.
 	Root->SetObjectField(TEXT("layout"), BuildDashboardLayout().ToJsonObject());
+	// S2b step 5 (optional field; older reports lack it): leaks, valves, tank history, first fault times.
+	Root->SetObjectField(TEXT("s2b"), FaultMonitor.ToJsonObject());
 
 	FString Json;
 	FJsonSerializer::Serialize(Root, TJsonWriterFactory<>::Create(&Json));
@@ -2643,7 +2718,7 @@ static FAutoConsoleCommand GVrgEvalReportCommand(
 
 static FAutoConsoleCommand GVrgEvalEventCommand(
 	TEXT("vrg.Eval.Event"),
-	TEXT("시각 이벤트를 넣는다(시뮬레이션 진입마다 다시 적용). vrg.Eval.Event <t s> util <0~1> | <t s> rackutil <랙 번호> <0~1> | <t s> valve <랙 번호> close|open | clear"),
+	TEXT("시각 이벤트를 넣는다(시뮬레이션 진입마다 다시 적용). vrg.Eval.Event <t s> util <0~1> | <t s> rackutil <랙 번호> <0~1> | <t s> valve <랙 번호> close|open | <t s> leak <랙 번호> <supply|return> <mm> | clear"),
 	FConsoleCommandWithArgsDelegate::CreateLambda([](const TArray<FString>& Args)
 	{
 		for (ADataCenterSimulationActor* Sim : EvalSimActors())
@@ -2654,6 +2729,7 @@ static FAutoConsoleCommand GVrgEvalEventCommand(
 			E.TimeS = FCString::Atod(*Args[0]);
 			E.Kind = Args[1].ToLower();
 			if (E.Kind == TEXT("rackutil") && Args.Num() >= 4) { E.Index = FCString::Atoi(*Args[2]); E.Value = FCString::Atod(*Args[3]); }
+			else if (E.Kind == TEXT("leak") && Args.Num() >= 5) { E.Index = FCString::Atoi(*Args[2]); E.bFlag = Args[3].ToLower() == TEXT("return"); E.Value = FCString::Atod(*Args[4]) * 1e-3; }
 			else if (E.Kind == TEXT("valve") && Args.Num() >= 4) { E.Index = FCString::Atoi(*Args[2]); E.Value = Args[3].ToLower() == TEXT("close") ? 1.0 : 0.0; }
 			else if (E.Kind == TEXT("util")) { E.Value = FCString::Atod(*Args[2]); }
 			else { UE_LOG(LogTemp, Warning, TEXT("[VrgEval] 모르는 이벤트: %s"), *E.Kind); continue; }

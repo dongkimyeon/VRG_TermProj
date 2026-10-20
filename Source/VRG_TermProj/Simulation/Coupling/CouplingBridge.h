@@ -316,6 +316,7 @@ public:
 	double GetLastAirSolverMs() const { return LastAirSolverMs; }
 	// S6 evaluation: cheap per-step reads (no ledger pass over the air grid).
 	const TArray<double>& GetLastAirInletTempK() const { return LastAirInletTempK; }
+	const TArray<double>& GetLastCoolantMassFlowKgs() const { return LastCoolantMassFlowKgs; }
 	double GetLastItHeatW() const { return LastItHeatW; }
 	double GetLastServerFanPowerW() const { return LastFanPowerW; }
 	double GetLastCrahFanPowerW() const { return AirSolver != nullptr && !AirSolver->WereDuctsRejected() ? AirSolver->GetLastDuctFanHeatW() : 0.0; }
