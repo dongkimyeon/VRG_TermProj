@@ -10,7 +10,7 @@ bool FFacilityWaterLoop::Build(const FFacilityLoopSpec& InSpec)
 	Openings.Reset(); Running.Reset(); ValveOpenResistance.Reset();
 	Spec = InSpec;
 	double TotalM3s = 0.0;
-	for (const double Q : Spec.CduDesignFlowM3s)
+	for (const double Q : Spec.BranchDesignFlowM3s)
 	{
 		if (!(Q > 0.0)) return false;   // every branch needs a design flow to be sized
 		TotalM3s += Q;
@@ -41,17 +41,17 @@ bool FFacilityWaterLoop::Build(const FFacilityLoopSpec& InSpec)
 
 	// CDU branches: every element's resistance from its design drop at the branch design flow (dp = R Q^2).
 	const double Authority = FMath::Clamp(Spec.ValveAuthority, 0.05, 0.95);
-	const double RestDropPa = Spec.BranchRunDesignDropPa + Spec.CduHxDesignDropPa;
+	const double RestDropPa = Spec.BranchRunDesignDropPa + Spec.BranchHxDesignDropPa;
 	const double ValveOpenDropPa = Authority / (1.0 - Authority) * RestDropPa;
 	const double BranchDropPa = RestDropPa + ValveOpenDropPa;
-	for (const double Q : Spec.CduDesignFlowM3s)
+	for (const double Q : Spec.BranchDesignFlowM3s)
 	{
 		const double Q2 = Q * Q;
 		const int32 A = AddNode(false, Spec.SuctionPressurePa), B = AddNode(false, Spec.SuctionPressurePa), C = AddNode(false, Spec.SuctionPressurePa);
 		Handles.BranchSupplyRunPipes.Add(AddPipe(Handles.SupplyHeaderNode, A, 0.5 * Spec.BranchRunDesignDropPa / Q2));
 		ValveOpenResistance.Add(ValveOpenDropPa / Q2);
 		Handles.ValvePipes.Add(AddPipe(A, B, ValveOpenDropPa / Q2));
-		Handles.HxPipes.Add(AddPipe(B, C, Spec.CduHxDesignDropPa / Q2));
+		Handles.HxPipes.Add(AddPipe(B, C, Spec.BranchHxDesignDropPa / Q2));
 		Handles.BranchReturnRunPipes.Add(AddPipe(C, Handles.ReturnHeaderNode, 0.5 * Spec.BranchRunDesignDropPa / Q2));
 		Openings.Add(1.0);
 	}
@@ -62,10 +62,10 @@ bool FFacilityWaterLoop::Build(const FFacilityLoopSpec& InSpec)
 	Handles.ReturnMainPipe = AddPipe(Handles.ReturnHeaderNode, Handles.PlantReturnNode, 0.5 * Spec.MainDesignDropPa / Total2);
 
 	// Dry cooler coils in parallel back to the pump suction.
-	const double RatedQ = FMath::Max(Spec.DryCoolerRatedFlowM3s, UE_DOUBLE_SMALL_NUMBER);
-	const int32 NumDry = Spec.DryCoolers > 0 ? Spec.DryCoolers : FMath::Max(1, FMath::CeilToInt32(TotalM3s / RatedQ - 1e-9));
-	const double DryR = Spec.DryCoolerRatedDropPa / (RatedQ * RatedQ);
-	for (int32 K = 0; K < NumDry; ++K) Handles.DryCoolerPipes.Add(AddPipe(Handles.PlantReturnNode, Handles.SuctionNode, DryR));
+	const double RatedQ = FMath::Max(Spec.ReturnCoilRatedFlowM3s, UE_DOUBLE_SMALL_NUMBER);
+	const int32 NumDry = Spec.ReturnCoils > 0 ? Spec.ReturnCoils : FMath::Max(1, FMath::CeilToInt32(TotalM3s / RatedQ - 1e-9));
+	const double DryR = Spec.ReturnCoilRatedDropPa / (RatedQ * RatedQ);
+	for (int32 K = 0; K < NumDry; ++K) Handles.ReturnCoilPipes.Add(AddPipe(Handles.PlantReturnNode, Handles.SuctionNode, DryR));
 	const double PerDryQ = TotalM3s / NumDry;
 	const double DryDropPa = DryR * PerDryQ * PerDryQ;
 

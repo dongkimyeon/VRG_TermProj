@@ -129,26 +129,26 @@ static FAutoConsoleCommand GVrgPlantEnableCommand(
 		}
 	}));
 
-static FAutoConsoleCommand GVrgPlantAmbientCommand(
-	TEXT("vrg.Plant.Ambient"),
-	TEXT("S8 외기 건구온도 [C]를 바로 바꾼다(드라이쿨러). 시각을 정하려면 vrg.Eval.Event <t> ambient <C>. vrg.Plant.Ambient <C>"),
-	FConsoleCommandWithArgsDelegate::CreateLambda([](const TArray<FString>& Args)
-	{
-		if (Args.Num() == 0 || GEngine == nullptr) return;
-		const double K = FCString::Atod(*Args[0]) + 273.15;
-		for (const FWorldContext& Context : GEngine->GetWorldContexts())
-		{
-			UWorld* World = Context.World();
-			if (World == nullptr || !World->IsGameWorld()) continue;
-			for (TActorIterator<ADataCenterSimulationActor> It(World); It; ++It)
-			{
-				It->PlantThermalSpec.AmbientK = K;
-				It->GetMutableFacilityPlant().SetAmbientK(K);
-				UE_LOG(LogTemp, Display, TEXT("[Plant] 외기 %.2f C"), K - 273.15);
-			}
-		}
-	}));
-
+static FAutoConsoleCommand GVrgPlantAmbientCommand(
+	TEXT("vrg.Plant.Ambient"),
+	TEXT("S8 외기 건구온도 [C]를 바로 바꾼다(드라이쿨러). 시각을 정하려면 vrg.Eval.Event <t> ambient <C>. vrg.Plant.Ambient <C>"),
+	FConsoleCommandWithArgsDelegate::CreateLambda([](const TArray<FString>& Args)
+	{
+		if (Args.Num() == 0 || GEngine == nullptr) return;
+		const double K = FCString::Atod(*Args[0]) + 273.15;
+		for (const FWorldContext& Context : GEngine->GetWorldContexts())
+		{
+			UWorld* World = Context.World();
+			if (World == nullptr || !World->IsGameWorld()) continue;
+			for (TActorIterator<ADataCenterSimulationActor> It(World); It; ++It)
+			{
+				It->PlantThermalSpec.AmbientK = K;
+				It->GetMutableFacilityPlant().SetAmbientK(K);
+				UE_LOG(LogTemp, Display, TEXT("[Plant] 외기 %.2f C"), K - 273.15);
+			}
+		}
+	}));
+
 static FAutoConsoleCommand GVrgSimContainmentCommand(
 	TEXT("vrg.Sim.Containment"),
 	TEXT("공기 차단. 0 = 없음, 1 = 블랭킹(줄 틈 막기), 2 = 블랭킹 + 콜드 아일 지붕. vrg.Sim.Containment <0|1|2>"),
@@ -1163,15 +1163,31 @@ void ADataCenterSimulationActor::BuildFacilityLoop(TArray<FCduCouplingGroup>& Gr
 	// The design primary flow of every branch is the exchanger's sized facility flow (one density, rule 3: the
 	// coupling's coolant density converts m^3/s <-> kg/s, so enabling the plant at design changes no flow).
 	FFacilityLoopSpec Spec = PlantSpec;
-	Spec.CduDesignFlowM3s.Reset();
+	Spec.BranchDesignFlowM3s.Reset();
 	double DesignHeatW = 0.0;
 	for (int32 G = 0; G < Groups.Num(); ++G)
 	{
-		Spec.CduDesignFlowM3s.Add(Groups[G].Hx.FacilityMassFlowKgs / CoolantDensityKgM3);
+		Spec.BranchDesignFlowM3s.Add(Groups[G].Hx.FacilityMassFlowKgs / CoolantDensityKgM3);
 		if (CduSummaries.IsValidIndex(G)) DesignHeatW += CduSummaries[G].DesignDutyW;
 	}
 	const double WaterCp = Groups.Num() > 0 ? Groups[0].Hx.FacilityCpJKgK : 4180.0;
-	if (Groups.Num() == 0 || !Plant.Build(Spec, PlantThermalSpec, DesignHeatW, CoolantDensityKgM3, WaterCp, FHydraulicSolveSettings()))
+	// S8 F3: the CRAH coils as sized by BuildCrahUnits (design air flow, old infinite-water UA). No units (ceiling coil
+	// mode) = no chilled water loop; the coil keeps its fixed water temperature.
+	TArray<FPlantCrahCoil> Coils;
+	if (AirField != nullptr)
+	{
+		const FAirGridParams& Air = AirField->GetSolver().GetGrid().GetParams();
+		const double DesignEps = CrahDesignAirDeltaTK / (CrahDesignAirDeltaTK + CrahDesignApproachK);
+		for (const FCrahCouplingUnit& U : CrahUnits)
+		{
+			FPlantCrahCoil& C = Coils.AddDefaulted_GetRef();
+			C.AirWK = Air.DensityKgM3 * U.VolumeFlowM3s * Air.SpecificHeatJKgK;
+			C.DesignAirEps = DesignEps;
+			C.DesignDutyW = C.AirWK * CrahDesignAirDeltaTK;
+			C.OldUAWK = U.CoilUAWK;
+		}
+	}
+	if (Groups.Num() == 0 || !Plant.Build(Spec, PlantThermalSpec, DesignHeatW, CoolantDensityKgM3, WaterCp, FHydraulicSolveSettings(), Coils, CoilSupplyTempK))
 	{
 		const FFacilityLoopResult& R = Plant.GetLoopResult();
 		UE_LOG(LogTemp, Warning, TEXT("[Plant] 설비를 만들지 못했다(CDU 분기 %d, 수력 %s, 차압 잔차 %.3e, 속도 %.4f%s). 고정 설비수 경계를 쓴다."),
@@ -1202,18 +1218,35 @@ void ADataCenterSimulationActor::BuildFacilityLoop(TArray<FCduCouplingGroup>& Gr
 			DesignHeatW * 1e-3, PlantThermalSpec.SupplySetpointK - 273.15, Plant.GetAmbientK() - 273.15, PlantThermalSpec.DesignAmbientK - 273.15,
 			Plant.GetSupplyCapacityJK() * 1e-6, Plant.GetReturnCapacityJK() * 1e-6);
 	}
+	if (Plant.IsChilledWaterActive())
+	{
+		for (int32 U = 0; U < CrahUnits.Num(); ++U) Bridge.SetCrahCoil(U, Plant.GetCrahEquivalentUAWK(U), Plant.GetChwSupplyTempK());
+		const FFacilityThermalSpec& T = Plant.GetThermalSpec();
+		UE_LOG(LogTemp, Display, TEXT("[Plant] CHW: CRAH 코일 %d, 설계 냉수 부하 %.1f kW(공급 %.2f C, 상승 %.2f K), 냉수 %.3f L/s, 칠러 %d+%d(기준 용량 %.1f kW 각, 범위 안 최고 COP %.2f), CW: 설계 응축 열 %.1f kW, 드라이쿨러 %d대, 응축수 설정 %.2f C, 펌프 합계 %.2f kW"),
+			CrahUnits.Num(), Plant.GetDesignChwLoadW() * 1e-3, Plant.GetChwSetpointK() - 273.15, T.ChwDesignRiseK,
+			Plant.GetChwLoop().GetTotalPumpFlowM3s() * 1e3, T.DutyChillers, T.StandbyChillers, Plant.GetChillerRefCapacityW() * 1e-3, Plant.GetChillerMaxCop(),
+			Plant.GetDesignCondenserW() * 1e-3, Plant.GetNumCwDryCoolers(), T.CwSupplySetpointK - 273.15, Plant.GetPumpElectricW() * 1e-3);
+	}
+	else if (PlantThermalSpec.bChilledWater && !PlantThermalSpec.bFixedSupplyTemp)
+	{
+		UE_LOG(LogTemp, Display, TEXT("[Plant] CHW 없음: CRAH 유닛이 없다(천장 코일 모드). 코일 냉수는 고정 %.2f C."), CoilSupplyTempK - 273.15);
+	}
 }
 
 void ADataCenterSimulationActor::PlantBeforeStep()
 {
 	if (!bPlantActive || !Plant.IsThermalActive()) return;
 	for (int32 G = 0; G < Bridge.GetNumCduGroups(); ++G) Bridge.SetCduFacilitySupplyTempK(G, Plant.GetSupplyTempK());
+	if (Plant.IsChilledWaterActive())
+		for (int32 U = 0; U < Bridge.GetCrahUnits().Num(); ++U) Bridge.SetCrahCoil(U, Plant.GetCrahEquivalentUAWK(U), Plant.GetChwSupplyTempK());
 }
 
 void ADataCenterSimulationActor::PlantAfterStep(double DtS)
 {
 	if (!bPlantActive || !Plant.IsThermalActive()) return;
-	Plant.Step(DtS, Bridge.GetLastCduDutyW());
+	// CRAH coil heat of this step: the air solver's own duct coil total (rule 6; every solver path records it).
+	const double CrahW = (Plant.IsChilledWaterActive() && AirField != nullptr) ? AirField->GetSolver().GetLastDuctCoilRemovedW() : 0.0;
+	Plant.Step(DtS, Bridge.GetLastCduDutyW(), CrahW);
 	const int32 Bucket = FMath::FloorToInt32(Clock.GetSimTimeS() / 5.0);
 	if (Bucket == LastPlantLogSecond) return;
 	LastPlantLogSecond = Bucket;
@@ -1223,6 +1256,14 @@ void ADataCenterSimulationActor::PlantAfterStep(double DtS)
 	UE_LOG(LogTemp, Display, TEXT("[Plant] t=%.2f s 외기 %.2f C | 공급 %.3f C(설정 %.2f) 회수 %.3f C | CDU 듀티 %.1f kW, 드라이쿨러 %.1f kW, 팬 %.3f(목표 %.3f) %.2f kW%s | 설비 장부 %.3e"),
 		Clock.GetSimTimeS(), Plant.GetAmbientK() - 273.15, S.SupplyK - 273.15, PlantThermalSpec.SupplySetpointK - 273.15, S.ReturnK - 273.15,
 		S.DutyW * 1e-3, S.DryCoolerHeatW * 1e-3, S.FanRatio, S.FanTargetRatio, Plant.GetFanElectricW() * 1e-3, *NotMet, Plant.GetLedgerResidual());
+	if (Plant.IsChilledWaterActive())
+	{
+		UE_LOG(LogTemp, Display, TEXT("[Plant]   CHW 공급 %.3f C(설정 %.2f) 회수 %.3f C | CRAH %.1f kW, 칠러 %d대 %.1f kW, 압축기 %.1f kW(COP %.2f)%s%s | CW 공급 %.3f 회수 %.3f C, 드라이쿨러 %.1f kW, 팬 %.2f kW"),
+			S.ChwSupplyK - 273.15, Plant.GetChwSetpointK() - 273.15, S.ChwReturnK - 273.15, S.CrahDutyW * 1e-3, S.ChillersRunning, S.ChillerLoadW * 1e-3,
+			S.ChillerPowerW * 1e-3, S.ChillerPowerW > 0.0 ? S.ChillerLoadW / S.ChillerPowerW : 0.0,
+			S.bChillerCapacityLimited ? TEXT(" | 칠러 용량 부족") : TEXT(""), S.bChillerOutsideCurves ? TEXT(" | 곡선 범위 밖(카르노 외삽, 추정)") : TEXT(""),
+			S.CwSupplyK - 273.15, S.CwReturnK - 273.15, S.CwDryCoolerHeatW * 1e-3, Plant.GetCwFanElectricW() * 1e-3);
+	}
 }
 
 void ADataCenterSimulationActor::GroupCabinetRows()

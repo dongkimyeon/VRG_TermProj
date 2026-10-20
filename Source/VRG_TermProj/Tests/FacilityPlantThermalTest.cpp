@@ -27,7 +27,7 @@ namespace
 	{
 		FFacilityLoopSpec Loop;
 		const double DesignHeatW = 0.8e6;
-		Loop.CduDesignFlowM3s = { DesignHeatW / (TestCpJKgK * 10.0) / TestRhoKgM3 };
+		Loop.BranchDesignFlowM3s = { DesignHeatW / (TestCpJKgK * 10.0) / TestRhoKgM3 };
 		FFacilityThermalSpec Th;
 		Th.AmbientK = AmbientC + 273.15;
 		Th.SupplySideTransitS = Th.ReturnSideTransitS = TransitS;

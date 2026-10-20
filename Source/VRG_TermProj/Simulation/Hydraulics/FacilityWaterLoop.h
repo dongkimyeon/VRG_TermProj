@@ -39,7 +39,7 @@ struct FFacilityLoopSpec
 
 	// Design primary flow of every CDU branch [m^3/s], in CDU group order. Sets the branch count.
 	UPROPERTY(EditAnywhere, Category = "Plant")
-	TArray<double> CduDesignFlowM3s;
+	TArray<double> BranchDesignFlowM3s;
 
 	UPROPERTY(EditAnywhere, Category = "Plant", meta = (ClampMin = "1", ClampMax = "16"))
 	int32 DutyPumps = 2;
@@ -54,7 +54,7 @@ struct FFacilityLoopSpec
 
 	// Design pressure drops [Pa] at the design flows. ESTIMATES (no public CDU primary-side or piping figure found):
 	UPROPERTY(EditAnywhere, Category = "Plant", meta = (ClampMin = "0.0"))
-	double CduHxDesignDropPa = 5.0e4;          // exchanger primary side at its design flow
+	double BranchHxDesignDropPa = 5.0e4;          // exchanger primary side at its design flow
 	UPROPERTY(EditAnywhere, Category = "Plant", meta = (ClampMin = "0.0"))
 	double BranchRunDesignDropPa = 2.0e4;      // supply + return runs between the headers and one CDU
 	UPROPERTY(EditAnywhere, Category = "Plant", meta = (ClampMin = "0.0"))
@@ -73,12 +73,12 @@ struct FFacilityLoopSpec
 	// Dry cooler coil: Vertiv Liebert direct-drive drycooler 940 model, 910 L/min at 37 kPa (Technical Design Manual
 	// 2023, table 2.1, 40 % ethylene glycol; this model runs water, so the drop is only of the right order).
 	UPROPERTY(EditAnywhere, Category = "Plant", meta = (ClampMin = "0.0"))
-	double DryCoolerRatedFlowM3s = 910.0 / 60000.0;
+	double ReturnCoilRatedFlowM3s = 910.0 / 60000.0;
 	UPROPERTY(EditAnywhere, Category = "Plant", meta = (ClampMin = "0.0"))
-	double DryCoolerRatedDropPa = 3.7e4;
+	double ReturnCoilRatedDropPa = 3.7e4;
 	// 0 = as many as the total design flow needs at the rated coil flow (F2 sizes them by heat).
 	UPROPERTY(EditAnywhere, Category = "Plant", meta = (ClampMin = "0"))
-	int32 DryCoolers = 0;
+	int32 ReturnCoils = 0;
 
 	// Pump curve: shutoff head / design head (centrifugal pumps commonly 1.1-1.3; ESTIMATE 1.25) and the combined
 	// pump + motor efficiency used for the electric input at the operating point (D8; ESTIMATE, same as the CDU pump).
@@ -103,7 +103,7 @@ struct FFacilityLoopHandles
 	TArray<int32> Pumps, PumpCheckPipes;             // duty pumps first, then standby
 	int32 SupplyMainPipe = INDEX_NONE, ReturnMainPipe = INDEX_NONE;
 	TArray<int32> BranchSupplyRunPipes, ValvePipes, HxPipes, BranchReturnRunPipes;   // per CDU branch
-	TArray<int32> DryCoolerPipes;
+	TArray<int32> ReturnCoilPipes;
 };
 
 // Result of one controlled solve (D5).

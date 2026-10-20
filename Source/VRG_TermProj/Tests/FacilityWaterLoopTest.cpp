@@ -25,7 +25,7 @@ namespace
 	FFacilityLoopSpec FourBranchSpec()
 	{
 		FFacilityLoopSpec Spec;
-		Spec.CduDesignFlowM3s = { 0.0195, 0.0180, 0.0210, 0.0150 };
+		Spec.BranchDesignFlowM3s = { 0.0195, 0.0180, 0.0210, 0.0150 };
 		return Spec;
 	}
 
@@ -45,19 +45,19 @@ bool FFwsDesignPointTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("built"), Loop.Build(Spec));
 	const FFacilityLoopResult R = Loop.Solve(FHydraulicSolveSettings());
 	double WorstBranch = 0.0, Total = 0.0;
-	for (int32 G = 0; G < Spec.CduDesignFlowM3s.Num(); ++G)
+	for (int32 G = 0; G < Spec.BranchDesignFlowM3s.Num(); ++G)
 	{
-		WorstBranch = FMath::Max(WorstBranch, FMath::Abs(Loop.GetBranchFlowM3s(G) - Spec.CduDesignFlowM3s[G]) / Spec.CduDesignFlowM3s[G]);
+		WorstBranch = FMath::Max(WorstBranch, FMath::Abs(Loop.GetBranchFlowM3s(G) - Spec.BranchDesignFlowM3s[G]) / Spec.BranchDesignFlowM3s[G]);
 		Total += Loop.GetBranchFlowM3s(G);
 	}
 	const FHydraulicNetwork& Net = Loop.GetNetwork();
 	const FFacilityLoopHandles& H = Loop.GetHandles();
 	const double Q0 = Net.GetPumpFlowM3s(H.Pumps[0]), Q1 = Net.GetPumpFlowM3s(H.Pumps[1]), QStandby = Net.GetPumpFlowM3s(H.Pumps[2]);
 	double DryTotal = 0.0;
-	for (const int32 P : H.DryCoolerPipes) DryTotal += Net.GetPipeFlowM3s(P);
+	for (const int32 P : H.ReturnCoilPipes) DryTotal += Net.GetPipeFlowM3s(P);
 	const double Imbalance = MaxRelImbalance(Net, Loop.GetDesignTotalFlowM3s());
 	AddInfo(FString::Printf(TEXT("설계점: 속도 %.12f, 차압 %.3f kPa(설정 %.3f), 분기 최대 상대 오차 %.3e, 펌프 %.5f / %.5f / 대기 %.3e L/s, 드라이쿨러 %d대, 양정 %.1f kPa, 전력 %.2f kW, 노드 수지 %.3e, 제어 %d회"),
-		R.PumpSpeedRatio, R.HeaderDeltaPPa * 1e-3, R.SetpointPa * 1e-3, WorstBranch, Q0 * 1e3, Q1 * 1e3, QStandby, H.DryCoolerPipes.Num(),
+		R.PumpSpeedRatio, R.HeaderDeltaPPa * 1e-3, R.SetpointPa * 1e-3, WorstBranch, Q0 * 1e3, Q1 * 1e3, QStandby, H.ReturnCoilPipes.Num(),
 		Loop.GetDesignPumpHeadPa() * 1e-3, Loop.GetTotalPumpElectricW() * 1e-3, Imbalance, R.ControlIterations));
 	TestTrue(TEXT("control converged (D5)"), R.bControlConverged && R.Hydraulics.bConverged && !R.bSpeedSaturatedHigh && !R.bSpeedSaturatedLow);
 	TestTrue(TEXT("design point is speed 1 (rel < 1e-9)"), FMath::Abs(R.PumpSpeedRatio - 1.0) < 1e-9);

@@ -345,6 +345,14 @@ public:
 	double GetLastLeakHeatW() const { return LastLeakHeatW; }
 	// S8 F2: the facility water supply temperature a CDU exchanger sees this step (the plant's supply volume).
 	void SetCduFacilitySupplyTempK(int32 Group, double TempK) { if (CduGroups.IsValidIndex(Group)) CduGroups[Group].Hx.FacilitySupplyTempK = TempK; }
+	// S8 F3: a CRAH coil's (equivalent) conductance and chilled water inlet for the next step.
+	void SetCrahCoil(int32 Unit, double UAWK, double WaterK)
+	{
+		if (!CrahUnits.IsValidIndex(Unit)) return;
+		CrahUnits[Unit].CoilUAWK = UAWK; CrahUnits[Unit].WaterSupplyTempK = WaterK;
+		const int32 D = CrahDuctBase + Unit;
+		if (AirSolverInput.DuctCoilUAWK.IsValidIndex(D)) { AirSolverInput.DuctCoilUAWK[D] = UAWK; AirSolverInput.DuctCoilWaterTempK[D] = WaterK; }
+	}
 	// Wall time of the rack models in the last step [ms] (measurement).
 	double GetLastRackModelsMs() const { return LastRackModelsMs; }
 
