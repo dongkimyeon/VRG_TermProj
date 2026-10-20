@@ -343,6 +343,8 @@ public:
 	const TArray<double>& GetLastSupplyLeakKgs() const { return LastSupplyLeakKgs; }
 	const TArray<double>& GetLastReturnLeakKgs() const { return LastReturnLeakKgs; }
 	double GetLastLeakHeatW() const { return LastLeakHeatW; }
+	// S8 F2: the facility water supply temperature a CDU exchanger sees this step (the plant's supply volume).
+	void SetCduFacilitySupplyTempK(int32 Group, double TempK) { if (CduGroups.IsValidIndex(Group)) CduGroups[Group].Hx.FacilitySupplyTempK = TempK; }
 	// Wall time of the rack models in the last step [ms] (measurement).
 	double GetLastRackModelsMs() const { return LastRackModelsMs; }
 

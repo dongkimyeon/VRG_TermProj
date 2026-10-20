@@ -129,6 +129,26 @@ static FAutoConsoleCommand GVrgPlantEnableCommand(
 		}
 	}));
 
+static FAutoConsoleCommand GVrgPlantAmbientCommand(
+	TEXT("vrg.Plant.Ambient"),
+	TEXT("S8 외기 건구온도 [C]를 바로 바꾼다(드라이쿨러). 시각을 정하려면 vrg.Eval.Event <t> ambient <C>. vrg.Plant.Ambient <C>"),
+	FConsoleCommandWithArgsDelegate::CreateLambda([](const TArray<FString>& Args)
+	{
+		if (Args.Num() == 0 || GEngine == nullptr) return;
+		const double K = FCString::Atod(*Args[0]) + 273.15;
+		for (const FWorldContext& Context : GEngine->GetWorldContexts())
+		{
+			UWorld* World = Context.World();
+			if (World == nullptr || !World->IsGameWorld()) continue;
+			for (TActorIterator<ADataCenterSimulationActor> It(World); It; ++It)
+			{
+				It->PlantThermalSpec.AmbientK = K;
+				It->GetMutableFacilityPlant().SetAmbientK(K);
+				UE_LOG(LogTemp, Display, TEXT("[Plant] 외기 %.2f C"), K - 273.15);
+			}
+		}
+	}));
+
 static FAutoConsoleCommand GVrgSimContainmentCommand(
 	TEXT("vrg.Sim.Containment"),
 	TEXT("공기 차단. 0 = 없음, 1 = 블랭킹(줄 틈 막기), 2 = 블랭킹 + 콜드 아일 지붕. vrg.Sim.Containment <0|1|2>"),
@@ -1130,6 +1150,7 @@ void ADataCenterSimulationActor::BuildCduGroups()
 			S.UAWK = Hx.UAWK;
 			S.FacilityMassFlowKgs = Hx.FacilityMassFlowKgs;
 		}
+		bPlantActive = false;
 		if (bFacilityPlant) BuildFacilityLoop(Groups);
 	}
 	Bridge.SetCduGroups(Groups);
@@ -1137,37 +1158,71 @@ void ADataCenterSimulationActor::BuildCduGroups()
 
 void ADataCenterSimulationActor::BuildFacilityLoop(TArray<FCduCouplingGroup>& Groups)
 {
-	FacilityLoopResult = FFacilityLoopResult();
+	bPlantActive = false;
+	LastPlantLogSecond = -1;
 	// The design primary flow of every branch is the exchanger's sized facility flow (one density, rule 3: the
-	// coupling's coolant density converts m^3/s <-> kg/s, so enabling the plant at design changes nothing).
+	// coupling's coolant density converts m^3/s <-> kg/s, so enabling the plant at design changes no flow).
 	FFacilityLoopSpec Spec = PlantSpec;
 	Spec.CduDesignFlowM3s.Reset();
-	for (const FCduCouplingGroup& G : Groups) Spec.CduDesignFlowM3s.Add(G.Hx.FacilityMassFlowKgs / CoolantDensityKgM3);
-	if (Groups.Num() == 0 || !FacilityLoop.Build(Spec))
-	{
-		UE_LOG(LogTemp, Warning, TEXT("[Plant] FWS 망을 만들지 못했다(CDU 분기 %d개). 고정 설비수 유량을 쓴다."), Groups.Num());
-		return;
-	}
-	FacilityLoop.GetMutableNetwork().SetFluidDensityKgM3(CoolantDensityKgM3);
-	FacilityLoopResult = FacilityLoop.Solve(FHydraulicSolveSettings());
-	const FFacilityLoopResult& R = FacilityLoopResult;
-	if (!R.bControlConverged)
-	{
-		UE_LOG(LogTemp, Warning, TEXT("[Plant] FWS 차압 제어 미수렴(수력 %s, 잔차 %.3e, 속도 %.4f%s%s). 고정 설비수 유량을 쓴다."),
-			R.Hydraulics.bConverged ? TEXT("수렴") : TEXT("실패"), R.ControlResidual, R.PumpSpeedRatio,
-			R.bSpeedSaturatedHigh ? TEXT(", 최고 속도에서 차압 미달") : TEXT(""), R.bSpeedSaturatedLow ? TEXT(", 최저 속도에서 차압 초과") : TEXT(""));
-		return;
-	}
+	double DesignHeatW = 0.0;
 	for (int32 G = 0; G < Groups.Num(); ++G)
 	{
-		Groups[G].Hx.FacilityMassFlowKgs = FMath::Max(FacilityLoop.GetBranchFlowM3s(G), 0.0) * CoolantDensityKgM3;
-		if (CduSummaries.IsValidIndex(G)) CduSummaries[G].FacilityMassFlowKgs = Groups[G].Hx.FacilityMassFlowKgs;
+		Spec.CduDesignFlowM3s.Add(Groups[G].Hx.FacilityMassFlowKgs / CoolantDensityKgM3);
+		if (CduSummaries.IsValidIndex(G)) DesignHeatW += CduSummaries[G].DesignDutyW;
 	}
-	const FFacilityLoopHandles& H = FacilityLoop.GetHandles();
-	UE_LOG(LogTemp, Display, TEXT("[Plant] FWS: CDU 분기 %d, 펌프 %d+%d(속도 %.6f), 차압 %.1f kPa(설정 %.1f), 총 유량 %.3f L/s(설계 %.3f), 드라이쿨러 코일 %d, 펌프 전력 %.2f kW, 제어 %d회, 수력 반복 %d"),
-		Groups.Num(), FacilityLoop.GetSpec().DutyPumps, FacilityLoop.GetSpec().StandbyPumps, R.PumpSpeedRatio, R.HeaderDeltaPPa * 1e-3, R.SetpointPa * 1e-3,
-		FacilityLoop.GetTotalPumpFlowM3s() * 1e3, FacilityLoop.GetDesignTotalFlowM3s() * 1e3, H.DryCoolerPipes.Num(), FacilityLoop.GetTotalPumpElectricW() * 1e-3,
-		R.ControlIterations, R.Hydraulics.IterationsUsed);
+	const double WaterCp = Groups.Num() > 0 ? Groups[0].Hx.FacilityCpJKgK : 4180.0;
+	if (Groups.Num() == 0 || !Plant.Build(Spec, PlantThermalSpec, DesignHeatW, CoolantDensityKgM3, WaterCp, FHydraulicSolveSettings()))
+	{
+		const FFacilityLoopResult& R = Plant.GetLoopResult();
+		UE_LOG(LogTemp, Warning, TEXT("[Plant] 설비를 만들지 못했다(CDU 분기 %d, 수력 %s, 차압 잔차 %.3e, 속도 %.4f%s). 고정 설비수 경계를 쓴다."),
+			Groups.Num(), R.Hydraulics.bConverged ? TEXT("수렴") : TEXT("실패"), R.ControlResidual, R.PumpSpeedRatio,
+			R.bSpeedSaturatedHigh ? TEXT(", 최고 속도에서 차압 미달") : TEXT(""));
+		return;
+	}
+	bPlantActive = true;
+	for (int32 G = 0; G < Groups.Num(); ++G)
+	{
+		Groups[G].Hx.FacilityMassFlowKgs = Plant.GetBranchMassFlowKgs(G);
+		if (Plant.IsThermalActive()) Groups[G].Hx.FacilitySupplyTempK = Plant.GetSupplyTempK();
+		if (CduSummaries.IsValidIndex(G))
+		{
+			CduSummaries[G].FacilityMassFlowKgs = Groups[G].Hx.FacilityMassFlowKgs;
+			CduSummaries[G].FacilitySupplyTempK = Groups[G].Hx.FacilitySupplyTempK;
+		}
+	}
+	const FFacilityWaterLoop& Loop = Plant.GetLoop();
+	const FFacilityLoopResult& R = Plant.GetLoopResult();
+	UE_LOG(LogTemp, Display, TEXT("[Plant] FWS: CDU 분기 %d, 펌프 %d+%d(속도 %.6f), 차압 %.1f kPa(설정 %.1f), 총 유량 %.3f L/s(설계 %.3f), 펌프 전력 %.2f kW, 제어 %d회, 수력 반복 %d"),
+		Groups.Num(), Loop.GetSpec().DutyPumps, Loop.GetSpec().StandbyPumps, R.PumpSpeedRatio, R.HeaderDeltaPPa * 1e-3, R.SetpointPa * 1e-3,
+		Loop.GetTotalPumpFlowM3s() * 1e3, Loop.GetDesignTotalFlowM3s() * 1e3, Loop.GetTotalPumpElectricW() * 1e-3, R.ControlIterations, R.Hydraulics.IterationsUsed);
+	if (Plant.IsThermalActive())
+	{
+		UE_LOG(LogTemp, Display, TEXT("[Plant] 드라이쿨러 %d대(UA %.1f kW/K, 정격 풍량 %.2f m3/s, 팬 %.2f kW 각), 설계 열 %.1f kW, 공급 설정 %.2f C, 외기 %.2f C(설계 %.2f C), 물 열용량 공급 %.1f / 회수 %.1f MJ/K"),
+			Plant.GetNumDryCoolers(), Plant.GetDryCoolerParams().RatedUAWK * 1e-3, Plant.GetDryCoolerParams().RatedAirFlowM3s, Plant.GetDryCoolerParams().RatedFanElectricW * 1e-3,
+			DesignHeatW * 1e-3, PlantThermalSpec.SupplySetpointK - 273.15, Plant.GetAmbientK() - 273.15, PlantThermalSpec.DesignAmbientK - 273.15,
+			Plant.GetSupplyCapacityJK() * 1e-6, Plant.GetReturnCapacityJK() * 1e-6);
+	}
+}
+
+void ADataCenterSimulationActor::PlantBeforeStep()
+{
+	if (!bPlantActive || !Plant.IsThermalActive()) return;
+	for (int32 G = 0; G < Bridge.GetNumCduGroups(); ++G) Bridge.SetCduFacilitySupplyTempK(G, Plant.GetSupplyTempK());
+}
+
+void ADataCenterSimulationActor::PlantAfterStep(double DtS)
+{
+	if (!bPlantActive || !Plant.IsThermalActive()) return;
+	Plant.Step(DtS, Bridge.GetLastCduDutyW());
+	const int32 Bucket = FMath::FloorToInt32(Clock.GetSimTimeS() / 5.0);
+	if (Bucket == LastPlantLogSecond) return;
+	LastPlantLogSecond = Bucket;
+	const FFacilityPlantState& S = Plant.GetState();
+	const FString NotMet = S.bSetpointNotMet ? FString::Printf(TEXT(" | 설정점 미달(누적 %.1f s, 트림 칠러는 F3)"), S.SetpointNotMetS)
+		: S.bOverCooling ? FString(TEXT(" | 과냉: 팬 최저 속도에서도 설정점 아래(대수 제어·바이패스 없음)")) : FString();
+	UE_LOG(LogTemp, Display, TEXT("[Plant] t=%.2f s 외기 %.2f C | 공급 %.3f C(설정 %.2f) 회수 %.3f C | CDU 듀티 %.1f kW, 드라이쿨러 %.1f kW, 팬 %.3f(목표 %.3f) %.2f kW%s | 설비 장부 %.3e"),
+		Clock.GetSimTimeS(), Plant.GetAmbientK() - 273.15, S.SupplyK - 273.15, PlantThermalSpec.SupplySetpointK - 273.15, S.ReturnK - 273.15,
+		S.DutyW * 1e-3, S.DryCoolerHeatW * 1e-3, S.FanRatio, S.FanTargetRatio, Plant.GetFanElectricW() * 1e-3, *NotMet, Plant.GetLedgerResidual());
 }
 
 void ADataCenterSimulationActor::GroupCabinetRows()
@@ -1716,7 +1771,9 @@ void ADataCenterSimulationActor::Tick(float DeltaTime)
 				// S2b step 2: tank pressure -> hydraulic re-solve (only while a leak is open) before the coupling reads flows.
 				if (Room != nullptr) Room->StepCoolantInventory(Clock.GetFixedStepS(), Clock.GetSimTimeS());
 				const bool bHydraulicsConverged = (Room == nullptr) || Room->GetLastSolveResult().bConverged;
+				PlantBeforeStep();
 				Bridge.Step(Clock.GetFixedStepS(), bHydraulicsResolved && StepIndex == 0, bHydraulicsConverged);
+				PlantAfterStep(Clock.GetFixedStepS());
 			}
 			Clock.CompleteStep();
 			EvalAfterStep();
@@ -2438,7 +2495,9 @@ void ADataCenterSimulationActor::DrainWarmupSteps()
 		const uint64 StepStart = FPlatformTime::Cycles64();
 		EvalBeforeStep();
 		if (Room != nullptr) Room->StepCoolantInventory(Clock.GetFixedStepS(), Clock.GetSimTimeS());
+		PlantBeforeStep();
 		Bridge.Step(Clock.GetFixedStepS(), bHydraulicsResolved, (Room == nullptr) || Room->GetLastSolveResult().bConverged);
+		PlantAfterStep(Clock.GetFixedStepS());
 		WarmupCouplingMs += FPlatformTime::ToMilliseconds64(FPlatformTime::Cycles64() - StepStart);
 		WarmupRackMs += Bridge.GetLastRackModelsMs();
 		Clock.CompleteStep();
@@ -2567,6 +2626,12 @@ void ADataCenterSimulationActor::EvalBeforeStep()
 		else if (E.Kind == TEXT("rackutil") && Racks.IsValidIndex(E.Index) && Racks[E.Index] != nullptr)
 		{
 			Racks[E.Index]->Input.Utilization = FMath::Clamp(E.Value, 0.0, 1.0);
+		}
+		else if (E.Kind == TEXT("ambient"))
+		{
+			// S8 F2: outdoor dry bulb [K] for the dry coolers from this step on (rule 4: at this step's start time).
+			PlantThermalSpec.AmbientK = E.Value;
+			Plant.SetAmbientK(E.Value);
 		}
 		else if (E.Kind == TEXT("valve") && Room != nullptr)
 		{
@@ -2904,7 +2969,7 @@ static FAutoConsoleCommand GVrgEvalReportCommand(
 
 static FAutoConsoleCommand GVrgEvalEventCommand(
 	TEXT("vrg.Eval.Event"),
-	TEXT("시각 이벤트를 넣는다(시뮬레이션 진입마다 다시 적용). vrg.Eval.Event <t s> util <0~1> | <t s> rackutil <랙 번호> <0~1> | <t s> valve <랙 번호> close|open | <t s> leak <랙 번호> <supply|return> <mm> | clear"),
+	TEXT("시각 이벤트를 넣는다(시뮬레이션 진입마다 다시 적용). vrg.Eval.Event <t s> util <0~1> | <t s> rackutil <랙 번호> <0~1> | <t s> valve <랙 번호> close|open | <t s> leak <랙 번호> <supply|return> <mm> | <t s> ambient <외기 C> | clear"),
 	FConsoleCommandWithArgsDelegate::CreateLambda([](const TArray<FString>& Args)
 	{
 		for (ADataCenterSimulationActor* Sim : EvalSimActors())
@@ -2918,6 +2983,7 @@ static FAutoConsoleCommand GVrgEvalEventCommand(
 			else if (E.Kind == TEXT("leak") && Args.Num() >= 5) { E.Index = FCString::Atoi(*Args[2]); E.bFlag = Args[3].ToLower() == TEXT("return"); E.Value = FCString::Atod(*Args[4]) * 1e-3; }
 			else if (E.Kind == TEXT("valve") && Args.Num() >= 4) { E.Index = FCString::Atoi(*Args[2]); E.Value = Args[3].ToLower() == TEXT("close") ? 1.0 : 0.0; }
 			else if (E.Kind == TEXT("util")) { E.Value = FCString::Atod(*Args[2]); }
+			else if (E.Kind == TEXT("ambient")) { E.Value = FCString::Atod(*Args[2]) + 273.15; }   // S8 F2: outdoor dry bulb [C] -> K
 			else { UE_LOG(LogTemp, Warning, TEXT("[VrgEval] 모르는 이벤트: %s"), *E.Kind); continue; }
 			Sim->EvalEvents.Add(E);
 			Sim->EvalEvents.StableSort([](const ADataCenterSimulationActor::FEvalEvent& L, const ADataCenterSimulationActor::FEvalEvent& R) { return L.TimeS < R.TimeS; });

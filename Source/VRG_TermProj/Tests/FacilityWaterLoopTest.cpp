@@ -164,7 +164,7 @@ bool FFwsPumpFailoverTest::RunTest(const FString& Parameters)
 }
 
 // Coupling regression: the plant at its design point gives each CDU its old design facility flow, so a run with the
-// plant on equals the run with fixed flows (the FWS supply temperature is still fixed in F1).
+// plant on (hydraulics only, bFixedSupplyTemp) equals the run with fixed flows.
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFwsCouplingDesignTest, "VRG.Plant.Fws.CouplingAtDesignUnchanged", VrgPlantTestFlags)
 bool FFwsCouplingDesignTest::RunTest(const FString& Parameters)
 {
@@ -176,6 +176,7 @@ bool FFwsCouplingDesignTest::RunTest(const FString& Parameters)
 		Sim->bShowSummary = false;
 		Sim->MaxStepsPerFrame = 16;
 		Sim->bFacilityPlant = bPlant;
+		Sim->PlantThermalSpec.bFixedSupplyTemp = true;   // F1 comparison: hydraulics only, the CDU's fixed supply temperature
 		ADataCenterRoomActor* Room = World->SpawnActor<ADataCenterRoomActor>();
 		World->SpawnActor<AAirFieldDebugActor>()->bShowSummary = false;
 		for (const double X : { 0.0, 400.0 })   // two rows of two racks, one CDU (two exchanger groups)

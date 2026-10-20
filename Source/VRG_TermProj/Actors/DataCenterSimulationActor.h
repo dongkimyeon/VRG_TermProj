@@ -8,7 +8,7 @@
 #include "Simulation/Coupling/CouplingBridge.h"
 #include "Simulation/Evaluation/VrgEvaluation.h"
 #include "Simulation/Evaluation/VrgFaultMonitor.h"
-#include "Simulation/Hydraulics/FacilityWaterLoop.h"
+#include "Simulation/Plant/FacilityPlant.h"
 #include "Simulation/Evaluation/VrgDashboardSummary.h"
 #include "Interaction/VrgCrahLifecycle.h"
 #include "Simulation/Air/RoomAirDomain.h"
@@ -268,20 +268,27 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Cooling|Coolant")
 	ECoolantRejection CoolantRejection = ECoolantRejection::CduHeatExchanger;
 
-	// S8 F1 (2026-10-20): facility water (FWS) hydraulics for the CDU primaries. Off (default) = the fixed design
-	// facility flow of every CDU as before. On = the CDU groups become branches of an FWS network (pumps N+1,
-	// differential-pressure control, valves, dry cooler coils) sized at those same design flows, and each exchanger
-	// takes its primary flow from the network solution. The FWS supply temperature stays the CDU's fixed value until F2.
-	// Applied when the simulation is entered (vrg.Plant.Enable).
+	// S8 F1/F2 (2026-10-20): facility water (FWS) plant for the CDU primaries. Off (default) = the fixed design
+	// facility flow and supply temperature of every CDU as before. On = the CDU groups become branches of an FWS
+	// network (pumps N+1, differential-pressure control, valves, dry cooler coils) sized at those same design flows;
+	// each exchanger takes its primary flow from the network solution and (F2) its supply temperature from the plant's
+	// supply volume, cooled by the dry coolers against the outdoor air (PlantThermalSpec; bFixedSupplyTemp keeps the
+	// old fixed temperature as a comparison). Applied when the simulation is entered (vrg.Plant.Enable).
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Cooling|Plant")
 	bool bFacilityPlant = false;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Cooling|Plant")
 	FFacilityLoopSpec PlantSpec;
 
-	const FFacilityWaterLoop& GetFacilityLoop() const { return FacilityLoop; }
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Cooling|Plant")
+	FFacilityThermalSpec PlantThermalSpec;
+
+	const FFacilityPlant& GetFacilityPlant() const { return Plant; }
+	FFacilityPlant& GetMutableFacilityPlant() { return Plant; }
+	bool IsFacilityPlantActive() const { return bPlantActive; }
+	const FFacilityWaterLoop& GetFacilityLoop() const { return Plant.GetLoop(); }
 	const FCouplingBridge& GetCouplingBridge() const { return Bridge; }
-	const FFacilityLoopResult& GetFacilityLoopResult() const { return FacilityLoopResult; }
+	const FFacilityLoopResult& GetFacilityLoopResult() const { return Plant.GetLoopResult(); }
 
 	// Blanking / cold-aisle roof. Default off: the level's own layout (gaps and all) is the reference.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Cooling|Containment")
@@ -463,10 +470,14 @@ private:
 		double DesignDutyW = 0.0, UAWK = 0.0, FacilityMassFlowKgs = 0.0, FacilitySupplyTempK = 0.0;
 	};
 	TArray<FCduSummary> CduSummaries;
-	FFacilityWaterLoop FacilityLoop;
-	FFacilityLoopResult FacilityLoopResult;
+	FFacilityPlant Plant;
+	bool bPlantActive = false;
+	int32 LastPlantLogSecond = -1;
 	// S8 F1: builds and solves the FWS network from the sized CDU groups and hands each exchanger its branch flow.
 	void BuildFacilityLoop(TArray<FCduCouplingGroup>& Groups);
+	// S8 F2: CDU inlet = plant supply before the coupling step; the plant advances with that step's duties after it.
+	void PlantBeforeStep();
+	void PlantAfterStep(double DtS);
 	// Groups the racks of every row that has a CDU and sizes the exchanger (after Bridge.Initialize).
 	void BuildCduGroups();
 
