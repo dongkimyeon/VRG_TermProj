@@ -23,7 +23,7 @@ namespace
 	constexpr double TestRhoKgM3 = 997.0, TestCpJKgK = 4180.0;
 
 	// One CDU branch carrying an 0.8 MW design duty at a 10 K rise (synthetic).
-	FFacilityPlant MakePlant(double AmbientC, double TransitS = 60.0)
+	FFacilityPlant MakePlant(double AmbientC, double TransitS = 60.0, bool bTrim = true)
 	{
 		FFacilityLoopSpec Loop;
 		const double DesignHeatW = 0.8e6;
@@ -31,6 +31,7 @@ namespace
 		FFacilityThermalSpec Th;
 		Th.AmbientK = AmbientC + 273.15;
 		Th.SupplySideTransitS = Th.ReturnSideTransitS = TransitS;
+		Th.bTrimChiller = bTrim;
 		FFacilityPlant Plant;
 		Plant.Build(Loop, Th, DesignHeatW, TestRhoKgM3, TestCpJKgK, FHydraulicSolveSettings());
 		return Plant;
@@ -97,7 +98,7 @@ bool FFwsThermalSaturatedTest::RunTest(const FString& Parameters)
 	TArray<double> SteadySupply;
 	for (const double AmbientC : { 30.0, 35.0, 40.0 })
 	{
-		FFacilityPlant Plant = MakePlant(AmbientC);
+		FFacilityPlant Plant = MakePlant(AmbientC, 60.0, false);   // dry coolers alone (the F4 trim chiller is tested elsewhere)
 		const double Duty = Plant.GetDesignHeatW();
 		RunConstant(Plant, Duty, 4000.0, 0.5);
 		const FFacilityPlantState& S = Plant.GetState();
@@ -137,6 +138,7 @@ bool FFwsThermalCoupledTest::RunTest(const FString& Parameters)
 		Sim->bFacilityPlant = bPlant;
 		Sim->PlantThermalSpec.AmbientK = AmbientC + 273.15;
 		Sim->PlantThermalSpec.SupplySideTransitS = Sim->PlantThermalSpec.ReturnSideTransitS = 5.0;   // short, so 20 s shows the trend
+		Sim->PlantThermalSpec.bTrimChiller = false;   // the dry cooler chain alone (F4 trim tested elsewhere)
 		ADataCenterRoomActor* Room = World->SpawnActor<ADataCenterRoomActor>();
 		World->SpawnActor<AAirFieldDebugActor>()->bShowSummary = false;
 		for (const double X : { 0.0, 400.0 })

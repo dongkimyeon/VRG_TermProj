@@ -1232,6 +1232,12 @@ void ADataCenterSimulationActor::BuildFacilityLoop(TArray<FCduCouplingGroup>& Gr
 	{
 		UE_LOG(LogTemp, Display, TEXT("[Plant] CHW 없음: CRAH 유닛이 없다(천장 코일 모드). 코일 냉수는 고정 %.2f C."), CoilSupplyTempK - 273.15);
 	}
+	if (Plant.IsTrimActive())
+	{
+		UE_LOG(LogTemp, Display, TEXT("[Plant] 트림 칠러: 설계 외기에서 드라이쿨러가 남기는 열 %.1f kW, %d+%d대(기준 용량 %.1f kW 각), 이코노마이저 UA %.1f kW/K, 응축 설계 합계 %.1f kW"),
+			Plant.GetDesignTrimW() * 1e-3, PlantThermalSpec.TrimDutyChillers, PlantThermalSpec.TrimStandbyChillers, Plant.GetTrimRefCapacityW() * 1e-3,
+			Plant.GetEconomizerUAWK() * 1e-3, Plant.GetDesignCondenserW() * 1e-3);
+	}
 }
 
 void ADataCenterSimulationActor::PlantBeforeStep()
@@ -1258,8 +1264,8 @@ void ADataCenterSimulationActor::PlantAfterStep(double DtS)
 	if (Bucket == LastPlantLogSecond) return;
 	LastPlantLogSecond = Bucket;
 	const FFacilityPlantState& S = Plant.GetState();
-	const FString NotMet = S.bSetpointNotMet ? FString::Printf(TEXT(" | 설정점 미달(누적 %.1f s, 트림 칠러는 F3)"), S.SetpointNotMetS)
-		: S.bOverCooling ? FString(TEXT(" | 과냉: 팬 최저 속도에서도 설정점 아래(대수 제어·바이패스 없음)")) : FString();
+	const FString NotMet = S.bSetpointNotMet ? FString::Printf(TEXT(" | 드라이쿨러 단독으로는 설정 미달(누적 %.1f s)%s"), S.SetpointNotMetS, Plant.IsTrimActive() ? TEXT(", 나머지는 트림 칠러") : TEXT(""))
+		: S.bOverCooling ? FString(TEXT(" | 과냉: 팬이 멈춰도 설정점 아래(회수가 설정보다 차다)")) : FString();
 	UE_LOG(LogTemp, Display, TEXT("[Plant] t=%.2f s 외기 %.2f C | 공급 %.3f C(설정 %.2f) 회수 %.3f C | CDU 듀티 %.1f kW, 드라이쿨러 %.1f kW, 팬 %.3f(목표 %.3f) %.2f kW%s | 설비 장부 %.3e"),
 		Clock.GetSimTimeS(), Plant.GetAmbientK() - 273.15, S.SupplyK - 273.15, PlantThermalSpec.SupplySetpointK - 273.15, S.ReturnK - 273.15,
 		S.DutyW * 1e-3, S.DryCoolerHeatW * 1e-3, S.FanRatio, S.FanTargetRatio, Plant.GetFanElectricW() * 1e-3, *NotMet, Plant.GetLedgerResidual());
@@ -1272,6 +1278,12 @@ void ADataCenterSimulationActor::PlantAfterStep(double DtS)
 			S.ChillerPowerW * 1e-3, S.ChillerPowerW > 0.0 ? S.ChillerLoadW / S.ChillerPowerW : 0.0,
 			S.bChillerCapacityLimited ? TEXT(" | 칠러 용량 부족") : TEXT(""), S.bChillerOutsideCurves ? TEXT(" | 곡선 범위 밖(카르노 외삽, 추정)") : TEXT(""),
 			S.CwSupplyK - 273.15, S.CwReturnK - 273.15, S.CwDryCoolerHeatW * 1e-3, Plant.GetCwFanElectricW() * 1e-3);
+	}
+	if (Plant.IsTrimActive() || S.bEconomizerOn)
+	{
+		UE_LOG(LogTemp, Display, TEXT("[Plant]   트림 칠러 %d대 %.1f kW(압축기 %.1f kW)%s, FWS 공급 %s | 이코노마이저 %s %.1f kW(누적 %.0f s, 전환 %d회)"),
+			S.TrimRunning, S.TrimLoadW * 1e-3, S.TrimPowerW * 1e-3, S.bTrimLimited ? TEXT(" 용량 부족") : TEXT(""),
+			S.bFwsSupplyNotMet ? TEXT("설정 미달") : TEXT("설정 충족"), S.bEconomizerOn ? TEXT("켬") : TEXT("끔"), S.EconomizerW * 1e-3, S.EconomizerOnS, S.EconomizerSwitches);
 	}
 }
 

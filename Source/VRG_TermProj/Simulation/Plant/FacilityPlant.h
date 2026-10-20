@@ -13,6 +13,10 @@
 //   FWS  (warm water): CDU primaries  -> FWS dry coolers (fans hold the FWS supply setpoint, W32)
 //   CHW  (chilled):    CRAH coils     -> chiller evaporators (staged N+1 chillers hold the CHW supply setpoint)
 //   CW   (condenser):  chiller condensers (Q_evap + W) -> CW dry coolers (fans hold the condenser water setpoint)
+//   F4: FWS trim chiller in series after the FWS dry coolers (cools what they cannot reach, condenser on the CW loop);
+//       water-side economizer = plate exchanger on the CHW return ahead of the chillers, fed by the CW supply ahead of
+//       the condensers (integrated / series operation, so it can run together with the chillers), switched with
+//       hysteresis; while it runs the CW fans aim below the CHW setpoint.
 //
 // Every loop is the same pieces: an FFacilityWaterLoop network (pumps N+1, differential-pressure control, branch valves,
 // return coils) for its flows and pump power, and two well-mixed water volumes on the integrated clock (rule 4, D2):
@@ -50,8 +54,9 @@ struct FFacilityThermalSpec
 	// 0 = size by the catalog selection rule: units = ceil(design heat / (rated heat * ITD_design / ITD_rated)), with
 	// ITD_design = design return - design ambient (manufacturers' tables rate heat per degree of ITD).
 	UPROPERTY(EditAnywhere, Category = "Plant", meta = (ClampMin = "0")) int32 DryCoolers = 0;
-	// Fan speed range and ramp (EC fans; ESTIMATES).
-	UPROPERTY(EditAnywhere, Category = "Plant") double MinFanRatio = 0.1;
+	// Fan speed range and ramp. Below the EC fans' minimum speed the units cycle; the model takes the time average,
+	// so the ratio runs continuously down to 0 (F4; F2 used 0.1 and over-cooled in cold air). Ramp: ESTIMATE.
+	UPROPERTY(EditAnywhere, Category = "Plant") double MinFanRatio = 0.0;
 	UPROPERTY(EditAnywhere, Category = "Plant") double FanRampPerS = 0.05;
 	// Water volume of each side as a transit time at the design flow [s] (no plant piping geometry exists; ESTIMATE).
 	UPROPERTY(EditAnywhere, Category = "Plant") double SupplySideTransitS = 60.0;
@@ -80,6 +85,19 @@ struct FFacilityThermalSpec
 	// in the Liebert PCW catalog, which only says the actuator is managed proportionally).
 	UPROPERTY(EditAnywhere, Category = "Plant") bool bCrahValveControl = true;
 	UPROPERTY(EditAnywhere, Category = "Plant") double ValveStrokeS = 60.0;
+
+	// ---- F4 ----
+	// FWS trim chiller (same curve set as the CHW chillers), sized for the gap the dry coolers leave at the design air.
+	UPROPERTY(EditAnywhere, Category = "Plant") bool bTrimChiller = true;
+	UPROPERTY(EditAnywhere, Category = "Plant", meta = (ClampMin = "1")) int32 TrimDutyChillers = 1;
+	UPROPERTY(EditAnywhere, Category = "Plant", meta = (ClampMin = "0")) int32 TrimStandbyChillers = 1;
+	// Water-side economizer (plate exchanger). Sized at the design flows so the CHW leaves it EconomizerApproachK above
+	// the entering CW (plate exchangers are commonly selected for 1-2 K; ESTIMATE). On when the CW supply is more than
+	// OnMargin below the CHW return, off when the gap falls under OffMargin (hysteresis; ESTIMATES).
+	UPROPERTY(EditAnywhere, Category = "Plant") bool bEconomizer = true;
+	UPROPERTY(EditAnywhere, Category = "Plant") double EconomizerApproachK = 2.0;
+	UPROPERTY(EditAnywhere, Category = "Plant") double EconomizerOnMarginK = 1.0;
+	UPROPERTY(EditAnywhere, Category = "Plant") double EconomizerOffMarginK = 0.3;
 };
 
 // One CRAH coil handed to the plant (sized by the integrated actor at its design air flow).
@@ -139,6 +157,12 @@ struct FFacilityPlantState
 	int32 ChillersRunning = 0;
 	bool bChillerCapacityLimited = false, bChillerOutsideCurves = false;
 	int32 CrahValvesFullOpen = 0, CrahValvesShut = 0;
+	// F4
+	int32 TrimRunning = 0;
+	double TrimLoadW = 0.0, TrimPowerW = 0.0, EconomizerW = 0.0, EconomizerOnS = 0.0;
+	bool bTrimLimited = false, bEconomizerOn = false, bFwsSupplyNotMet = false;
+	int32 EconomizerSwitches = 0;
+	double FwsSupplyNotMetS = 0.0;
 	bool bCrahReadingsMissing = false;   // valves held: no per-unit intake temperatures on this air path
 	double ChillerLimitedS = 0.0, ChillerOutsideCurvesS = 0.0;
 	// Plant ledger since the start of the run [J].
@@ -157,6 +181,11 @@ public:
 	bool IsBuilt() const { return bBuilt; }
 	bool IsThermalActive() const { return bBuilt && !Thermal.bFixedSupplyTemp; }
 	bool IsChilledWaterActive() const { return IsThermalActive() && bChw; }
+	bool IsCondenserActive() const { return IsThermalActive() && bCw; }
+	bool IsTrimActive() const { return IsThermalActive() && bTrim; }
+	double GetTrimRefCapacityW() const { return TrimCapRefW; }
+	double GetDesignTrimW() const { return DesignTrimW; }
+	double GetEconomizerUAWK() const { return HxUA; }
 
 	// CDU inlet temperature for this step (the FWS supply volume at the start of the step).
 	double GetSupplyTempK() const { return Fws.SupplyK; }
@@ -207,6 +236,7 @@ public:
 	double GetDesignChwLoadW() const { return DesignChwW; }
 	double GetDesignCondenserW() const { return DesignCondW; }
 	double GetChillerRefCapacityW() const { return ChillerCapRefW; }
+	double GetEconomizerHeatW(double ChwInK, double CwInK) const { return EconomizerHeatW(ChwInK, CwInK); }
 	double GetChillerMaxCop() const { return ChillerMaxCop; }
 	double GetWaterCpJKgK() const { return WaterCp; }
 	double GetChwSetpointK() const { return ChwSetpointK; }
@@ -225,7 +255,11 @@ private:
 	double TotalKgs = 0.0, WaterCp = 4180.0, WaterRho = 997.0, DesignHeatW = 0.0;
 	double ChwKgs = 0.0, CwKgs = 0.0, DesignChwW = 0.0, DesignCondW = 0.0, ChwSetpointK = 291.15;
 	double ChillerCapRefW = 0.0, ChillerMaxCop = 0.0;
-	bool bBuilt = false, bChw = false;
+	double TrimCapRefW = 0.0, DesignTrimW = 0.0, HxUA = 0.0, CwRiseK = 0.0, CwDesignInK = 0.0;
+	bool bBuilt = false, bChw = false, bCw = false, bTrim = false, bEconOn = false;
 	bool BuildChilledWater(const TArray<FPlantCrahCoil>& Crahs, const FHydraulicSolveSettings& Settings);
+	bool BuildCondenser(const FHydraulicSolveSettings& Settings);
+	// Economizer heat at the given temperatures (counterflow, CHW return hot side, CW supply cold side), >= 0.
+	double EconomizerHeatW(double ChwInK, double CwInK) const;
 	void SyncFwsState();
 };
