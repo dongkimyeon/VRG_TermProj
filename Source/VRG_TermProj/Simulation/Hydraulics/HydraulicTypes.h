@@ -28,9 +28,17 @@ struct FHydraulicNode
 	// 랙이 뽑아 쓰는 유량을 여기에 음수로 넣는다.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hydraulics")
 	double ExternalInflowM3s = 0.0;
+
+	// S2b (2026-10-20): node height above the floor [m] (option B of Tools/S2b_누수_계획.md). Pipes and pumps act on
+	// the piezometric pressure P + rho*g*z; PressurePa stays the static pressure at this height. 0 everywhere keeps
+	// every result bit-identical to the model without heights.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hydraulics")
+	double ElevationM = 0.0;
 };
 
 // 수동 저항 요소. Δp = Resistance * Flow * |Flow|.
+// Δp is the piezometric drop (P_from + rho*g*z_from) - (P_to + rho*g*z_to) (S2b height term; equal to the static
+// drop when both ends are at the same height).
 USTRUCT(BlueprintType)
 struct FHydraulicPipe
 {
@@ -49,6 +57,7 @@ struct FHydraulicPipe
 
 // 능동 요소. 유량이 보조 미지수로 들어간다 (D3).
 // 펌프 곡선: Δp_pump = ShutoffHeadPa * r^2 - CurveCoeff * Flow * |Flow|   (r = SpeedRatio)
+// Δp_pump is the piezometric rise between suction and discharge (the pump's total head as pressure).
 USTRUCT(BlueprintType)
 struct FHydraulicPump
 {

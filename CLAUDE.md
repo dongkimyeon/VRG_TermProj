@@ -852,6 +852,12 @@ IT 발열 1684.8 kW = 라디에이터 1262.8 kW + CRAH 28.43 kW + 축적
 | `Eval.RerunEventsAndReport` 재실행 | 동일 | 같은 시드·초기조건·이벤트 두 실행의 흡기 창 평균·센서·IT (수치 비교) | 같음 |
 | 같은 테스트 이벤트 | IT 233.0 -> 104.3 kW | 1 s에 부하율 0.3 (이벤트 없는 실행 대비) | 60% 미만 |
 | `Interaction.Layout.SaveLoadRoundTrip` | 위치 1e-6 cm / 방향 1e-6 도 안 | 저장 -> 이동·회전 -> 불러오기 뒤 차 | 정확히 |
+| `Hydraulics.Elevation.StaticAndGravityAnalytic` 정지 수직관 | 0 | ρgh 21509.906 Pa(h 2.2 m) 기준, 무차원 | < 1e-12 |
+| 같은 테스트 중력 유동 유량 / 중간 정압 | 1.164e-14 / 9.471e-15 | 해석 유량 √(ρgh/(R₁+R₂)) / ρgh 기준 | < 1e-9 |
+| 같은 테스트 출구 높이 비 √(1−ρgh/P_s) | 1.175e-16 | 해석 비 기준 | < 1e-9 |
+| `Hydraulics.Elevation.ClosedLoopFlowsUnchanged` 순환 유량 | 4.680e-17 | NVL72 한 줄 펌프 유량 18.533 L/s 기준 | < 1e-9 |
+| 같은 테스트 정압 이동 ρg(z_CDU−z) | 1.191e-14 | ρg·Δz 최대 4888.6 Pa 기준 | < 1e-6 |
+| `Hydraulics.Elevation.RoomNodesFollowPipeRoutes` | 0 m | 노드 높이 − 그려진 끝점 평균 (plain/GJ) | < 1e-9 m |
 
 **수력 솔버의 오차 하한은 수렴 목표가 정한다.** `SinglePipe`/`Parallel`의 해석해 오차
 3.5e-11은 방법의 정확도 한계가 아니라 `NormalizedResidualTarget`(기본 1e-10)에서
@@ -4556,3 +4562,10 @@ Editor -game L_Test: 34개 표시, 판독 − 실제 최대 0.74 K, 경보 0. �
 `GET /api/cooling`과 `VRG.Web.CoolingMatchesModel` 추가(이미 계산된 값만, 새 물리 없음, 상세는 `Tools/웹대시보드_계획.md`).
 공기 솔버 CPU 경로가 덕트별 코일 제거열·혼합/토출 온도를, 랙 모델이 PSU 변환 손실을 기록만 한다(합계·장부 불변). 영향 테스트 13건 성공.
 페이지 탭과 Editor -game 확인은 아직 하지 않았다.
+
+## 2026-10-20 S2b 계획과 높이(정수압) 단계
+
+팀장 결정으로 S2b를 웹 대시보드보다 먼저 한다(`Tools/S2b_누수_계획.md`). 팀이 높이차 선택지 **B**(노드 높이 + 정수압 항)를 정했고, 높이 단계를 누수보다 먼저 했다.
+`FHydraulicNode::ElevationM`, 배관·펌프는 피에조 압력 `P + ρgz`의 차를 쓴다(미지수는 정압, 펌프 곡선은 피에조 상승). 높이 0이면 기존 결과와 비트 동일.
+ρ는 통합 액터 `CoolantDensityKgM3` 한 출처(망 기본 997), g = 9.80665. 방 액터가 노드 높이를 그려진 배관 끝점 높이 평균으로 정한다.
+신규 `VRG.Hydraulics.Elevation.*` 3건 포함 영향 37건 성공·경고 0. 닫힌 루프 순환 유량은 높이와 무관(4.7e-17)이라 L_Test 냉각 결과는 바뀌지 않는다. 오차 기준표에 추가.

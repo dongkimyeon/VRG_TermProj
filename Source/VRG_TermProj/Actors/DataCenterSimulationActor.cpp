@@ -923,6 +923,7 @@ void ADataCenterSimulationActor::BuildCoupling()
 	Bridge.SetHydraulicNetwork(Room != nullptr ? &Room->GetMutableNetwork() : nullptr);
 	Bridge.SetAirSolver(bHasAir ? &AirField->GetMutableSolver() : nullptr);
 	Bridge.SetCoolantDensityKgM3(CoolantDensityKgM3);
+	if (Room != nullptr) Room->SetCoolantDensityKgM3(CoolantDensityKgM3);   // S2b height term: same density (one source)
 
 	// A barrier (or containment) that separates a duct's intake from its exhaust leaves both air regions with a
 	// net source: the pressure problem has no solution. Report it at setup instead of only as a solver failure.

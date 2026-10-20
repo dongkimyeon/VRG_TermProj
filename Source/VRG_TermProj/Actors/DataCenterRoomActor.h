@@ -262,6 +262,10 @@ public:
 	// 배관을 다시 이었는지. 통합 액터가 이번 스텝에 유량이 바뀌었는지 알아야 한다.
 	bool ConsumeRebuiltFlag();
 
+	// S2b height term: fluid density of the hydraulic network [kg/m^3]. The integrated actor passes its
+	// CoolantDensityKgM3 (single source); a changed value re-solves the network now.
+	void SetCoolantDensityKgM3(double InDensityKgM3);
+
 	// Drawn pipe paths (see FRoomPipeRoute), rebuilt with the pipe meshes.
 	const TArray<FRoomPipeRoute>& GetPipeRoutesM() const { return PipeRoutesM; }
 
@@ -385,6 +389,10 @@ private:
 	void DiscoverRows();
 
 	void BuildNetwork();
+	// S2b height (2026-10-20): every node's elevation is the mean height of the drawn pipe ends that meet there
+	// (GJ ports, CDU ports and the pump supply route included), so the solver's z is the mesh's z.
+	// A node no drawn end touches keeps its anchor height. Called before the solve.
+	void AssignNodeElevationsFromRoutes();
 	void BuildPipeMeshes();
 	void BuildDecorMeshes();
 	void DestroyMeshes(TArray<TObjectPtr<UStaticMeshComponent>>& Meshes);

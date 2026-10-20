@@ -43,6 +43,14 @@ double FHydraulicNetwork::PipeFlowM3s(double DeltaPPa, double ResistancePaS2M6)
 	return DeltaPPa >= 0.0 ? Magnitude : -Magnitude;
 }
 
+void FHydraulicNetwork::SetNodeElevationM(int32 NodeIndex, double ElevationM)
+{
+	if (Nodes.IsValidIndex(NodeIndex))
+	{
+		Nodes[NodeIndex].ElevationM = ElevationM;
+	}
+}
+
 double FHydraulicNetwork::GetNodePressurePa(int32 NodeIndex) const
 {
 	return NodePressurePa.IsValidIndex(NodeIndex) ? NodePressurePa[NodeIndex] : 0.0;
@@ -65,7 +73,7 @@ double FHydraulicNetwork::GetPipeFlowM3s(int32 PipeIndex) const
 		return 0.0;
 	}
 	const FHydraulicPipe& Pipe = Pipes[PipeIndex];
-	const double DeltaPPa = NodePressurePa[Pipe.FromNodeIndex] - NodePressurePa[Pipe.ToNodeIndex];
+	const double DeltaPPa = GetNodePiezometricPa(Pipe.FromNodeIndex) - GetNodePiezometricPa(Pipe.ToNodeIndex);
 	return PipeFlowM3s(DeltaPPa, Pipe.ResistancePaS2M6);
 }
 
@@ -83,7 +91,7 @@ double FHydraulicNetwork::GetPumpDeltaPPa(int32 PumpIndex) const
 	// 실제로 실현된 압력 상승을 쓴다. 수렴하면 펌프 곡선값과 일치하고,
 	// 수렴하지 않았다면 어긋난 상태가 그대로 드러난다.
 	const FHydraulicPump& Pump = Pumps[PumpIndex];
-	return NodePressurePa[Pump.ToNodeIndex] - NodePressurePa[Pump.FromNodeIndex];
+	return GetNodePiezometricPa(Pump.ToNodeIndex) - GetNodePiezometricPa(Pump.FromNodeIndex);
 }
 
 double FHydraulicNetwork::GetPumpHydraulicPowerW(int32 PumpIndex) const
@@ -163,13 +171,15 @@ void FHydraulicNetwork::BuildUnknownMap(int32& OutNumFreeNodes)
 
 void FHydraulicNetwork::SeedInitialGuess()
 {
+	// Seed every free node at the mean piezometric pressure of the fixed nodes (static = that - rho*g*z), so a
+	// network at rest starts at its hydrostatic solution. With all heights 0 this is the former mean static seed.
 	double FixedSumPa = 0.0;
 	int32 FixedCount = 0;
 	for (int32 NodeIndex = 0; NodeIndex < Nodes.Num(); ++NodeIndex)
 	{
 		if (Nodes[NodeIndex].bFixedPressure)
 		{
-			FixedSumPa += Nodes[NodeIndex].PressurePa;
+			FixedSumPa += Nodes[NodeIndex].PressurePa + NodeHydrostaticPa(NodeIndex);
 			++FixedCount;
 		}
 	}
@@ -179,7 +189,7 @@ void FHydraulicNetwork::SeedInitialGuess()
 	{
 		if (!Nodes[NodeIndex].bFixedPressure)
 		{
-			NodePressurePa[NodeIndex] = SeedPressurePa;
+			NodePressurePa[NodeIndex] = SeedPressurePa - NodeHydrostaticPa(NodeIndex);
 		}
 	}
 
@@ -215,7 +225,7 @@ double FHydraulicNetwork::EvaluateResidual(const FHydraulicSolveSettings& Settin
 	for (int32 PipeIndex = 0; PipeIndex < Pipes.Num(); ++PipeIndex)
 	{
 		const FHydraulicPipe& Pipe = Pipes[PipeIndex];
-		const double DeltaPPa = NodePressurePa[Pipe.FromNodeIndex] - NodePressurePa[Pipe.ToNodeIndex];
+		const double DeltaPPa = GetNodePiezometricPa(Pipe.FromNodeIndex) - GetNodePiezometricPa(Pipe.ToNodeIndex);
 		const double FlowM3s = PipeFlowM3s(DeltaPPa, Pipe.ResistancePaS2M6);
 		MaxFlowMagnitudeM3s = FMath::Max(MaxFlowMagnitudeM3s, FMath::Abs(FlowM3s));
 
@@ -268,7 +278,7 @@ double FHydraulicNetwork::EvaluateResidual(const FHydraulicSolveSettings& Settin
 		// 상사식: 계수는 그대로 두고 체절양정만 회전수비의 제곱으로 스케일한다.
 		const double ScaledShutoffHeadPa = Pump.ShutoffHeadPa * Pump.SpeedRatio * Pump.SpeedRatio;
 		const double CurveDeltaPPa = ScaledShutoffHeadPa - Pump.CurveCoeffPaS2M6 * FlowM3s * FMath::Abs(FlowM3s);
-		const double ActualDeltaPPa = NodePressurePa[Pump.ToNodeIndex] - NodePressurePa[Pump.FromNodeIndex];
+		const double ActualDeltaPPa = GetNodePiezometricPa(Pump.ToNodeIndex) - GetNodePiezometricPa(Pump.FromNodeIndex);
 		OutResidual[NumFreeNodes + PumpIndex] = ActualDeltaPPa - CurveDeltaPPa;
 
 		MaxShutoffHeadPa = FMath::Max(MaxShutoffHeadPa, FMath::Abs(ScaledShutoffHeadPa));
@@ -365,7 +375,7 @@ FHydraulicSolveResult FHydraulicNetwork::Solve(const FHydraulicSolveSettings& Se
 		// 파이프: Δp에 대한 도함수가 Δp=0에서 발산하므로 여기에만 하한을 건다.
 		for (const FHydraulicPipe& Pipe : Pipes)
 		{
-			const double DeltaPPa = NodePressurePa[Pipe.FromNodeIndex] - NodePressurePa[Pipe.ToNodeIndex];
+			const double DeltaPPa = GetNodePiezometricPa(Pipe.FromNodeIndex) - GetNodePiezometricPa(Pipe.ToNodeIndex);
 			const double ClampedDeltaPPa = FMath::Max(FMath::Abs(DeltaPPa), Settings.JacobianDeltaPFloorPa);
 			const double ConductanceM3sPa = 1.0 / (2.0 * FMath::Sqrt(Pipe.ResistancePaS2M6 * ClampedDeltaPPa));
 

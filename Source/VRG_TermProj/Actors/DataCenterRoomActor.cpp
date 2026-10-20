@@ -92,6 +92,52 @@ bool ADataCenterRoomActor::ConsumeRebuiltFlag()
 	return bWasRebuilt;
 }
 
+void ADataCenterRoomActor::AssignNodeElevationsFromRoutes()
+{
+	const int32 NumNodes = Network.GetNumNodes();
+	TArray<double> SumZ;
+	TArray<int32> Count;
+	SumZ.Init(0.0, NumNodes);
+	Count.Init(0, NumNodes);
+	auto AddEnd = [&](int32 Node, const FVector& PointM)
+	{
+		if (SumZ.IsValidIndex(Node)) { SumZ[Node] += PointM.Z; ++Count[Node]; }
+	};
+	// The same ends BuildPipeMeshes / BuildGjPipeMeshes draw: node anchors, replaced by GJ port overrides where set.
+	for (int32 PipeIndex = 0; PipeIndex < Network.GetNumPipes(); ++PipeIndex)
+	{
+		const int32 From = Network.GetPipeFromNodeIndex(PipeIndex), To = Network.GetPipeToNodeIndex(PipeIndex);
+		const FVector* Start = PipeStartOverrideCm.Find(PipeIndex);
+		const FVector* End = PipeEndOverrideCm.Find(PipeIndex);
+		if (NodePositionM.IsValidIndex(From)) AddEnd(From, Start ? SimUnits::UnrealToMeters(*Start) : NodePositionM[From]);
+		if (NodePositionM.IsValidIndex(To)) AddEnd(To, End ? SimUnits::UnrealToMeters(*End) : NodePositionM[To]);
+	}
+	for (const FGjPumpRoute& Route : GjPumpRoutes)
+	{
+		AddEnd(Network.GetPumpFromNodeIndex(Route.Pump), SimUnits::UnrealToMeters(Route.StartCm));
+		AddEnd(Network.GetPumpToNodeIndex(Route.Pump), SimUnits::UnrealToMeters(Route.EndCm));
+	}
+	for (int32 Node = 0; Node < NumNodes; ++Node)
+	{
+		const double AnchorZ = NodePositionM.IsValidIndex(Node) ? NodePositionM[Node].Z : 0.0;
+		Network.SetNodeElevationM(Node, Count[Node] > 0 ? SumZ[Node] / Count[Node] : AnchorZ);
+	}
+}
+
+void ADataCenterRoomActor::SetCoolantDensityKgM3(double InDensityKgM3)
+{
+	if (!(InDensityKgM3 > 0.0) || InDensityKgM3 == Network.GetFluidDensityKgM3())
+	{
+		return;
+	}
+	Network.SetFluidDensityKgM3(InDensityKgM3);
+	if (Network.GetNumNodes() > 0)
+	{
+		LastResult = Network.Solve(SolveSettings);
+		bPipeColorsDirty = true;
+	}
+}
+
 void ADataCenterRoomActor::SetPumpSpeedRatio(double InSpeedRatio)
 {
 	LastPumpSpeedRatio = FMath::Clamp(InSpeedRatio, 0.0, 1.5);
@@ -420,6 +466,8 @@ void ADataCenterRoomActor::BuildNetwork()
 		LastResult = FHydraulicSolveResult();
 		return;
 	}
+
+	AssignNodeElevationsFromRoutes();
 
 
 	LastResult = Network.Solve(SolveSettings);
