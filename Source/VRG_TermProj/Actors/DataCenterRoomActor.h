@@ -5,6 +5,7 @@
 #include "CoreMinimal.h"
 #include "GameFramework/Actor.h"
 #include "Simulation/Hydraulics/HydraulicNetwork.h"
+#include "Simulation/Hydraulics/CoolantInventory.h"
 #include "Visualization/GjConnectionMesh.h"
 #include "Visualization/PatchManager.h"
 #include "DataCenterRoomActor.generated.h"
@@ -262,6 +263,61 @@ public:
 	// 배관을 다시 이었는지. 통합 액터가 이번 스텝에 유량이 바뀌었는지 알아야 한다.
 	bool ConsumeRebuiltFlag();
 
+	// S2b height term: fluid density of the hydraulic network [kg/m^3]. The integrated actor passes its
+	// CoolantDensityKgM3 (single source); a changed value re-solves the network now.
+	void SetCoolantDensityKgM3(double InDensityKgM3);
+
+	// ---- S2b step 2: leaks and coolant inventory ----
+	// A leak on a rack's supply or return branch (the pipe is split at mid length, the orifice sits there).
+	// Leaks are part of the network topology: adding / clearing one rebuilds the room on its next tick (enter the
+	// simulation after it). A leak's hole size can change at any time without a rebuild (SetLeakHoleDiameterM).
+	int32 AddLeak(ARackThermalActor* Rack, bool bReturnBranch, double HoleDiameterM, double DischargeCoefficient = 0.61);
+	void ClearLeaks();
+	int32 GetNumLeakSpecs() const { return LeakSpecs.Num(); }
+
+	// ---- S2b step 4: isolation valves (Tools/S2b_누수_계획.md) ----
+	// Every rack branch has a supply valve at the supply header and a return valve at the return header. Closing a
+	// rack's valves takes both pipes out of the network and re-solves (not a large resistance). The result keeps two
+	// different scopes apart (D4): racks cut off from the CDU by the closed valves (isolation, graph topology) and
+	// racks whose branch flow changed by more than ValveImpactThreshold (hydraulic impact, from the re-solve).
+	struct FValveReport
+	{
+		int32 RackIndex = INDEX_NONE;         // routed order
+		bool bClosed = false;
+		TArray<int32> IsolatedRacks;          // routed indices whose rack node is cut off
+		TArray<int32> ImpactedRacks;          // routed indices with |dFlow|/Flow_before > threshold (not isolated)
+		TArray<double> FlowBeforeM3s, FlowAfterM3s;   // every routed rack's branch flow, before / after
+		bool bConverged = false;
+	};
+	// Returns false if the rack has no branch (no units, not routed) or nothing changed.
+	bool SetRackValveClosed(const ARackThermalActor* Rack, bool bClosed);
+	bool IsRackValveClosed(const ARackThermalActor* Rack) const;
+	const FValveReport& GetLastValveReport() const { return LastValveReport; }
+	int32 GetRackSupplyValvePipe(int32 RoutedIndex) const { return RackSupplyValvePipe.IsValidIndex(RoutedIndex) ? RackSupplyValvePipe[RoutedIndex] : INDEX_NONE; }
+	int32 GetRackReturnValvePipe(int32 RoutedIndex) const { return RackReturnValvePipe.IsValidIndex(RoutedIndex) ? RackReturnValvePipe[RoutedIndex] : INDEX_NONE; }
+	// Opens every valve (a new simulation run starts with all valves open; valve events re-apply them).
+	void OpenAllValves();
+
+	// Relative branch flow change above which a rack is listed in the hydraulic impact scope. Display threshold
+	// only: the report keeps every rack's before / after flow.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Room|Leak", meta = (ClampMin = "0.0"))
+	double ValveImpactThreshold = 1.0e-3;
+	// S2b step 3: network leak indices on a rack's supply / return branch (for the coupling's leak heat).
+	void GetRackLeakIndices(const ARackThermalActor* Rack, TArray<int32>& OutSupply, TArray<int32>& OutReturn) const;
+	bool SetLeakHoleDiameterM(int32 LeakSpec, double HoleDiameterM);
+	// Network leak index of a leak spec (INDEX_NONE until the room is rebuilt with it).
+	int32 GetLeakNetworkIndex(int32 LeakSpec) const { return LeakSpecs.IsValidIndex(LeakSpec) ? LeakSpecs[LeakSpec].NetworkLeak : INDEX_NONE; }
+	const FCoolantInventory& GetCoolantInventory() const { return Inventory; }
+	// One integrated step [s]: re-solves the network only while a leak is open / make-up is filling / a loop just
+	// depleted (otherwise nothing changes and the static solution stays). Called by the integrated actor before the
+	// coupling reads the flows of this step (rule 4).
+	void StepCoolantInventory(double DtS, double NowS);
+	// Tanks back to their fill state, pumps and leak sizes as built (entering the simulation starts a new run).
+	void RestartCoolantInventory();
+	// Fallback tank of rows without a CDU actor.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hydraulics")
+	FExpansionTankParams FallbackExpansionTank;
+
 	// Drawn pipe paths (see FRoomPipeRoute), rebuilt with the pipe meshes.
 	const TArray<FRoomPipeRoute>& GetPipeRoutesM() const { return PipeRoutesM; }
 
@@ -302,9 +358,29 @@ private:
 	// 랙 자리별 공급 분기 파이프 인덱스. 줄 순서대로 펼친 평탄 배열.
 	TArray<int32> RackBranchPipeIndices;
 	TArray<int32> RackReturnPipeIndices;
+	TArray<int32> RackSupplyValvePipe, RackReturnValvePipe;   // S2b step 4, routed order
+	TArray<TWeakObjectPtr<const ARackThermalActor>> ClosedValveRacks;
+	FValveReport LastValveReport;
 
 	// 파이프마다 공급 쪽인지. 표시용이며 계산에 쓰이지 않는다.
 	TArray<bool> bPipeIsSupplySide;
+
+	struct FRoomLeakSpec
+	{
+		TWeakObjectPtr<ARackThermalActor> Rack;
+		bool bReturnBranch = false;
+		double HoleDiameterM = 0.0;
+		double DischargeCoefficient = 0.61;
+		int32 NetworkLeak = INDEX_NONE;
+	};
+	TArray<FRoomLeakSpec> LeakSpecs;
+	// Branch pipes created or renumbered by leak splits (drawn as branches).
+	TSet<int32> LeakBranchPipes;
+	FCoolantInventory Inventory;
+	int32 LastInventoryLogSecond = -1;
+	// D10: wall time of the inventory re-solves since the last [Leak] line (game thread only).
+	double InventorySolveMsSum = 0.0;
+	int32 InventorySolveCount = 0;
 
 	TArray<FRoomPipeRoute> PipeRoutesM;
 
@@ -385,6 +461,10 @@ private:
 	void DiscoverRows();
 
 	void BuildNetwork();
+	// S2b height (2026-10-20): every node's elevation is the mean height of the drawn pipe ends that meet there
+	// (GJ ports, CDU ports and the pump supply route included), so the solver's z is the mesh's z.
+	// A node no drawn end touches keeps its anchor height. Called before the solve.
+	void AssignNodeElevationsFromRoutes();
 	void BuildPipeMeshes();
 	void BuildDecorMeshes();
 	void DestroyMeshes(TArray<TObjectPtr<UStaticMeshComponent>>& Meshes);

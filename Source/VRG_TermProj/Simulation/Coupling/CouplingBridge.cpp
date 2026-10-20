@@ -36,6 +36,9 @@ void FCouplingBridge::Initialize(const TArray<FRackCouplingTarget>& InTargets,
 	bLastHydraulicsConverged = true;
 
 	LastCoolantMassFlowKgs.Init(0.0, NumRacks);
+	LastSupplyLeakKgs.Init(0.0, NumRacks);
+	LastReturnLeakKgs.Init(0.0, NumRacks);
+	LeakHeatJ = LastLeakHeatW = 0.0;
 	LastAirInletTempK.Init(0.0, NumRacks);
 	LastHeatToAirW.Init(0.0, NumRacks);
 	LastRackAirMassFlowKgs.Init(0.0, NumRacks);
@@ -238,6 +241,18 @@ void FCouplingBridge::PullCoolantFlow()
 
 		Input->CoolantMassFlowKgs = MassFlowKgs;
 		LastCoolantMassFlowKgs[RackIndex] = MassFlowKgs;
+
+		// S2b step 3: leaked mass flows from the same hydraulic solution (one conversion to kg/s, rule 6).
+		double SupplyLeakKgs = 0.0, ReturnLeakKgs = 0.0;
+		if (HydraulicNetwork != nullptr)
+		{
+			for (const int32 L : Links[RackIndex].SupplyLeakIndices)
+				if (L >= 0 && L < HydraulicNetwork->GetNumLeaks()) SupplyLeakKgs += HydraulicNetwork->GetLeakFlowM3s(L) * CoolantDensityKgM3;
+			for (const int32 L : Links[RackIndex].ReturnLeakIndices)
+				if (L >= 0 && L < HydraulicNetwork->GetNumLeaks()) ReturnLeakKgs += HydraulicNetwork->GetLeakFlowM3s(L) * CoolantDensityKgM3;
+		}
+		LastSupplyLeakKgs[RackIndex] = SupplyLeakKgs;
+		LastReturnLeakKgs[RackIndex] = ReturnLeakKgs;
 	}
 }
 
@@ -350,20 +365,38 @@ void FCouplingBridge::SetCduGroups(const TArray<FCduCouplingGroup>& InGroups)
 void FCouplingBridge::CloseCoolantLoop(double DeltaTimeS)
 {
 	double RejectedW = 0.0;
+	double LeakW = 0.0;
+
+	// S2b step 3, leaks (Tools/S2b_누수_계획.md). Water leaving through a hole is replaced by the expansion tank,
+	// which sits on the CDU supply side; its water enters at T_tank = the loop supply temperature of the previous
+	// step (the tank's own heat capacity and mixing are not modelled). The heat exchanger sees the pump flow
+	//   C_hot = sum(m_i) + L_s                       (the pump also carries what the supply holes lose)
+	//   C_hot*T_mix = sum(m_i T_out,i) - L_r T_out + (L_s + L_r) T_tank
+	// so rack heat into coolant = duty + sum L_r cp (T_out - T_tank) + L_s cp (T_supply - T_tank) exactly.
+	// That last sum is the leak heat, computed once here and booked as a ledger outflow (rule 6).
+	// Without leaks every added term is +0.0 and the results are bit-identical to before.
 
 	// CDU groups: mix the returns, one exchanger duty, one supply temperature for the whole row (rule 6).
 	for (int32 G = 0; G < CduGroups.Num(); ++G)
 	{
 		const FCduCouplingGroup& Group = CduGroups[G];
 		double HotWK = 0.0, MixSum = 0.0, MassKgs = 0.0;
+		double TankK = 0.0;
+		bool bTankSet = false;
 		for (const int32 R : Group.RackIndices)
 		{
 			const FRackCouplingTarget& Target = Targets[R];
 			if (Target.Model == nullptr || Target.Input == nullptr) continue;
-			const double C = FMath::Max(Target.Input->CoolantMassFlowKgs, 0.0) * Target.Model->GetParams().CoolantCpJKgK;
+			if (!bTankSet) { TankK = Target.Input->CoolantInletTempK; bTankSet = true; }
+			const double CpJKgK = Target.Model->GetParams().CoolantCpJKgK;
+			const double C = FMath::Max(Target.Input->CoolantMassFlowKgs, 0.0) * CpJKgK;
+			const double OutK = Target.Model->GetState().CoolantTempK;
+			const double Ls = LastSupplyLeakKgs[R], Lr = LastReturnLeakKgs[R];
 			MassKgs += FMath::Max(Target.Input->CoolantMassFlowKgs, 0.0);
 			HotWK += C;
-			MixSum += C * Target.Model->GetState().CoolantTempK;
+			MixSum += C * OutK;
+			HotWK += Ls * CpJKgK;
+			MixSum += (Ls + Lr) * CpJKgK * TankK - Lr * CpJKgK * OutK;
 		}
 		LastCduHotWK[G] = HotWK; LastCduCoolantKgs[G] = MassKgs;
 		// No flow: nothing is carried, so nothing is exchanged; the racks keep their inlet as it was (D2).
@@ -376,7 +409,13 @@ void FCouplingBridge::CloseCoolantLoop(double DeltaTimeS)
 		const double DutyW = CduHeatExchanger::DutyW(Group.Hx, HotWK, MixK);
 		const double SupplyK = MixK - DutyW / HotWK;
 		for (const int32 R : Group.RackIndices)
-			if (Targets[R].Input) Targets[R].Input->CoolantInletTempK = SupplyK;
+		{
+			if (Targets[R].Input == nullptr || Targets[R].Model == nullptr) continue;
+			const double CpJKgK = Targets[R].Model->GetParams().CoolantCpJKgK;
+			LeakW += LastReturnLeakKgs[R] * CpJKgK * (Targets[R].Model->GetState().CoolantTempK - TankK)
+				+ LastSupplyLeakKgs[R] * CpJKgK * (SupplyK - TankK);
+			Targets[R].Input->CoolantInletTempK = SupplyK;
+		}
 		const double FacilityWK = Group.Hx.FacilityMassFlowKgs * Group.Hx.FacilityCpJKgK;
 		LastCduDutyW[G] = DutyW;
 		LastCduReturnK[G] = MixK;
@@ -400,6 +439,22 @@ void FCouplingBridge::CloseCoolantLoop(double DeltaTimeS)
 		// 랙 출구 = 지금 냉각수 노드 온도. 랙 모델도 스텝을 시작할 때 이 값을 읽는다.
 		const double OutletTempK = Target.Model->GetState().CoolantTempK;
 
+		// S2b step 3: same leak bookkeeping as a CDU group of one rack (the radiator sees the pump flow).
+		const double Ls = LastSupplyLeakKgs[RackIndex], Lr = LastReturnLeakKgs[RackIndex];
+		if (Ls + Lr > 0.0)
+		{
+			const double TankK = Target.Input->CoolantInletTempK;
+			const double RackKgs = FMath::Max(MassFlowKgs, 0.0);
+			const double HotKgs = RackKgs + Ls;
+			if (HotKgs * CoolantCpJKgK <= UE_DOUBLE_SMALL_NUMBER) continue;
+			const double MixK = (RackKgs * OutletTempK - Lr * OutletTempK + (Ls + Lr) * TankK) / HotKgs;
+			const double InletK = RadiatorModel::OutletTempK(*Target.Radiator, MixK, HotKgs, CoolantCpJKgK);
+			RejectedW += RadiatorModel::HeatRejectedW(*Target.Radiator, MixK, HotKgs, CoolantCpJKgK);
+			LeakW += Lr * CoolantCpJKgK * (OutletTempK - TankK) + Ls * CoolantCpJKgK * (InletK - TankK);
+			Target.Input->CoolantInletTempK = InletK;
+			continue;
+		}
+
 		// 버린 열과 되돌아오는 온도를 **같은 effectiveness로 한 번에** 구한다 (규약 6).
 		// 그래서 랙이 냉각수로 내보낸 열과 라디에이터가 버린 열이 정확히 같아진다.
 		//   랙이 내보낸 열 = m*cp*(T_out - T_in)
@@ -415,6 +470,8 @@ void FCouplingBridge::CloseCoolantLoop(double DeltaTimeS)
 
 	LastRadiatorRejectedW = RejectedW;
 	RadiatorRejectedJ += RejectedW * DeltaTimeS;
+	LastLeakHeatW = LeakW;
+	LeakHeatJ += LeakW * DeltaTimeS;
 }
 
 void FCouplingBridge::PushHeatToAir()
@@ -522,6 +579,7 @@ void FCouplingBridge::Step(double DeltaTimeS, bool bHydraulicsResolved, bool bHy
 		BaselineAirOutJ = AirSolver ? AirSolver->GetEnergyOutJ() : 0.0;
 		BaselineFanHeatJ = AirSolver ? AirSolver->GetDuctFanHeatJ() : 0.0;
 		RadiatorRejectedJ = RackCoolantOutJ = RackAirOutJ = DroppedAirHeatJ = 0.0;
+		LeakHeatJ = 0.0;
 		bLedgerBaselineTaken = true;
 	}
 
@@ -600,7 +658,8 @@ void FCouplingBridge::Step(double DeltaTimeS, bool bHydraulicsResolved, bool bHy
 
 	// 유출은 계 밖으로 나간 것만이다: 라디에이터(냉각수)와 CRAH 코일(공기).
 	// 랙에서 공기로 넘어간 열은 계 안에서의 이동이라 여기 넣지 않는다.
-	EnergyOutJ = RadiatorRejectedJ + (AirSolver != nullptr ? AirSolver->GetEnergyOutJ() - BaselineAirOutJ : 0.0);
+	// S2b step 3: heat carried away by leaked coolant leaves the system once, next to the radiators / CDUs.
+	EnergyOutJ = RadiatorRejectedJ + LeakHeatJ + (AirSolver != nullptr ? AirSolver->GetEnergyOutJ() - BaselineAirOutJ : 0.0);
 }
 
 double FCouplingBridge::GetEnergyStoredJ() const
@@ -661,6 +720,12 @@ FCouplingSnapshot FCouplingBridge::MakeSnapshot(double SimTimeS) const
 	Snapshot.CduSupplyTempK = LastCduSupplyK;
 	Snapshot.CduFacilityReturnTempK = LastCduFacilityReturnK;
 	Snapshot.TotalAirCoolingRemovedW = LastAirCoolingRemovedW;
+	Snapshot.CoolantLeakHeatW = LastLeakHeatW;
+	Snapshot.RackCoolantOutJ = RackCoolantOutJ;
+	Snapshot.CoolantRejectedJ = RadiatorRejectedJ;
+	Snapshot.CoolantLeakHeatJ = LeakHeatJ;
+	Snapshot.RackSupplyLeakKgs = LastSupplyLeakKgs;
+	Snapshot.RackReturnLeakKgs = LastReturnLeakKgs;
 	if (AirSolver != nullptr && !AirSolver->WereDuctsRejected())
 	{
 		Snapshot.CrahCoilRemovedW = AirSolver->GetLastDuctCoilRemovedW();
@@ -687,9 +752,9 @@ FString FCouplingBridge::DescribeEnergyLedger() const
 	for (const FRackCouplingTarget& Target : Targets) if (Target.Model) RackResidualJ += Target.Model->GetEnergyResidualJ();
 	const double AirResidualJ = AirSolver ? AirSolver->GetEnergyResidualJ() : 0.0;
 	const double AirInJ = AirSolver ? AirSolver->GetEnergyInJ() - AirSolver->GetDuctFanHeatJ() : 0.0;  // rack heat only
-	return FString::Printf(TEXT("전역 잔차 %.3e J = 랙 %.3e + 공기 %.3e + 결합 %.3e | 결합: 냉각수(랙 반출 %.6e - 방출(라디에이터·CDU) %.6e = %.3e), ")
+	return FString::Printf(TEXT("전역 잔차 %.3e J = 랙 %.3e + 공기 %.3e + 결합 %.3e | 결합: 냉각수(랙 반출 %.6e - 방출(라디에이터·CDU) %.6e - 누수 열 %.6e = %.3e), ")
 		TEXT("공기(랙 반출 %.6e - 공기 주입 %.6e = %.3e, 고체 셀 버림 %.3e)"),
 		GetEnergyResidualJ(), RackResidualJ, AirResidualJ, GetEnergyResidualJ() - RackResidualJ - AirResidualJ,
-		RackCoolantOutJ, RadiatorRejectedJ, RackCoolantOutJ - RadiatorRejectedJ, RackAirOutJ, AirInJ, RackAirOutJ - AirInJ, DroppedAirHeatJ);
+		RackCoolantOutJ, RadiatorRejectedJ, LeakHeatJ, RackCoolantOutJ - RadiatorRejectedJ - LeakHeatJ, RackAirOutJ, AirInJ, RackAirOutJ - AirInJ, DroppedAirHeatJ);
 }
 

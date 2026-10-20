@@ -6,6 +6,8 @@
 #include "HydraulicTypes.generated.h"
 
 // 규약 1: 압력 Pa, 체적유량 m^3/s, 질량유량 kg/s.
+// S2b (2026-10-20): every hydraulic pressure is GAUGE pressure [Pa(g)], ambient air = 0. Before the leak model only
+// pressure differences were used, so this definition changes no earlier result.
 // 규약 3: 체적유량 이름은 FlowM3s. 'Q'를 쓰지 않는다.
 // 규약 7: 그래프는 인덱스로만 연결한다. 포인터 그래프를 만들지 않는다.
 
@@ -20,7 +22,7 @@ struct FHydraulicNode
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hydraulics")
 	bool bFixedPressure = false;
 
-	// 고정 노드면 경계 압력, 자유 노드면 초기 추정값 [Pa].
+	// 고정 노드면 경계 압력, 자유 노드면 초기 추정값 [Pa(g), gauge].
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hydraulics")
 	double PressurePa = 1.0e5;
 
@@ -28,9 +30,17 @@ struct FHydraulicNode
 	// 랙이 뽑아 쓰는 유량을 여기에 음수로 넣는다.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hydraulics")
 	double ExternalInflowM3s = 0.0;
+
+	// S2b (2026-10-20): node height above the floor [m] (option B of Tools/S2b_누수_계획.md). Pipes and pumps act on
+	// the piezometric pressure P + rho*g*z; PressurePa stays the static pressure at this height. 0 everywhere keeps
+	// every result bit-identical to the model without heights.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hydraulics")
+	double ElevationM = 0.0;
 };
 
 // 수동 저항 요소. Δp = Resistance * Flow * |Flow|.
+// Δp is the piezometric drop (P_from + rho*g*z_from) - (P_to + rho*g*z_to) (S2b height term; equal to the static
+// drop when both ends are at the same height).
 USTRUCT(BlueprintType)
 struct FHydraulicPipe
 {
@@ -45,10 +55,17 @@ struct FHydraulicPipe
 	// 저항 계수 [Pa*s^2/m^6]. 완전 난류 영역의 2차 손실을 가정한다.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hydraulics")
 	double ResistancePaS2M6 = 2.0e6;
+
+	// S2b step 4: a closed valve on this pipe. The pipe is left out of the solve (as if removed from the network,
+	// not a large resistance) and carries exactly 0. Nodes it cuts off from every fixed-pressure node are no longer
+	// unknowns: their pressure is not modelled and is shown vented (piezometric 0 Pa(g)), so their leaks stop.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hydraulics")
+	bool bClosed = false;
 };
 
 // 능동 요소. 유량이 보조 미지수로 들어간다 (D3).
 // 펌프 곡선: Δp_pump = ShutoffHeadPa * r^2 - CurveCoeff * Flow * |Flow|   (r = SpeedRatio)
+// Δp_pump is the piezometric rise between suction and discharge (the pump's total head as pressure).
 USTRUCT(BlueprintType)
 struct FHydraulicPump
 {
@@ -90,6 +107,33 @@ struct FHydraulicPump
 	// P ∝ Flow^3 같은 상사식으로 전력을 만들지 않는다.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hydraulics")
 	double Efficiency = 0.7;
+};
+
+// S2b step 1 (2026-10-20): a leak orifice at a node, discharging to the ambient at the node's height.
+//   Flow = Cd * A * sqrt(2 * (P - P_amb) / rho)   for P > P_amb, else 0 (no inflow from the ambient),
+// i.e. P - P_amb = R_leak * Flow^2 with R_leak = rho / (2 Cd^2 A^2), the same quadratic form as a pipe.
+// P is the static gauge pressure at the node (the jet leaves at the node's own height, so no height term).
+// The flow is an outflow of that node in the mass balance. Diameter 0 = no leak (results bit-identical).
+USTRUCT(BlueprintType)
+struct FHydraulicLeak
+{
+	GENERATED_BODY()
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hydraulics")
+	int32 NodeIndex = INDEX_NONE;
+
+	// Equivalent round hole diameter [m].
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hydraulics", meta = (ClampMin = "0.0"))
+	double HoleDiameterM = 0.0;
+
+	// Discharge coefficient. 0.61 is the textbook value of a sharp-edged orifice; a real crack or fitting gap is
+	// not that shape, so this is an ESTIMATE (cracks and loose fittings are commonly quoted between about 0.6 and 1).
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hydraulics", meta = (ClampMin = "0.01", ClampMax = "1.0"))
+	double DischargeCoefficient = 0.61;
+
+	// Pressure the jet discharges into [Pa(g)]; 0 = room air.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hydraulics")
+	double AmbientPressurePa = 0.0;
 };
 
 // D5: 정규화 잔차 목표와 최대 반복 수를 함께 쓴다.

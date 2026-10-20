@@ -193,7 +193,7 @@ void ADataCenterSimulationActor::EnterSimulationMode()
 	Mode = ESimMode::Simulation;
 	FindTargetActors();
 	// Rows and hydraulics first: the coupling reads the routed racks and branch pipes.
-	if (Room != nullptr) Room->RebuildRoomNow();
+	if (Room != nullptr) { Room->RebuildRoomNow(); Room->RestartCoolantInventory(); }   // S2b: tanks start full
 	FindTargetActors();
 	if (AirField != nullptr)
 	{
@@ -832,6 +832,7 @@ void ADataCenterSimulationActor::BuildCoupling()
 		FRackCouplingLink Link;
 		Link.BranchPipeIndex = Rack && BranchIndices.IsValidIndex(RackIndex) ? BranchIndices[RackIndex] : INDEX_NONE;
 		Link.FallbackCoolantMassFlowKgs = Target.Input->CoolantMassFlowKgs;
+		if (Rack != nullptr && Room != nullptr) Room->GetRackLeakIndices(Rack, Link.SupplyLeakIndices, Link.ReturnLeakIndices);
 
 		if (bHasAir)
 		{
@@ -923,6 +924,7 @@ void ADataCenterSimulationActor::BuildCoupling()
 	Bridge.SetHydraulicNetwork(Room != nullptr ? &Room->GetMutableNetwork() : nullptr);
 	Bridge.SetAirSolver(bHasAir ? &AirField->GetMutableSolver() : nullptr);
 	Bridge.SetCoolantDensityKgM3(CoolantDensityKgM3);
+	if (Room != nullptr) Room->SetCoolantDensityKgM3(CoolantDensityKgM3);   // S2b height term: same density (one source)
 
 	// A barrier (or containment) that separates a duct's intake from its exhaust leaves both air regions with a
 	// net source: the pressure problem has no solution. Report it at setup instead of only as a solver failure.
@@ -1635,8 +1637,6 @@ void ADataCenterSimulationActor::Tick(float DeltaTime)
 
 		// 배관을 다시 이었으면 유량이 바뀐 것이다. 다리에 알려 준다.
 		const bool bHydraulicsResolved = (Room != nullptr) && Room->ConsumeRebuiltFlag();
-		const bool bHydraulicsConverged =
-			(Room == nullptr) || Room->GetLastSolveResult().bConverged;
 
 		for (int32 StepIndex = 0; StepIndex < NumSteps; ++StepIndex)
 		{
@@ -1644,6 +1644,9 @@ void ADataCenterSimulationActor::Tick(float DeltaTime)
 				// S7-0 계측. 통합 스텝 안에 랙·수력·공기가 모두 들어 있다.
 				VRG_SCOPE_COST(STAT_VrgCouplingStep, CouplingMs);
 				EvalBeforeStep();
+				// S2b step 2: tank pressure -> hydraulic re-solve (only while a leak is open) before the coupling reads flows.
+				if (Room != nullptr) Room->StepCoolantInventory(Clock.GetFixedStepS(), Clock.GetSimTimeS());
+				const bool bHydraulicsConverged = (Room == nullptr) || Room->GetLastSolveResult().bConverged;
 				Bridge.Step(Clock.GetFixedStepS(), bHydraulicsResolved && StepIndex == 0, bHydraulicsConverged);
 			}
 			Clock.CompleteStep();
@@ -2240,9 +2243,6 @@ void ADataCenterSimulationActor::DrainWarmupSteps()
 	constexpr double WarmupBudgetMs = 120.0;
 	const uint64 StartCycles = FPlatformTime::Cycles64();
 
-	const bool bHydraulicsConverged =
-		(Room == nullptr) || Room->GetLastSolveResult().bConverged;
-
 	while (PendingWarmupSteps > 0)
 	{
 		// 시계에도 같은 시간을 넣는다. CompleteStep만 부르면 누적기가 음수로 내려가
@@ -2251,7 +2251,8 @@ void ADataCenterSimulationActor::DrainWarmupSteps()
 		Clock.BeginFrame(Clock.GetFixedStepS());
 		const uint64 StepStart = FPlatformTime::Cycles64();
 		EvalBeforeStep();
-		Bridge.Step(Clock.GetFixedStepS(), bHydraulicsResolved, bHydraulicsConverged);
+		if (Room != nullptr) Room->StepCoolantInventory(Clock.GetFixedStepS(), Clock.GetSimTimeS());
+		Bridge.Step(Clock.GetFixedStepS(), bHydraulicsResolved, (Room == nullptr) || Room->GetLastSolveResult().bConverged);
 		WarmupCouplingMs += FPlatformTime::ToMilliseconds64(FPlatformTime::Cycles64() - StepStart);
 		WarmupRackMs += Bridge.GetLastRackModelsMs();
 		Clock.CompleteStep();
@@ -2380,6 +2381,13 @@ void ADataCenterSimulationActor::EvalBeforeStep()
 		else if (E.Kind == TEXT("rackutil") && Racks.IsValidIndex(E.Index) && Racks[E.Index] != nullptr)
 		{
 			Racks[E.Index]->Input.Utilization = FMath::Clamp(E.Value, 0.0, 1.0);
+		}
+		else if (E.Kind == TEXT("valve") && Room != nullptr)
+		{
+			// S2b step 4: Index = rack in the room's routed order, Value 1 = close, 0 = open. Re-solves now, before
+			// this step's coupling reads the flows (rule 4: the change happens at this step's start time).
+			const TArray<ARackThermalActor*> Routed = Room->GetRoutedRacks();
+			if (Routed.IsValidIndex(E.Index)) Room->SetRackValveClosed(Routed[E.Index], E.Value > 0.5);
 		}
 		UE_LOG(LogTemp, Display, TEXT("[VrgEval] t=%.2f s 이벤트 %s %d %.3f"), NowS, *E.Kind, E.Index, E.Value);
 	}
@@ -2635,7 +2643,7 @@ static FAutoConsoleCommand GVrgEvalReportCommand(
 
 static FAutoConsoleCommand GVrgEvalEventCommand(
 	TEXT("vrg.Eval.Event"),
-	TEXT("시각 이벤트를 넣는다(시뮬레이션 진입마다 다시 적용). vrg.Eval.Event <t s> util <0~1> | <t s> rackutil <랙 번호> <0~1> | clear"),
+	TEXT("시각 이벤트를 넣는다(시뮬레이션 진입마다 다시 적용). vrg.Eval.Event <t s> util <0~1> | <t s> rackutil <랙 번호> <0~1> | <t s> valve <랙 번호> close|open | clear"),
 	FConsoleCommandWithArgsDelegate::CreateLambda([](const TArray<FString>& Args)
 	{
 		for (ADataCenterSimulationActor* Sim : EvalSimActors())
@@ -2646,6 +2654,7 @@ static FAutoConsoleCommand GVrgEvalEventCommand(
 			E.TimeS = FCString::Atod(*Args[0]);
 			E.Kind = Args[1].ToLower();
 			if (E.Kind == TEXT("rackutil") && Args.Num() >= 4) { E.Index = FCString::Atoi(*Args[2]); E.Value = FCString::Atod(*Args[3]); }
+			else if (E.Kind == TEXT("valve") && Args.Num() >= 4) { E.Index = FCString::Atoi(*Args[2]); E.Value = Args[3].ToLower() == TEXT("close") ? 1.0 : 0.0; }
 			else if (E.Kind == TEXT("util")) { E.Value = FCString::Atod(*Args[2]); }
 			else { UE_LOG(LogTemp, Warning, TEXT("[VrgEval] 모르는 이벤트: %s"), *E.Kind); continue; }
 			Sim->EvalEvents.Add(E);
