@@ -5,6 +5,7 @@
 #include "CoreMinimal.h"
 #include "GameFramework/Actor.h"
 #include "Simulation/Hydraulics/HydraulicNetwork.h"
+#include "Simulation/Hydraulics/CoolantInventory.h"
 #include "Visualization/GjConnectionMesh.h"
 #include "Visualization/PatchManager.h"
 #include "DataCenterRoomActor.generated.h"
@@ -266,6 +267,27 @@ public:
 	// CoolantDensityKgM3 (single source); a changed value re-solves the network now.
 	void SetCoolantDensityKgM3(double InDensityKgM3);
 
+	// ---- S2b step 2: leaks and coolant inventory ----
+	// A leak on a rack's supply or return branch (the pipe is split at mid length, the orifice sits there).
+	// Leaks are part of the network topology: adding / clearing one rebuilds the room on its next tick (enter the
+	// simulation after it). A leak's hole size can change at any time without a rebuild (SetLeakHoleDiameterM).
+	int32 AddLeak(ARackThermalActor* Rack, bool bReturnBranch, double HoleDiameterM, double DischargeCoefficient = 0.61);
+	void ClearLeaks();
+	int32 GetNumLeakSpecs() const { return LeakSpecs.Num(); }
+	bool SetLeakHoleDiameterM(int32 LeakSpec, double HoleDiameterM);
+	// Network leak index of a leak spec (INDEX_NONE until the room is rebuilt with it).
+	int32 GetLeakNetworkIndex(int32 LeakSpec) const { return LeakSpecs.IsValidIndex(LeakSpec) ? LeakSpecs[LeakSpec].NetworkLeak : INDEX_NONE; }
+	const FCoolantInventory& GetCoolantInventory() const { return Inventory; }
+	// One integrated step [s]: re-solves the network only while a leak is open / make-up is filling / a loop just
+	// depleted (otherwise nothing changes and the static solution stays). Called by the integrated actor before the
+	// coupling reads the flows of this step (rule 4).
+	void StepCoolantInventory(double DtS, double NowS);
+	// Tanks back to their fill state, pumps and leak sizes as built (entering the simulation starts a new run).
+	void RestartCoolantInventory();
+	// Fallback tank of rows without a CDU actor.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hydraulics")
+	FExpansionTankParams FallbackExpansionTank;
+
 	// Drawn pipe paths (see FRoomPipeRoute), rebuilt with the pipe meshes.
 	const TArray<FRoomPipeRoute>& GetPipeRoutesM() const { return PipeRoutesM; }
 
@@ -309,6 +331,23 @@ private:
 
 	// 파이프마다 공급 쪽인지. 표시용이며 계산에 쓰이지 않는다.
 	TArray<bool> bPipeIsSupplySide;
+
+	struct FRoomLeakSpec
+	{
+		TWeakObjectPtr<ARackThermalActor> Rack;
+		bool bReturnBranch = false;
+		double HoleDiameterM = 0.0;
+		double DischargeCoefficient = 0.61;
+		int32 NetworkLeak = INDEX_NONE;
+	};
+	TArray<FRoomLeakSpec> LeakSpecs;
+	// Branch pipes created or renumbered by leak splits (drawn as branches).
+	TSet<int32> LeakBranchPipes;
+	FCoolantInventory Inventory;
+	int32 LastInventoryLogSecond = -1;
+	// D10: wall time of the inventory re-solves since the last [Leak] line (game thread only).
+	double InventorySolveMsSum = 0.0;
+	int32 InventorySolveCount = 0;
 
 	TArray<FRoomPipeRoute> PipeRoutesM;
 

@@ -32,6 +32,12 @@ public:
 	// S2b step 1: leak orifice at a node (FHydraulicLeak). Returns the leak index.
 	int32 AddLeak(const FHydraulicLeak& Leak);
 	void SetLeakHoleDiameterM(int32 LeakIndex, double HoleDiameterM);
+	// S2b step 2: the boundary pressure a fixed node holds (its PressurePa) and a pump's speed ratio, changed between
+	// solves by the coolant inventory (expansion tank pressure, depleted loop).
+	double GetNodeSetPressurePa(int32 NodeIndex) const { return Nodes.IsValidIndex(NodeIndex) ? Nodes[NodeIndex].PressurePa : 0.0; }
+	void SetNodeSetPressurePa(int32 NodeIndex, double PressurePa) { if (Nodes.IsValidIndex(NodeIndex)) Nodes[NodeIndex].PressurePa = PressurePa; }
+	double GetPumpSpeedRatio(int32 PumpIndex) const { return Pumps.IsValidIndex(PumpIndex) ? Pumps[PumpIndex].SpeedRatio : 0.0; }
+	void SetPumpSpeedRatio(int32 PumpIndex, double SpeedRatio) { if (Pumps.IsValidIndex(PumpIndex)) Pumps[PumpIndex].SpeedRatio = SpeedRatio; }
 	// Puts a node into a pipe at Fraction (0..1) of its resistance from its From end: the pipe keeps its index and
 	// becomes From -> new node (R * Fraction), a new pipe new node -> To carries R * (1 - Fraction). Quadratic losses in
 	// series add, so the network's flows are unchanged. Used to place a leak on a pipe. Returns the new node or

@@ -861,6 +861,10 @@ IT 발열 1684.8 kW = 라디에이터 1262.8 kW + CRAH 28.43 kW + 축적
 | `Hydraulics.Leak.OrificeAnalytic` 누수 √(P_s/(R₁+R_leak)) / 높이 포함 | 0 / 0 | 해석 Q 8.634e-5 m³/s 기준 | < 1e-9 |
 | 같은 테스트 SplitPipe 유량 불변 | 5.7e-14 | NVL72 펌프 유량 기준 | < 1e-9 |
 | `Hydraulics.Leak.InRowRowMassAndPlausibility` 질량 / 노드 수지 | 1.1e-15 / 3.7e-14 | 펌프 유량 약 18.5 L/s 기준 | < 1e-9 |
+| `Hydraulics.Inventory.TankLedgerAndGasLaw` 기체 불변량 / 부피 장부 | 1.40e-16 / 1.33e-13 | `P_pre_abs·V_tank` / 누적 누수 부피 기준, 무차원 | < 1e-12 |
+| `Hydraulics.Inventory.LeakDrainsTankRow` 스텝별 질량 | 1.59e-15 | 펌프 유량 기준, 무차원 (NVL72 한 줄, 3 mm, 10 s) | < 1e-9 |
+| 같은 테스트 시간 정밀화 | 비 2.067 | 누적 누수 오차 dt 0.04 / 0.02 s, 기준해 dt/32 | 1.9 ~ 2.1 |
+| `Hydraulics.Inventory.RoomLeakCoupling` 결합 유량 / 전역 잔차 | 0 / -3.88e-14 | 구멍 아래쪽 배관 유량 / 누적 입력 J 기준, 무차원 | < 1e-12 / < 1e-9 |
 
 **수력 솔버의 오차 하한은 수렴 목표가 정한다.** `SinglePipe`/`Parallel`의 해석해 오차
 3.5e-11은 방법의 정확도 한계가 아니라 `NormalizedResidualTarget`(기본 1e-10)에서
@@ -4580,3 +4584,14 @@ Editor -game L_Test: 34개 표시, 판독 − 실제 최대 0.74 K, 경보 0. �
 `SplitPipe`로 배관 중간에 누수 노드를 넣는다(유량 불변). 신규 `VRG.Hydraulics.Leak.*` 2건 포함 영향 27건 성공·경고 0, 수치는 오차 기준표.
 **방·시뮬레이션에는 아직 연결하지 않았다.** CDU 고정 노드가 무한 저장소라 지금은 정적 상한 해이며(10 mm 분기 누수 1.175 L/s = 펌프의 6.2%, 펌프 유량이 오히려 늘어남),
 2단계 재고·팽창탱크에서 고친다. 상세 `Tools/S2b_누수_계획.md` "1단계 결과".
+
+## 2026-10-20 S2b 2단계: 팽창탱크·재고·보충수
+
+줄마다 CDU 기준 노드를 팽창탱크(등온 기체 쿠션 `P_abs·V_gas = P_pre_abs·V_tank`)로 바꾸고, 통합 시계 스텝마다 명시적 오일러로 탱크 물을 줄인다(`Simulation/Hydraulics/CoolantInventory.*`).
+**누수가 열려 있거나 보충 중일 때만** 그 스텝의 탱크 압력으로 수력망을 다시 풀고 결합 다리가 같은 스텝에 새 유량을 읽는다. 누수가 없으면 풀이 0회·기존 결과 그대로.
+재고 고갈 = 그 줄 펌프 0·누수 닫음·탱크 0 Pa(g)(2상 거동 없음). 새 진입 때 탱크를 다시 채운다. 루프 물 부피는 쓰지 않는다(비압축·강체 관이면 탱크만 압력을 정함).
+기본값은 **추정**이다: 탱크 24 L, 사전 충전 = 충전 − 0.3 bar(팽창탱크 안내서의 EN 12828 관계를 CDU에 적용), 보충 끔·상한 0.1 L/s. CDU 탱크의 공개 사양은 찾지 못했다.
+콘솔(배치 모드): `vrg.Leak.Add <랙 번호> <supply|return> <mm> [Cd]`, `vrg.Leak.Size`, `vrg.Leak.Clear`, `vrg.Leak.Status`. 누수는 저장하지 않는다.
+**고친 결함:** 수력 시작값을 방 전체 고정 노드 평균에서 루프별 자기 고정 노드 평균으로 바꿨다. 한 줄만 고갈되면 정지 루프가 먼 값에서 출발해 Newton이 유량 0 근처에서 멈췄다(D2). 줄마다 같은 압력이면 시작값이 이전과 같다.
+검증: 신규 `VRG.Hydraulics.Inventory.*` 3건 포함 영향 34건 성공(NullRHI), 수치는 오차 기준표. L_Test -game: 3 mm 공급 분기 누수로 탱크 200 → 171 kPa(g), t=21.72 s 고갈, 30 s 전역 잔차 3.29e-14,
+재풀이 스텝당 약 0.40 ms(노드 101, 밀행렬 LU, 결합 스텝 11.2 ms의 3.6 %, 측정값). 화면 확인 안 함. 누수 열 장부는 3단계. 상세는 `Tools/S2b_누수_계획.md`의 "2단계 결과".

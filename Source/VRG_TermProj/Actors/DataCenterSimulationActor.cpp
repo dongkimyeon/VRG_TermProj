@@ -193,7 +193,7 @@ void ADataCenterSimulationActor::EnterSimulationMode()
 	Mode = ESimMode::Simulation;
 	FindTargetActors();
 	// Rows and hydraulics first: the coupling reads the routed racks and branch pipes.
-	if (Room != nullptr) Room->RebuildRoomNow();
+	if (Room != nullptr) { Room->RebuildRoomNow(); Room->RestartCoolantInventory(); }   // S2b: tanks start full
 	FindTargetActors();
 	if (AirField != nullptr)
 	{
@@ -1636,8 +1636,6 @@ void ADataCenterSimulationActor::Tick(float DeltaTime)
 
 		// 배관을 다시 이었으면 유량이 바뀐 것이다. 다리에 알려 준다.
 		const bool bHydraulicsResolved = (Room != nullptr) && Room->ConsumeRebuiltFlag();
-		const bool bHydraulicsConverged =
-			(Room == nullptr) || Room->GetLastSolveResult().bConverged;
 
 		for (int32 StepIndex = 0; StepIndex < NumSteps; ++StepIndex)
 		{
@@ -1645,6 +1643,9 @@ void ADataCenterSimulationActor::Tick(float DeltaTime)
 				// S7-0 계측. 통합 스텝 안에 랙·수력·공기가 모두 들어 있다.
 				VRG_SCOPE_COST(STAT_VrgCouplingStep, CouplingMs);
 				EvalBeforeStep();
+				// S2b step 2: tank pressure -> hydraulic re-solve (only while a leak is open) before the coupling reads flows.
+				if (Room != nullptr) Room->StepCoolantInventory(Clock.GetFixedStepS(), Clock.GetSimTimeS());
+				const bool bHydraulicsConverged = (Room == nullptr) || Room->GetLastSolveResult().bConverged;
 				Bridge.Step(Clock.GetFixedStepS(), bHydraulicsResolved && StepIndex == 0, bHydraulicsConverged);
 			}
 			Clock.CompleteStep();
@@ -2241,9 +2242,6 @@ void ADataCenterSimulationActor::DrainWarmupSteps()
 	constexpr double WarmupBudgetMs = 120.0;
 	const uint64 StartCycles = FPlatformTime::Cycles64();
 
-	const bool bHydraulicsConverged =
-		(Room == nullptr) || Room->GetLastSolveResult().bConverged;
-
 	while (PendingWarmupSteps > 0)
 	{
 		// 시계에도 같은 시간을 넣는다. CompleteStep만 부르면 누적기가 음수로 내려가
@@ -2252,7 +2250,8 @@ void ADataCenterSimulationActor::DrainWarmupSteps()
 		Clock.BeginFrame(Clock.GetFixedStepS());
 		const uint64 StepStart = FPlatformTime::Cycles64();
 		EvalBeforeStep();
-		Bridge.Step(Clock.GetFixedStepS(), bHydraulicsResolved, bHydraulicsConverged);
+		if (Room != nullptr) Room->StepCoolantInventory(Clock.GetFixedStepS(), Clock.GetSimTimeS());
+		Bridge.Step(Clock.GetFixedStepS(), bHydraulicsResolved, (Room == nullptr) || Room->GetLastSolveResult().bConverged);
 		WarmupCouplingMs += FPlatformTime::ToMilliseconds64(FPlatformTime::Cycles64() - StepStart);
 		WarmupRackMs += Bridge.GetLastRackModelsMs();
 		Clock.CompleteStep();

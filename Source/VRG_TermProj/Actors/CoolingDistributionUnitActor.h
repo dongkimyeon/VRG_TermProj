@@ -4,6 +4,7 @@
 
 #include "CoreMinimal.h"
 #include "GameFramework/Actor.h"
+#include "Simulation/Hydraulics/CoolantInventory.h"
 #include "CoolingDistributionUnitActor.generated.h"
 
 // Authored layout values only. Defaults are captured from the actor, never duplicated here.
@@ -79,6 +80,11 @@ public:
 	// ---- 수력 ---- (pressures are gauge, Pa(g): ReferencePressurePa is above room air)
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hydraulics")
 	double ReferencePressurePa = 2.0e5;
+
+	// S2b step 2: expansion tank / make-up water of this CDU's loop (FExpansionTankParams notes the sources and the
+	// estimates). ReferencePressurePa is its fill pressure. Not part of the saved layout settings yet.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hydraulics")
+	FExpansionTankParams ExpansionTank;
 
 	// GB200 NVL72 한 줄(랙 8대, 18.4 L/s)을 약 195 kPa로 미는 운전점에서 역산한 값이다.
 	// 다른 랙을 쓰면 여기부터 다시 역산해야 한다.

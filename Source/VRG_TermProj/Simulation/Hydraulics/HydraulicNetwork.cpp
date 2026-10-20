@@ -253,11 +253,38 @@ void FHydraulicNetwork::SeedInitialGuess()
 	}
 
 	const double SeedPressurePa = FixedCount > 0 ? FixedSumPa / FixedCount : 1.0e5;
+
+	// S2b step 2: seed each connected loop (pipes and pumps; leaks open to ambient and do not connect) from its own
+	// fixed nodes. A drained loop's CDU sits at 0 Pa(g) while the other rows stay at their fill pressure; seeding it
+	// from the room-wide mean starts that stopped loop far from rest, and nodal Newton then stalls at zero flow (D2).
+	// With one fixed node per loop at equal pressure (all rows filled alike) the seed is the same value as before.
+	TArray<int32> Parent;
+	Parent.SetNum(Nodes.Num());
+	for (int32 NodeIndex = 0; NodeIndex < Nodes.Num(); ++NodeIndex) Parent[NodeIndex] = NodeIndex;
+	auto Find = [&Parent](int32 X) { while (Parent[X] != X) { Parent[X] = Parent[Parent[X]]; X = Parent[X]; } return X; };
+	auto Unite = [&](int32 A, int32 B) { if (Parent.IsValidIndex(A) && Parent.IsValidIndex(B)) Parent[Find(A)] = Find(B); };
+	for (const FHydraulicPipe& Pipe : Pipes) Unite(Pipe.FromNodeIndex, Pipe.ToNodeIndex);
+	for (const FHydraulicPump& Pump : Pumps) Unite(Pump.FromNodeIndex, Pump.ToNodeIndex);
+	TArray<double> LoopSumPa;
+	TArray<int32> LoopCount;
+	LoopSumPa.Init(0.0, Nodes.Num());
+	LoopCount.Init(0, Nodes.Num());
+	for (int32 NodeIndex = 0; NodeIndex < Nodes.Num(); ++NodeIndex)
+	{
+		if (Nodes[NodeIndex].bFixedPressure)
+		{
+			const int32 Root = Find(NodeIndex);
+			LoopSumPa[Root] += Nodes[NodeIndex].PressurePa + NodeHydrostaticPa(NodeIndex);
+			++LoopCount[Root];
+		}
+	}
 	for (int32 NodeIndex = 0; NodeIndex < Nodes.Num(); ++NodeIndex)
 	{
 		if (!Nodes[NodeIndex].bFixedPressure)
 		{
-			NodePressurePa[NodeIndex] = SeedPressurePa - NodeHydrostaticPa(NodeIndex);
+			const int32 Root = Find(NodeIndex);
+			const double LoopSeedPa = LoopCount[Root] > 0 ? LoopSumPa[Root] / LoopCount[Root] : SeedPressurePa;
+			NodePressurePa[NodeIndex] = LoopSeedPa - NodeHydrostaticPa(NodeIndex);
 		}
 	}
 

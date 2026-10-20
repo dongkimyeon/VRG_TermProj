@@ -124,6 +124,82 @@ void ADataCenterRoomActor::AssignNodeElevationsFromRoutes()
 	}
 }
 
+int32 ADataCenterRoomActor::AddLeak(ARackThermalActor* Rack, bool bReturnBranch, double HoleDiameterM, double DischargeCoefficient)
+{
+	if (Rack == nullptr || !(HoleDiameterM >= 0.0) || !(DischargeCoefficient > 0.0 && DischargeCoefficient <= 1.0)) return INDEX_NONE;
+	FRoomLeakSpec& Leak = LeakSpecs.AddDefaulted_GetRef();
+	Leak.Rack = Rack;
+	Leak.bReturnBranch = bReturnBranch;
+	Leak.HoleDiameterM = HoleDiameterM;
+	Leak.DischargeCoefficient = DischargeCoefficient;
+	RebuildRoom();
+	return LeakSpecs.Num() - 1;
+}
+
+void ADataCenterRoomActor::ClearLeaks()
+{
+	if (LeakSpecs.Num() == 0) return;
+	LeakSpecs.Reset();
+	RebuildRoom();
+}
+
+bool ADataCenterRoomActor::SetLeakHoleDiameterM(int32 LeakSpec, double HoleDiameterM)
+{
+	if (!LeakSpecs.IsValidIndex(LeakSpec) || !(HoleDiameterM >= 0.0)) return false;
+	LeakSpecs[LeakSpec].HoleDiameterM = HoleDiameterM;
+	// A live size change needs no rebuild; the next inventory step solves with it. Restart restores the built size,
+	// so record the new size as the as-built one only through a rebuild (an event-driven opening is step 5).
+	Network.SetLeakHoleDiameterM(LeakSpecs[LeakSpec].NetworkLeak, HoleDiameterM);
+	return true;
+}
+
+void ADataCenterRoomActor::StepCoolantInventory(double DtS, double NowS)
+{
+	FHydraulicSolveResult Result;
+	const uint64 StartCycles = FPlatformTime::Cycles64();
+	if (!Inventory.Step(Network, SolveSettings, DtS, NowS, Result)) return;
+	InventorySolveMsSum += FPlatformTime::ToMilliseconds64(FPlatformTime::Cycles64() - StartCycles);
+	++InventorySolveCount;
+	LastResult = Result;
+	bPipeColorsDirty = true;
+	if (!LastResult.bConverged)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[Leak] t=%.2f s 수력 수렴 실패 (반복 %d, 정규화 잔차 %.3e)"), NowS, LastResult.IterationsUsed, LastResult.NormalizedResidual);
+	}
+	// One line per simulated second while the inventory is active (and at a depletion).
+	const int32 Second = FMath::FloorToInt32(NowS);
+	bool bJustDepleted = false;
+	for (const FCoolantInventory::FTank& Tank : Inventory.GetTanks()) bJustDepleted |= Tank.State.bDepleted && FMath::Abs(Tank.State.DepletedAtS - NowS) < 0.5 * DtS;
+	if (Second == LastInventoryLogSecond && !bJustDepleted) return;
+	LastInventoryLogSecond = Second;
+	UE_LOG(LogTemp, Display, TEXT("[Leak] t=%.2f s 재고 재풀이 평균 %.3f ms (%d회, 노드 %d, %s, 반복 %d)"), NowS,
+		InventorySolveMsSum / FMath::Max(InventorySolveCount, 1), InventorySolveCount, Network.GetNumNodes(),
+		LastResult.bUsedSparse ? TEXT("희소 LU") : TEXT("밀행렬 LU"), LastResult.IterationsUsed);
+	InventorySolveMsSum = 0.0;
+	InventorySolveCount = 0;
+	const TArray<FCoolantInventory::FTank>& Tanks = Inventory.GetTanks();
+	for (int32 T = 0; T < Tanks.Num(); ++T)
+	{
+		const FCoolantInventory::FTank& Tank = Tanks[T];
+		if (Tank.LeakIndices.Num() == 0 && !Tank.State.bDepleted) continue;
+		UE_LOG(LogTemp, Display, TEXT("[Leak] t=%.2f s 줄 %d: 탱크 %.1f kPa(g), 탱크 물 %.3f L (처음 %.3f), 누수 %.4f L/s, 누적 누수 %.3f L, 보충 %.3f L, 펌프 %.3f L/s%s"),
+			NowS, T, Inventory.GetTankGaugePressurePa(T) * 1e-3, Tank.State.WaterVolumeM3 * 1e3, Tank.State.InitialWaterM3 * 1e3,
+			Tank.LastLeakM3s * 1e3, Tank.State.LeakedM3 * 1e3, Tank.State.MakeupM3 * 1e3, Network.GetPumpFlowM3s(Tank.PumpIndex) * 1e3,
+			Tank.State.bDepleted ? *FString::Printf(TEXT(" | 재고 고갈 (t=%.2f s): 펌프 정지, 누수 닫음, 2상 거동은 모델 없음"), Tank.State.DepletedAtS) : TEXT(""));
+	}
+}
+
+void ADataCenterRoomActor::RestartCoolantInventory()
+{
+	FHydraulicSolveResult Result;
+	if (Inventory.Restart(Network, SolveSettings, Result))
+	{
+		LastResult = Result;
+		bPipeColorsDirty = true;
+	}
+	LastInventoryLogSecond = -1;
+}
+
 void ADataCenterRoomActor::SetCoolantDensityKgM3(double InDensityKgM3)
 {
 	if (!(InDensityKgM3 > 0.0) || InDensityKgM3 == Network.GetFluidDensityKgM3())
@@ -340,6 +416,10 @@ void ADataCenterRoomActor::DiscoverRows()
 void ADataCenterRoomActor::BuildNetwork()
 {
 	Network.Reset();
+	Inventory.Reset();
+	LeakBranchPipes.Reset();
+	for (FRoomLeakSpec& Leak : LeakSpecs) Leak.NetworkLeak = INDEX_NONE;
+	LastInventoryLogSecond = -1;
 	NodePositionM.Reset();
 	RackBranchPipeIndices.Reset();
 	RackReturnPipeIndices.Reset();
@@ -459,6 +539,44 @@ void ADataCenterRoomActor::BuildNetwork()
 				bPipeIsSupplySide[PipeIndex] = true;
 			}
 		}
+
+		// S2b step 2: leaks on this row's racks. The branch is split at mid length (series halves keep the flows);
+		// the rack keeps reading the half that enters it (supply) or leaves it (return), so a supply leak lowers the
+		// rack's coolant flow. The original pipe keeps its start; its end override (GJ port) moves to the new half.
+		TArray<int32> RowLeaks;
+		for (FRoomLeakSpec& Leak : LeakSpecs)
+		{
+			const int32 Column = Row.Racks.IndexOfByKey(Leak.Rack.Get());
+			if (Column == INDEX_NONE) continue;
+			const int32 Pipe = Leak.bReturnBranch ? Handles.RackReturnPipeIndices[Column] : Handles.RackBranchPipeIndices[Column];
+			if (Pipe == INDEX_NONE) continue;
+			FVector A = NodePositionM[Network.GetPipeFromNodeIndex(Pipe)], B = NodePositionM[Network.GetPipeToNodeIndex(Pipe)];
+			if (const FVector* S = PipeStartOverrideCm.Find(Pipe)) A = SimUnits::UnrealToMeters(*S);
+			const FVector* EndOverride = PipeEndOverrideCm.Find(Pipe);
+			if (EndOverride) B = SimUnits::UnrealToMeters(*EndOverride);
+			const int32 Mid = Network.SplitPipe(Pipe, 0.5, 0.5 * (A.Z + B.Z));
+			const int32 NewPipe = Network.GetNumPipes() - 1;
+			NodePositionM.SetNum(Network.GetNumNodes());
+			NodePositionM[Mid] = 0.5 * (A + B);
+			if (EndOverride) { const FVector End = *EndOverride; PipeEndOverrideCm.Remove(Pipe); PipeEndOverrideCm.Add(NewPipe, End); }
+			bPipeIsSupplySide.SetNum(Network.GetNumPipes());
+			bPipeIsSupplySide[NewPipe] = bPipeIsSupplySide[Pipe];
+			LeakBranchPipes.Add(Pipe); LeakBranchPipes.Add(NewPipe);
+			if (Handles.RackReturnPipeIndices[Column] != INDEX_NONE) LeakBranchPipes.Add(Handles.RackReturnPipeIndices[Column]);
+			if (!Leak.bReturnBranch)
+			{
+				const int32 Slot = RackBranchPipeIndices.IndexOfByKey(Pipe);
+				if (Slot != INDEX_NONE) RackBranchPipeIndices[Slot] = NewPipe;
+			}
+			FHydraulicLeak Orifice;
+			Orifice.NodeIndex = Mid;
+			Orifice.HoleDiameterM = Leak.HoleDiameterM;
+			Orifice.DischargeCoefficient = Leak.DischargeCoefficient;
+			Leak.NetworkLeak = Network.AddLeak(Orifice);
+			RowLeaks.Add(Leak.NetworkLeak);
+		}
+		Inventory.AddTank(Network, Handles.CduNodeIndex, Handles.PumpIndex, RowLeaks,
+			Row.Cdu != nullptr ? Row.Cdu->ExpansionTank : FallbackExpansionTank);
 	}
 
 	if (Network.GetNumNodes() == 0)
@@ -522,7 +640,7 @@ void ADataCenterRoomActor::BuildPipeMeshes()
 	for (int32 PipeIndex = 0; PipeIndex < Network.GetNumPipes(); ++PipeIndex)
 	{
 		// 분기관은 헤더보다 가늘어야 흐름이 읽힌다.
-		const bool bIsBranch = RackBranchPipeIndices.Contains(PipeIndex)
+		const bool bIsBranch = RackBranchPipeIndices.Contains(PipeIndex) || LeakBranchPipes.Contains(PipeIndex)
 			|| (PipeIndex > 0 && RackBranchPipeIndices.Contains(PipeIndex - 1));
 
 		UStaticMeshComponent* Pipe = SimMeshBuilder::CreateMeshComponent(this, CylinderMesh, Material, TEXT("Pipe"));
@@ -1030,7 +1148,7 @@ void ADataCenterRoomActor::BuildGjPipeMeshes()
 		FVector B=SimUnits::MetersToUnreal(NodePositionM[Network.GetPipeToNodeIndex(I)]);
 		const FVector* Start=PipeStartOverrideCm.Find(I); const FVector* End=PipeEndOverrideCm.Find(I);
 		if(Start) A=*Start; if(End) B=*End;
-		const bool Branch=RackBranchPipeIndices.Contains(I) || (I>0 && RackBranchPipeIndices.Contains(I-1));
+		const bool Branch=RackBranchPipeIndices.Contains(I) || LeakBranchPipes.Contains(I) || (I>0 && RackBranchPipeIndices.Contains(I-1));
 		TArray<FVector> Points={A,B};
 		if (Branch) Points={A,FVector(A.X,A.Y,FMath::Max(A.Z,B.Z)),FVector(B.X,B.Y,FMath::Max(A.Z,B.Z)),B};
 		// Return terminal: honour the real CDU return port and its outward direction.
@@ -1266,3 +1384,89 @@ double ADataCenterRoomActor::GetTotalPumpElectricalW() const
 	}
 	return TotalW;
 }
+
+
+// ---- S2b step 2: leak console (Tools/S2b_누수_계획.md) ----
+namespace
+{
+	TArray<ADataCenterRoomActor*> LeakRoomActors()
+	{
+		TArray<ADataCenterRoomActor*> Out;
+		if (GEngine == nullptr) return Out;
+		for (const FWorldContext& Context : GEngine->GetWorldContexts())
+		{
+			UWorld* World = Context.World();
+			if (World == nullptr || !World->IsGameWorld()) continue;
+			for (TActorIterator<ADataCenterRoomActor> It(World); It; ++It) Out.Add(*It);
+		}
+		return Out;
+	}
+}
+
+static FAutoConsoleCommand GVrgLeakAddCommand(
+	TEXT("vrg.Leak.Add"),
+	TEXT("랙 분기 누수를 넣는다(배관 위상이 바뀌므로 방을 다시 짓는다. 시뮬레이션 진입 전에). vrg.Leak.Add <랙 번호(줄 순서)> <supply|return> <구멍 지름 mm> [Cd]"),
+	FConsoleCommandWithArgsDelegate::CreateLambda([](const TArray<FString>& Args)
+	{
+		for (ADataCenterRoomActor* Room : LeakRoomActors())
+		{
+			if (Args.Num() < 3) { UE_LOG(LogTemp, Warning, TEXT("[Leak] 사용법: vrg.Leak.Add <랙 번호> <supply|return> <mm> [Cd]")); return; }
+			if (Room->GetRoutedRacks().Num() == 0) Room->RebuildRoomNow();   // right after load the room has not found its racks yet
+			const TArray<ARackThermalActor*> Racks = Room->GetRoutedRacks();
+			const int32 Index = FCString::Atoi(*Args[0]);
+			if (!Racks.IsValidIndex(Index)) { UE_LOG(LogTemp, Warning, TEXT("[Leak] 랙 번호 %d 없음 (0~%d)"), Index, Racks.Num() - 1); return; }
+			const bool bReturn = Args[1].ToLower() == TEXT("return");
+			const double Cd = Args.Num() >= 4 ? FCString::Atod(*Args[3]) : 0.61;
+			const int32 Spec = Room->AddLeak(Racks[Index], bReturn, FCString::Atod(*Args[2]) * 1e-3, Cd);
+			UE_LOG(LogTemp, Display, TEXT("[Leak] 누수 %d 추가: 랙 %d(%s) %s 분기, 구멍 %.2f mm, Cd %.2f — 방을 다시 짓는다"),
+				Spec, Index, *Racks[Index]->GetName(), bReturn ? TEXT("회수") : TEXT("공급"), FCString::Atod(*Args[2]), Cd);
+		}
+	}));
+
+static FAutoConsoleCommand GVrgLeakSizeCommand(
+	TEXT("vrg.Leak.Size"),
+	TEXT("누수 구멍 크기를 바로 바꾼다(다시 짓지 않음). vrg.Leak.Size <누수 번호> <mm>"),
+	FConsoleCommandWithArgsDelegate::CreateLambda([](const TArray<FString>& Args)
+	{
+		for (ADataCenterRoomActor* Room : LeakRoomActors())
+		{
+			if (Args.Num() < 2 || !Room->SetLeakHoleDiameterM(FCString::Atoi(*Args[0]), FCString::Atod(*Args[1]) * 1e-3))
+			{
+				UE_LOG(LogTemp, Warning, TEXT("[Leak] 사용법: vrg.Leak.Size <누수 번호 0~%d> <mm>"), Room->GetNumLeakSpecs() - 1);
+				continue;
+			}
+			UE_LOG(LogTemp, Display, TEXT("[Leak] 누수 %s 구멍 %s mm"), *Args[0], *Args[1]);
+		}
+	}));
+
+static FAutoConsoleCommand GVrgLeakClearCommand(
+	TEXT("vrg.Leak.Clear"),
+	TEXT("누수를 모두 지운다(방을 다시 짓는다)."),
+	FConsoleCommandDelegate::CreateLambda([]()
+	{
+		for (ADataCenterRoomActor* Room : LeakRoomActors()) { Room->ClearLeaks(); UE_LOG(LogTemp, Display, TEXT("[Leak] 누수 모두 지움")); }
+	}));
+
+static FAutoConsoleCommand GVrgLeakStatusCommand(
+	TEXT("vrg.Leak.Status"),
+	TEXT("줄별 팽창탱크·재고·누수 상태를 로그에 쓴다."),
+	FConsoleCommandDelegate::CreateLambda([]()
+	{
+		for (ADataCenterRoomActor* Room : LeakRoomActors())
+		{
+			const FCoolantInventory& Inv = Room->GetCoolantInventory();
+			const FHydraulicNetwork& Net = Room->GetNetwork();
+			for (int32 T = 0; T < Inv.GetTanks().Num(); ++T)
+			{
+				const FCoolantInventory::FTank& Tank = Inv.GetTanks()[T];
+				UE_LOG(LogTemp, Display, TEXT("[Leak] 줄 %d: 탱크 %.1f L, 사전 충전 = 충전 - %.0f kPa, 압력 %.1f kPa(g) (충전 %.1f), 물 %.3f / %.3f L, 누수 %d개, 누적 누수 %.3f L, 보충 %s, 고갈 %s, 펌프 %.3f L/s"),
+					T, Tank.Params.TankVolumeM3 * 1e3, Tank.Params.PrechargeBelowFillPa * 1e-3, Inv.GetTankGaugePressurePa(T) * 1e-3, Tank.FillGaugePa * 1e-3,
+					Tank.State.WaterVolumeM3 * 1e3, Tank.State.InitialWaterM3 * 1e3, Tank.LeakIndices.Num(), Tank.State.LeakedM3 * 1e3,
+					Tank.Params.bMakeupWater ? TEXT("켬") : TEXT("끔"), Tank.State.bDepleted ? TEXT("예") : TEXT("아니오"), Net.GetPumpFlowM3s(Tank.PumpIndex) * 1e3);
+				for (const int32 L : Tank.LeakIndices)
+					UE_LOG(LogTemp, Display, TEXT("[Leak]   누수 망 %d: 구멍 %.2f mm, Cd %.2f, 노드 정압 %.1f kPa(g), 높이 %.3f m, 유량 %.4f L/s"),
+						L, Net.GetLeak(L).HoleDiameterM * 1e3, Net.GetLeak(L).DischargeCoefficient, Net.GetNodePressurePa(Net.GetLeak(L).NodeIndex) * 1e-3,
+						Net.GetNodeElevationM(Net.GetLeak(L).NodeIndex), Net.GetLeakFlowM3s(L) * 1e3);
+			}
+		}
+	}));
