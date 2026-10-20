@@ -23,11 +23,71 @@ int32 FHydraulicNetwork::AddPump(const FHydraulicPump& Pump)
 	return PumpIndex;
 }
 
+int32 FHydraulicNetwork::AddLeak(const FHydraulicLeak& Leak)
+{
+	return Leaks.Add(Leak);
+}
+
+void FHydraulicNetwork::SetLeakHoleDiameterM(int32 LeakIndex, double HoleDiameterM)
+{
+	if (Leaks.IsValidIndex(LeakIndex))
+	{
+		Leaks[LeakIndex].HoleDiameterM = FMath::Max(0.0, HoleDiameterM);
+	}
+}
+
+int32 FHydraulicNetwork::SplitPipe(int32 PipeIndex, double Fraction, double ElevationM)
+{
+	if (!Pipes.IsValidIndex(PipeIndex) || !(Fraction > 0.0 && Fraction < 1.0))
+	{
+		return INDEX_NONE;
+	}
+	FHydraulicNode Mid;
+	Mid.ElevationM = ElevationM;
+	const FHydraulicPipe Original = Pipes[PipeIndex];
+	Mid.PressurePa = 0.5 * (GetNodePressurePa(Original.FromNodeIndex) + GetNodePressurePa(Original.ToNodeIndex));
+	const int32 MidIndex = AddNode(Mid);
+	Pipes[PipeIndex].ToNodeIndex = MidIndex;
+	Pipes[PipeIndex].ResistancePaS2M6 = Original.ResistancePaS2M6 * Fraction;
+	FHydraulicPipe Rest = Original;
+	Rest.FromNodeIndex = MidIndex;
+	Rest.ResistancePaS2M6 = Original.ResistancePaS2M6 * (1.0 - Fraction);
+	AddPipe(Rest);
+	return MidIndex;
+}
+
+double FHydraulicNetwork::LeakResistancePaS2M6(const FHydraulicLeak& Leak, double DensityKgM3)
+{
+	const double AreaM2 = 0.25 * UE_DOUBLE_PI * Leak.HoleDiameterM * Leak.HoleDiameterM;
+	const double CdA = Leak.DischargeCoefficient * AreaM2;
+	return CdA > 0.0 ? DensityKgM3 / (2.0 * CdA * CdA) : 0.0;
+}
+
+double FHydraulicNetwork::GetLeakFlowM3s(int32 LeakIndex) const
+{
+	if (!Leaks.IsValidIndex(LeakIndex) || !NodePressurePa.IsValidIndex(Leaks[LeakIndex].NodeIndex))
+	{
+		return 0.0;
+	}
+	const FHydraulicLeak& Leak = Leaks[LeakIndex];
+	const double R = LeakResistancePaS2M6(Leak, FluidDensityKgM3);
+	const double DeltaPPa = NodePressurePa[Leak.NodeIndex] - Leak.AmbientPressurePa;
+	return R > 0.0 && DeltaPPa > 0.0 ? PipeFlowM3s(DeltaPPa, R) : 0.0;   // no inflow from the ambient
+}
+
+double FHydraulicNetwork::GetTotalLeakFlowM3s() const
+{
+	double SumM3s = 0.0;
+	for (int32 L = 0; L < Leaks.Num(); ++L) SumM3s += GetLeakFlowM3s(L);
+	return SumM3s;
+}
+
 void FHydraulicNetwork::Reset()
 {
 	Nodes.Reset();
 	Pipes.Reset();
 	Pumps.Reset();
+	Leaks.Reset();
 	NodePressurePa.Reset();
 	PumpFlowM3s.Reset();
 	NodeToUnknown.Reset();
@@ -148,6 +208,14 @@ double FHydraulicNetwork::GetNodeImbalanceM3s(int32 NodeIndex) const
 		}
 	}
 
+	for (int32 LeakIndex = 0; LeakIndex < Leaks.Num(); ++LeakIndex)
+	{
+		if (Leaks[LeakIndex].NodeIndex == NodeIndex)
+		{
+			SignedOutflowM3s += GetLeakFlowM3s(LeakIndex);
+		}
+	}
+
 	return SignedOutflowM3s - Nodes[NodeIndex].ExternalInflowM3s;
 }
 
@@ -259,6 +327,18 @@ double FHydraulicNetwork::EvaluateResidual(const FHydraulicSolveSettings& Settin
 		}
 	}
 
+	// Leak orifices: outflow of their node (S2b step 1).
+	for (int32 LeakIndex = 0; LeakIndex < Leaks.Num(); ++LeakIndex)
+	{
+		const double FlowM3s = GetLeakFlowM3s(LeakIndex);
+		MaxFlowMagnitudeM3s = FMath::Max(MaxFlowMagnitudeM3s, FlowM3s);
+		const int32 Unknown = NodeToUnknown[Leaks[LeakIndex].NodeIndex];
+		if (Unknown != INDEX_NONE)
+		{
+			OutResidual[Unknown] += FlowM3s;
+		}
+	}
+
 	for (int32 NodeIndex = 0; NodeIndex < Nodes.Num(); ++NodeIndex)
 	{
 		const int32 Unknown = NodeToUnknown[NodeIndex];
@@ -330,6 +410,10 @@ FHydraulicSolveResult FHydraulicNetwork::Solve(const FHydraulicSolveSettings& Se
 	{
 		bIndicesValid &= Nodes.IsValidIndex(Pump.FromNodeIndex) && Nodes.IsValidIndex(Pump.ToNodeIndex);
 	}
+	for (const FHydraulicLeak& Leak : Leaks)
+	{
+		bIndicesValid &= Nodes.IsValidIndex(Leak.NodeIndex);
+	}
 
 	if (Nodes.Num() == 0 || !bHasFixedPressure || !bIndicesValid)
 	{
@@ -398,6 +482,18 @@ FHydraulicSolveResult FHydraulicNetwork::Solve(const FHydraulicSolveSettings& Se
 					AddJacobian(ToUnknown, FromUnknown, -ConductanceM3sPa);
 				}
 			}
+		}
+
+		// Leaks: d(Flow)/dP like a pipe to a fixed ambient node, with the same Jacobian-only floor. Below the ambient
+		// the residual flow is 0 (one-way); the floored derivative still gives Newton a direction back.
+		for (const FHydraulicLeak& Leak : Leaks)
+		{
+			const double R = LeakResistancePaS2M6(Leak, FluidDensityKgM3);
+			const int32 Unknown = NodeToUnknown[Leak.NodeIndex];
+			if (R <= 0.0 || Unknown == INDEX_NONE) continue;
+			const double DeltaPPa = NodePressurePa[Leak.NodeIndex] - Leak.AmbientPressurePa;
+			const double ClampedDeltaPPa = FMath::Max(DeltaPPa, Settings.JacobianDeltaPFloorPa);
+			AddJacobian(Unknown, Unknown, 1.0 / (2.0 * FMath::Sqrt(R * ClampedDeltaPPa)));
 		}
 
 		// 펌프: 유량이 보조 미지수다.

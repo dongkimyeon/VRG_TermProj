@@ -29,11 +29,26 @@ public:
 	int32 AddNode(const FHydraulicNode& Node);
 	int32 AddPipe(const FHydraulicPipe& Pipe);
 	int32 AddPump(const FHydraulicPump& Pump);
+	// S2b step 1: leak orifice at a node (FHydraulicLeak). Returns the leak index.
+	int32 AddLeak(const FHydraulicLeak& Leak);
+	void SetLeakHoleDiameterM(int32 LeakIndex, double HoleDiameterM);
+	// Puts a node into a pipe at Fraction (0..1) of its resistance from its From end: the pipe keeps its index and
+	// becomes From -> new node (R * Fraction), a new pipe new node -> To carries R * (1 - Fraction). Quadratic losses in
+	// series add, so the network's flows are unchanged. Used to place a leak on a pipe. Returns the new node or
+	// INDEX_NONE (bad index / fraction outside (0,1)).
+	int32 SplitPipe(int32 PipeIndex, double Fraction, double ElevationM);
 	void Reset();
 
 	int32 GetNumNodes() const { return Nodes.Num(); }
 	int32 GetNumPipes() const { return Pipes.Num(); }
 	int32 GetNumPumps() const { return Pumps.Num(); }
+	int32 GetNumLeaks() const { return Leaks.Num(); }
+	const FHydraulicLeak& GetLeak(int32 LeakIndex) const { return Leaks[LeakIndex]; }
+	// Leak outflow at the current solution [m^3/s] (>= 0), and the sum over all leaks.
+	double GetLeakFlowM3s(int32 LeakIndex) const;
+	double GetTotalLeakFlowM3s() const;
+	// R_leak = rho / (2 Cd^2 A^2) [Pa s^2/m^6]; 0 means no orifice (zero area).
+	static double LeakResistancePaS2M6(const FHydraulicLeak& Leak, double DensityKgM3);
 
 	FHydraulicSolveResult Solve(const FHydraulicSolveSettings& Settings);
 
@@ -85,6 +100,7 @@ private:
 	TArray<FHydraulicNode> Nodes;
 	TArray<FHydraulicPipe> Pipes;
 	TArray<FHydraulicPump> Pumps;
+	TArray<FHydraulicLeak> Leaks;
 	double FluidDensityKgM3 = 997.0;
 
 	// 해. Solve가 채운다.

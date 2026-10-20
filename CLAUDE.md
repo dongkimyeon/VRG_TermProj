@@ -858,6 +858,9 @@ IT 발열 1684.8 kW = 라디에이터 1262.8 kW + CRAH 28.43 kW + 축적
 | `Hydraulics.Elevation.ClosedLoopFlowsUnchanged` 순환 유량 | 4.680e-17 | NVL72 한 줄 펌프 유량 18.533 L/s 기준 | < 1e-9 |
 | 같은 테스트 정압 이동 ρg(z_CDU−z) | 1.191e-14 | ρg·Δz 최대 4888.6 Pa 기준 | < 1e-6 |
 | `Hydraulics.Elevation.RoomNodesFollowPipeRoutes` | 0 m | 노드 높이 − 그려진 끝점 평균 (plain/GJ) | < 1e-9 m |
+| `Hydraulics.Leak.OrificeAnalytic` 누수 √(P_s/(R₁+R_leak)) / 높이 포함 | 0 / 0 | 해석 Q 8.634e-5 m³/s 기준 | < 1e-9 |
+| 같은 테스트 SplitPipe 유량 불변 | 5.7e-14 | NVL72 펌프 유량 기준 | < 1e-9 |
+| `Hydraulics.Leak.InRowRowMassAndPlausibility` 질량 / 노드 수지 | 1.1e-15 / 3.7e-14 | 펌프 유량 약 18.5 L/s 기준 | < 1e-9 |
 
 **수력 솔버의 오차 하한은 수렴 목표가 정한다.** `SinglePipe`/`Parallel`의 해석해 오차
 3.5e-11은 방법의 정확도 한계가 아니라 `NormalizedResidualTarget`(기본 1e-10)에서
@@ -4569,3 +4572,11 @@ Editor -game L_Test: 34개 표시, 판독 − 실제 최대 0.74 K, 경보 0. �
 `FHydraulicNode::ElevationM`, 배관·펌프는 피에조 압력 `P + ρgz`의 차를 쓴다(미지수는 정압, 펌프 곡선은 피에조 상승). 높이 0이면 기존 결과와 비트 동일.
 ρ는 통합 액터 `CoolantDensityKgM3` 한 출처(망 기본 997), g = 9.80665. 방 액터가 노드 높이를 그려진 배관 끝점 높이 평균으로 정한다.
 신규 `VRG.Hydraulics.Elevation.*` 3건 포함 영향 37건 성공·경고 0. 닫힌 루프 순환 유량은 높이와 무관(4.7e-17)이라 L_Test 냉각 결과는 바뀌지 않는다. 오차 기준표에 추가.
+
+## 2026-10-20 S2b 1단계: 누수 오리피스
+
+수력 압력은 모두 **계기압 Pa(g), 대기 0**으로 정의했다(기존 결과는 차만 써서 불변). `FHydraulicLeak`: `Flow = Cd·A·√(2(P−P_amb)/ρ)`, 역류 없음,
+`R_leak = ρ/(2(Cd·A)²)`로 배관과 같은 꼴(D3 Newton 그대로). `Cd` 0.61은 날카로운 오리피스 교과서 값이며 실제 균열에는 추정값이다.
+`SplitPipe`로 배관 중간에 누수 노드를 넣는다(유량 불변). 신규 `VRG.Hydraulics.Leak.*` 2건 포함 영향 27건 성공·경고 0, 수치는 오차 기준표.
+**방·시뮬레이션에는 아직 연결하지 않았다.** CDU 고정 노드가 무한 저장소라 지금은 정적 상한 해이며(10 mm 분기 누수 1.175 L/s = 펌프의 6.2%, 펌프 유량이 오히려 늘어남),
+2단계 재고·팽창탱크에서 고친다. 상세 `Tools/S2b_누수_계획.md` "1단계 결과".

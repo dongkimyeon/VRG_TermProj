@@ -76,7 +76,7 @@ public:
 	UFUNCTION(CallInEditor, BlueprintCallable, Category = "Visualization")
 	void RefreshVisuals() { RebuildMeshes(); bMeshesDirty = false; }
 
-	// ---- 수력 ----
+	// ---- 수력 ---- (pressures are gauge, Pa(g): ReferencePressurePa is above room air)
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hydraulics")
 	double ReferencePressurePa = 2.0e5;
 
