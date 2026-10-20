@@ -15,6 +15,9 @@
 #include "Engine/Engine.h"
 #include "Engine/World.h"
 #include "Visualization/GjRackLayout.h"
+#include "Simulation/Evaluation/VrgFaultMonitor.h"
+#include "Serialization/JsonReader.h"
+#include "Serialization/JsonSerializer.h"
 
 #if WITH_DEV_AUTOMATION_TESTS
 
@@ -576,6 +579,105 @@ bool FHydraulicValveRoomTest::RunTest(const FString& Parameters)
 	R.Sim->EnterLayoutMode();
 	R.Sim->EnterSimulationMode();
 	TestTrue(TEXT("re-entry: all valves open"), !R.Room->IsRackValveClosed(R.Routed[0]) && !R.Room->IsRackValveClosed(R.Routed[1]));
+	return true;
+}
+
+// ---- S2b step 5: fault judgement, events, report ----
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFaultMonitorJsonTest, "VRG.Hydraulics.Fault.MonitorAndReportJson", VrgInventoryTestFlags)
+bool FFaultMonitorJsonTest::RunTest(const FString& Parameters)
+{
+	FVrgFaultMonitor M;
+	M.Reset(FVrgFaultSettings());
+	FVrgFaultInput In;
+	In.TimeS = 1.25; In.CoolantMassFlowKgs = { 1.0, 3.0 }; In.DesignMassFlowKgs = { 3.0, 3.0 }; In.MaxComponentTempK = { 300.0, 400.0 }; In.LoopDepleted = { false, true };
+	const int32 N1 = M.Update(In);
+	In.TimeS = 2.5;
+	const int32 N2 = M.Update(In);   // the same faults again: first occurrences only
+	In.bHydraulicsConverged = false; In.HydraulicResidual = 1e-3;
+	const int32 N3 = M.Update(In);
+	TestTrue(TEXT("first occurrence only: low flow r0, over-temperature r1, depleted r1, then hydraulic once"), N1 == 3 && N2 == 0 && N3 == 1);
+	TestTrue(TEXT("first fault time per rack"), M.GetFirstFaultTimeS(0) == 1.25 && M.GetFirstFaultTimeS(1) == 1.25 && M.GetFirstFaultTimeS(5) < 0.0);
+	FVrgLeakRecord L; L.TimeS = 0.5; L.Rack = 3; L.bReturnBranch = true; L.HoleDiameterM = 3.0e-3 / 7.0; M.AddLeak(L);
+	FVrgValveRecord V; V.TimeS = 5.0; V.Rack = 3; V.bClosed = true; V.IsolatedRacks = { 3 }; V.ImpactedRacks = { 0, 1, 2 }; M.AddValve(V);
+	FVrgTankSample T; T.TimeS = 1.0 / 3.0; T.Row = 0; T.PressurePa = 199123.456789; T.WaterM3 = 2.3894e-3 / 3.0; T.LeakedM3 = 1e-5 / 7.0; M.AddTankSample(T);
+
+	FString Text;
+	FJsonSerializer::Serialize(M.ToJsonObject(), TJsonWriterFactory<>::Create(&Text));
+	TSharedPtr<FJsonObject> Parsed;
+	const bool bParsed = FJsonSerializer::Deserialize(TJsonReaderFactory<>::Create(Text), Parsed);
+	FVrgFaultMonitor Back;
+	const bool bRead = bParsed && FVrgFaultMonitor::FromJsonObject(Parsed, Back);
+	AddInfo(FString::Printf(TEXT("JSON %d자, 판정 %d / 누수 %d / 밸브 %d / 탱크 %d, 왕복 일치 %d"), Text.Len(), Back.GetFaults().Num(), Back.GetLeaks().Num(), Back.GetValves().Num(), Back.GetTankSamples().Num(), bRead && Back == M ? 1 : 0));
+	TestTrue(TEXT("report JSON round trip: exactly equal"), bRead && Back == M);
+	FVrgFaultMonitor Old;
+	TestTrue(TEXT("older report without the s2b object reads as empty"), FVrgFaultMonitor::FromJsonObject(nullptr, Old) && Old.GetFaults().Num() == 0 && Old.GetLeaks().Num() == 0);
+	return true;
+}
+
+namespace
+{
+	// One run with event-driven faults; returns the monitor and the leaked volume.
+	FVrgFaultMonitor RunFaultRoom(double Seconds, double LowFlowRatio, int32 LeakRack, bool bReturn, double DiameterM, double& OutLeakedM3,
+		TArray<double>* OutRatio = nullptr)
+	{
+		FLeakRoom R;
+		R.Sim->FaultSettings.LowFlowRatio = LowFlowRatio;
+		ADataCenterSimulationActor::FEvalEvent E;
+		E.TimeS = 0.5; E.Kind = TEXT("leak"); E.Index = LeakRack; E.bFlag = bReturn; E.Value = DiameterM;
+		R.Sim->EvalEvents.Add(E);
+		R.Sim->EnterSimulationMode();
+		R.Run(Seconds);
+		OutLeakedM3 = R.Room->GetCoolantInventory().GetTanks()[0].State.LeakedM3;
+		if (OutRatio)
+		{
+			const FCouplingSnapshot S = R.Sim->GetSnapshot();
+			const TArray<double>& Design = R.Room->GetRackDesignFlowM3s();
+			OutRatio->Reset();
+			for (int32 I = 0; I < R.Routed.Num(); ++I) OutRatio->Add(S.RackCoolantMassFlowKgs[I] / (Design[I] * R.Sim->CoolantDensityKgM3));
+		}
+		return R.Sim->GetFaultMonitor();
+	}
+
+	TArray<int32> RacksOf(const FVrgFaultMonitor& M, EVrgFaultKind Kind)
+	{
+		TArray<int32> Out;
+		for (const FVrgFaultRecord& F : M.GetFaults()) if (F.Kind == Kind) Out.AddUnique(F.Rack);
+		Out.Sort();
+		return Out;
+	}
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFaultRoomEventsTest, "VRG.Hydraulics.Fault.RoomEventsDeterministicNotHardcoded", VrgInventoryTestFlags)
+bool FFaultRoomEventsTest::RunTest(const FString& Parameters)
+{
+	// (a) 10 mm return leak on rack 0 at t = 0.5 s until the row's inventory is depleted; run twice.
+	double LeakedA = 0.0, LeakedB = 0.0;
+	const FVrgFaultMonitor A = RunFaultRoom(3.5, 0.5, 0, true, 10.0e-3, LeakedA);
+	const FVrgFaultMonitor B = RunFaultRoom(3.5, 0.5, 0, true, 10.0e-3, LeakedB);
+	const double LeakT = A.GetLeaks().Num() > 0 ? A.GetLeaks()[0].TimeS : -1.0;
+	FString Lines;
+	for (const FVrgFaultRecord& F : A.GetFaults()) Lines += FString::Printf(TEXT(" [t=%.2f 랙%d %s %.4g]"), F.TimeS, F.Rack, FVrgFaultMonitor::KindName(F.Kind), F.Value);
+	AddInfo(FString::Printf(TEXT("(a) 누수 이벤트 적용 t=%.4f s, 누적 누수 %.6f / %.6f L, 판정%s, 탱크 표본 %d, 두 실행 동일 %d"),
+		LeakT, LeakedA * 1e3, LeakedB * 1e3, *Lines, A.GetTankSamples().Num(), A == B ? 1 : 0));
+	TestTrue(TEXT("(a) event applied at its time on the integrated clock (within one step)"), LeakT >= 0.5 - 1e-9 && LeakT < 0.5 + 0.02);
+	TestTrue(TEXT("(a) depletion judged for both racks of the row (same loop), low flow follows from the stopped pump"),
+		RacksOf(A, EVrgFaultKind::InventoryDepleted) == TArray<int32>({ 0, 1 }) && RacksOf(A, EVrgFaultKind::LowCoolantFlow) == TArray<int32>({ 0, 1 }));
+	TestTrue(TEXT("(a) the stopped loop still solves (no hydraulic fault)"), RacksOf(A, EVrgFaultKind::HydraulicNotConverged).Num() == 0);
+	TestTrue(TEXT("(a) rerun determinism: same faults, times, leaks, tank history and leaked volume"), A == B && LeakedA == LeakedB && LeakedA > 0.0);
+
+	// (b) Not hard-coded: the same 5 mm supply leak at rack 0 or at rack 1. With a judgement ratio of 0.985 the
+	//     flagged set must be exactly the racks whose recomputed flow ratio is below it, and it moves with the leak.
+	double Unused = 0.0;
+	TArray<double> Ratio0, Ratio1;
+	const FVrgFaultMonitor P0 = RunFaultRoom(1.5, 0.985, 0, false, 5.0e-3, Unused, &Ratio0);
+	const FVrgFaultMonitor P1 = RunFaultRoom(1.5, 0.985, 1, false, 5.0e-3, Unused, &Ratio1);
+	auto Expected = [](const TArray<double>& Ratio) { TArray<int32> Out; for (int32 I = 0; I < Ratio.Num(); ++I) if (Ratio[I] < 0.985) Out.Add(I); return Out; };
+	const TArray<int32> F0 = RacksOf(P0, EVrgFaultKind::LowCoolantFlow), F1 = RacksOf(P1, EVrgFaultKind::LowCoolantFlow);
+	AddInfo(FString::Printf(TEXT("(b) 공급 누수 랙0: 유량비 %.4f / %.4f -> 판정 %d개(첫 %d) | 랙1: 유량비 %.4f / %.4f -> 판정 %d개(첫 %d)"),
+		Ratio0[0], Ratio0[1], F0.Num(), F0.Num() ? F0[0] : -1, Ratio1[0], Ratio1[1], F1.Num(), F1.Num() ? F1[0] : -1));
+	TestTrue(TEXT("(b) flagged set = racks with recomputed ratio below the threshold"), F0 == Expected(Ratio0) && F1 == Expected(Ratio1));
+	TestTrue(TEXT("(b) moving the leak moves the flagged rack"), F0 == TArray<int32>({ 0 }) && F1 == TArray<int32>({ 1 }));
 	return true;
 }
 

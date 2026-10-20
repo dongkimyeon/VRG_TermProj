@@ -298,6 +298,14 @@ public:
 	// Opens every valve (a new simulation run starts with all valves open; valve events re-apply them).
 	void OpenAllValves();
 
+	// S2b step 5: design branch flow per routed rack [m^3/s] = the solution with every leak closed and every valve
+	// open (computed at each rebuild). Fault judgement compares the live flow against it.
+	const TArray<double>& GetRackDesignFlowM3s() const { return RackDesignFlowM3s; }
+	// Leak spec for a rack branch, added with a closed hole (0 m) if it does not exist yet (needs a rebuild).
+	int32 EnsureLeakSpec(ARackThermalActor* Rack, bool bReturnBranch);
+	// True when the coolant inventory of the rack's row is depleted.
+	bool IsRackLoopDepleted(int32 RoutedIndex) const;
+
 	// Relative branch flow change above which a rack is listed in the hydraulic impact scope. Display threshold
 	// only: the report keeps every rack's before / after flow.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Room|Leak", meta = (ClampMin = "0.0"))
@@ -359,6 +367,7 @@ private:
 	TArray<int32> RackBranchPipeIndices;
 	TArray<int32> RackReturnPipeIndices;
 	TArray<int32> RackSupplyValvePipe, RackReturnValvePipe;   // S2b step 4, routed order
+	TArray<double> RackDesignFlowM3s;                          // S2b step 5, routed order
 	TArray<TWeakObjectPtr<const ARackThermalActor>> ClosedValveRacks;
 	FValveReport LastValveReport;
 

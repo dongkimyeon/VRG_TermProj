@@ -197,6 +197,20 @@ void ADataCenterRoomActor::StepCoolantInventory(double DtS, double NowS)
 	}
 }
 
+int32 ADataCenterRoomActor::EnsureLeakSpec(ARackThermalActor* Rack, bool bReturnBranch)
+{
+	for (int32 S = 0; S < LeakSpecs.Num(); ++S)
+		if (LeakSpecs[S].Rack.Get() == Rack && LeakSpecs[S].bReturnBranch == bReturnBranch) return S;
+	return AddLeak(Rack, bReturnBranch, 0.0);
+}
+
+bool ADataCenterRoomActor::IsRackLoopDepleted(int32 RoutedIndex) const
+{
+	const TArray<int32> RackRows = GetRoutedRackRows();
+	const TArray<FCoolantInventory::FTank>& Tanks = Inventory.GetTanks();
+	return RackRows.IsValidIndex(RoutedIndex) && Tanks.IsValidIndex(RackRows[RoutedIndex]) && Tanks[RackRows[RoutedIndex]].State.bDepleted;
+}
+
 bool ADataCenterRoomActor::IsRackValveClosed(const ARackThermalActor* Rack) const
 {
 	for (const TWeakObjectPtr<const ARackThermalActor>& R : ClosedValveRacks) if (R.Get() == Rack) return true;
@@ -671,6 +685,16 @@ void ADataCenterRoomActor::BuildNetwork()
 	}
 
 	AssignNodeElevationsFromRoutes();
+
+	// S2b step 5: design flows with every leak closed and every valve open (one extra solve only when leaks exist).
+	{
+		TArray<double> Diameters;
+		for (int32 L = 0; L < Network.GetNumLeaks(); ++L) { Diameters.Add(Network.GetLeak(L).HoleDiameterM); Network.SetLeakHoleDiameterM(L, 0.0); }
+		Network.Solve(SolveSettings);
+		RackDesignFlowM3s.Reset();
+		for (const int32 Pipe : RackBranchPipeIndices) RackDesignFlowM3s.Add(Pipe != INDEX_NONE ? FMath::Abs(Network.GetPipeFlowM3s(Pipe)) : 0.0);
+		for (int32 L = 0; L < Diameters.Num(); ++L) Network.SetLeakHoleDiameterM(L, Diameters[L]);
+	}
 
 	// S2b step 4: valves closed during this run stay closed across a rebuild (layout changes are not allowed while
 	// simulating, so this only matters for rebuilds the room triggers itself).
