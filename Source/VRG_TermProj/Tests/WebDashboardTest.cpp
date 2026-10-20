@@ -709,4 +709,205 @@ bool FWebDashboardSensorsTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+// S2b step 6 (2026-10-20): the leak layer copies what the hydraulic solution, the coolant inventory, the coupling and
+// the fault monitor already hold. One row of two NVL72 racks + CDU; a 5 mm supply leak on rack 0 opens at 0.5 s and
+// rack 0's valves close at 1.0 s (events on the integrated clock). Checked against the models directly, and the two
+// scopes stay different sets (D4): isolation = rack 0 (topology), hydraulic impact = rack 1 (flow vs design).
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FWebDashboardLeaksTest, "VRG.Web.LeaksMatchModel",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::CommandletContext | EAutomationTestFlags::EngineFilter)
+bool FWebDashboardLeaksTest::RunTest(const FString& Parameters)
+{
+	UWorld* World = UWorld::CreateWorld(EWorldType::Game, false);
+	GEngine->CreateNewWorldContext(EWorldType::Game).SetCurrentWorld(World);
+	ADataCenterSimulationActor* Sim = World->SpawnActor<ADataCenterSimulationActor>();
+	Sim->bShowSummary = false;
+	Sim->MaxStepsPerFrame = 16;
+	ADataCenterRoomActor* Room = World->SpawnActor<ADataCenterRoomActor>();
+	World->SpawnActor<AAirFieldDebugActor>()->bShowSummary = false;
+	for (const double Y : { 0.0, 66.0 })   // one row of two racks (synthetic placement)
+	{
+		ARackThermalActor* Rack = World->SpawnActor<ARackThermalActor>(FVector(0, Y, 0), FRotator::ZeroRotator);
+		Rack->ApplyGb200Nvl72Preset(); Rack->bShowReadout = false;
+		Rack->RackSizeM = FVector(GjRackLayout::FrameDepthM, GjRackLayout::FrameWidthM, GjRackLayout::FrameHeightM);
+	}
+	World->SpawnActor<ACoolingDistributionUnitActor>(FVector(-300, 100, 0), FRotator::ZeroRotator);
+	Room->RebuildRoomNow();
+	auto AddEvent = [Sim](double T, const TCHAR* Kind, double Value)
+	{
+		ADataCenterSimulationActor::FEvalEvent E;
+		E.TimeS = T; E.Kind = Kind; E.Index = 0; E.Value = Value; E.bFlag = false;   // rack 0, supply branch
+		Sim->EvalEvents.Add(E);
+	};
+	AddEvent(0.5, TEXT("leak"), 5.0e-3);
+	AddEvent(1.0, TEXT("valve"), 1.0);
+	Sim->EnterSimulationMode();
+	auto Run = [Sim](double Seconds) { for (int32 F = 0; F < FMath::RoundToInt32(Seconds / 0.1); ++F) Sim->Tick(.1f); };
+	auto RoundTrip = [this](const FVrgDashboardLeaks& D, const TCHAR* Label)
+	{
+		FVrgDashboardLeaks Back;
+		TestTrue(FString::Printf(TEXT("%s: JSON round-trip exact"), Label), FVrgDashboardLeaks::FromJson(D.ToJson(), Back) && Back == D);
+	};
+
+	// Before the leak opens: the prepared hole is closed (0 m), every branch is at its design flow.
+	Run(0.3);
+	const FVrgDashboardLeaks D0 = Sim->BuildDashboardLeaks();
+	TestTrue(TEXT("t0: one prepared leak, closed, no flow"), D0.bHasRoom && D0.bSimulating && D0.Leaks.Num() == 1
+		&& D0.Leaks[0].HoleDiameterM == 0.0 && D0.Leaks[0].FlowM3s == 0.0 && D0.LeakEvents.Num() == 0);
+	TestTrue(TEXT("t0: no rack isolated or impacted"), D0.Racks.Num() == 2 && !D0.Racks[0].bIsolated && !D0.Racks[0].bImpacted
+		&& !D0.Racks[1].bIsolated && !D0.Racks[1].bImpacted);
+	RoundTrip(D0, TEXT("t0"));
+
+	// Leak open: values are the network's, the inventory's and the coupling's (exact copies).
+	Run(0.4);
+	const FVrgDashboardLeaks D1 = Sim->BuildDashboardLeaks();
+	const FHydraulicNetwork& Net = Room->GetNetwork();
+	const FCoolantInventory& Inv = Room->GetCoolantInventory();
+	TestTrue(TEXT("t1: one leak, one tank"), D1.Leaks.Num() == 1 && D1.Tanks.Num() == 1 && D1.LeakEvents.Num() == 1);
+	if (D1.Leaks.Num() != 1 || D1.Tanks.Num() != 1 || D1.Racks.Num() != 2) { Sim->EnterLayoutMode(); GEngine->DestroyWorldContext(World); World->DestroyWorld(false); return false; }
+	const FVrgDashboardLeak& L = D1.Leaks[0];
+	const int32 Node = Net.GetLeak(L.NetworkLeak).NodeIndex;
+	TestTrue(TEXT("t1: leak = network orifice (flow, pressure, size, elevation exact)"), L.FlowM3s == Net.GetLeakFlowM3s(L.NetworkLeak) && L.FlowM3s > 0.0
+		&& L.NodePressurePa == Net.GetNodePressurePa(Node) && L.HoleDiameterM == 5.0e-3 && L.ElevationM == Net.GetNodeElevationM(Node)
+		&& L.Rack == 0 && L.Inlet == 0 && !L.bReturnBranch && L.Tank == 0 && !L.bNodeIsolated);
+	TestTrue(TEXT("t1: leak position = its node"), L.PositionM == Room->GetNodePositionM(Node));
+	// The orifice sits where two drawn pipe paths meet (the split branch halves).
+	int32 RouteEnds = 0;
+	for (const FRoomPipeRoute& R : Room->GetPipeRoutesM())
+	{
+		if (R.PointsM.Num() == 0) continue;
+		RouteEnds += (R.PointsM[0] - L.PositionM).Size() < 1e-9 ? 1 : 0;
+		RouteEnds += (R.PointsM.Last() - L.PositionM).Size() < 1e-9 ? 1 : 0;
+	}
+	TestEqual(TEXT("t1: two drawn pipe paths end at the leak"), RouteEnds, 2);
+	const FCoolantInventory::FTank& Tank = Inv.GetTanks()[0];
+	const FVrgDashboardTank& T1 = D1.Tanks[0];
+	TestTrue(TEXT("t1: tank = inventory (exact)"), T1.PressurePa == Inv.GetTankGaugePressurePa(0) && T1.WaterM3 == Tank.State.WaterVolumeM3
+		&& T1.LeakedM3 == Tank.State.LeakedM3 && T1.LeakFlowM3s == Tank.LastLeakM3s && T1.FillPressurePa == Tank.FillGaugePa
+		&& T1.PumpFlowM3s == Net.GetPumpFlowM3s(Tank.PumpIndex) && T1.Leaks == 1 && T1.Row == 0 && !T1.Cdu.IsEmpty());
+	TestTrue(TEXT("t1: draining tank below its fill pressure, ledger closes"), T1.PressurePa < T1.FillPressurePa && T1.LeakedM3 > 0.0
+		&& FMath::Abs(T1.InitialWaterM3 - T1.WaterM3 - T1.LeakedM3 + T1.MakeupM3) <= 1e-12 * T1.LeakedM3);
+	const FVrgFaultInput In = Sim->MakeFaultInput();
+	const TArray<double>& Design = Room->GetRackDesignFlowM3s();
+	const TArray<int32>& Branches = Room->GetRackBranchPipeIndices();
+	bool bRackCopy = true;
+	for (int32 I = 0; I < 2; ++I)
+	{
+		const FVrgDashboardLeakRack& R = D1.Racks[I];
+		bRackCopy &= R.Rack == I && R.DesignFlowM3s == Design[I] && R.FlowM3s == Net.GetPipeFlowM3s(Branches[I])
+			&& R.CoolantKgs == In.CoolantMassFlowKgs[I] && R.DesignKgs == In.DesignMassFlowKgs[I] && R.MaxComponentK == In.MaxComponentTempK[I]
+			&& R.CoolantKgs > 0.0 && R.DesignKgs > 0.0;
+	}
+	TestTrue(TEXT("t1: rack rows = hydraulic solution and the fault judgement's input (exact)"), bRackCopy);
+	TestTrue(TEXT("t1: the coupling read each rack's own branch (coolant = |branch flow| x density, exact)"),
+		D1.Racks[0].CoolantKgs == FMath::Abs(D1.Racks[0].FlowM3s) * Sim->CoolantDensityKgM3
+		&& D1.Racks[1].CoolantKgs == FMath::Abs(D1.Racks[1].FlowM3s) * Sim->CoolantDensityKgM3);
+	TestTrue(TEXT("t1: leak mass flow on rack 0 supply only (coupling's value)"), D1.Racks[0].SupplyLeakKgs > 0.0 && D1.Racks[0].ReturnLeakKgs == 0.0
+		&& D1.Racks[1].SupplyLeakKgs == 0.0 && D1.Racks[1].ReturnLeakKgs == 0.0);
+	auto Rel = [](const FVrgDashboardLeakRack& R) { return FMath::Abs(FMath::Abs(R.FlowM3s) - R.DesignFlowM3s) / R.DesignFlowM3s; };
+	const double Rel0 = Rel(D1.Racks[0]), Rel1 = Rel(D1.Racks[1]);
+	TestTrue(TEXT("t1: impact = flow vs design above the display threshold, nothing isolated"),
+		D1.Racks[0].bImpacted == (Rel0 > D1.ImpactThreshold) && D1.Racks[1].bImpacted == (Rel1 > D1.ImpactThreshold) && D1.Racks[0].bImpacted
+		&& !D1.Racks[0].bIsolated && !D1.Racks[1].bIsolated);
+	// A supply leak loses water at the supply (tank reference) temperature, so its leak heat is 0 by the ledger's own
+	// definition; the layer copies whatever the coupling booked.
+	TestTrue(TEXT("t1: leak heat = coupling's (exact)"), D1.LeakHeatW == Sim->GetSnapshot().CoolantLeakHeatW);
+	RoundTrip(D1, TEXT("t1"));
+
+	// Valve closed on rack 0: isolation and hydraulic impact are different sets (D4); the leak is cut off.
+	Run(0.6);
+	const FVrgDashboardLeaks D2 = Sim->BuildDashboardLeaks();
+	const ADataCenterRoomActor::FValveReport& V = Room->GetLastValveReport();
+	const FVrgFaultMonitor& M = Sim->GetFaultMonitor();
+	TestTrue(TEXT("t2: rack 0 valved and isolated, rack 1 impacted, not isolated"), D2.Racks.Num() == 2 && D2.Racks[0].bValveClosed
+		&& D2.Racks[0].bIsolated && !D2.Racks[0].bImpacted && !D2.Racks[1].bValveClosed && !D2.Racks[1].bIsolated && D2.Racks[1].bImpacted);
+	TestTrue(TEXT("t2: valve report = the room's (scopes and every flow exact)"), D2.bHasValveReport && D2.ValveReport.Rack == 0 && D2.ValveReport.bClosed
+		&& D2.ValveReport.IsolatedRacks == V.IsolatedRacks && D2.ValveReport.ImpactedRacks == V.ImpactedRacks && D2.bValveConverged == V.bConverged
+		&& D2.ValveFlowBeforeM3s == V.FlowBeforeM3s && D2.ValveFlowAfterM3s == V.FlowAfterM3s
+		&& V.IsolatedRacks == TArray<int32>({ 0 }) && V.ImpactedRacks == TArray<int32>({ 1 }));
+	TestTrue(TEXT("t2: leak node isolated, leak flow exactly 0"), D2.Leaks.Num() == 1 && D2.Leaks[0].bNodeIsolated && D2.Leaks[0].FlowM3s == 0.0);
+	TestTrue(TEXT("t2: records = the fault monitor's (faults, leak and valve events)"), D2.Faults == M.GetFaults() && D2.LeakEvents == M.GetLeaks()
+		&& D2.ValveEvents == M.GetValves() && D2.ValveEvents.Num() == 1 && D2.LeakEvents.Num() == 1);
+	bool bLowFlow0 = false;
+	for (const FVrgFaultRecord& F : D2.Faults) bLowFlow0 |= F.Rack == 0 && F.Kind == EVrgFaultKind::LowCoolantFlow;
+	TestTrue(TEXT("t2: rack 0 judged low coolant flow (from its computed flow)"), bLowFlow0);
+	int32 History = 0;
+	for (const FVrgTankSample& S : M.GetTankSamples()) History += S.TimeS >= D2.SimTimeS - D2.HistoryLengthS ? 1 : 0;
+	TestTrue(TEXT("t2: tank history = the monitor's samples of the active tank inside the window"), D2.TankHistory.Num() == History && History > 0
+		&& D2.TankHistory.Last() == M.GetTankSamples().Last());
+	RoundTrip(D2, TEXT("t2"));
+	const FString Json = D2.ToJson();
+	AddInfo(FString::Printf(TEXT("leak layer: t1 leak %.4f L/s at %.1f kPa(g) (z %.3f m), tank %.1f kPa(g) / %.4f L, rack flow rel to design %.3e / %.3e; ")
+		TEXT("t2 isolated [0], impacted [1] (rack 1 %.4f -> %.4f L/s), faults %d, history %d, JSON %d chars"),
+		L.FlowM3s * 1e3, L.NodePressurePa * 1e-3, L.ElevationM, T1.PressurePa * 1e-3, T1.WaterM3 * 1e3, Rel0, Rel1,
+		V.FlowBeforeM3s.IsValidIndex(1) ? V.FlowBeforeM3s[1] * 1e3 : 0.0, V.FlowAfterM3s.IsValidIndex(1) ? V.FlowAfterM3s[1] * 1e3 : 0.0,
+		D2.Faults.Num(), D2.TankHistory.Num(), Json.Len()));
+
+	// Layout mode: physics paused, no coupled values.
+	Sim->EnterLayoutMode();
+	const FVrgDashboardLeaks D3 = Sim->BuildDashboardLeaks();
+	TestTrue(TEXT("layout mode: flagged, no coupled values"), !D3.bSimulating && D3.LeakHeatW == 0.0 && D3.Racks.Num() == 2 && D3.Racks[0].CoolantKgs == 0.0);
+	GEngine->DestroyWorldContext(World);
+	World->DestroyWorld(false);
+	return true;
+}
+
+// Regression (2026-10-20, found through the leak layer in L_Test): entering the simulation before the room had routed
+// its racks (-ExecCmds on the first frame) skipped the leak-hole preparation, so the leak event rebuilt the room
+// mid-run. The split renumbered the pipes of every later row while the coupling kept its old branch indices: racks of
+// those rows were fed header flows (up to 7x their branch flow) and the tanks were refilled. Two rows, no room build
+// before entry, a leak event on the first rack: the network must not be rebuilt by the event, and every rack's
+// coupled coolant flow must be its own branch flow. A mid-run vrg.Leak.Add is refused for the same reason.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FWebDashboardLeakRowMappingTest, "VRG.Web.LeakEventKeepsRowMapping",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::CommandletContext | EAutomationTestFlags::EngineFilter)
+bool FWebDashboardLeakRowMappingTest::RunTest(const FString& Parameters)
+{
+	UWorld* World = UWorld::CreateWorld(EWorldType::Game, false);
+	GEngine->CreateNewWorldContext(EWorldType::Game).SetCurrentWorld(World);
+	ADataCenterSimulationActor* Sim = World->SpawnActor<ADataCenterSimulationActor>();
+	Sim->bShowSummary = false;
+	Sim->MaxStepsPerFrame = 16;
+	ADataCenterRoomActor* Room = World->SpawnActor<ADataCenterRoomActor>();
+	World->SpawnActor<AAirFieldDebugActor>()->bShowSummary = false;
+	for (const double X : { 0.0, 400.0 })      // two rows of two racks (synthetic placement)
+		for (const double Y : { 0.0, 66.0 })
+		{
+			ARackThermalActor* Rack = World->SpawnActor<ARackThermalActor>(FVector(X, Y, 0), FRotator::ZeroRotator);
+			Rack->ApplyGb200Nvl72Preset(); Rack->bShowReadout = false;
+			Rack->RackSizeM = FVector(GjRackLayout::FrameDepthM, GjRackLayout::FrameWidthM, GjRackLayout::FrameHeightM);
+		}
+	World->SpawnActor<ACoolingDistributionUnitActor>(FVector(-300, 100, 0), FRotator::ZeroRotator);
+	TestEqual(TEXT("room has not routed its racks before entry (as on the first frame)"), Room->GetRoutedRacks().Num(), 0);
+	ADataCenterSimulationActor::FEvalEvent E;
+	E.TimeS = 0.3; E.Kind = TEXT("leak"); E.Index = 0; E.Value = 5.0e-3; E.bFlag = false;
+	Sim->EvalEvents.Add(E);
+	Sim->EnterSimulationMode();
+	const int32 PipesAtEntry = Room->GetNetwork().GetNumPipes();
+	TestTrue(TEXT("two rows routed, the hole prepared at entry"), Room->GetNumRows() == 2 && Room->GetRoutedRacks().Num() == 4
+		&& Room->GetNumLeakSpecs() == 1 && Room->GetLeakNetworkIndex(0) != INDEX_NONE);
+	for (int32 F = 0; F < 6; ++F) Sim->Tick(.1f);
+	const FVrgDashboardLeaks D = Sim->BuildDashboardLeaks();
+	TestTrue(TEXT("the event opened the prepared hole without a rebuild"), D.LeakEvents.Num() == 1 && D.Leaks.Num() == 1
+		&& D.Leaks[0].FlowM3s > 0.0 && Room->GetNetwork().GetNumPipes() == PipesAtEntry);
+	bool bOwnBranch = D.Racks.Num() == 4;
+	double WorstRel = 0.0;
+	for (const FVrgDashboardLeakRack& R : D.Racks)
+	{
+		const double Expected = FMath::Abs(R.FlowM3s) * Sim->CoolantDensityKgM3;
+		bOwnBranch &= R.CoolantKgs == Expected && Expected > 0.0;
+		WorstRel = FMath::Max(WorstRel, FMath::Abs(R.CoolantKgs - Expected) / FMath::Max(Expected, 1e-30));
+	}
+	TestTrue(TEXT("every rack's coupled coolant flow = its own branch flow x density (exact)"), bOwnBranch);
+	const int32 SpecsBefore = Room->GetNumLeakSpecs();
+	AddExpectedMessagePlain(TEXT("시뮬레이션 실행 중에는 누수를 추가하지 않는다"), ELogVerbosity::Warning, EAutomationExpectedMessageFlags::Contains, 1);
+	TestTrue(TEXT("mid-run AddLeak is refused (no topology change)"), Room->AddLeak(Room->GetRoutedRacks()[3], true, 3.0e-3) == INDEX_NONE
+		&& Room->GetNumLeakSpecs() == SpecsBefore);
+	AddInfo(FString::Printf(TEXT("rows %d, racks %d, pipes %d, leak %.4f L/s, worst coupled/branch rel %.3e"),
+		Room->GetNumRows(), D.Racks.Num(), PipesAtEntry, D.Leaks.Num() ? D.Leaks[0].FlowM3s * 1e3 : 0.0, WorstRel));
+	Sim->EnterLayoutMode();
+	TestFalse(TEXT("layout mode unlocks the leak topology"), Room->IsLeakTopologyLocked());
+	GEngine->DestroyWorldContext(World);
+	World->DestroyWorld(false);
+	return true;
+}
+
 #endif

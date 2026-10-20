@@ -338,6 +338,11 @@ public:
 	const TArray<double>& GetLastCduFacilityReturnK() const { return LastCduFacilityReturnK; }
 	const TArray<double>& GetLastCduHotWK() const { return LastCduHotWK; }
 	const TArray<double>& GetLastCduCoolantKgs() const { return LastCduCoolantKgs; }
+	// S2b step 6 (web leak layer): per rack (target order) leaked mass flow on the supply / return branch [kg/s] and the
+	// leak heat [W] of the last step, as the coolant ledger used them.
+	const TArray<double>& GetLastSupplyLeakKgs() const { return LastSupplyLeakKgs; }
+	const TArray<double>& GetLastReturnLeakKgs() const { return LastReturnLeakKgs; }
+	double GetLastLeakHeatW() const { return LastLeakHeatW; }
 	// Wall time of the rack models in the last step [ms] (measurement).
 	double GetLastRackModelsMs() const { return LastRackModelsMs; }
 

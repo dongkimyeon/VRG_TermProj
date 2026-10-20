@@ -121,6 +121,11 @@
   #c3d:active { cursor:grabbing; }
   .view3d .over { position:absolute; left:28px; bottom:22px; font-size:11px; color:var(--faint); pointer-events:none; }
   .view3d .err { position:absolute; inset:60px 16px auto; color:#f0b43c; font-size:12px; }
+  /* 누수 레이어 (S2b 6단계) */
+  #leaktable h3 { font-size:12px; font-weight:600; margin:12px 0 0; color:var(--muted); }
+  #leaktable .none { font-size:11.5px; color:var(--faint); margin-top:4px; }
+  #leaktable svg { display:inline-block; width:120px; height:26px; vertical-align:middle; overflow:visible; }
+  #leaktable td.iso { color:#c678dd; } #leaktable td.imp { color:#4fc1c9; } #leaktable td.bad { color:#f08a8d; }
 </style>
 <!-- 3D 보기: 데모와 같은 three.js 0.128 (전역 THREE + OrbitControls). 못 불러와도 나머지 화면은 동작한다. -->
 <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/build/three.min.js"></script>
@@ -228,6 +233,17 @@
     </div>
     <div id="sensnote" style="font-size:11px;color:var(--faint);margin-top:4px" hidden></div>
     <div id="senstable" hidden></div>
+    <div class="tablebar" style="align-items:center;flex-wrap:wrap">
+      <button id="leakbtn" type="button" aria-pressed="true">누수·밸브: 켜짐</button>
+      <button id="leaktbtn" type="button">누수·밸브 표 보기</button>
+      <span id="leaklegend" style="display:inline-flex;align-items:center;gap:10px;font-size:11px;color:var(--faint)">
+        <span><span style="display:inline-block;width:9px;height:9px;border-radius:50%;background:#e5484d"></span> ▲ 누수점</span>
+        <span><span style="display:inline-block;width:16px;height:0;border-top:2px solid #c678dd;vertical-align:middle"></span> 격리 범위(위상)</span>
+        <span><span style="display:inline-block;width:16px;height:0;border-top:2px dashed #4fc1c9;vertical-align:middle"></span> 수력 영향 범위(재계산)</span>
+        <span><span style="display:inline-block;width:11px;height:11px;border-radius:50%;background:#e5484d;color:#fff;font:700 9px/11px sans-serif;text-align:center">!</span> 장애 판정</span></span>
+    </div>
+    <div id="leaknote" style="font-size:11px;color:var(--faint);margin-top:4px"></div>
+    <div id="leaktable" hidden></div>
   </div>
   <div class="panel plan">
     <div class="head">
@@ -552,6 +568,7 @@ function init3D() {
   V3.pipePickables = []; V3.pipeMats = []; V3.pipeArrows = []; V3.pipeKey = '';
   V3.air = new THREE.Group(); V3.air.visible = false; V3.scene.add(V3.air);
   V3.sens = new THREE.Group(); V3.sens.visible = false; V3.scene.add(V3.sens); V3.sensPickables = []; V3.sensKey = '';
+  V3.leak = new THREE.Group(); V3.scene.add(V3.leak); V3.leakPickables = []; V3.leakKey = ''; V3.leakRacks = []; V3.leakLabels = []; V3.tankLabels = [];
   // ▲ 경고 표식(27 °C 권장 상한 초과): 색만으로 상태를 알리지 않도록 기호를 띄운다.
   const c = document.createElement('canvas'); c.width = c.height = 64;
   const g = c.getContext('2d'); g.fillStyle = '#f0b43c'; g.font = 'bold 52px sans-serif'; g.textAlign = 'center'; g.textBaseline = 'middle'; g.fillText('▲', 32, 36);
@@ -559,7 +576,7 @@ function init3D() {
   const ray = new THREE.Raycaster(), ndc = new THREE.Vector2();
   const hit = ev => { const r = canvas.getBoundingClientRect(); ndc.set((ev.clientX - r.left) / r.width * 2 - 1, -(ev.clientY - r.top) / r.height * 2 + 1);
     ray.setFromCamera(ndc, V3.cam);
-    const targets = (V3.sens.visible ? V3.sensPickables : []).concat(V3.pipes.visible ? V3.pipePickables : [], V3.pickables);
+    const targets = (V3.leak.visible ? V3.leakPickables : []).concat(V3.sens.visible ? V3.sensPickables : [], V3.pipes.visible ? V3.pipePickables : [], V3.pickables);
     const h = ray.intersectObjects(targets, false)[0]; return h ? h.object.userData : null; };
   let down = null;
   canvas.addEventListener('pointerdown', ev => { down = { x:ev.clientX, y:ev.clientY }; });
@@ -571,11 +588,12 @@ function init3D() {
     if (ev.buttons) { tip.style.display = 'none'; return; }
     const u = hit(ev), e = u && u.e;
     if (!u) { tip.style.display = 'none'; return; }
-    if (u.sensor !== undefined) tip.innerHTML = sensorTip(u.sensor);
+    if (u.leak !== undefined) tip.innerHTML = leakTip(u.leak);
+    else if (u.sensor !== undefined) tip.innerHTML = sensorTip(u.sensor);
     else if (u.pipe !== undefined) tip.innerHTML = pipeTip(layout.pipes[u.pipe]);
     else { const cv = inletC(e);
     tip.innerHTML = `<div class="k">${KIND[e.kind]}${e.auto ? ' (자동 배치)' : ''}</div><div>${e.name}</div><div><span class="k">위치</span> (${e.xM.toFixed(2)}, ${e.yM.toFixed(2)}) m · 높이 ${(e.heightM || 0).toFixed(2)} m</div>`
-      + (cv === null ? '' : `<div><span class="k">흡기 창 평균</span> ${cv.toFixed(2)} °C${cv > 27 ? ' ▲' : ''}</div>`); }
+      + (cv === null ? '' : `<div><span class="k">흡기 창 평균</span> ${cv.toFixed(2)} °C${cv > 27 ? ' ▲' : ''}</div>`) + leakRackTip(e); }
     tip.style.display = 'block';
     tip.style.left = Math.min(ev.clientX + 14, window.innerWidth - tip.offsetWidth - 8) + 'px'; tip.style.top = (ev.clientY + 14) + 'px';
   });
@@ -914,6 +932,195 @@ $('sensbtn').addEventListener('click', async () => {
   updateSensors3D();
 });
 $('senstbtn').addEventListener('click', () => { $('senstable').hidden = !$('senstable').hidden; $('senstbtn').textContent = $('senstable').hidden ? '센서 표 보기' : '센서 표 닫기'; renderSensorTable(); });
+// ---- 누수 레이어 (S2b 6단계, 2026-10-20) ----
+// /api/leaks = 수력 해·냉각수 재고·결합·장애 판정기가 이미 가진 값의 사본이다(새 물리 없음).
+// 두 범위를 다른 표시로 나눈다(D4): 격리 범위 = 닫힌 밸브 때문에 CDU와 끊긴 랙(그래프 위상, 실선),
+// 수력 영향 범위 = 끊기지 않았지만 지금 분기 유량이 설계 유량(모든 누수 닫음·모든 밸브 엶 해)과 표시 문턱 넘게 다른 랙(점선).
+// 문턱은 표시용이며 물리 상수가 아니다. 장애 판정은 계산된 유량·온도·재고로만 했고(위상표·순서 하드코딩 없음),
+// 저유량 문턱은 판정 표시용 설정, 부품 85 °C는 추정값이다. 누수점 = 나눈 분기 가운데의 오리피스 노드(그린 배관 위).
+let leaks = null;
+const leakOn = () => $('leakbtn').getAttribute('aria-pressed') === 'true';
+const LEAK_C = 0xe5484d, ISO_C = 0xc678dd, IMP_C = 0x4fc1c9;
+const FAULT_NAME = { lowCoolantFlow:'냉각수 저유량', overTemperature:'부품 과열', inventoryDepleted:'재고 고갈', hydraulicNotConverged:'수력 수렴 실패' };
+const lps = m3s => (m3s * 1e3).toFixed(4);
+const kpa = pa => (pa * 1e-3).toFixed(1);
+async function pollLeaks() {
+  if (!leakOn() || tab !== 'summary') return;
+  const r = await fetch('/api/leaks', { cache:'no-store' });
+  leaks = r.ok ? await r.json() : null;
+}
+const leakRack = i => leaks ? leaks.racks.find(r => r.rack === i) : null;
+const rackLabel = i => { const r = leakRack(i); return i < 0 ? '망 전체' : '#' + i + (r ? ' ' + r.name : ''); };
+function faultValue(f) {
+  return f.kind === 'lowCoolantFlow' ? '유량비 ' + f.value.toFixed(3) : f.kind === 'overTemperature' ? fmtC(f.value) + ' °C'
+    : f.kind === 'hydraulicNotConverged' ? '잔차 ' + f.value.toExponential(2) : '';
+}
+function faultText(f) { const v = faultValue(f); return `${f.timeS.toFixed(2)} s ${FAULT_NAME[f.kind] || f.kind}${v ? ' (' + v + ')' : ''}`; }
+function leakState(l) {
+  const t = leaks.tanks.find(t => t.tank === l.tank);
+  return l.nodeIsolated ? '격리됨(밸브)' : t && t.depleted ? '재고 고갈로 닫힘' : l.holeDiameterM > 0 ? '열림' : '닫힘(이벤트 전)';
+}
+function leakTip(k) {
+  const l = leaks && leaks.leaks[k]; if (!l) return '';
+  const t = leaks.tanks.find(t => t.tank === l.tank);
+  return `<div class="k">누수 #${l.spec} · ${l.branch === 'return' ? '회수' : '공급'} 분기 · 랙 ${rackLabel(l.rack)}</div>`
+    + `<div><span class="k">누수 유량</span> ${lps(l.flowM3s)} L/s · ${leakState(l)}</div>`
+    + `<div><span class="k">구멍</span> ${(l.holeDiameterM * 1e3).toFixed(2)} mm, Cd ${l.dischargeCoefficient} · <span class="k">노드 정압</span> ${kpa(l.nodePressurePa)} kPa(g) · 높이 ${l.elevationM.toFixed(3)} m</div>`
+    + (t ? `<div><span class="k">줄 ${t.row} 탱크</span> ${kpa(t.pressurePa)} kPa(g) · 물 ${(t.waterM3 * 1e3).toFixed(3)} L · 누적 누수 ${(t.leakedM3 * 1e3).toFixed(3)} L</div>` : '')
+    + '<div class="k">Q = Cd·A·√(2Δp/ρ), 역류 없음 · 2상·수격·관 체적 지연은 모델에 없다</div>';
+}
+function leakRackTip(e) {
+  if (!leakOn() || !leaks || !e || e.kind !== 'rack') return '';
+  const r = leaks.racks.find(r => r.inlet === e.inlet); if (!r) return '';
+  const ch = r.designFlowM3s > 0 ? (Math.abs(r.flowM3s) - r.designFlowM3s) / r.designFlowM3s * 100 : 0;
+  const fs = leaks.faults.filter(f => f.rack === r.rack);
+  return `<div><span class="k">냉각수 분기</span> ${lps(Math.abs(r.flowM3s))} L/s (설계 ${lps(r.designFlowM3s)}, ${ch >= 0 ? '+' : ''}${ch.toFixed(2)} %) · 이벤트 번호 #${r.rack}</div>`
+    + `<div><span class="k">범위</span> ${r.isolated ? '격리(CDU와 끊김)' : r.impacted ? '수력 영향(설계 대비 변화)' : '영향 없음'}${r.valveClosed ? ' · 밸브 닫힘' : ''}${r.loopDepleted ? ' · 줄 재고 고갈' : ''}</div>`
+    + (fs.length ? `<div><span class="k">판정</span> ${fs.map(faultText).join(' · ')}</div>` : '');
+}
+function labelSprite(w) {
+  const c = document.createElement('canvas'); c.width = 640; c.height = 72;
+  const tex = new THREE.CanvasTexture(c);
+  const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map:tex, depthTest:false, transparent:true }));
+  sp.scale.set(w, w * 72 / 640, 1); sp.renderOrder = 3;
+  sp.userData.canvas = c; sp.userData.tex = tex; sp.userData.text = '';
+  return sp;
+}
+function setLabel(sp, text, color) {
+  if (sp.userData.text === text + color) return;
+  sp.userData.text = text + color;
+  const c = sp.userData.canvas, g = c.getContext('2d');
+  g.clearRect(0, 0, c.width, c.height);
+  g.font = '600 30px ui-monospace, Consolas, monospace';
+  const w = Math.min(c.width - 4, g.measureText(text).width + 28);
+  g.fillStyle = 'rgba(28,32,41,0.92)'; g.strokeStyle = color; g.lineWidth = 3;
+  g.beginPath(); g.rect(2, 8, w, 56); g.fill(); g.stroke();
+  g.fillStyle = '#e4e7ee'; g.textBaseline = 'middle'; g.fillText(text, 16, 37);
+  sp.userData.tex.needsUpdate = true;
+}
+function clearLeak3D() {
+  for (const sp of V3.leakLabels.concat(V3.tankLabels)) sp.userData.tex.dispose();
+  clear3D(V3.leak); V3.leakPickables = []; V3.leakRacks = []; V3.leakLabels = []; V3.tankLabels = [];
+}
+function buildLeak3D() {
+  clearLeak3D();
+  if (!leaks || !layout) return;
+  if (!V3.faultTex) {
+    const c = document.createElement('canvas'); c.width = c.height = 64;
+    const g = c.getContext('2d'); g.fillStyle = '#e5484d'; g.beginPath(); g.arc(32, 32, 28, 0, Math.PI * 2); g.fill();
+    g.fillStyle = '#fff'; g.font = 'bold 44px sans-serif'; g.textAlign = 'center'; g.textBaseline = 'middle'; g.fillText('!', 32, 35);
+    V3.faultTex = new THREE.CanvasTexture(c);
+  }
+  // 랙 범위 외곽선: 격리(실선)·영향(점선)을 둘 다 만들어 두고 1초마다 보이기만 바꾼다. 흡기 색은 가리지 않는다.
+  for (const r of leaks.racks) {
+    const e = layout.equipment.find(q => q.kind === 'rack' && q.inlet === r.inlet); if (!e) continue;
+    const h = e.heightM > 0 ? e.heightM : 2.0, geo = new THREE.EdgesGeometry(new THREE.BoxGeometry(e.depthM + .1, h + .1, e.widthM + .1));
+    const mk = mat => { const l = new THREE.LineSegments(geo, mat); l.position.copy(P3(e.xM, e.yM, (e.baseZM || 0) + h / 2)); l.rotation.y = -e.yawDeg * Math.PI / 180; l.visible = false; V3.leak.add(l); return l; };
+    const iso = mk(new THREE.LineBasicMaterial({ color:ISO_C }));
+    const imp = mk(new THREE.LineDashedMaterial({ color:IMP_C, dashSize:.14, gapSize:.09 })); imp.computeLineDistances();
+    const fault = new THREE.Sprite(new THREE.SpriteMaterial({ map:V3.faultTex, depthTest:false }));
+    fault.scale.set(.36, .36, 1); fault.position.copy(P3(e.xM, e.yM, (e.baseZM || 0) + h + .8)); fault.visible = false; V3.leak.add(fault);
+    V3.leakRacks.push({ rack:r.rack, iso, imp, fault });
+  }
+  // 누수점: 공 + ▲ + 지시선 + 라벨(참고 이미지의 경고 삼각형 + 지시선).
+  leaks.leaks.forEach((l, k) => {
+    const p = P3(l.xM, l.yM, l.zM);
+    const m = new THREE.Mesh(new THREE.SphereGeometry(.09, 14, 10), new THREE.MeshBasicMaterial({ color:LEAK_C }));
+    m.position.copy(p); m.userData = { leak:k }; V3.leak.add(m); V3.leakPickables.push(m);
+    const top = P3(l.xM, l.yM, Math.max(l.zM + 1.4, 3.0));
+    V3.leak.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints([p, top]), new THREE.LineBasicMaterial({ color:LEAK_C })));
+    const warn = new THREE.Sprite(new THREE.SpriteMaterial({ map:V3.warnTex, depthTest:false }));
+    warn.scale.set(.34, .34, 1); warn.position.copy(top).add(new THREE.Vector3(0, .05, 0)); V3.leak.add(warn);
+    const lab = labelSprite(2.6); lab.position.copy(top).add(new THREE.Vector3(0, .36, 0)); lab.userData.leak = k; V3.leak.add(lab); V3.leakLabels.push(lab);
+  });
+  // 탱크 라벨: 누수가 있거나 고갈된 줄의 CDU 노드 위. CDU 하나가 여러 줄을 맡으면 노드가 같은 자리라 위로 쌓는다.
+  const stacked = {};
+  for (const t of leaks.tanks) {
+    if (t.leaks === 0 && !t.depleted) continue;
+    const at = [t.xM, t.yM, t.zM].map(v => v.toFixed(2)).join(), k = stacked[at] = (stacked[at] === undefined ? 0 : stacked[at] + 1);
+    const lab = labelSprite(2.8); lab.position.copy(P3(t.xM, t.yM, t.zM + 2.4 + 0.42 * k)); lab.userData.tank = t.tank; V3.leak.add(lab); V3.tankLabels.push(lab);
+  }
+}
+function updateLeak3D() {
+  if (!V3.ok) return;
+  V3.leak.visible = leakOn();
+  $('leaklegend').hidden = !leakOn();
+  if (!leakOn()) { $('leaknote').textContent = ''; return; }
+  if (!leaks || !layout) { $('leaknote').textContent = '누수 데이터 없음(시뮬레이션 액터가 아직 값을 내지 않았다)'; return; }
+  if (!leaks.hasRoom) { $('leaknote').textContent = '방 액터 없음: 수력망·누수 계산이 없다'; clearLeak3D(); V3.leakKey = ''; return; }
+  const key = JSON.stringify([leaks.leaks.map(l => [l.spec, l.xM, l.yM, l.zM]), leaks.tanks.map(t => [t.tank, t.leaks > 0 || t.depleted, t.xM, t.yM, t.zM]),
+    leaks.racks.map(r => [r.rack, r.inlet]), layout.equipment.map(e => [e.inlet, e.xM, e.yM, e.yawDeg, e.depthM, e.widthM, e.heightM, e.baseZM])]);
+  if (key !== V3.leakKey) { V3.leakKey = key; buildLeak3D(); }
+  const faultRacks = new Set(leaks.faults.map(f => f.rack));
+  for (const v of V3.leakRacks) {
+    const r = leakRack(v.rack);
+    v.iso.visible = !!r && r.isolated; v.imp.visible = !!r && !r.isolated && r.impacted; v.fault.visible = faultRacks.has(v.rack);
+  }
+  for (const sp of V3.leakLabels) { const l = leaks.leaks[sp.userData.leak]; setLabel(sp, `누수 #${l.spec} ${lps(l.flowM3s)} L/s · ${leakState(l)}`, '#e5484d'); }
+  for (const sp of V3.tankLabels) {
+    const t = leaks.tanks.find(t => t.tank === sp.userData.tank);
+    setLabel(sp, t.depleted ? `줄 ${t.row} 탱크: 재고 고갈 (${t.depletedAtS.toFixed(2)} s)` : `줄 ${t.row} 탱크 ${kpa(t.pressurePa)} kPa(g) · 물 ${(t.waterM3 * 1e3).toFixed(2)} L`, t.depleted ? '#e5484d' : '#8a93a3');
+  }
+  const open = leaks.leaks.filter(l => l.flowM3s > 0).length, sum = leaks.leaks.reduce((a, l) => a + l.flowM3s, 0);
+  const leaked = leaks.tanks.reduce((a, t) => a + t.leakedM3, 0);
+  const iso = leaks.racks.filter(r => r.isolated).map(r => r.rack), imp = leaks.racks.filter(r => !r.isolated && r.impacted).map(r => r.rack);
+  const list = a => a.length === 0 ? '없음' : a.length > 12 ? `${a.length}대` : '[' + a.join(',') + ']';
+  $('leaknote').textContent = `누수 ${leaks.leaks.length}개(지금 새는 것 ${open}) · 누수 합 ${lps(sum)} L/s · 누적 ${(leaked * 1e3).toFixed(3)} L · 누수 열 ${(leaks.leakHeatW / 1e3).toFixed(2)} kW`
+    + ` · 격리 범위 ${list(iso)} · 수력 영향 범위 ${list(imp)} (설계 유량 대비 > ${(leaks.impactThreshold * 100).toPrecision(2)} %, 표시 문턱) · 판정 ${leaks.faults.length}건`
+    + (leaks.hydConverged ? '' : ' · ▲ 수력 수렴 실패: 유량을 믿지 말 것(D5)')
+    + ` · 번호 = 이벤트·vrg.Valve 번호(줄 순서) · 판정: 유량비 < ${leaks.lowFlowRatio}(표시용 설정), 부품 > ${fmtC(leaks.maxComponentTempK)} °C(추정값)`
+    + ' · 2상·수격·관 체적 지연 없음, 보정되지 않은 모델' + (leaks.mode === 'simulation' ? '' : ' · 배치 모드: 계산이 멈춰 있다');
+  renderLeakTable();
+}
+function spark(samples, f) {
+  if (samples.length < 2) return '';
+  const t0 = samples[0].timeS, t1 = samples[samples.length - 1].timeS, vs = samples.map(f), lo = Math.min(...vs), hi = Math.max(...vs);
+  const pts = samples.map((s, i) => `${((s.timeS - t0) / Math.max(t1 - t0, 1e-9) * 120).toFixed(1)},${(24 - (hi > lo ? (vs[i] - lo) / (hi - lo) : .5) * 22).toFixed(1)}`).join(' ');
+  return `<svg viewBox="0 0 120 26" aria-hidden="true"><polyline points="${pts}" fill="none" stroke="#8fb4d8" stroke-width="1.5"/></svg>`;
+}
+function renderLeakTable() {
+  if ($('leaktable').hidden || !leaks) return;
+  const th = a => '<tr>' + a.map((x, i) => `<th${i < 2 ? ' class="l"' : ''}>${x}</th>`).join('') + '</tr>';
+  let h = '<h3>누수점 (수력 해)</h3>';
+  h += leaks.leaks.length === 0 ? '<div class="none">누수 없음 (vrg.Leak.Add 또는 vrg.Eval.Event &lt;t&gt; leak &lt;랙&gt; &lt;supply|return&gt; &lt;mm&gt;)</div>'
+    : `<table><thead>${th(['누수', '랙', '분기', '구멍 mm', 'Cd', '위치 x,y,z m', '노드 정압 kPa(g)', '유량 L/s', '상태'])}</thead><tbody>`
+      + leaks.leaks.map(l => `<tr><td class="l">#${l.spec}</td><td class="l">${rackLabel(l.rack)}</td><td>${l.branch === 'return' ? '회수' : '공급'}</td>`
+        + `<td>${(l.holeDiameterM * 1e3).toFixed(2)}</td><td>${l.dischargeCoefficient}</td><td>${l.xM.toFixed(2)}, ${l.yM.toFixed(2)}, ${l.zM.toFixed(2)}</td>`
+        + `<td>${kpa(l.nodePressurePa)}</td><td>${lps(l.flowM3s)}</td><td>${leakState(l)}</td></tr>`).join('') + '</tbody></table>';
+  h += '<h3>팽창탱크·냉각수 재고 (줄마다, 등온 기체 쿠션)</h3>';
+  h += `<table><thead>${th(['줄', 'CDU', '압력 / 충전 kPa(g)', '물 / 처음 L', '누적 누수 L', '보충 L', '누수 L/s', '펌프 L/s', '고갈', `물 이력(최근 ${leaks.historyLengthS} s)`])}</thead><tbody>`
+    + leaks.tanks.map(t => { const hist = leaks.tankHistory.filter(s => s.tank === t.tank);
+      return `<tr><td class="l">${t.row}</td><td class="l">${t.cdu || '가상 CDU'}</td><td>${kpa(t.pressurePa)} / ${kpa(t.fillPressurePa)}</td>`
+        + `<td>${(t.waterM3 * 1e3).toFixed(3)} / ${(t.initialWaterM3 * 1e3).toFixed(3)}</td><td>${(t.leakedM3 * 1e3).toFixed(3)}</td><td>${t.makeup ? (t.makeupM3 * 1e3).toFixed(3) : '끔'}</td>`
+        + `<td>${lps(t.leakFlowM3s)}</td><td>${lps(t.pumpFlowM3s)}</td><td class="${t.depleted ? 'bad' : ''}">${t.depleted ? t.depletedAtS.toFixed(2) + ' s' : '-'}</td>`
+        + `<td>${spark(hist, s => s.waterM3)}</td></tr>`; }).join('') + '</tbody></table>';
+  const shown = leaks.racks.filter(r => r.isolated || r.impacted || r.valveClosed || r.loopDepleted || leaks.faults.some(f => f.rack === r.rack));
+  h += `<h3>랙 냉각수 분기: 격리 범위(위상) / 수력 영향 범위(설계 유량 대비 &gt; ${(leaks.impactThreshold * 100).toPrecision(2)} %)</h3>`;
+  h += shown.length === 0 ? `<div class="none">모든 랙(${leaks.racks.length}대)이 설계 유량 그대로다</div>`
+    : `<table><thead>${th(['번호', '장비', '줄', '설계 L/s', '현재 L/s', '변화 %', '판정 유량비', '밸브', '범위', '최고 부품 °C'])}</thead><tbody>`
+      + shown.map(r => { const ch = r.designFlowM3s > 0 ? (Math.abs(r.flowM3s) - r.designFlowM3s) / r.designFlowM3s * 100 : 0;
+        return `<tr><td class="l">#${r.rack}</td><td class="l">${r.name}</td><td>${r.row}</td><td>${lps(r.designFlowM3s)}</td><td>${lps(Math.abs(r.flowM3s))}</td>`
+          + `<td>${(ch >= 0 ? '+' : '') + ch.toFixed(2)}</td><td>${r.designKgs > 0 && leaks.mode === 'simulation' ? (r.coolantKgs / r.designKgs).toFixed(3) : '-'}</td>`
+          + `<td>${r.valveClosed ? '닫힘' : '열림'}</td><td class="${r.isolated ? 'iso' : r.impacted ? 'imp' : ''}">${r.isolated ? '격리' : r.impacted ? '영향' : '-'}${r.loopDepleted ? ' · 재고 고갈' : ''}</td>`
+          + `<td>${fmtC(r.maxComponentK)}</td></tr>`; }).join('') + '</tbody></table>';
+  h += '<h3>장애 판정 (계산 결과로만, 랙·종류마다 첫 시각)</h3>';
+  h += leaks.faults.length === 0 ? '<div class="none">판정 없음</div>'
+    : `<table><thead>${th(['시각 s', '랙', '종류', '값'])}</thead><tbody>` + leaks.faults.map(f => `<tr><td class="l">${f.timeS.toFixed(2)}</td><td class="l">${rackLabel(f.rack)}</td>`
+      + `<td class="bad">${FAULT_NAME[f.kind] || f.kind}</td><td>${faultValue(f) || '-'}</td></tr>`).join('') + '</tbody></table>';
+  h += '<h3>이벤트: 누수·밸브 (통합 시계)</h3>';
+  const ev = leaks.leakEvents.map(e => ({ t:e.timeS, s:`누수 열림 · 랙 ${rackLabel(e.rack)} ${e.returnBranch ? '회수' : '공급'} · ${(e.holeDiameterM * 1e3).toFixed(2)} mm` }))
+    .concat(leaks.valveEvents.map(v => ({ t:v.timeS, s:`밸브 ${v.closed ? '닫음' : '엶'} · 랙 #${v.rack} · 격리 [${v.isolatedRacks.join(',')}] · 영향 [${v.impactedRacks.join(',')}] (조작 전후 비교)` })))
+    .sort((a, b) => a.t - b.t);
+  h += ev.length === 0 ? '<div class="none">이벤트 없음</div>' : '<table><tbody>' + ev.map(e => `<tr><td class="l" style="width:6em">${e.t.toFixed(2)} s</td><td class="l">${e.s}</td></tr>`).join('') + '</tbody></table>';
+  $('leaktable').innerHTML = h;
+}
+$('leakbtn').addEventListener('click', async () => {
+  const on = !leakOn();
+  $('leakbtn').setAttribute('aria-pressed', on); $('leakbtn').textContent = '누수·밸브: ' + (on ? '켜짐' : '꺼짐');
+  if (on) { try { await pollLeaks(); } catch (e) { leaks = null; } }
+  updateLeak3D();
+});
+$('leaktbtn').addEventListener('click', () => { $('leaktable').hidden = !$('leaktable').hidden; $('leaktbtn').textContent = $('leaktable').hidden ? '누수·밸브 표 보기' : '누수·밸브 표 닫기'; renderLeakTable(); });
 $('pipetbtn').addEventListener('click', () => { $('pipetable').hidden = !$('pipetable').hidden; $('pipetbtn').textContent = $('pipetable').hidden ? '배관 표 보기' : '배관 표 닫기'; renderPipeTable(); });
 if (V3.ok) { try { init3D(); } catch (err) { V3.ok = false; $('err3d').hidden = false; $('err3d').textContent = '3D를 시작하지 못했다: ' + err.message; } }
 else { $('err3d').hidden = false; $('err3d').textContent = 'three.js를 불러오지 못했다(CDN, 인터넷 연결 필요). 아래 2D 평면도는 그대로 쓸 수 있다.'; }
@@ -1167,6 +1374,8 @@ async function tick() {
       update3D();
       if (airOn()) { await pollAirflow(); updateAir3D(); }   // 기류는 레이어가 켜져 있을 때만 받는다
       if (sensOn()) { await pollSensors(); updateSensors3D(); }
+      if (leakOn()) await pollLeaks();
+      updateLeak3D();
       for (const c of charts) draw(c);
       renderTable();
     } else if (tab === 'racks') {

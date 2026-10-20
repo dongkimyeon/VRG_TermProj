@@ -351,6 +351,11 @@ public:
 	// Web dashboard tab 4 (2026-10-14): CRAH units, CDUs, pumps and the power breakdown of the last step, copied from
 	// values the coupled step already computed (empty lists outside simulation mode).
 	FVrgDashboardCooling BuildDashboardCooling() const;
+	// S2b step 6 (2026-10-20): leak layer. Leaks, tanks, per-rack valve / isolation / hydraulic impact and the fault
+	// monitor record, copied from the room's hydraulic solution and inventory, the coupling and the monitor (no new model).
+	FVrgDashboardLeaks BuildDashboardLeaks() const;
+	// The fault judgement's input of this step (the dashboard shows the same values the judgement used).
+	FVrgFaultInput MakeFaultInput() const;
 	// Stage 5: handles a report save the page queued (same writer as vrg.Eval.Report) and records the result for the
 	// report list. Called from each dashboard publish on the game thread; returns true when it handled one.
 	bool ProcessDashboardRequests();

@@ -833,3 +833,341 @@ bool FVrgDashboardCooling::FromJson(const FString& Json, FVrgDashboardCooling& O
 	Out = MoveTemp(C);
 	return true;
 }
+
+// ---- S2b step 6: leak layer ----
+
+namespace
+{
+	// Field order shared by the writer, the reader and the comparison so the three cannot drift.
+	template <typename FVisit>
+	void VisitLeakNumbers(FVrgDashboardLeak& L, FVisit&& Visit)
+	{
+		Visit(TEXT("holeDiameterM"), L.HoleDiameterM); Visit(TEXT("dischargeCoefficient"), L.DischargeCoefficient);
+		Visit(TEXT("xM"), L.PositionM.X); Visit(TEXT("yM"), L.PositionM.Y); Visit(TEXT("zM"), L.PositionM.Z);
+		Visit(TEXT("elevationM"), L.ElevationM); Visit(TEXT("nodePressurePa"), L.NodePressurePa); Visit(TEXT("flowM3s"), L.FlowM3s);
+	}
+	template <typename FVisit>
+	void VisitLeakInts(FVrgDashboardLeak& L, FVisit&& Visit)
+	{
+		Visit(TEXT("spec"), L.Spec); Visit(TEXT("networkLeak"), L.NetworkLeak); Visit(TEXT("rack"), L.Rack);
+		Visit(TEXT("inlet"), L.Inlet); Visit(TEXT("tank"), L.Tank);
+	}
+	template <typename FVisit>
+	void VisitLeakBools(FVrgDashboardLeak& L, FVisit&& Visit)
+	{
+		Visit(TEXT("returnBranch"), L.bReturnBranch); Visit(TEXT("nodeIsolated"), L.bNodeIsolated);
+	}
+	template <typename FVisit>
+	void VisitTankNumbers(FVrgDashboardTank& T, FVisit&& Visit)
+	{
+		Visit(TEXT("xM"), T.PositionM.X); Visit(TEXT("yM"), T.PositionM.Y); Visit(TEXT("zM"), T.PositionM.Z);
+		Visit(TEXT("pressurePa"), T.PressurePa); Visit(TEXT("fillPressurePa"), T.FillPressurePa); Visit(TEXT("tankVolumeM3"), T.TankVolumeM3);
+		Visit(TEXT("waterM3"), T.WaterM3); Visit(TEXT("initialWaterM3"), T.InitialWaterM3); Visit(TEXT("leakedM3"), T.LeakedM3);
+		Visit(TEXT("makeupM3"), T.MakeupM3); Visit(TEXT("leakFlowM3s"), T.LeakFlowM3s); Visit(TEXT("makeupFlowM3s"), T.MakeupFlowM3s);
+		Visit(TEXT("pumpFlowM3s"), T.PumpFlowM3s);
+	}
+	template <typename FVisit>
+	void VisitTankInts(FVrgDashboardTank& T, FVisit&& Visit)
+	{
+		Visit(TEXT("tank"), T.Tank); Visit(TEXT("row"), T.Row); Visit(TEXT("leaks"), T.Leaks);
+	}
+	template <typename FVisit>
+	void VisitTankBools(FVrgDashboardTank& T, FVisit&& Visit)
+	{
+		Visit(TEXT("makeup"), T.bMakeup); Visit(TEXT("depleted"), T.bDepleted);
+	}
+	template <typename FVisit>
+	void VisitLeakRackNumbers(FVrgDashboardLeakRack& R, FVisit&& Visit)
+	{
+		Visit(TEXT("designFlowM3s"), R.DesignFlowM3s); Visit(TEXT("flowM3s"), R.FlowM3s); Visit(TEXT("coolantKgs"), R.CoolantKgs);
+		Visit(TEXT("designKgs"), R.DesignKgs); Visit(TEXT("maxComponentK"), R.MaxComponentK);
+		Visit(TEXT("supplyLeakKgs"), R.SupplyLeakKgs); Visit(TEXT("returnLeakKgs"), R.ReturnLeakKgs);
+	}
+	template <typename FVisit>
+	void VisitLeakRackInts(FVrgDashboardLeakRack& R, FVisit&& Visit)
+	{
+		Visit(TEXT("rack"), R.Rack); Visit(TEXT("inlet"), R.Inlet); Visit(TEXT("row"), R.Row);
+	}
+	template <typename FVisit>
+	void VisitLeakRackBools(FVrgDashboardLeakRack& R, FVisit&& Visit)
+	{
+		Visit(TEXT("valveClosed"), R.bValveClosed); Visit(TEXT("isolated"), R.bIsolated); Visit(TEXT("impacted"), R.bImpacted);
+		Visit(TEXT("loopDepleted"), R.bLoopDepleted);
+	}
+	template <typename FVisit>
+	void VisitLeaksNumbers(FVrgDashboardLeaks& D, FVisit&& Visit)
+	{
+		Visit(TEXT("simTimeS"), D.SimTimeS); Visit(TEXT("hydResidual"), D.HydResidual); Visit(TEXT("lowFlowRatio"), D.FaultSettings.LowFlowRatio);
+		Visit(TEXT("maxComponentTempK"), D.FaultSettings.MaxComponentTempK); Visit(TEXT("impactThreshold"), D.ImpactThreshold);
+		Visit(TEXT("leakHeatW"), D.LeakHeatW); Visit(TEXT("historyLengthS"), D.HistoryLengthS);
+	}
+
+	// Writes ints / bools from the visitors after an opening brace (each pair preceded by a comma).
+	struct FLeakJsonText : FJsonText
+	{
+		auto IntFields() { return [this](const TCHAR* K, int32& V) { Raw(TEXT(",")); Key(K); Int(V); }; }
+		auto BoolFields() { return [this](const TCHAR* K, bool& V) { Raw(TEXT(",")); Key(K); Bool(V); }; }
+		void Ints(const TArray<int32>& A) { Raw(TEXT("[")); for (int32 I = 0; I < A.Num(); ++I) { if (I) Raw(TEXT(",")); Int(A[I]); } Raw(TEXT("]")); }
+		void Nums(const TArray<double>& A) { Raw(TEXT("[")); for (int32 I = 0; I < A.Num(); ++I) { if (I) Raw(TEXT(",")); Num(A[I]); } Raw(TEXT("]")); }
+		void ValveFields(const FVrgValveRecord& R)
+		{
+			Key(TEXT("rack")); Int(R.Rack);
+			Raw(TEXT(",")); Key(TEXT("closed")); Bool(R.bClosed);
+			Raw(TEXT(",")); Key(TEXT("isolatedRacks")); Ints(R.IsolatedRacks);
+			Raw(TEXT(",")); Key(TEXT("impactedRacks")); Ints(R.ImpactedRacks);
+		}
+	};
+
+	bool ReadIntField(const FJsonObject& O, const TCHAR* Key, int32& Out)
+	{
+		double V = 0.0;
+		if (!O.TryGetNumberField(Key, V)) return false;
+		Out = int32(V);
+		return true;
+	}
+	bool ReadIntArray(const FJsonObject& O, const TCHAR* Key, TArray<int32>& Out)
+	{
+		const TArray<TSharedPtr<FJsonValue>>* A = nullptr;
+		if (!O.TryGetArrayField(Key, A)) return false;
+		Out.Reset();
+		for (const TSharedPtr<FJsonValue>& V : *A) { double D = 0.0; if (!V->TryGetNumber(D)) return false; Out.Add(int32(D)); }
+		return true;
+	}
+	bool ReadNumArray(const FJsonObject& O, const TCHAR* Key, TArray<double>& Out)
+	{
+		const TArray<TSharedPtr<FJsonValue>>* A = nullptr;
+		if (!O.TryGetArrayField(Key, A)) return false;
+		Out.Reset();
+		for (const TSharedPtr<FJsonValue>& V : *A) { double D = 0.0; if (!V->TryGetNumber(D)) return false; Out.Add(D); }
+		return true;
+	}
+}
+
+FString FVrgDashboardLeaks::ToJson() const
+{
+	FVrgDashboardLeaks& D = const_cast<FVrgDashboardLeaks&>(*this);   // the visitors only read
+	FLeakJsonText J;
+	J.S.Reserve(1024 + Leaks.Num() * 320 + Tanks.Num() * 420 + Racks.Num() * 330 + TankHistory.Num() * 110 + ValveFlowAfterM3s.Num() * 50);
+	J.Raw(TEXT("{")); J.Key(TEXT("schema")); J.Int(1);
+	J.Raw(TEXT(",")); J.Key(TEXT("mode")); J.Str(bSimulating ? TEXT("simulation") : TEXT("layout"));
+	J.Raw(TEXT(",")); J.Key(TEXT("hasRoom")); J.Bool(bHasRoom);
+	J.Raw(TEXT(",")); J.Key(TEXT("hydConverged")); J.Bool(bHydConverged);
+	J.Raw(TEXT(",")); J.Key(TEXT("hydIterations")); J.Int(HydIterations);
+	VisitLeaksNumbers(D, J.NumberFields());
+	J.Raw(TEXT(",")); J.Key(TEXT("leaks")); J.Raw(TEXT("["));
+	for (int32 I = 0; I < Leaks.Num(); ++I)
+	{
+		FVrgDashboardLeak& R = D.Leaks[I];
+		J.Raw(I ? TEXT(",{") : TEXT("{")); J.Key(TEXT("branch")); J.Str(R.bReturnBranch ? TEXT("return") : TEXT("supply"));   // label only
+		VisitLeakInts(R, J.IntFields()); VisitLeakBools(R, J.BoolFields()); VisitLeakNumbers(R, J.NumberFields());
+		J.Raw(TEXT("}"));
+	}
+	J.Raw(TEXT("],")); J.Key(TEXT("tanks")); J.Raw(TEXT("["));
+	for (int32 I = 0; I < Tanks.Num(); ++I)
+	{
+		FVrgDashboardTank& R = D.Tanks[I];
+		J.Raw(I ? TEXT(",{") : TEXT("{")); J.Key(TEXT("cdu")); J.Str(R.Cdu);
+		J.Raw(TEXT(",")); J.Key(TEXT("depletedAtS")); if (R.DepletedAtS >= 0.0) J.Num(R.DepletedAtS); else J.Raw(TEXT("null"));
+		VisitTankInts(R, J.IntFields()); VisitTankBools(R, J.BoolFields()); VisitTankNumbers(R, J.NumberFields());
+		J.Raw(TEXT("}"));
+	}
+	J.Raw(TEXT("],")); J.Key(TEXT("racks")); J.Raw(TEXT("["));
+	for (int32 I = 0; I < Racks.Num(); ++I)
+	{
+		FVrgDashboardLeakRack& R = D.Racks[I];
+		J.Raw(I ? TEXT(",{") : TEXT("{")); J.Key(TEXT("name")); J.Str(R.Name);
+		VisitLeakRackInts(R, J.IntFields()); VisitLeakRackBools(R, J.BoolFields()); VisitLeakRackNumbers(R, J.NumberFields());
+		J.Raw(TEXT("}"));
+	}
+	J.Raw(TEXT("],")); J.Key(TEXT("valveReport"));
+	if (bHasValveReport)
+	{
+		J.Raw(TEXT("{")); J.ValveFields(ValveReport);
+		J.Raw(TEXT(",")); J.Key(TEXT("converged")); J.Bool(bValveConverged);
+		J.Raw(TEXT(",")); J.Key(TEXT("flowBeforeM3s")); J.Nums(ValveFlowBeforeM3s);
+		J.Raw(TEXT(",")); J.Key(TEXT("flowAfterM3s")); J.Nums(ValveFlowAfterM3s);
+		J.Raw(TEXT("}"));
+	}
+	else J.Raw(TEXT("null"));
+	J.Raw(TEXT(",")); J.Key(TEXT("faults")); J.Raw(TEXT("["));
+	for (int32 I = 0; I < Faults.Num(); ++I)
+	{
+		const FVrgFaultRecord& R = Faults[I];
+		J.Raw(I ? TEXT(",{") : TEXT("{")); J.Key(TEXT("timeS")); J.Num(R.TimeS);
+		J.Raw(TEXT(",")); J.Key(TEXT("rack")); J.Int(R.Rack);
+		J.Raw(TEXT(",")); J.Key(TEXT("kind")); J.Str(FVrgFaultMonitor::KindName(R.Kind));
+		J.Raw(TEXT(",")); J.Key(TEXT("value")); J.Num(R.Value);
+		J.Raw(TEXT("}"));
+	}
+	J.Raw(TEXT("],")); J.Key(TEXT("leakEvents")); J.Raw(TEXT("["));
+	for (int32 I = 0; I < LeakEvents.Num(); ++I)
+	{
+		const FVrgLeakRecord& R = LeakEvents[I];
+		J.Raw(I ? TEXT(",{") : TEXT("{")); J.Key(TEXT("timeS")); J.Num(R.TimeS);
+		J.Raw(TEXT(",")); J.Key(TEXT("rack")); J.Int(R.Rack);
+		J.Raw(TEXT(",")); J.Key(TEXT("returnBranch")); J.Bool(R.bReturnBranch);
+		J.Raw(TEXT(",")); J.Key(TEXT("holeDiameterM")); J.Num(R.HoleDiameterM);
+		J.Raw(TEXT("}"));
+	}
+	J.Raw(TEXT("],")); J.Key(TEXT("valveEvents")); J.Raw(TEXT("["));
+	for (int32 I = 0; I < ValveEvents.Num(); ++I)
+	{
+		J.Raw(I ? TEXT(",{") : TEXT("{")); J.Key(TEXT("timeS")); J.Num(ValveEvents[I].TimeS);
+		J.Raw(TEXT(",")); J.ValveFields(ValveEvents[I]);
+		J.Raw(TEXT("}"));
+	}
+	J.Raw(TEXT("],")); J.Key(TEXT("tankHistory")); J.Raw(TEXT("["));
+	for (int32 I = 0; I < TankHistory.Num(); ++I)
+	{
+		const FVrgTankSample& S = TankHistory[I];
+		J.Raw(I ? TEXT(",{") : TEXT("{")); J.Key(TEXT("timeS")); J.Num(S.TimeS);
+		J.Raw(TEXT(",")); J.Key(TEXT("tank")); J.Int(S.Row);
+		J.Raw(TEXT(",")); J.Key(TEXT("pressurePa")); J.Num(S.PressurePa);
+		J.Raw(TEXT(",")); J.Key(TEXT("waterM3")); J.Num(S.WaterM3);
+		J.Raw(TEXT(",")); J.Key(TEXT("leakedM3")); J.Num(S.LeakedM3);
+		J.Raw(TEXT(",")); J.Key(TEXT("depleted")); J.Bool(S.bDepleted);
+		J.Raw(TEXT("}"));
+	}
+	J.Raw(TEXT("]}"));
+	return MoveTemp(J.S);
+}
+
+bool FVrgDashboardLeaks::FromJson(const FString& Json, FVrgDashboardLeaks& Out)
+{
+	TSharedPtr<FJsonObject> Root;
+	if (!FJsonSerializer::Deserialize(TJsonReaderFactory<>::Create(Json), Root) || !Root.IsValid()) return false;
+	FVrgDashboardLeaks D;
+	FString Mode;
+	const TArray<TSharedPtr<FJsonValue>>* Leaks = nullptr, * Tanks = nullptr, * Racks = nullptr, * Faults = nullptr,
+		* LeakEvents = nullptr, * ValveEvents = nullptr, * History = nullptr;
+	bool bOk = Root->TryGetStringField(TEXT("mode"), Mode) && Root->TryGetBoolField(TEXT("hasRoom"), D.bHasRoom)
+		&& Root->TryGetBoolField(TEXT("hydConverged"), D.bHydConverged) && ReadIntField(*Root, TEXT("hydIterations"), D.HydIterations)
+		&& Root->TryGetArrayField(TEXT("leaks"), Leaks) && Root->TryGetArrayField(TEXT("tanks"), Tanks)
+		&& Root->TryGetArrayField(TEXT("racks"), Racks) && Root->TryGetArrayField(TEXT("faults"), Faults)
+		&& Root->TryGetArrayField(TEXT("leakEvents"), LeakEvents) && Root->TryGetArrayField(TEXT("valveEvents"), ValveEvents)
+		&& Root->TryGetArrayField(TEXT("tankHistory"), History);
+	if (bOk) VisitLeaksNumbers(D, [&](const TCHAR* Key, double& Value) { bOk = bOk && Root->TryGetNumberField(Key, Value); });
+	if (!bOk) return false;
+	D.bSimulating = Mode == TEXT("simulation");
+	auto Ints = [&bOk](const FJsonObject& O) { return [&bOk, &O](const TCHAR* Key, int32& V) { bOk = bOk && ReadIntField(O, Key, V); }; };
+	auto Bools = [&bOk](const FJsonObject& O) { return [&bOk, &O](const TCHAR* Key, bool& V) { bOk = bOk && O.TryGetBoolField(Key, V); }; };
+	auto Nums = [&bOk](const FJsonObject& O) { return [&bOk, &O](const TCHAR* Key, double& V) { bOk = bOk && O.TryGetNumberField(Key, V); }; };
+	for (const TSharedPtr<FJsonValue>& V : *Leaks)
+	{
+		const TSharedPtr<FJsonObject> O = V->AsObject();
+		if (!O.IsValid()) return false;
+		FVrgDashboardLeak& R = D.Leaks.AddDefaulted_GetRef();
+		VisitLeakInts(R, Ints(*O)); VisitLeakBools(R, Bools(*O)); VisitLeakNumbers(R, Nums(*O));
+	}
+	for (const TSharedPtr<FJsonValue>& V : *Tanks)
+	{
+		const TSharedPtr<FJsonObject> O = V->AsObject();
+		if (!O.IsValid()) return false;
+		FVrgDashboardTank& R = D.Tanks.AddDefaulted_GetRef();
+		bOk = bOk && O->TryGetStringField(TEXT("cdu"), R.Cdu);
+		if (!O->TryGetNumberField(TEXT("depletedAtS"), R.DepletedAtS)) R.DepletedAtS = -1.0;
+		VisitTankInts(R, Ints(*O)); VisitTankBools(R, Bools(*O)); VisitTankNumbers(R, Nums(*O));
+	}
+	for (const TSharedPtr<FJsonValue>& V : *Racks)
+	{
+		const TSharedPtr<FJsonObject> O = V->AsObject();
+		if (!O.IsValid()) return false;
+		FVrgDashboardLeakRack& R = D.Racks.AddDefaulted_GetRef();
+		bOk = bOk && O->TryGetStringField(TEXT("name"), R.Name);
+		VisitLeakRackInts(R, Ints(*O)); VisitLeakRackBools(R, Bools(*O)); VisitLeakRackNumbers(R, Nums(*O));
+	}
+	auto ReadValve = [&bOk](const FJsonObject& O, FVrgValveRecord& R)
+	{
+		bOk = bOk && ReadIntField(O, TEXT("rack"), R.Rack) && O.TryGetBoolField(TEXT("closed"), R.bClosed)
+			&& ReadIntArray(O, TEXT("isolatedRacks"), R.IsolatedRacks) && ReadIntArray(O, TEXT("impactedRacks"), R.ImpactedRacks);
+	};
+	const TSharedPtr<FJsonObject>* Valve = nullptr;
+	D.bHasValveReport = Root->TryGetObjectField(TEXT("valveReport"), Valve);
+	if (D.bHasValveReport)
+	{
+		D.ValveReport.TimeS = -1.0;
+		ReadValve(**Valve, D.ValveReport);
+		bOk = bOk && (*Valve)->TryGetBoolField(TEXT("converged"), D.bValveConverged)
+			&& ReadNumArray(**Valve, TEXT("flowBeforeM3s"), D.ValveFlowBeforeM3s) && ReadNumArray(**Valve, TEXT("flowAfterM3s"), D.ValveFlowAfterM3s);
+	}
+	for (const TSharedPtr<FJsonValue>& V : *Faults)
+	{
+		const TSharedPtr<FJsonObject> O = V->AsObject();
+		if (!O.IsValid()) return false;
+		FVrgFaultRecord& R = D.Faults.AddDefaulted_GetRef();
+		FString Kind;
+		bOk = bOk && O->TryGetNumberField(TEXT("timeS"), R.TimeS) && ReadIntField(*O, TEXT("rack"), R.Rack)
+			&& O->TryGetStringField(TEXT("kind"), Kind) && O->TryGetNumberField(TEXT("value"), R.Value);
+		bool bKnown = false;
+		for (const EVrgFaultKind K : { EVrgFaultKind::LowCoolantFlow, EVrgFaultKind::OverTemperature, EVrgFaultKind::InventoryDepleted, EVrgFaultKind::HydraulicNotConverged })
+			if (Kind == FVrgFaultMonitor::KindName(K)) { R.Kind = K; bKnown = true; }
+		bOk = bOk && bKnown;
+	}
+	for (const TSharedPtr<FJsonValue>& V : *LeakEvents)
+	{
+		const TSharedPtr<FJsonObject> O = V->AsObject();
+		if (!O.IsValid()) return false;
+		FVrgLeakRecord& R = D.LeakEvents.AddDefaulted_GetRef();
+		bOk = bOk && O->TryGetNumberField(TEXT("timeS"), R.TimeS) && ReadIntField(*O, TEXT("rack"), R.Rack)
+			&& O->TryGetBoolField(TEXT("returnBranch"), R.bReturnBranch) && O->TryGetNumberField(TEXT("holeDiameterM"), R.HoleDiameterM);
+	}
+	for (const TSharedPtr<FJsonValue>& V : *ValveEvents)
+	{
+		const TSharedPtr<FJsonObject> O = V->AsObject();
+		if (!O.IsValid()) return false;
+		FVrgValveRecord& R = D.ValveEvents.AddDefaulted_GetRef();
+		bOk = bOk && O->TryGetNumberField(TEXT("timeS"), R.TimeS);
+		ReadValve(*O, R);
+	}
+	for (const TSharedPtr<FJsonValue>& V : *History)
+	{
+		const TSharedPtr<FJsonObject> O = V->AsObject();
+		if (!O.IsValid()) return false;
+		FVrgTankSample& S = D.TankHistory.AddDefaulted_GetRef();
+		bOk = bOk && O->TryGetNumberField(TEXT("timeS"), S.TimeS) && ReadIntField(*O, TEXT("tank"), S.Row)
+			&& O->TryGetNumberField(TEXT("pressurePa"), S.PressurePa) && O->TryGetNumberField(TEXT("waterM3"), S.WaterM3)
+			&& O->TryGetNumberField(TEXT("leakedM3"), S.LeakedM3) && O->TryGetBoolField(TEXT("depleted"), S.bDepleted);
+	}
+	if (!bOk) return false;
+	Out = MoveTemp(D);
+	return true;
+}
+
+bool FVrgDashboardLeaks::operator==(const FVrgDashboardLeaks& O) const
+{
+	// Every visited field compared exactly, through the same visitors the JSON uses.
+	FVrgDashboardLeaks& A = const_cast<FVrgDashboardLeaks&>(*this);
+	FVrgDashboardLeaks& B = const_cast<FVrgDashboardLeaks&>(O);
+	TArray<double> NA, NB; TArray<int32> IA, IB; TArray<bool> BA, BB;
+	auto N = [](TArray<double>& Out) { return [&Out](const TCHAR*, double& V) { Out.Add(V); }; };
+	auto I = [](TArray<int32>& Out) { return [&Out](const TCHAR*, int32& V) { Out.Add(V); }; };
+	auto Bo = [](TArray<bool>& Out) { return [&Out](const TCHAR*, bool& V) { Out.Add(V); }; };
+	if (A.Leaks.Num() != B.Leaks.Num() || A.Tanks.Num() != B.Tanks.Num() || A.Racks.Num() != B.Racks.Num()) return false;
+	VisitLeaksNumbers(A, N(NA)); VisitLeaksNumbers(B, N(NB));
+	for (int32 K = 0; K < A.Leaks.Num(); ++K)
+	{
+		VisitLeakNumbers(A.Leaks[K], N(NA)); VisitLeakInts(A.Leaks[K], I(IA)); VisitLeakBools(A.Leaks[K], Bo(BA));
+		VisitLeakNumbers(B.Leaks[K], N(NB)); VisitLeakInts(B.Leaks[K], I(IB)); VisitLeakBools(B.Leaks[K], Bo(BB));
+	}
+	for (int32 K = 0; K < A.Tanks.Num(); ++K)
+	{
+		if (A.Tanks[K].Cdu != B.Tanks[K].Cdu || A.Tanks[K].DepletedAtS != B.Tanks[K].DepletedAtS) return false;
+		VisitTankNumbers(A.Tanks[K], N(NA)); VisitTankInts(A.Tanks[K], I(IA)); VisitTankBools(A.Tanks[K], Bo(BA));
+		VisitTankNumbers(B.Tanks[K], N(NB)); VisitTankInts(B.Tanks[K], I(IB)); VisitTankBools(B.Tanks[K], Bo(BB));
+	}
+	for (int32 K = 0; K < A.Racks.Num(); ++K)
+	{
+		if (A.Racks[K].Name != B.Racks[K].Name) return false;
+		VisitLeakRackNumbers(A.Racks[K], N(NA)); VisitLeakRackInts(A.Racks[K], I(IA)); VisitLeakRackBools(A.Racks[K], Bo(BA));
+		VisitLeakRackNumbers(B.Racks[K], N(NB)); VisitLeakRackInts(B.Racks[K], I(IB)); VisitLeakRackBools(B.Racks[K], Bo(BB));
+	}
+	auto SameValve = [](const FVrgValveRecord& X, const FVrgValveRecord& Y)
+	{
+		return X.Rack == Y.Rack && X.bClosed == Y.bClosed && X.IsolatedRacks == Y.IsolatedRacks && X.ImpactedRacks == Y.ImpactedRacks;
+	};
+	return NA == NB && IA == IB && BA == BB && bSimulating == O.bSimulating && bHasRoom == O.bHasRoom
+		&& bHydConverged == O.bHydConverged && HydIterations == O.HydIterations
+		&& bHasValveReport == O.bHasValveReport && (!bHasValveReport || (SameValve(ValveReport, O.ValveReport)
+			&& bValveConverged == O.bValveConverged && ValveFlowBeforeM3s == O.ValveFlowBeforeM3s && ValveFlowAfterM3s == O.ValveFlowAfterM3s))
+		&& Faults == O.Faults && LeakEvents == O.LeakEvents && ValveEvents == O.ValveEvents && TankHistory == O.TankHistory;
+}

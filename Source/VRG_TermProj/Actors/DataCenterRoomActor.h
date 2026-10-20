@@ -274,6 +274,12 @@ public:
 	int32 AddLeak(ARackThermalActor* Rack, bool bReturnBranch, double HoleDiameterM, double DischargeCoefficient = 0.61);
 	void ClearLeaks();
 	int32 GetNumLeakSpecs() const { return LeakSpecs.Num(); }
+	// While a simulation run holds the coupling's branch pipe indices, leak specs cannot be added or cleared: the
+	// rebuild would renumber the pipes of later rows (the coupling would read header flows) and refill the tanks
+	// mid-run. The integrated actor locks at simulation entry and unlocks in layout mode (2026-10-20, found through
+	// the web leak layer). Hole sizes still change freely (SetLeakHoleDiameterM).
+	void SetLeakTopologyLocked(bool bLocked) { bLeakTopologyLocked = bLocked; }
+	bool IsLeakTopologyLocked() const { return bLeakTopologyLocked; }
 
 	// ---- S2b step 4: isolation valves (Tools/S2b_누수_계획.md) ----
 	// Every rack branch has a supply valve at the supply header and a return valve at the return header. Closing a
@@ -315,6 +321,11 @@ public:
 	bool SetLeakHoleDiameterM(int32 LeakSpec, double HoleDiameterM);
 	// Network leak index of a leak spec (INDEX_NONE until the room is rebuilt with it).
 	int32 GetLeakNetworkIndex(int32 LeakSpec) const { return LeakSpecs.IsValidIndex(LeakSpec) ? LeakSpecs[LeakSpec].NetworkLeak : INDEX_NONE; }
+	// S2b step 6 (web leak layer, read only): the spec's rack and branch, and a network node's world position [m]
+	// (the leak orifice sits on a node at mid length of its split branch; drawn pipe routes end at the same points).
+	const ARackThermalActor* GetLeakSpecRack(int32 LeakSpec) const { return LeakSpecs.IsValidIndex(LeakSpec) ? LeakSpecs[LeakSpec].Rack.Get() : nullptr; }
+	bool IsLeakSpecReturnBranch(int32 LeakSpec) const { return LeakSpecs.IsValidIndex(LeakSpec) && LeakSpecs[LeakSpec].bReturnBranch; }
+	FVector GetNodePositionM(int32 NodeIndex) const { return NodePositionM.IsValidIndex(NodeIndex) ? NodePositionM[NodeIndex] : FVector::ZeroVector; }
 	const FCoolantInventory& GetCoolantInventory() const { return Inventory; }
 	// One integrated step [s]: re-solves the network only while a leak is open / make-up is filling / a loop just
 	// depleted (otherwise nothing changes and the static solution stays). Called by the integrated actor before the
@@ -383,6 +394,7 @@ private:
 		int32 NetworkLeak = INDEX_NONE;
 	};
 	TArray<FRoomLeakSpec> LeakSpecs;
+	bool bLeakTopologyLocked = false;
 	// Branch pipes created or renumbered by leak splits (drawn as branches).
 	TSet<int32> LeakBranchPipes;
 	FCoolantInventory Inventory;

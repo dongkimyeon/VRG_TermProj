@@ -127,6 +127,11 @@ void ADataCenterRoomActor::AssignNodeElevationsFromRoutes()
 int32 ADataCenterRoomActor::AddLeak(ARackThermalActor* Rack, bool bReturnBranch, double HoleDiameterM, double DischargeCoefficient)
 {
 	if (Rack == nullptr || !(HoleDiameterM >= 0.0) || !(DischargeCoefficient > 0.0 && DischargeCoefficient <= 1.0)) return INDEX_NONE;
+	if (bLeakTopologyLocked)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[Leak] 시뮬레이션 실행 중에는 누수를 추가하지 않는다(배관 번호·탱크가 바뀐다). 배치 모드에서 추가하거나 vrg.Eval.Event로 미리 예약한다."));
+		return INDEX_NONE;
+	}
 	FRoomLeakSpec& Leak = LeakSpecs.AddDefaulted_GetRef();
 	Leak.Rack = Rack;
 	Leak.bReturnBranch = bReturnBranch;
@@ -139,6 +144,11 @@ int32 ADataCenterRoomActor::AddLeak(ARackThermalActor* Rack, bool bReturnBranch,
 void ADataCenterRoomActor::ClearLeaks()
 {
 	if (LeakSpecs.Num() == 0) return;
+	if (bLeakTopologyLocked)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[Leak] 시뮬레이션 실행 중에는 누수를 지우지 않는다(배관 번호·탱크가 바뀐다). 구멍을 닫으려면 vrg.Leak.Size <번호> 0."));
+		return;
+	}
 	LeakSpecs.Reset();
 	RebuildRoom();
 }

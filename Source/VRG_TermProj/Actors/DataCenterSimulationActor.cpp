@@ -171,6 +171,7 @@ void ADataCenterSimulationActor::EnterLayoutMode()
 {
 	Mode = ESimMode::Layout;
 	bSimRunning = false;
+	if (Room != nullptr) Room->SetLeakTopologyLocked(false);
 	PendingWarmupSteps = 0;
 	VrgPerf::PendingWarmupSteps() = 0;
 	HoldModelsForLayout();
@@ -196,14 +197,18 @@ void ADataCenterSimulationActor::EnterSimulationMode()
 	FindTargetActors();
 	// Rows and hydraulics first: the coupling reads the routed racks and branch pipes.
 	// S2b step 5: leak events open holes that exist from the start of the run (built closed, so the topology and
-	// the design flows do not change when they open).
+	// the design flows do not change when they open). The rows must exist first: right after load (-ExecCmds on the
+	// first frame) the room has not routed its racks yet, the holes were skipped and the event then rebuilt the room
+	// mid-run, renumbering the pipes of later rows under the coupling (found 2026-10-20 through the web leak layer).
 	if (Room != nullptr)
 	{
+		Room->SetLeakTopologyLocked(false);
+		Room->RebuildRoomNow();   // no-op unless a rebuild is pending or the room has no rows yet
 		const TArray<ARackThermalActor*> Routed = Room->GetRoutedRacks();
 		for (const FEvalEvent& E : EvalEvents)
 			if (E.Kind == TEXT("leak") && Routed.IsValidIndex(E.Index)) Room->EnsureLeakSpec(Routed[E.Index], E.bFlag);
 	}
-	if (Room != nullptr) { Room->RebuildRoomNow(); Room->RestartCoolantInventory(); }   // S2b: tanks start full
+	if (Room != nullptr) { Room->RebuildRoomNow(); Room->RestartCoolantInventory(); Room->SetLeakTopologyLocked(true); }   // S2b: tanks start full
 	FindTargetActors();
 	if (AirField != nullptr)
 	{
@@ -1911,6 +1916,122 @@ FVrgDashboardCooling ADataCenterSimulationActor::BuildDashboardCooling() const
 	return C;
 }
 
+FVrgDashboardLeaks ADataCenterSimulationActor::BuildDashboardLeaks() const
+{
+	FVrgDashboardLeaks D;
+	D.SimTimeS = Clock.GetSimTimeS();
+	D.bSimulating = Mode == ESimMode::Simulation;
+	D.FaultSettings = FaultMonitor.GetSettings();
+	D.HistoryLengthS = EvalSettings.SeriesLengthS;
+	if (Room == nullptr) return D;
+	D.bHasRoom = true;
+	const FHydraulicNetwork& Net = Room->GetNetwork();
+	const FHydraulicSolveResult& Res = Room->GetLastSolveResult();
+	D.bHydConverged = Res.bConverged; D.HydResidual = Res.NormalizedResidual; D.HydIterations = Res.IterationsUsed;
+	D.ImpactThreshold = Room->ValveImpactThreshold;
+	const bool bCoupled = D.bSimulating && bEvalReady;
+	D.LeakHeatW = bCoupled ? Bridge.GetLastLeakHeatW() : 0.0;
+
+	const TArray<ARackThermalActor*> Routed = Room->GetRoutedRacks();
+	const TArray<int32> RackRows = Room->GetRoutedRackRows();
+	const TArray<int32>& Branches = Room->GetRackBranchPipeIndices();
+	const TArray<double>& Design = Room->GetRackDesignFlowM3s();
+	const FCoolantInventory& Inv = Room->GetCoolantInventory();
+
+	// Tanks: one per CDU loop; the row is the one whose pump the tank's loop holds.
+	TSet<int32> ActiveTanks;   // tanks with a leak or a depletion (their history goes to the page)
+	for (int32 T = 0; T < Inv.GetTanks().Num(); ++T)
+	{
+		const FCoolantInventory::FTank& Tank = Inv.GetTanks()[T];
+		FVrgDashboardTank& R = D.Tanks.AddDefaulted_GetRef();
+		R.Tank = T;
+		for (int32 Row = 0; Row < Room->GetNumRows(); ++Row) if (Room->GetRowPumpIndex(Row) == Tank.PumpIndex) R.Row = Row;
+		if (const ACoolingDistributionUnitActor* Cdu = Room->GetRowCdu(R.Row)) R.Cdu = Cdu->GetName();
+		R.PositionM = Room->GetNodePositionM(Tank.CduNodeIndex);
+		R.Leaks = Tank.LeakIndices.Num();
+		R.bMakeup = Tank.Params.bMakeupWater;
+		R.bDepleted = Tank.State.bDepleted;
+		R.DepletedAtS = Tank.State.bDepleted ? Tank.State.DepletedAtS : -1.0;
+		R.PressurePa = Inv.GetTankGaugePressurePa(T);
+		R.FillPressurePa = Tank.FillGaugePa;
+		R.TankVolumeM3 = Tank.Params.TankVolumeM3;
+		R.WaterM3 = Tank.State.WaterVolumeM3; R.InitialWaterM3 = Tank.State.InitialWaterM3;
+		R.LeakedM3 = Tank.State.LeakedM3; R.MakeupM3 = Tank.State.MakeupM3;
+		R.LeakFlowM3s = Tank.LastLeakM3s; R.MakeupFlowM3s = Tank.LastMakeupM3s;
+		R.PumpFlowM3s = Net.GetPumpFlowM3s(Tank.PumpIndex);
+		if (R.Leaks > 0 || R.bDepleted) ActiveTanks.Add(T);
+	}
+
+	// Leaks: the orifices built into the network (a spec added after the last rebuild has no orifice yet).
+	for (int32 S = 0; S < Room->GetNumLeakSpecs(); ++S)
+	{
+		const int32 NL = Room->GetLeakNetworkIndex(S);
+		if (NL == INDEX_NONE || NL >= Net.GetNumLeaks()) continue;
+		const FHydraulicLeak& Orifice = Net.GetLeak(NL);
+		FVrgDashboardLeak& L = D.Leaks.AddDefaulted_GetRef();
+		L.Spec = S; L.NetworkLeak = NL;
+		const ARackThermalActor* Rack = Room->GetLeakSpecRack(S);
+		L.Rack = Routed.IndexOfByPredicate([Rack](const ARackThermalActor* R) { return R == Rack; });
+		L.Inlet = Racks.IndexOfByPredicate([Rack](const TObjectPtr<ARackThermalActor>& R) { return R.Get() == Rack; });
+		L.bReturnBranch = Room->IsLeakSpecReturnBranch(S);
+		for (int32 T = 0; T < Inv.GetTanks().Num(); ++T) if (Inv.GetTanks()[T].LeakIndices.Contains(NL)) L.Tank = T;
+		L.HoleDiameterM = Orifice.HoleDiameterM; L.DischargeCoefficient = Orifice.DischargeCoefficient;
+		L.PositionM = Room->GetNodePositionM(Orifice.NodeIndex);
+		L.ElevationM = Net.GetNodeElevationM(Orifice.NodeIndex);
+		L.NodePressurePa = Net.GetNodePressurePa(Orifice.NodeIndex);
+		L.FlowM3s = Net.GetLeakFlowM3s(NL);
+		L.bNodeIsolated = Net.IsNodeIsolated(Orifice.NodeIndex);
+	}
+
+	// Racks: the judgement's own input next to the hydraulic solution, and the two scopes kept apart (D4).
+	const FVrgFaultInput In = MakeFaultInput();
+	const TArray<double>& SupplyLeak = Bridge.GetLastSupplyLeakKgs();
+	const TArray<double>& ReturnLeak = Bridge.GetLastReturnLeakKgs();
+	for (int32 I = 0; I < Routed.Num(); ++I)
+	{
+		FVrgDashboardLeakRack& R = D.Racks.AddDefaulted_GetRef();
+		R.Rack = I;
+		const int32 J = Racks.IndexOfByKey(Routed[I]);
+		R.Inlet = J;
+		R.Row = RackRows.IsValidIndex(I) ? RackRows[I] : INDEX_NONE;
+		R.Name = Routed[I] != nullptr ? Routed[I]->GetName() : FString();
+		const int32 Pipe = Branches.IsValidIndex(I) ? Branches[I] : INDEX_NONE;
+		R.DesignFlowM3s = Design.IsValidIndex(I) ? Design[I] : 0.0;
+		R.FlowM3s = Pipe != INDEX_NONE ? Net.GetPipeFlowM3s(Pipe) : 0.0;
+		if (bCoupled)
+		{
+			R.CoolantKgs = In.CoolantMassFlowKgs[I];
+			R.SupplyLeakKgs = SupplyLeak.IsValidIndex(J) ? SupplyLeak[J] : 0.0;
+			R.ReturnLeakKgs = ReturnLeak.IsValidIndex(J) ? ReturnLeak[J] : 0.0;
+		}
+		R.DesignKgs = In.DesignMassFlowKgs[I];
+		R.MaxComponentK = In.MaxComponentTempK[I];
+		R.bLoopDepleted = In.LoopDepleted[I];
+		R.bValveClosed = Room->IsRackValveClosed(Routed[I]);
+		const int32 RackNode = Pipe != INDEX_NONE ? Net.GetPipeToNodeIndex(Pipe) : INDEX_NONE;
+		R.bIsolated = RackNode != INDEX_NONE && Net.IsNodeIsolated(RackNode);
+		const double Change = FMath::Abs(FMath::Abs(R.FlowM3s) - R.DesignFlowM3s);
+		R.bImpacted = !R.bIsolated && (R.DesignFlowM3s > 0.0 ? Change / R.DesignFlowM3s > D.ImpactThreshold : Change > 0.0);
+	}
+
+	const ADataCenterRoomActor::FValveReport& V = Room->GetLastValveReport();
+	D.bHasValveReport = V.RackIndex != INDEX_NONE;
+	if (D.bHasValveReport)
+	{
+		D.ValveReport.TimeS = -1.0; D.ValveReport.Rack = V.RackIndex; D.ValveReport.bClosed = V.bClosed;
+		D.ValveReport.IsolatedRacks = V.IsolatedRacks; D.ValveReport.ImpactedRacks = V.ImpactedRacks;
+		D.bValveConverged = V.bConverged;
+		D.ValveFlowBeforeM3s = V.FlowBeforeM3s; D.ValveFlowAfterM3s = V.FlowAfterM3s;
+	}
+
+	D.Faults = FaultMonitor.GetFaults();
+	D.LeakEvents = FaultMonitor.GetLeaks();
+	D.ValveEvents = FaultMonitor.GetValves();
+	for (const FVrgTankSample& S : FaultMonitor.GetTankSamples())
+		if (ActiveTanks.Contains(S.Row) && S.TimeS >= D.SimTimeS - D.HistoryLengthS) D.TankHistory.Add(S);
+	return D;
+}
+
 FVrgDashboardRacks ADataCenterSimulationActor::BuildDashboardRacks(int32 DetailInlet) const
 {
 	FVrgDashboardRacks Out;
@@ -2093,6 +2214,7 @@ void ADataCenterSimulationActor::PublishDashboard()
 	Web.PublishLayout(BuildDashboardLayout());   // struct copy; JSON is built per request (it was most of the publish cost)
 	Web.PublishRacks(BuildDashboardRacks(Web.GetRequestedRack()));
 	Web.PublishCooling(BuildDashboardCooling());
+	Web.PublishLeaks(BuildDashboardLeaks());   // S2b step 6: leak layer (struct copy, JSON per request)
 	{
 		// 3D sensor layer: the same evaluation sensors the report uses (D9 simulated measurements).
 		FVrgDashboardSensors Sensors;
@@ -2409,25 +2531,28 @@ void ADataCenterSimulationActor::EvalBeforeStep()
 		{
 			// S2b step 5: opens the hole prepared at entry, at this step's start (rule 4).
 			const TArray<ARackThermalActor*> Routed = Room->GetRoutedRacks();
+			// The hole was prepared at entry; while running EnsureLeakSpec cannot add one (topology locked), so an
+			// unprepared event is reported instead of rebuilding the room mid-run.
 			if (Routed.IsValidIndex(E.Index) && Room->SetLeakHoleDiameterM(Room->EnsureLeakSpec(Routed[E.Index], E.bFlag), E.Value))
 			{
 				FVrgLeakRecord R;
 				R.TimeS = NowS; R.Rack = E.Index; R.bReturnBranch = E.bFlag; R.HoleDiameterM = E.Value;
 				FaultMonitor.AddLeak(R);
 			}
+			else UE_LOG(LogTemp, Warning, TEXT("[VrgEval] t=%.2f s 누수 이벤트(랙 %d)를 적용하지 못함: 진입 때 준비된 구멍이 없다(랙 번호 확인)"), NowS, E.Index);
 		}
 		UE_LOG(LogTemp, Display, TEXT("[VrgEval] t=%.2f s 이벤트 %s %d %.3f"), NowS, *E.Kind, E.Index, E.Value);
 	}
 }
 
-void ADataCenterSimulationActor::FaultAfterStep()
+FVrgFaultInput ADataCenterSimulationActor::MakeFaultInput() const
 {
-	if (Room == nullptr) return;
+	FVrgFaultInput In;
+	In.TimeS = Clock.GetSimTimeS();
+	if (Room == nullptr) return In;
 	const TArray<ARackThermalActor*> Routed = Room->GetRoutedRacks();
 	const TArray<double>& Design = Room->GetRackDesignFlowM3s();
 	const TArray<double>& Flow = Bridge.GetLastCoolantMassFlowKgs();
-	FVrgFaultInput In;
-	In.TimeS = Clock.GetSimTimeS();
 	In.bHydraulicsConverged = Room->GetLastSolveResult().bConverged;
 	In.HydraulicResidual = Room->GetLastSolveResult().NormalizedResidual;
 	for (int32 I = 0; I < Routed.Num(); ++I)
@@ -2440,6 +2565,13 @@ void ADataCenterSimulationActor::FaultAfterStep()
 		In.MaxComponentTempK.Add(MaxK);
 		In.LoopDepleted.Add(Room->IsRackLoopDepleted(I));
 	}
+	return In;
+}
+
+void ADataCenterSimulationActor::FaultAfterStep()
+{
+	if (Room == nullptr) return;
+	const FVrgFaultInput In = MakeFaultInput();
 	const int32 Before = FaultMonitor.GetFaults().Num();
 	if (FaultMonitor.Update(In) > 0)
 		for (int32 F = Before; F < FaultMonitor.GetFaults().Num(); ++F)

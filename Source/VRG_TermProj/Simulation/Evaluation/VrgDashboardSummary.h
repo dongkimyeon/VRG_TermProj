@@ -5,6 +5,7 @@
 #include "CoreMinimal.h"
 #include "Dom/JsonObject.h"
 #include "Simulation/Evaluation/VrgEvaluation.h"
+#include "Simulation/Evaluation/VrgFaultMonitor.h"
 
 // Web dashboard stage 1 (2026-10-13): the summary card values, copied on the game thread (rule 5) and served as JSON.
 // Units stay SI (W, K, s; rule 1/2); the page converts to kW and C. Window values reuse FVrgEvaluation (same as the
@@ -203,6 +204,82 @@ struct VRG_TERMPROJ_API FVrgDashboardCooling
 
 	FString ToJson() const;
 	static bool FromJson(const FString& Json, FVrgDashboardCooling& Out);
+};
+
+// S2b step 6 (2026-10-20, Tools/S2b_누수_계획.md): leak layer. Every value is one the hydraulic solution, the coolant
+// inventory, the coupling or the fault monitor already holds; nothing new is modelled. The two scopes stay apart (D4):
+// isolation = the rack node is cut off from its CDU (graph topology of the closed valves), hydraulic impact = a rack
+// that is not isolated and whose branch flow now differs from its design flow (every leak closed, every valve open,
+// solved at the rebuild) by more than the room's display threshold. Rack indices are the room's routed order (the
+// fault monitor's); Inlet maps them to the plan view. SI units (m^3/s, kg/s, Pa(g), m^3, K, s).
+struct FVrgDashboardLeak
+{
+	int32 Spec = INDEX_NONE;          // room leak spec (vrg.Leak.Size number)
+	int32 NetworkLeak = INDEX_NONE;
+	int32 Rack = INDEX_NONE, Inlet = INDEX_NONE, Tank = INDEX_NONE;
+	bool bReturnBranch = false;
+	double HoleDiameterM = 0.0, DischargeCoefficient = 0.0;
+	FVector PositionM = FVector::ZeroVector;   // orifice node (mid length of the split branch), world m
+	double ElevationM = 0.0;
+	double NodePressurePa = 0.0;      // static gauge pressure at the orifice node (drives Cd A sqrt(2 dp / rho))
+	double FlowM3s = 0.0;             // this solve's leak flow (0 for a closed hole, an isolated node or a depleted loop)
+	bool bNodeIsolated = false;
+};
+
+struct FVrgDashboardTank
+{
+	int32 Tank = INDEX_NONE, Row = INDEX_NONE;
+	FString Cdu;                      // empty: virtual CDU of a row without a CDU actor (fallback tank)
+	FVector PositionM = FVector::ZeroVector;   // the loop's CDU node, world m
+	int32 Leaks = 0;
+	bool bMakeup = false, bDepleted = false;
+	double DepletedAtS = -1.0;
+	double PressurePa = 0.0, FillPressurePa = 0.0, TankVolumeM3 = 0.0;
+	double WaterM3 = 0.0, InitialWaterM3 = 0.0, LeakedM3 = 0.0, MakeupM3 = 0.0;
+	double LeakFlowM3s = 0.0, MakeupFlowM3s = 0.0, PumpFlowM3s = 0.0;
+};
+
+struct FVrgDashboardLeakRack
+{
+	int32 Rack = INDEX_NONE, Inlet = INDEX_NONE, Row = INDEX_NONE;
+	FString Name;
+	double DesignFlowM3s = 0.0;       // branch flow of the design solve
+	double FlowM3s = 0.0;             // branch flow of the current solve
+	double CoolantKgs = 0.0, DesignKgs = 0.0;   // the fault judgement's input (coupling flow, design x density)
+	double MaxComponentK = 0.0;
+	bool bValveClosed = false, bIsolated = false, bImpacted = false, bLoopDepleted = false;
+	double SupplyLeakKgs = 0.0, ReturnLeakKgs = 0.0;   // coupling's leak mass flow on this rack's branches
+};
+
+struct VRG_TERMPROJ_API FVrgDashboardLeaks
+{
+	double SimTimeS = 0.0;
+	bool bSimulating = false;
+	bool bHasRoom = false;
+	bool bHydConverged = false;
+	double HydResidual = 0.0;
+	int32 HydIterations = 0;
+	FVrgFaultSettings FaultSettings;
+	double ImpactThreshold = 0.0;     // relative branch flow change, display threshold (room ValveImpactThreshold)
+	double LeakHeatW = 0.0;           // coupling's heat carried out by leaked water this step
+	TArray<FVrgDashboardLeak> Leaks;
+	TArray<FVrgDashboardTank> Tanks;
+	TArray<FVrgDashboardLeakRack> Racks;
+	// The room's last valve operation (before / after flows of every routed rack and its two scopes).
+	bool bHasValveReport = false;
+	FVrgValveRecord ValveReport;      // TimeS unused (< 0); the timed history is in ValveEvents
+	bool bValveConverged = false;
+	TArray<double> ValveFlowBeforeM3s, ValveFlowAfterM3s;
+	// Fault monitor record of this run (first occurrences, event-driven leaks / valves, tank history).
+	TArray<FVrgFaultRecord> Faults;
+	TArray<FVrgLeakRecord> LeakEvents;
+	TArray<FVrgValveRecord> ValveEvents;
+	TArray<FVrgTankSample> TankHistory;   // last HistoryLengthS seconds of the tanks that have a leak or depleted
+	double HistoryLengthS = 0.0;
+
+	FString ToJson() const;
+	static bool FromJson(const FString& Json, FVrgDashboardLeaks& Out);
+	bool operator==(const FVrgDashboardLeaks& O) const;
 };
 
 // Web dashboard stage 4 (2026-10-13): rack tab. One row per evaluation inlet (racks, then spines), from the thermal
