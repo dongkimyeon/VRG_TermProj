@@ -5,9 +5,24 @@
 
 namespace
 {
-	// Schematic sizes [m] (not equipment dimensions from a catalog).
-	constexpr double LaneGapM = 2.0, UnitPitchM = 2.8, PumpPitchM = 0.9, HeaderZM = 3.0;
+	// Schematic layout [m] (not plant dimensions from a catalog).
+	constexpr double LaneGapM = 2.0, UnitPitchM = 2.8, PumpPitchM = 0.9;
 	constexpr int32 UnitColumns = 6;
+	// Yard columns, from the yard's X0 (room +X face + 3 m): pump suction header, pumps, plant supply header, plant return
+	// header (coil supply), coil collector (back to the suction), condenser trunk, first unit column.
+	constexpr double PumpBarDX = 0.3, PumpDX = 1.0, PlantSupplyDX = 1.8, PlantReturnDX = 3.5, CollectorDX = 3.75, YardTrunkDX = 4.1, UnitsDX = 6.0;
+	constexpr double PumpSuctionZ = 0.3, PumpOutZ = 0.9, PlantSupplyZ = 1.2;
+	constexpr double CoilInZ = 2.3, CoilOutZ = 2.55;            // yard coil lanes, over the 1.8 m chillers
+	constexpr double YardBranchZ = 3.0;                          // condenser branches: supply layer (return one layer up)
+	constexpr double LayerM = 0.25;                              // supply -> return -> middle layer of one loop
+	constexpr double RoomTrunkDX = 1.2;                          // in-room loops' headers beyond the room's +X face
+	constexpr double RoomTrayAboveM = 0.5, RoomLoopStepM = 0.85; // first in-room loop above the room top, next loops above it
+	constexpr double RoomLanePitchM = 0.25, RoomClusterM = 0.6;  // one lane per branch; consumers this close share a band
+	constexpr double AisleOffsetM = 0.35, AisleLanePitchM = 0.18;
+	constexpr double ConsumerTopM = 1.9;                         // drop end above a CDU (1.9 m) / CRAH (2.24 m) base
+	constexpr double ConsumerHalfM = 0.2;                        // supply / return drops either side of the consumer centre
+	constexpr double MainOffsetM = 0.3;                          // supply main at the lane centre - this, return main + this
+	constexpr double CoilOnUnitStepM = 0.12;                     // more coils than units: the next coil beside the first
 
 	struct FPlantLane
 	{
@@ -16,17 +31,128 @@ namespace
 		double Y0 = 0.0, Width = 0.0;
 		int32 Units = 0;                   // sink units drawn in the lane (dry coolers / chillers)
 		int32 ExtraUnits = 0;              // trim chillers (FWS lane) after the dry coolers
+		double Yc() const { return Y0 + 0.5 * Width; }
 	};
 
-	FVector UnitPosition(double X0, const FPlantLane& L, int32 K)
+	FVector UnitPosition(double X0, const FPlantLane& L, int32 K, double HalfZ)
 	{
-		return FVector(X0 + 6.0 + (K % UnitColumns) * UnitPitchM, L.Y0 + 1.5 + (K / UnitColumns) * UnitPitchM, 0.7);
+		return FVector(X0 + UnitsDX + (K % UnitColumns) * UnitPitchM, L.Y0 + 1.5 + (K / UnitColumns) * UnitPitchM, HalfZ);
 	}
+
+	EPlantVisualKind VisualOf(EPlantEquipmentKind K)
+	{
+		switch (K)
+		{
+		case EPlantEquipmentKind::DryCooler: return EPlantVisualKind::DryCooler;
+		case EPlantEquipmentKind::Pump: return EPlantVisualKind::Pump;
+		case EPlantEquipmentKind::Economizer: return EPlantVisualKind::Economizer;
+		default: return EPlantVisualKind::Chiller;
+		}
+	}
+
+	// Polyline builder: drops repeated points and merges straight runs (fewer drawn segments).
+	void Push(TArray<FVector>& P, const FVector& V)
+	{
+		if (P.Num() > 0 && P.Last().Equals(V, 1e-9)) return;
+		if (P.Num() >= 2)
+		{
+			const FVector A = (P.Last() - P[P.Num() - 2]).GetSafeNormal(), B = (V - P.Last()).GetSafeNormal();
+			if (A.Equals(B, 1e-9)) { P.Last() = V; return; }
+		}
+		P.Add(V);
+	}
+	TArray<FVector> Line(std::initializer_list<FVector> Pts) { TArray<FVector> P; for (const FVector& V : Pts) Push(P, V); return P; }
+
+	// A header drawn along world Y at fixed X / Z; every pipe attached to it adds its anchor Y.
+	struct FBar
+	{
+		double X = 0.0, Z = 0.0;
+		TArray<double> Ys;
+		FVector At(double Y) { Ys.Add(Y); return FVector(X, Y, Z); }
+		double Lo() const { double V = TNumericLimits<double>::Max(); for (double Y : Ys) V = FMath::Min(V, Y); return V; }
+		double Hi() const { double V = -TNumericLimits<double>::Max(); for (double Y : Ys) V = FMath::Max(V, Y); return V; }
+	};
+
+	// One yard connection (a coil through its unit, or a condenser branch) and its aisle lane.
+	struct FYardLink
+	{
+		int32 Pipe = INDEX_NONE;           // coil pipe edge, or the branch index for a condenser branch
+		FVector In, Out;                   // unit connections [m]: In = the one nearer the header column
+		double Side = -1.0;                // aisle side of the face: -1 = -Y, +1 = +Y
+		double LaneY = 0.0;
+		int64 Group = 0;
+	};
+
+	void AssignAisleLanes(TArray<FYardLink>& Links)
+	{
+		TMap<int64, TArray<int32>> Groups;
+		for (int32 I = 0; I < Links.Num(); ++I) Groups.FindOrAdd(Links[I].Group).Add(I);
+		for (auto& G : Groups)
+		{
+			G.Value.Sort([&](int32 A, int32 B) { return Links[A].In.X < Links[B].In.X || (Links[A].In.X == Links[B].In.X && A < B); });
+			const double Side = Links[G.Value[0]].Side;
+			double Face = Links[G.Value[0]].In.Y;
+			for (int32 I : G.Value) Face = Side < 0 ? FMath::Min(Face, Links[I].In.Y) : FMath::Max(Face, Links[I].In.Y);
+			// Condenser lanes sit half a pitch off the coil lanes: where a chiller row's condenser aisle meets the next
+			// row's evaporator aisle, a condenser drop never lands on a coil lane.
+			const double Shift = (G.Key >> 39) & 1 ? 0.5 * AisleLanePitchM : 0.0;
+			for (int32 K = 0; K < G.Value.Num(); ++K) Links[G.Value[K]].LaneY = Face + Side * (AisleOffsetM + Shift + K * AisleLanePitchM);
+		}
+	}
+
+	FYardLink MakeLink(const FPlantDisplayEquipment& E, bool bCondenser, int32 Index, int32 OnUnit, double HeaderX, int32 LoopTag)
+	{
+		FYardLink K;
+		K.Pipe = Index;
+		FVector A = PlantDisplay::PortM(E, bCondenser ? EPlantPort::CondenserIn : EPlantPort::CoilIn);
+		FVector B = PlantDisplay::PortM(E, bCondenser ? EPlantPort::CondenserOut : EPlantPort::CoilOut);
+		const FVector Step = E.Rotation.RotateVector(FVector(CoilOnUnitStepM * OnUnit, 0, 0));
+		A += Step; B += Step;
+		if (FMath::Abs(B.X - HeaderX) < FMath::Abs(A.X - HeaderX)) Swap(A, B);
+		K.In = A; K.Out = B;
+		const FVector Normal = E.Rotation.RotateVector(FVector(0, bCondenser ? 1 : -1, 0));
+		K.Side = Normal.Y > 0.0 ? 1.0 : -1.0;
+		K.Group = (int64(LoopTag) << 40) | (int64(bCondenser ? 1 : 0) << 39) | (int64(K.Side > 0 ? 1 : 0) << 38) | (int64(FMath::RoundToInt(A.Y * 2.0)) & 0x3FFFFFFFFF);
+		return K;
+	}
+
+	// Posts along a run from Lo to Hi, in the gaps between the given lane / riser coordinates (never on a pipe).
+	TArray<double> PostSpots(double Lo, double Hi, TArray<double> Avoid, double Spacing)
+	{
+		TArray<double> Out;
+		Avoid.Add(Lo); Avoid.Add(Hi);
+		Avoid.Sort();
+		double Last = -TNumericLimits<double>::Max();
+		for (int32 I = 0; I + 1 < Avoid.Num(); ++I)
+		{
+			if (Avoid[I + 1] - Avoid[I] < 0.5) continue;
+			const double Mid = 0.5 * (Avoid[I] + Avoid[I + 1]);
+			const bool bEdge = I == 0 || I + 2 == Avoid.Num();
+			if (bEdge || Mid - Last >= Spacing) { Out.Add(Mid); Last = Mid; }
+		}
+		return Out;
+	}
+
+	double SegmentGap(const FVector& A0, const FVector& A1, const FVector& B0, const FVector& B1)
+	{
+		FVector PA, PB;
+		FMath::SegmentDistToSegmentSafe(A0, A1, B0, B1, PA, PB);
+		return FVector::Distance(PA, PB);
+	}
+}
+
+EPlantVisualKind PlantDisplay::VisualKind(EPlantEquipmentKind Kind) { return VisualOf(Kind); }
+
+FVector PlantDisplay::PortM(const FPlantDisplayEquipment& E, EPlantPort Port)
+{
+	const FVector Local = PlantVisual::PortLocalM(VisualOf(E.Kind), E.SizeM, Port) - FVector(0, 0, 0.5 * E.SizeM.Z);
+	return E.CenterM + E.Rotation.RotateVector(Local);
 }
 
 FPlantDisplaySnapshot PlantDisplay::Build(const FFacilityPlant& Plant, const FPlantDisplayInput& In)
 {
 	FPlantDisplaySnapshot S;
+	S.bLive = In.bLive;
 	if (!Plant.IsBuilt()) return S;
 	const FFacilityThermalSpec& Th = Plant.GetThermalSpec();
 	const FFacilityPlantState& St = Plant.GetState();
@@ -34,6 +160,7 @@ FPlantDisplaySnapshot PlantDisplay::Build(const FFacilityPlant& Plant, const FPl
 	const double X0 = Room.Max.X + 3.0;
 	const int32 NChw = FMath::Max(Th.DutyChillers, 1) + FMath::Max(Th.StandbyChillers, 0);
 	const int32 NTrim = Plant.IsTrimActive() ? FMath::Max(Th.TrimDutyChillers, 1) + FMath::Max(Th.TrimStandbyChillers, 0) : 0;
+	const FQuat Turned(FVector::UpVector, PI);   // pumps: suction (+X of the pump) toward the suction header (-X)
 
 	// Lanes beside the room, one per built loop.
 	TArray<FPlantLane> Lanes;
@@ -50,21 +177,17 @@ FPlantDisplaySnapshot PlantDisplay::Build(const FFacilityPlant& Plant, const FPl
 		Lane.Width = FMath::Max(6.0, 3.0 + Rows * UnitPitchM);
 		Y += Lane.Width + LaneGapM;
 	}
-	auto LaneOf = [&](EPlantLoopId Id) -> const FPlantLane* { for (const FPlantLane& L : Lanes) if (L.Id == Id) return &L; return nullptr; };
-	const FPlantLane* ChwLane = LaneOf(EPlantLoopId::Chw);
-	const FPlantLane* FwsLane = LaneOf(EPlantLoopId::Fws);
 
-	// F8: a kind whose placed units match the model's count is drawn at those units.
-	auto Placed = [](const TArray<FPlantDisplayUnit>& Units, int32 Count) { return Count > 0 && Units.Num() == Count ? &Units : nullptr; };
-	auto Place = [](FPlantDisplayEquipment& E, const TArray<FPlantDisplayUnit>* Units, int32 K)
+	// F8: model unit K of a kind is drawn at placed unit K when there is one.
+	auto Place = [](FPlantDisplayEquipment& E, const TArray<FPlantDisplayUnit>& Units, int32 K)
 	{
-		if (Units == nullptr) return;
-		const FPlantDisplayUnit& U = (*Units)[K];
+		if (!Units.IsValidIndex(K)) return;
+		const FPlantDisplayUnit& U = Units[K];
 		E.CenterM = U.CenterM; E.SizeM = U.SizeM; E.Rotation = U.Rotation; E.bPlaced = true;
 	};
 
-	// Equipment of the lanes (built first: condenser and evaporator branches run to these boxes).
-	TArray<FVector> ChillerPos, TrimPos, FwsUnitPos, CwUnitPos;
+	// Equipment of the lanes (built first: coils and condenser branches run to these units).
+	TArray<int32> ChillerEq, TrimEq, FwsEq, CwEq;
 	for (const FPlantLane& L : Lanes)
 	{
 		const FFacilityLoopHandles& H = L.Loop->GetHandles();
@@ -72,102 +195,270 @@ FPlantDisplaySnapshot PlantDisplay::Build(const FFacilityPlant& Plant, const FPl
 		{
 			FPlantDisplayEquipment& E = S.Equipment.AddDefaulted_GetRef();
 			E.Loop = L.Id; E.Kind = EPlantEquipmentKind::Pump; E.Index = P;
-			E.CenterM = FVector(X0 + 1.0, L.Y0 + 1.0 + P * PumpPitchM, 0.3); E.SizeM = FVector(0.6, 0.6, 0.6);
+			E.CenterM = FVector(X0 + PumpDX, L.Y0 + 0.8 + P * PumpPitchM, 0.3); E.SizeM = FVector(0.6, 0.6, 0.6); E.Rotation = Turned;
 			E.bRunning = L.Loop->IsPumpRunning(P); E.bFailed = L.Loop->IsPumpTripped(P);
 		}
 		if (L.Id == EPlantLoopId::Chw)
 		{
-			const TArray<FPlantDisplayUnit>* Units = Placed(In.Chillers, L.Units);
 			for (int32 K = 0; K < L.Units; ++K)
 			{
 				FPlantDisplayEquipment& E = S.Equipment.AddDefaulted_GetRef();
 				E.Loop = L.Id; E.Kind = EPlantEquipmentKind::Chiller; E.Index = K;
-				E.CenterM = UnitPosition(X0, L, K) + FVector(0, 0, 0.2); E.SizeM = FVector(2.4, 1.2, 1.8);
-				Place(E, Units, K);
+				E.CenterM = UnitPosition(X0, L, K, 0.9); E.SizeM = FVector(2.4, 1.2, 1.8);
+				Place(E, In.Chillers, K);
 				// Healthy units first: the running count takes the lowest healthy indices, failed ones are the last.
 				const int32 Healthy = NChw - St.TrippedChillers;
 				E.bFailed = K >= Healthy; E.bRunning = !E.bFailed && K < St.ChillersRunning;
-				ChillerPos.Add(E.CenterM);
+				ChillerEq.Add(S.Equipment.Num() - 1);
 			}
 			if (Plant.GetEconomizerUAWK() > 0.0)
 			{
 				FPlantDisplayEquipment& E = S.Equipment.AddDefaulted_GetRef();
 				E.Loop = L.Id; E.Kind = EPlantEquipmentKind::Economizer;
-				E.CenterM = UnitPosition(X0, L, L.Units) + FVector(0, 0, 0.1); E.SizeM = FVector(0.8, 0.5, 1.6);
+				E.CenterM = UnitPosition(X0, L, L.Units, 0.8); E.SizeM = FVector(0.8, 0.5, 1.6);
 				E.bRunning = St.bEconomizerOn;
 			}
 		}
 		else
 		{
 			const int32 Tripped = Plant.GetTrippedDryCoolers(L.Id);
-			const TArray<FPlantDisplayUnit>* Units = Placed(L.Id == EPlantLoopId::Fws ? In.FwsDryCoolers : In.CwDryCoolers, L.Units);
-			TArray<FVector>& UnitPos = L.Id == EPlantLoopId::Fws ? FwsUnitPos : CwUnitPos;
+			const TArray<FPlantDisplayUnit>& Units = L.Id == EPlantLoopId::Fws ? In.FwsDryCoolers : In.CwDryCoolers;
+			TArray<int32>& UnitEq = L.Id == EPlantLoopId::Fws ? FwsEq : CwEq;
 			for (int32 K = 0; K < L.Units; ++K)
 			{
 				FPlantDisplayEquipment& E = S.Equipment.AddDefaulted_GetRef();
 				E.Loop = L.Id; E.Kind = EPlantEquipmentKind::DryCooler; E.Index = K;
-				E.CenterM = UnitPosition(X0, L, K); E.SizeM = FVector(2.4, 1.2, 1.3);
+				E.CenterM = UnitPosition(X0, L, K, 0.65); E.SizeM = FVector(2.4, 1.2, 1.3);
 				Place(E, Units, K);
 				E.bFailed = K >= L.Units - Tripped;
 				E.bRunning = !E.bFailed && (L.Id == EPlantLoopId::Fws ? St.FanRatio : St.CwDryCoolerHeatW > 0.0 ? 1.0 : 0.0) > 0.0;
-				UnitPos.Add(E.CenterM);
+				UnitEq.Add(S.Equipment.Num() - 1);
 			}
-			const TArray<FPlantDisplayUnit>* Trims = Placed(In.TrimChillers, L.ExtraUnits);
 			for (int32 K = 0; K < L.ExtraUnits; ++K)
 			{
 				FPlantDisplayEquipment& E = S.Equipment.AddDefaulted_GetRef();
 				E.Loop = L.Id; E.Kind = EPlantEquipmentKind::TrimChiller; E.Index = K;
-				E.CenterM = UnitPosition(X0, L, L.Units + K) + FVector(0, 0, 0.2); E.SizeM = FVector(2.4, 1.2, 1.8);
-				Place(E, Trims, K);
+				E.CenterM = UnitPosition(X0, L, L.Units + K, 0.9); E.SizeM = FVector(2.4, 1.2, 1.8);
+				Place(E, In.TrimChillers, K);
 				const int32 Healthy = NTrim - St.TrippedTrimChillers;
 				E.bFailed = K >= Healthy; E.bRunning = !E.bFailed && K < St.TrimRunning;
-				TrimPos.Add(E.CenterM);
+				TrimEq.Add(S.Equipment.Num() - 1);
 			}
 		}
 	}
 
+	// Consumers of the room branches, all loops together: one lane per branch, so no two runs in the room overlap.
+	const int32 NumCrah = In.CrahPositionsM.Num();
+	const int32 NChwCond = Plant.IsChilledWaterActive() ? FMath::Max(Th.DutyChillers, 1) : 0;
+	struct FRoomBranch { EPlantLoopId Loop; int32 Branch; FVector C; double LaneY = 0.0; };
+	TArray<FRoomBranch> RoomBranches;
+	for (const FPlantLane& L : Lanes)
+	{
+		if (L.Id == EPlantLoopId::Cw) continue;
+		for (int32 B = 0; B < L.Loop->GetNumBranches(); ++B)
+		{
+			FVector C = FVector(Room.Max.X - 1.0, L.Yc(), 0.0);
+			if (L.Id == EPlantLoopId::Fws) { if (In.CduPositionsM.IsValidIndex(B)) C = In.CduPositionsM[B]; }
+			else if (B < NumCrah) C = In.CrahPositionsM[B];
+			else if (In.CduPositionsM.IsValidIndex(B - NumCrah)) C = In.CduPositionsM[B - NumCrah];
+			RoomBranches.Add({ L.Id, B, C });
+		}
+	}
+	{
+		TArray<int32> Order;
+		for (int32 I = 0; I < RoomBranches.Num(); ++I) Order.Add(I);
+		Order.Sort([&](int32 A, int32 B) { return RoomBranches[A].C.Y < RoomBranches[B].C.Y || (RoomBranches[A].C.Y == RoomBranches[B].C.Y && A < B); });
+		for (int32 First = 0; First < Order.Num();)
+		{
+			int32 End = First + 1;
+			while (End < Order.Num() && RoomBranches[Order[End]].C.Y - RoomBranches[Order[End - 1]].C.Y < RoomClusterM) ++End;
+			TArray<int32> Band(&Order[First], End - First);
+			double Mean = 0.0;
+			for (int32 I : Band) Mean += RoomBranches[I].C.Y / Band.Num();
+			Band.Sort([&](int32 A, int32 B) { return RoomBranches[A].C.X < RoomBranches[B].C.X || (RoomBranches[A].C.X == RoomBranches[B].C.X && A < B); });
+			for (int32 K = 0; K < Band.Num(); ++K) RoomBranches[Band[K]].LaneY = Mean + (K - 0.5 * (Band.Num() - 1)) * RoomLanePitchM;
+			First = End;
+		}
+	}
+	auto RoomBranch = [&](EPlantLoopId Id, int32 B) -> const FRoomBranch*
+	{
+		for (const FRoomBranch& R : RoomBranches) if (R.Loop == Id && R.Branch == B) return &R;
+		return nullptr;
+	};
+
 	// Network nodes and pipes of every lane.
 	uint32 Hash = GetTypeHash(int32(Plant.GetTopology()));
+	int32 RoomLoops = 0;
+	struct FTrunk { double X = 0.0, Lo = TNumericLimits<double>::Max(), Hi = -TNumericLimits<double>::Max(); TArray<double> Ys, Bottoms; } RoomTrunk;
+	TArray<FVector2D> YardLanes;   // (lane Y, lowest height) of every yard lane so far: posts stay off them
 	for (const FPlantLane& L : Lanes)
 	{
 		const FFacilityWaterLoop& Loop = *L.Loop;
 		const FHydraulicNetwork& N = Loop.GetNetwork();
 		const FFacilityLoopHandles& H = Loop.GetHandles();
+		const bool bRoom = L.Id != EPlantLoopId::Cw;
+		const double Base = bRoom ? Room.Max.Z + RoomTrayAboveM + (RoomLoops++) * RoomLoopStepM : YardBranchZ;
+		const double ZSup = Base, ZRet = Base + LayerM, ZMid = Base + 2.0 * LayerM;
+		const double XT = bRoom ? Room.Max.X + RoomTrunkDX : X0 + YardTrunkDX;
+		const double Yc = L.Yc(), YSupplyMain = Yc - MainOffsetM, YReturnMain = Yc + MainOffsetM;
+		const double XPumpBar = X0 + PumpBarDX, XPump = X0 + PumpDX, XPS = X0 + PlantSupplyDX, XPR = X0 + PlantReturnDX, XSU = X0 + CollectorDX;
+
+		TMap<int32, FBar> Bars;
+		auto MakeBar = [&](int32 Node, double X, double Z) { if (Node != INDEX_NONE) { FBar& B = Bars.Add(Node); B.X = X; B.Z = Z; } };
+		MakeBar(H.SupplyHeaderNode, XT, ZSup);
+		MakeBar(H.ReturnHeaderNode, XT, ZRet);
+		MakeBar(H.MiddleNode, XT, ZMid);
+		MakeBar(H.PlantSupplyNode, XPS, PlantSupplyZ);
+		MakeBar(H.PlantReturnNode, XPR, CoilInZ);
+		MakeBar(H.SuctionNode, XSU, CoilOutZ);   // the coil collector; the pump suction header is added below
+		FBar PumpBar; PumpBar.X = XPumpBar; PumpBar.Z = PumpSuctionZ;
+		auto LayerOf = [&](int32 Node) { const FBar* B = Bars.Find(Node); return B ? B->Z : ZSup; };
+
 		TArray<FVector>& Pos = S.NodePositionsM[uint8(L.Id)];
-		Pos.Init(FVector(X0, L.Y0, 0.6), N.GetNumNodes());
-		const double Yc = L.Y0 + 0.5 * L.Width;
-		auto SetPos = [&](int32 Node, const FVector& P) { if (Pos.IsValidIndex(Node)) Pos[Node] = P; };
-		SetPos(H.SuctionNode, FVector(X0, L.Y0 + 1.0, 0.6));
-		SetPos(H.PlantSupplyNode, FVector(X0 + 2.2, Yc - 0.4, 1.2));
-		SetPos(H.PlantReturnNode, FVector(X0 + 2.2, Yc + 0.4, 1.8));
-		SetPos(H.SupplyHeaderNode, FVector(Room.Max.X + 0.6, Yc - 0.4, HeaderZM));
-		SetPos(H.ReturnHeaderNode, FVector(Room.Max.X + 0.6, Yc + 0.4, HeaderZM + 0.3));
-		SetPos(H.MiddleNode, FVector(Room.Max.X + 1.2, Yc, HeaderZM + 0.6));
-		for (int32 P = 0; P < H.Pumps.Num(); ++P) SetPos(N.GetPumpToNodeIndex(H.Pumps[P]), FVector(X0 + 1.0, L.Y0 + 1.0 + P * PumpPitchM, 0.8));
-		// Branch consumers.
-		const int32 NumCrah = L.Id == EPlantLoopId::Chw ? In.CrahPositionsM.Num() : 0;
-		const int32 NChwCond = Plant.IsChilledWaterActive() ? FMath::Max(Th.DutyChillers, 1) : 0;
+		TArray<TArray<FVector>>& Shapes = S.NodeShapesM[uint8(L.Id)];
+		Pos.Init(FVector(X0, Yc, 0.6), N.GetNumNodes());
+		Shapes.SetNum(N.GetNumNodes());
+		auto SetPoint = [&](int32 Node, const FVector& P) { if (Pos.IsValidIndex(Node)) { Pos[Node] = P; Shapes[Node] = { P }; } };
+
+		TArray<TArray<FVector>> Routes;   // by pipe edge
+		Routes.SetNum(N.GetNumPipes());
+		TArray<TArray<FVector>> PumpRoutes;
+		PumpRoutes.SetNum(H.Pumps.Num());
+
+		// Pumps and their check pipes into the plant supply header.
+		for (int32 P = 0; P < H.Pumps.Num(); ++P)
+		{
+			const double PY = L.Y0 + 0.8 + P * PumpPitchM;
+			const int32 Discharge = N.GetPumpToNodeIndex(H.Pumps[P]);
+			const FVector Out(XPump, PY, PumpOutZ);
+			SetPoint(Discharge, Out);
+			PumpRoutes[P] = Line({ PumpBar.At(PY), FVector(XPump, PY, PumpSuctionZ), Out });
+			if (H.PumpCheckPipes.IsValidIndex(P))
+				Routes[H.PumpCheckPipes[P]] = Line({ Out, FVector(XPump, PY, PlantSupplyZ), Bars[H.PlantSupplyNode].At(PY) });
+		}
+		// Mains: plant supply header -> up -> along X -> supply header; return header -> along X -> down -> plant return.
+		{
+			const FVector From = Bars[H.PlantSupplyNode].At(YSupplyMain);
+			const FVector To = Bars[H.SupplyHeaderNode].At(YSupplyMain);
+			Routes[H.SupplyMainPipe] = Line({ From, FVector(From.X, From.Y, To.Z), To });
+			const FVector RFrom = Bars[H.ReturnHeaderNode].At(YReturnMain);
+			const FVector RTo = Bars[H.PlantReturnNode].At(YReturnMain);
+			Routes[H.ReturnMainPipe] = Line({ RFrom, FVector(RTo.X, RFrom.Y, RFrom.Z), RTo });
+		}
+
+		// Branches: room consumers (FWS, CHW) or the chillers' condensers (CW).
+		TArray<FYardLink> Links;
+		auto BranchUnit = [&](int32 B) -> const FPlantDisplayEquipment*
+		{
+			if (L.Id != EPlantLoopId::Cw) return nullptr;
+			if (B < NChwCond && ChillerEq.IsValidIndex(B)) return &S.Equipment[ChillerEq[B]];
+			if (TrimEq.IsValidIndex(B - NChwCond)) return &S.Equipment[TrimEq[B - NChwCond]];
+			return nullptr;
+		};
+		for (int32 B = 0; B < Loop.GetNumBranches(); ++B)
+			if (const FPlantDisplayEquipment* E = BranchUnit(B)) Links.Add(MakeLink(*E, true, B, 0, XT, 100));
+		// Coils: each through the sink unit it stands for (coil K of NumCoils -> unit K * Units / NumCoils; the FWS
+		// hydraulic coils are counted by flow and the thermal units by heat, so the two counts can differ: limitation).
+		const int32 NumCoils = H.ReturnCoilPipes.Num();
+		const int32 CoilUnits = L.Id == EPlantLoopId::Chw ? FMath::Max(Th.DutyChillers, 1) : L.Units;
+		const TArray<int32>& Sinks = L.Id == EPlantLoopId::Chw ? ChillerEq : L.Id == EPlantLoopId::Fws ? FwsEq : CwEq;
+		TMap<int32, int32> CoilsOnUnit;
+		for (int32 K = 0; K < NumCoils; ++K)
+		{
+			const int32 U = CoilUnits > 0 ? FMath::Min(K * CoilUnits / FMath::Max(NumCoils, 1), CoilUnits - 1) : 0;
+			FPlantDisplayEquipment Fallback;
+			Fallback.Kind = EPlantEquipmentKind::DryCooler; Fallback.SizeM = FVector(2.4, 1.2, 1.3);
+			Fallback.CenterM = UnitPosition(X0, L, U, 0.65);
+			const FPlantDisplayEquipment& E = Sinks.IsValidIndex(U) ? S.Equipment[Sinks[U]] : Fallback;
+			int32& On = CoilsOnUnit.FindOrAdd(U);
+			Links.Add(MakeLink(E, false, H.ReturnCoilPipes[K], On++, XPR, 200));
+		}
+		AssignAisleLanes(Links);
+		TArray<double> TrunkAvoid;   // lanes leaving the trunk (posts go between them)
+		for (const FYardLink& K : Links)
+		{
+			const double LY = K.LaneY;
+			if (K.Group >> 40 == 200)
+			{
+				Routes[K.Pipe] = Line({ Bars[H.PlantReturnNode].At(LY), FVector(K.In.X, LY, CoilInZ), FVector(K.In.X, LY, K.In.Z), K.In,
+					K.Out, FVector(K.Out.X, LY, K.Out.Z), FVector(K.Out.X, LY, CoilOutZ), Bars[H.SuctionNode].At(LY) });
+				continue;
+			}
+			// Condenser branch in its aisle lane: valve drop at the nearer connection, return riser at the farther one.
+			const int32 Bi = K.Pipe;
+			const int32 A = N.GetPipeToNodeIndex(H.BranchSupplyRunPipes[Bi]);
+			const int32 Bn = N.GetPipeToNodeIndex(H.ValvePipes[Bi]);
+			const int32 Cn = N.GetPipeFromNodeIndex(H.BranchReturnRunPipes[Bi]);
+			const FVector PA(K.In.X, LY, K.In.Z + 0.9), PB(K.In.X, LY, K.In.Z + 0.5), PC(K.Out.X, LY, K.Out.Z + 0.5);
+			SetPoint(A, PA); SetPoint(Bn, PB); SetPoint(Cn, PC);
+			const int32 SupNode = N.GetPipeFromNodeIndex(H.BranchSupplyRunPipes[Bi]), RetNode = N.GetPipeToNodeIndex(H.BranchReturnRunPipes[Bi]);
+			Routes[H.BranchSupplyRunPipes[Bi]] = Line({ Bars[SupNode].At(LY), FVector(PA.X, LY, LayerOf(SupNode)), PA });
+			Routes[H.ValvePipes[Bi]] = Line({ PA, PB });
+			Routes[H.HxPipes[Bi]] = Line({ PB, FVector(PB.X, LY, K.In.Z), K.In, K.Out, FVector(K.Out.X, LY, K.Out.Z), PC });
+			Routes[H.BranchReturnRunPipes[Bi]] = Line({ PC, FVector(PC.X, LY, LayerOf(RetNode)), Bars[RetNode].At(LY) });
+			TrunkAvoid.Add(LY);
+		}
 		for (int32 B = 0; B < Loop.GetNumBranches(); ++B)
 		{
-			FVector C = FVector(X0 + 4.0, Yc, 1.0);
-			if (L.Id == EPlantLoopId::Fws) { if (In.CduPositionsM.IsValidIndex(B)) C = In.CduPositionsM[B]; }
-			else if (L.Id == EPlantLoopId::Chw)
-			{
-				if (B < NumCrah) C = In.CrahPositionsM[B];
-				else if (In.CduPositionsM.IsValidIndex(B - NumCrah)) C = In.CduPositionsM[B - NumCrah];
-			}
-			else
-			{
-				// Condensers: the CHW chillers' first, then the trim chillers' (CW branch order of BuildCondenser).
-				if (B < NChwCond && ChillerPos.IsValidIndex(B)) C = ChillerPos[B];
-				else if (TrimPos.IsValidIndex(B - NChwCond)) C = TrimPos[B - NChwCond];
-			}
+			if (BranchUnit(B) != nullptr) continue;
+			// Room consumer (or a condenser branch without its chiller): drops over the consumer, supply in the lower
+			// layer. The upper-layer pipe ends farther from the trunk, so its riser never cuts the lower run.
+			const FRoomBranch* R = RoomBranch(L.Id, B);
+			const FVector C = R ? R->C : FVector(XT + 2.0, Yc, 0.0);
+			const double LY = R ? R->LaneY : Yc + 0.5 + B * RoomLanePitchM;
+			const int32 SupNode = N.GetPipeFromNodeIndex(H.BranchSupplyRunPipes[B]), RetNode = N.GetPipeToNodeIndex(H.BranchReturnRunPipes[B]);
+			const double ZS = LayerOf(SupNode), ZR = LayerOf(RetNode);
+			const double Toward = XT >= C.X ? 1.0 : -1.0;
+			const double Near = C.X + Toward * ConsumerHalfM, Far = C.X - Toward * ConsumerHalfM;
+			const double XA = ZS > ZR ? Far : Near, XC = ZS > ZR ? Near : Far;
+			const double ZTop = C.Z + ConsumerTopM;
+			const FVector PA(XA, LY, ZTop + 0.45), PB(XA, LY, ZTop + 0.15), PC(XC, LY, ZTop + 0.15);
 			const int32 A = N.GetPipeToNodeIndex(H.BranchSupplyRunPipes[B]);
 			const int32 Bn = N.GetPipeToNodeIndex(H.ValvePipes[B]);
 			const int32 Cn = N.GetPipeFromNodeIndex(H.BranchReturnRunPipes[B]);
-			SetPos(A, C + FVector(0, -0.3, 2.6));
-			SetPos(Bn, C + FVector(0, -0.3, 1.9));
-			SetPos(Cn, C + FVector(0, 0.3, 2.6));
+			SetPoint(A, PA); SetPoint(Bn, PB); SetPoint(Cn, PC);
+			Routes[H.BranchSupplyRunPipes[B]] = Line({ Bars[SupNode].At(LY), FVector(XA, LY, ZS), PA });
+			Routes[H.ValvePipes[B]] = Line({ PA, PB });
+			Routes[H.HxPipes[B]] = Line({ PB, FVector(XA, LY, ZTop), FVector(XA, C.Y, ZTop), FVector(XC, C.Y, ZTop), FVector(XC, LY, ZTop), PC });
+			Routes[H.BranchReturnRunPipes[B]] = Line({ PC, FVector(XC, LY, ZR), Bars[RetNode].At(LY) });
+			TrunkAvoid.Add(LY);
+		}
+		// Series: the bypass from the supply to the middle header, past the end of every header (crosses none).
+		if (H.BypassPipe != INDEX_NONE)
+		{
+			double Lo = TNumericLimits<double>::Max();
+			for (const auto& Pair : Bars) if (Pair.Value.X == XT && Pair.Value.Ys.Num() > 0) Lo = FMath::Min(Lo, Pair.Value.Lo());
+			const double BY = (Lo < TNumericLimits<double>::Max() ? Lo : Yc) - 0.5;
+			const int32 From = N.GetPipeFromNodeIndex(H.BypassPipe), To = N.GetPipeToNodeIndex(H.BypassPipe);
+			if (Bars.Contains(From) && Bars.Contains(To)) Routes[H.BypassPipe] = Line({ Bars[From].At(BY), Bars[To].At(BY) });
+			TrunkAvoid.Add(BY);
+		}
+
+		// Headers: bars from their anchors; the suction is the coil collector, down and along to the pump suction header.
+		for (auto& Pair : Bars)
+		{
+			const int32 Node = Pair.Key;
+			FBar& B = Pair.Value;
+			if (!Pos.IsValidIndex(Node)) continue;
+			if (Node == H.SuctionNode) continue;
+			if (B.Ys.IsEmpty()) B.Ys.Add(Yc);
+			Shapes[Node] = Line({ FVector(B.X, B.Lo(), B.Z), FVector(B.X, B.Hi(), B.Z) });
+			Pos[Node] = FVector(B.X, 0.5 * (B.Lo() + B.Hi()), B.Z);
+		}
+		if (Pos.IsValidIndex(H.SuctionNode))
+		{
+			FBar& C = Bars[H.SuctionNode];
+			if (PumpBar.Ys.IsEmpty()) PumpBar.Ys.Add(Yc);
+			double YConn = PumpBar.Lo();
+			// Below this loop's coil lanes only (condenser lanes run in the chillers' lane, another loop's ground).
+			for (const FYardLink& K : Links) if (K.Group >> 40 == 200) YConn = FMath::Min(YConn, FMath::Min(K.LaneY, K.In.Y));
+			YConn = FMath::Min(YConn, YSupplyMain) - 0.4;
+			TArray<FVector> Shape;
+			if (C.Ys.Num() > 0) { Push(Shape, FVector(C.X, C.Hi(), C.Z)); Push(Shape, FVector(C.X, YConn, C.Z)); Push(Shape, FVector(C.X, YConn, PumpSuctionZ)); }
+			Push(Shape, FVector(PumpBar.X, C.Ys.Num() > 0 ? YConn : PumpBar.Lo(), PumpSuctionZ));
+			Push(Shape, FVector(PumpBar.X, PumpBar.Hi(), PumpSuctionZ));
+			Shapes[H.SuctionNode] = Shape;
+			Pos[H.SuctionNode] = FVector(PumpBar.X, 0.5 * (PumpBar.Lo() + PumpBar.Hi()), PumpSuctionZ);
 		}
 
 		// Temperatures of the loop's volumes (series: the middle header carries the CDU inlet mix).
@@ -176,11 +467,22 @@ FPlantDisplaySnapshot PlantDisplay::Build(const FFacilityPlant& Plant, const FPl
 		else if (L.Id == EPlantLoopId::Cw) { Ts = St.CwSupplyK; Tr = St.CwReturnK; }
 		const bool bSeries = H.MiddleNode != INDEX_NONE;
 		const double Tmid = bSeries ? Plant.GetSupplyTempK() : Tr;
+		for (const auto& Pair : Bars)
+		{
+			if (!Shapes.IsValidIndex(Pair.Key) || Shapes[Pair.Key].Num() < 2) continue;
+			FPlantDisplayHeader& Hd = S.Headers.AddDefaulted_GetRef();
+			Hd.Loop = L.Id; Hd.Node = Pair.Key; Hd.PointsM = Shapes[Pair.Key];
+			Hd.TempK = Pair.Key == H.ReturnHeaderNode || Pair.Key == H.PlantReturnNode ? Tr : Pair.Key == H.MiddleNode ? Tmid : Ts;
+		}
 
-		auto Add = [&](EPlantPipeRole Role, int32 Edge, int32 Branch, const TArray<FVector>& Pts, double Flow, double TempK, bool bClosed)
+		auto Add = [&](EPlantPipeRole Role, int32 Edge, int32 Branch, int32 From, int32 To, TArray<FVector> Pts, double Flow, double TempK, bool bClosed)
 		{
 			FPlantDisplayPipe& P = S.Pipes.AddDefaulted_GetRef();
-			P.Loop = L.Id; P.Role = Role; P.Edge = Edge; P.Branch = Branch; P.PointsM = Pts; P.FlowM3s = Flow; P.TempK = TempK;
+			P.Loop = L.Id; P.Role = Role; P.Edge = Edge; P.Branch = Branch; P.FromNode = From; P.ToNode = To; P.FlowM3s = Flow; P.TempK = TempK;
+			// A pipe nothing routed (an unknown role) runs X, then Y, then Z between its node points.
+			if (Pts.Num() < 2 && Pos.IsValidIndex(From) && Pos.IsValidIndex(To))
+				Pts = Line({ Pos[From], FVector(Pos[To].X, Pos[From].Y, Pos[From].Z), FVector(Pos[To].X, Pos[To].Y, Pos[From].Z), Pos[To] });
+			P.PointsM = MoveTemp(Pts);
 			P.bClosed = bClosed;
 			P.bReversed = Branch != INDEX_NONE && Flow < -1e-12;
 			P.bHeader = Role == EPlantPipeRole::SupplyMain || Role == EPlantPipeRole::ReturnMain || Role == EPlantPipeRole::Bypass;
@@ -188,7 +490,7 @@ FPlantDisplaySnapshot PlantDisplay::Build(const FFacilityPlant& Plant, const FPl
 		for (int32 P = 0; P < H.Pumps.Num(); ++P)
 		{
 			const int32 Pump = H.Pumps[P];
-			Add(EPlantPipeRole::Pump, P, INDEX_NONE, { Pos[N.GetPumpFromNodeIndex(Pump)], Pos[N.GetPumpToNodeIndex(Pump)] },
+			Add(EPlantPipeRole::Pump, P, INDEX_NONE, N.GetPumpFromNodeIndex(Pump), N.GetPumpToNodeIndex(Pump), PumpRoutes[P],
 				Loop.IsPumpRunning(P) ? N.GetPumpFlowM3s(Pump) : 0.0, Ts, !Loop.IsPumpRunning(P));
 		}
 		// Every network pipe once, with its role.
@@ -205,23 +507,11 @@ FPlantDisplaySnapshot PlantDisplay::Build(const FFacilityPlant& Plant, const FPl
 			Roles.Add(H.BranchReturnRunPipes[B], TPair<EPlantPipeRole, int32>(EPlantPipeRole::ReturnRun, B));
 		}
 		for (int32 K = 0; K < H.ReturnCoilPipes.Num(); ++K) Roles.Add(H.ReturnCoilPipes[K], TPair<EPlantPipeRole, int32>(EPlantPipeRole::ReturnCoil, K));
-		const int32 NumCoils = H.ReturnCoilPipes.Num();
 		for (int32 Edge = 0; Edge < N.GetNumPipes(); ++Edge)
 		{
 			const TPair<EPlantPipeRole, int32>* R = Roles.Find(Edge);
 			const EPlantPipeRole Role = R ? R->Key : EPlantPipeRole::Other;
 			const int32 Branch = R && Role != EPlantPipeRole::ReturnCoil ? R->Value : INDEX_NONE;
-			TArray<FVector> Pts = { Pos[N.GetPipeFromNodeIndex(Edge)], Pos[N.GetPipeToNodeIndex(Edge)] };
-			if (Role == EPlantPipeRole::ReturnCoil)
-			{
-				// Through the sink unit it stands for: coil K of NumCoils -> unit K * Units / NumCoils (the FWS hydraulic
-				// coils are counted by flow and the thermal units by heat, so the two counts can differ: limitation).
-				const int32 Units = L.Id == EPlantLoopId::Chw ? FMath::Max(Th.DutyChillers, 1) : L.Units;
-				const int32 U = Units > 0 ? FMath::Min(R->Value * Units / FMath::Max(NumCoils, 1), Units - 1) : 0;
-				const TArray<FVector>& Sinks = L.Id == EPlantLoopId::Chw ? ChillerPos : L.Id == EPlantLoopId::Fws ? FwsUnitPos : CwUnitPos;
-				const FVector Via = Sinks.IsValidIndex(U) ? Sinks[U] : UnitPosition(X0, L, U);
-				Pts.Insert(Via + FVector(0, 0, 0.9), 1);
-			}
 			// Series: the first stage returns into the middle header, the second stage leaves it.
 			const bool bFirstStage = Branch != INDEX_NONE && Branch < H.NumFirstStage;
 			double T = Ts;
@@ -232,7 +522,8 @@ FPlantDisplaySnapshot PlantDisplay::Build(const FFacilityPlant& Plant, const FPl
 			case EPlantPipeRole::ReturnMain: case EPlantPipeRole::ReturnCoil: T = Tr; break;
 			default: T = Ts; break;
 			}
-			Add(Role, Edge, Branch, Pts, N.IsPipeClosed(Edge) ? 0.0 : N.GetPipeFlowM3s(Edge), T, N.IsPipeClosed(Edge));
+			Add(Role, Edge, Branch, N.GetPipeFromNodeIndex(Edge), N.GetPipeToNodeIndex(Edge), Routes[Edge],
+				N.IsPipeClosed(Edge) ? 0.0 : N.GetPipeFlowM3s(Edge), T, N.IsPipeClosed(Edge));
 		}
 		for (int32 K = 0; K < Loop.GetNumLeaks(); ++K)
 		{
@@ -242,9 +533,83 @@ FPlantDisplaySnapshot PlantDisplay::Build(const FFacilityPlant& Plant, const FPl
 			Lk.Loop = L.Id; Lk.Leak = K; Lk.PositionM = Pos.IsValidIndex(Hole.NodeIndex) ? Pos[Hole.NodeIndex] : FVector::ZeroVector;
 			Lk.FlowM3s = Loop.GetLeakFlowM3s(K);
 		}
+
+		// Supports (display only): a tray under the trunk headers and under every lane band, posts in the gaps.
+		auto Tray = [&](const FVector& Lo, const FVector& Hi) { S.Trays.Add({ L.Id, 0.5 * (Lo + Hi), (Hi - Lo).GetAbs() }); };
+		for (const FYardLink& K : Links) YardLanes.Add(FVector2D(K.LaneY, K.Group >> 40 == 200 ? CoilInZ : ZSup));
+		if (const FBar* Sup = Bars.Find(H.SupplyHeaderNode))
+		{
+			const double Bottom = Sup->Z - 0.11;
+			Tray(FVector(XT - 0.2, Sup->Lo() - 0.15, Bottom), FVector(XT + 0.2, Sup->Hi() + 0.15, Bottom + 0.03));
+			TArray<double> Avoid;
+			for (const auto& Pair : Bars) if (Pair.Value.X == XT) Avoid.Append(Pair.Value.Ys);
+			if (bRoom)
+			{
+				// The room loops share one trunk column: their posts are placed once, after the last loop.
+				RoomTrunk.X = XT; RoomTrunk.Ys.Append(Avoid); RoomTrunk.Bottoms.Add(Bottom);
+				RoomTrunk.Lo = FMath::Min(RoomTrunk.Lo, Sup->Lo()); RoomTrunk.Hi = FMath::Max(RoomTrunk.Hi, Sup->Hi());
+			}
+			else
+			{
+				for (const FVector2D& Lane : YardLanes) if (Lane.Y < Bottom) Avoid.Add(Lane.X);
+				for (const double PY : PostSpots(Sup->Lo() - 0.1, Sup->Hi() + 0.1, Avoid, 4.0))
+				{
+					S.PostTopsM.Add(FVector(XT + 0.3, PY, Bottom));
+					Tray(FVector(XT - 0.2, PY - 0.04, Bottom - 0.06), FVector(XT + 0.34, PY + 0.04, Bottom));
+				}
+			}
+		}
+		TMap<int64, TArray<const FYardLink*>> Aisles;
+		for (const FYardLink& K : Links) Aisles.FindOrAdd(K.Group).Add(&K);
+		for (const auto& A : Aisles)
+		{
+			const bool bCoil = A.Key >> 40 == 200;
+			double Lo = TNumericLimits<double>::Max(), Hi = -Lo, X1 = -TNumericLimits<double>::Max();
+			TArray<double> Xs;
+			for (const FYardLink* K : A.Value) { Lo = FMath::Min(Lo, K->LaneY); Hi = FMath::Max(Hi, K->LaneY); X1 = FMath::Max(X1, K->Out.X); Xs.Add(K->In.X); Xs.Add(K->Out.X); }
+			const double X = bCoil ? XPR : XT, Bottom = (bCoil ? CoilInZ : ZSup) - 0.11;
+			if (X1 <= X) continue;   // placed units behind the header column: no tray
+			Tray(FVector(X - 0.1, Lo - 0.1, Bottom), FVector(X1 + 0.4, Hi + 0.1, Bottom + 0.03));
+			const double MidY = 0.5 * (Lo + Hi);
+			bool bClear = true;   // a post must not rise through another aisle's lane below this tray
+			for (const FVector2D& Lane : YardLanes) bClear &= (Lane.X >= Lo - 1e-6 && Lane.X <= Hi + 1e-6) || Lane.Y >= Bottom || FMath::Abs(Lane.X - MidY) > 0.15;
+			if (!bClear) continue;
+			for (const double PX : PostSpots(X + 0.05, X1 + 0.35, Xs, 4.0))
+			{
+				S.PostTopsM.Add(FVector(PX, MidY, Bottom));
+				Tray(FVector(PX - 0.04, Lo - 0.1, Bottom - 0.06), FVector(PX + 0.04, Hi + 0.1, Bottom));
+			}
+		}
+		// Trays under the room lanes of this loop (hung from the ceiling: no posts).
+		TMap<int32, FBox> RoomBands;
+		for (const FRoomBranch& R : RoomBranches)
+		{
+			if (R.Loop != L.Id) continue;
+			const int32 Key = FMath::RoundToInt(R.LaneY / 2.0);
+			FBox& Band = RoomBands.FindOrAdd(Key, FBox(ForceInit));
+			Band += FVector(R.C.X - ConsumerHalfM - 0.1, R.LaneY - 0.12, 0.0);
+			Band += FVector(XT - 0.2, R.LaneY + 0.12, 0.0);
+		}
+		for (const auto& Band : RoomBands)
+			Tray(FVector(Band.Value.Min.X, Band.Value.Min.Y, ZSup - 0.11), FVector(Band.Value.Max.X, Band.Value.Max.Y, ZSup - 0.08));
+
 		Hash = HashCombine(Hash, GetTypeHash(N.GetNumPipes()));
 		Hash = HashCombine(Hash, GetTypeHash(N.GetNumNodes()));
 	}
+	if (RoomTrunk.Bottoms.Num() > 0)
+	{
+		double Top = 0.0;
+		for (const double B : RoomTrunk.Bottoms) Top = FMath::Max(Top, B);
+		for (const double PY : PostSpots(RoomTrunk.Lo - 0.1, RoomTrunk.Hi + 0.1, RoomTrunk.Ys, 4.0))
+		{
+			S.PostTopsM.Add(FVector(RoomTrunk.X + 0.3, PY, Top));
+			for (const double B : RoomTrunk.Bottoms)
+				S.Trays.Add({ EPlantLoopId::Fws, FVector(RoomTrunk.X + 0.07, PY, B - 0.03), FVector(0.54, 0.08, 0.06) });
+		}
+	}
+	for (int32 Id = 0; Id < 3; ++Id)
+		for (int32 Node = 0; Node < S.NodeShapesM[Id].Num(); ++Node)
+			if (S.NodeShapesM[Id][Node].IsEmpty()) S.NodeShapesM[Id][Node] = { S.NodePositionsM[Id][Node] };
 	Hash = HashCombine(Hash, GetTypeHash(S.Equipment.Num()));
 	Hash = HashCombine(Hash, GetTypeHash(int32(S.Equipment.FilterByPredicate([](const FPlantDisplayEquipment& E) { return E.bPlaced; }).Num())));
 	Hash = HashCombine(Hash, GetTypeHash(S.Leaks.Num()));
@@ -254,8 +619,18 @@ FPlantDisplaySnapshot PlantDisplay::Build(const FFacilityPlant& Plant, const FPl
 	return S;
 }
 
+namespace
+{
+	FLinearColor LoopHue(EPlantLoopId Loop)
+	{
+		return Loop == EPlantLoopId::Fws ? FLinearColor(1.f, .45f, .1f) : Loop == EPlantLoopId::Chw ? FLinearColor(.15f, .45f, 1.f) : FLinearColor(.2f, .85f, .3f);
+	}
+}
+
 FLinearColor PlantDisplay::PipeColor(const FPlantDisplaySnapshot& S, const FPlantDisplayPipe& P, bool bTemperatureMode)
 {
+	// Structure only (plant off or layout mode): the loop's colour, no flow or temperature claim.
+	if (!S.bLive) return LoopHue(P.Loop) * 0.6f;
 	if (P.bReversed) return FLinearColor(0.9f, 0.1f, 0.9f);
 	if (P.bClosed || FMath::Abs(P.FlowM3s) < 1e-9) return PipeTemperatureDisplay::UnknownColor();
 	if (bTemperatureMode) return PipeTemperatureDisplay::Color(P.TempK, P.TempK > 0.0);
@@ -263,19 +638,72 @@ FLinearColor PlantDisplay::PipeColor(const FPlantDisplaySnapshot& S, const FPlan
 	for (const FPlantDisplayPipe& Q : S.Pipes) if (Q.Loop == P.Loop) MaxFlow = FMath::Max(MaxFlow, FMath::Abs(Q.FlowM3s));
 	// Brightness 0.35..1 by |flow| (dim pipes stay visible); hue by loop: FWS orange, CHW blue, CW green.
 	const float B = 0.35f + 0.65f * static_cast<float>(MaxFlow > 0.0 ? FMath::Clamp(FMath::Abs(P.FlowM3s) / MaxFlow, 0.0, 1.0) : 0.0);
-	const FLinearColor Hue = P.Loop == EPlantLoopId::Fws ? FLinearColor(1.f, .45f, .1f) : P.Loop == EPlantLoopId::Chw ? FLinearColor(.15f, .45f, 1.f) : FLinearColor(.2f, .85f, .3f);
-	return Hue * B;
+	return LoopHue(P.Loop) * B;
+}
+
+FLinearColor PlantDisplay::HeaderColor(const FPlantDisplaySnapshot& S, const FPlantDisplayHeader& H, bool bTemperatureMode)
+{
+	if (!S.bLive) return LoopHue(H.Loop) * 0.75f;
+	if (bTemperatureMode) return PipeTemperatureDisplay::Color(H.TempK, H.TempK > 0.0);
+	return LoopHue(H.Loop) * 0.85f;
+}
+
+FLinearColor PlantDisplay::KindColor(EPlantLoopId Loop, EPlantEquipmentKind Kind)
+{
+	switch (Kind)
+	{
+	case EPlantEquipmentKind::Chiller: return FLinearColor(0.2f, 0.5f, 0.9f);
+	case EPlantEquipmentKind::TrimChiller: return FLinearColor(0.55f, 0.4f, 0.85f);
+	case EPlantEquipmentKind::Economizer: return FLinearColor(0.3f, 0.8f, 0.6f);
+	default: return LoopHue(Loop);
+	}
 }
 
 FLinearColor PlantDisplay::EquipmentColor(const FPlantDisplayEquipment& E)
 {
 	if (E.bFailed) return FLinearColor(0.85f, 0.05f, 0.05f);
 	if (!E.bRunning) return FLinearColor(0.3f, 0.3f, 0.3f);
-	switch (E.Kind)
+	return KindColor(E.Loop, E.Kind);
+}
+
+TArray<FPlantDisplayClash> PlantDisplay::FindClashes(const FPlantDisplaySnapshot& S)
+{
+	using namespace PlantDisplayStyle;
+	struct FItem { const TArray<FVector>* Pts; EPlantLoopId Loop; int32 From, To; double Dia; bool bHeader; int32 Index; };
+	TArray<FItem> Items;
+	for (int32 I = 0; I < S.Pipes.Num(); ++I)
 	{
-	case EPlantEquipmentKind::Pump: return FLinearColor(0.9f, 0.9f, 0.9f);
-	case EPlantEquipmentKind::DryCooler: return FLinearColor(0.55f, 0.75f, 0.85f);
-	case EPlantEquipmentKind::Chiller: case EPlantEquipmentKind::TrimChiller: return FLinearColor(0.2f, 0.5f, 0.9f);
-	default: return FLinearColor(0.3f, 0.8f, 0.6f);
+		const FPlantDisplayPipe& P = S.Pipes[I];
+		Items.Add({ &P.PointsM, P.Loop, P.FromNode, P.ToNode, P.bHeader ? MainDiameterM : PipeDiameterM, false, I });
 	}
+	for (int32 I = 0; I < S.Headers.Num(); ++I)
+		Items.Add({ &S.Headers[I].PointsM, S.Headers[I].Loop, S.Headers[I].Node, S.Headers[I].Node, HeaderDiameterM, true, I });
+	TArray<FPlantDisplayClash> Out;
+	for (int32 A = 0; A < Items.Num(); ++A)
+		for (int32 B = A + 1; B < Items.Num(); ++B)
+		{
+			const FItem& X = Items[A];
+			const FItem& Yi = Items[B];
+			// Segments that end at a node the other item also touches meet there by design.
+			auto Skip = [](const FItem& Self, const FItem& Other, int32 Seg)
+			{
+				if (Self.bHeader) return false;
+				const bool bShareFrom = Self.Loop == Other.Loop && (Self.From == Other.From || Self.From == Other.To);
+				const bool bShareTo = Self.Loop == Other.Loop && (Self.To == Other.From || Self.To == Other.To);
+				return (Seg == 0 && bShareFrom) || (Seg == Self.Pts->Num() - 2 && bShareTo);
+			};
+			const double Touch = 0.5 * (X.Dia + Yi.Dia);
+			double Worst = TNumericLimits<double>::Max();
+			for (int32 I = 0; I + 1 < X.Pts->Num(); ++I)
+			{
+				if (Skip(X, Yi, I)) continue;
+				for (int32 J = 0; J + 1 < Yi.Pts->Num(); ++J)
+				{
+					if (Skip(Yi, X, J)) continue;
+					Worst = FMath::Min(Worst, SegmentGap((*X.Pts)[I], (*X.Pts)[I + 1], (*Yi.Pts)[J], (*Yi.Pts)[J + 1]) - Touch);
+				}
+			}
+			if (Worst < -1e-9) Out.Add({ X.Index, Yi.Index, X.bHeader, Yi.bHeader, Worst });
+		}
+	return Out;
 }

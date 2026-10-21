@@ -7,8 +7,9 @@
 #include "Simulation/Plant/FacilityPlant.h"
 #include "PlantEquipmentActor.generated.h"
 
-class UStaticMeshComponent;
-class UMaterialInstanceDynamic;
+class UInstancedStaticMeshComponent;
+class UMaterialInterface;
+class UStaticMesh;
 
 // S8 F8 (Tools/설비냉각_계획.md): one facility plant unit placed by hand in the plant yard outside the room.
 UENUM(BlueprintType)
@@ -26,7 +27,9 @@ struct FPlantEquipmentRecord
 };
 
 // A box (SizeM: depth, width, height; origin at the bottom centre, actor scale 1) like the other layout equipment, so
-// selection, drag, rotation, the marquee, the 1 cm overlap rule and F framing use the shared layout code.
+// selection, drag, rotation, the marquee, the 1 cm overlap rule and F framing use the shared layout code. It is drawn
+// as the unit's parts (PlantVisual: fans and coil of a dry cooler, shells and panel of a chiller) inside that box;
+// the accent parts show the plant's status for this unit (SetStatusColor from the yard display).
 //
 // What it changes in the model: when at least one actor of a kind exists, the plant has exactly that many units of the
 // kind (FacilityPlantLayout::ApplyEquipmentCounts); with none, the automatic sizing rule of F2~F4 stays. Its location
@@ -43,6 +46,9 @@ public:
 
 	virtual void OnConstruction(const FTransform& Transform) override;
 	void RefreshVisuals();
+	// Accent colour (identity, or running / stopped / failed while the plant is live). Redraws only on a change.
+	void SetStatusColor(const FLinearColor& Color);
+	static FLinearColor IdentityColor(EPlantUnitKind Kind);
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Plant")
 	EPlantUnitKind Kind = EPlantUnitKind::FwsDryCooler;
@@ -59,11 +65,16 @@ public:
 	static const TCHAR* KindName(EPlantUnitKind Kind);
 
 private:
-	UPROPERTY(VisibleAnywhere, Category = "Plant")
-	TObjectPtr<UStaticMeshComponent> Body;
-
 	UPROPERTY(Transient)
-	TObjectPtr<UMaterialInstanceDynamic> BodyMaterial;
+	TMap<uint32, TObjectPtr<UInstancedStaticMeshComponent>> PartSets;
+	// Hard references so the cooker packages the engine shapes and material the parts use.
+	UPROPERTY() TArray<TObjectPtr<UStaticMesh>> CookedShapes;
+	UPROPERTY() TObjectPtr<UMaterialInterface> CookedMaterial;
+	FLinearColor StatusColor = FLinearColor::Transparent;   // transparent = identity colour
+	FVector DrawnSizeM = FVector::ZeroVector;
+	FLinearColor DrawnColor = FLinearColor::Transparent;
+	EPlantUnitKind DrawnKind = EPlantUnitKind::FwsDryCooler;
+	bool bDrawn = false;
 };
 
 namespace VrgPlantEquipment

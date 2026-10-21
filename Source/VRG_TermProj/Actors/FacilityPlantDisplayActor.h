@@ -5,14 +5,17 @@
 #include "CoreMinimal.h"
 #include "GameFramework/Actor.h"
 #include "Visualization/PlantDisplay.h"
+#include "Visualization/PlantVisual.h"
 #include "FacilityPlantDisplayActor.generated.h"
 
-class UStaticMeshComponent;
+class UInstancedStaticMeshComponent;
 
-// S8 F7: draws the facility plant from a PlantDisplay snapshot (the integrated actor spawns it while the plant runs in
-// simulation mode and removes it in layout mode). Display only: it never reads or changes the plant (rule 5), the
-// snapshot is a copy made on the game thread. Pipes recolour by flow (or temperature with vrg.Pipes.Temperature 1, the
-// same switch as the room's pipes); meshes are rebuilt only when the snapshot's structure changes.
+// S8 F7: draws the facility plant from a PlantDisplay snapshot (the integrated actor spawns it whenever a plant is built,
+// in layout and simulation mode, with or without vrg.Plant.Enable). Display only: it never reads or changes the plant
+// (rule 5), the snapshot is a copy made on the game thread. Pipes recolour by flow (or temperature with
+// vrg.Pipes.Temperature 1, the same switch as the room's pipes) while the plant is live, loop colours otherwise.
+// Everything is instanced shapes grouped by colour (PlantInstances); the upload is skipped when nothing changed.
+// Units placed by hand (APlantEquipmentActor) draw themselves; the yard draws the automatic units.
 UCLASS()
 class VRG_TERMPROJ_API AFacilityPlantDisplayActor : public AActor
 {
@@ -23,23 +26,17 @@ public:
 
 	void ShowSnapshot(const FPlantDisplaySnapshot& Snapshot);
 	const FPlantDisplaySnapshot& GetSnapshot() const { return Shown; }
-	// Components by role (tests count these, not every component of the actor).
-	int32 GetNumPipeMeshes() const { return PipeMeshes.Num(); }
-	int32 GetNumEquipmentMeshes() const { return EquipmentMeshes.Num(); }
-	int32 GetNumLeakMeshes() const { return LeakMeshes.Num(); }
-	int32 GetNumRebuilds() const { return Rebuilds; }
-	// Pipe diameters on screen [m] (schematic).
-	double HeaderDiameterM = 0.20, BranchDiameterM = 0.10;
+	// What was drawn (tests count these, not components).
+	int32 GetNumPipeSegments() const { return PipeSegments; }
+	int32 GetNumHeaderSegments() const { return HeaderSegments; }
+	int32 GetNumEquipmentDrawn() const { return EquipmentDrawn; }
+	int32 GetNumLeakMarkers() const { return LeakMarkers; }
+	int32 GetNumUploads() const { return Uploads; }
 
 private:
-	UPROPERTY(Transient) TArray<TObjectPtr<UStaticMeshComponent>> PipeMeshes;
-	UPROPERTY(Transient) TArray<TObjectPtr<UStaticMeshComponent>> EquipmentMeshes;
-	UPROPERTY(Transient) TArray<TObjectPtr<UStaticMeshComponent>> LeakMeshes;
-	TArray<int32> PipeMeshOwner;      // display pipe index of every pipe mesh (a polyline has several)
+	UPROPERTY(Transient) TMap<uint32, TObjectPtr<UInstancedStaticMeshComponent>> Sets;
 	FPlantDisplaySnapshot Shown;
-	uint32 BuiltHash = 0;
-	bool bBuilt = false;
-	int32 Rebuilds = 0;
-	void Rebuild();
-	void Recolor();
+	uint32 UploadedHash = 0;
+	bool bUploaded = false;
+	int32 PipeSegments = 0, HeaderSegments = 0, EquipmentDrawn = 0, LeakMarkers = 0, Uploads = 0;
 };

@@ -103,14 +103,14 @@ bool FPlantLayoutCountsTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("duty chillers' total reference capacity unchanged (network solve tolerance)"), CapRel < 1e-9);
 	TestTrue(TEXT("placed plant still holds its network control"), Placed.GetLoopResult().bControlConverged || Placed.GetTopology() != EPlantTopology::Separate);
 
-	// The yard draws placed units where they stand; a count that does not match keeps the schematic positions.
+	// The yard draws placed units where they stand; model units beyond the placed ones keep the schematic positions.
 	FPlantDisplayInput In;
 	In.RoomM = FBox(FVector(0, 0, 0), FVector(10, 8, 3));
 	In.CduPositionsM = { FVector(1, 1, 0), FVector(1, 5, 0) };
 	In.CrahPositionsM = { FVector(8, 1, 0), FVector(8, 3, 0), FVector(8, 5, 0), FVector(8, 7, 0) };
 	In.FwsDryCoolers = MakeUnits(5, 20.0, -6.0);
 	In.CwDryCoolers = MakeUnits(4, 20.0, 12.0);
-	In.Chillers = MakeUnits(3, 30.0, 4.0);   // the model has 4 chillers: schematic
+	In.Chillers = MakeUnits(3, 30.0, 4.0);   // the model has 4 chillers: 3 placed, the 4th schematic
 	const FPlantDisplaySnapshot S = PlantDisplay::Build(Placed, In);
 	double MaxPosErr = 0.0, MaxViaErr = 0.0;
 	int32 PlacedFws = 0, PlacedCw = 0, PlacedChillers = 0, Coils = 0;
@@ -125,19 +125,29 @@ bool FPlantLayoutCountsTest::RunTest(const FString& Parameters)
 		}
 		if (E.Kind == EPlantEquipmentKind::Chiller && E.bPlaced) ++PlacedChillers;
 	}
-	// FWS return coils: coil K runs through placed unit K (one coil per unit).
+	// FWS return coils: coil K runs through placed unit K (one coil per unit): its route passes both connections.
+	auto OnRoute = [](const FVector& P, const TArray<FVector>& Line)
+	{
+		double Best = TNumericLimits<double>::Max();
+		for (int32 I = 0; I + 1 < Line.Num(); ++I) Best = FMath::Min(Best, FMath::PointDistToSegment(P, Line[I], Line[I + 1]));
+		return Best;
+	};
 	for (const FPlantDisplayPipe& Pipe : S.Pipes)
-		if (Pipe.Loop == EPlantLoopId::Fws && Pipe.Role == EPlantPipeRole::ReturnCoil && Pipe.PointsM.Num() == 3)
+		if (Pipe.Loop == EPlantLoopId::Fws && Pipe.Role == EPlantPipeRole::ReturnCoil)
 		{
 			const int32 K = Placed.GetLoop().GetHandles().ReturnCoilPipes.IndexOfByKey(Pipe.Edge);
-			if (In.FwsDryCoolers.IsValidIndex(K)) { MaxViaErr = FMath::Max(MaxViaErr, FVector::Distance(Pipe.PointsM[1], In.FwsDryCoolers[K].CenterM + FVector(0, 0, 0.9))); ++Coils; }
-			else MaxViaErr = 1.0;
+			const FPlantDisplayEquipment* Unit = S.Equipment.FindByPredicate([K](const FPlantDisplayEquipment& E)
+				{ return E.Loop == EPlantLoopId::Fws && E.Kind == EPlantEquipmentKind::DryCooler && E.Index == K && E.bPlaced; });
+			if (Unit == nullptr) { MaxViaErr = 1.0; continue; }
+			MaxViaErr = FMath::Max(MaxViaErr, FMath::Max(OnRoute(PlantDisplay::PortM(*Unit, EPlantPort::CoilIn), Pipe.PointsM),
+				OnRoute(PlantDisplay::PortM(*Unit, EPlantPort::CoilOut), Pipe.PointsM)));
+			++Coils;
 		}
-	AddInfo(FString::Printf(TEXT("표시: 배치 FWS %d / CW %d / 칠러 %d(수 불일치라 0), 위치 최대 차 %.3e m, 코일 %d개 경유점 최대 차 %.3e m"),
+	AddInfo(FString::Printf(TEXT("표시: 배치 FWS %d / CW %d / 칠러 %d(모델 4대 중 배치 3), 위치 최대 차 %.3e m, 코일 %d개 접속점 최대 차 %.3e m"),
 		PlacedFws, PlacedCw, PlacedChillers, MaxPosErr, Coils, MaxViaErr));
 	TestTrue(TEXT("placed dry coolers drawn at their units (exact)"), PlacedFws == 5 && PlacedCw == 4 && MaxPosErr == 0.0);
-	TestTrue(TEXT("mismatched chiller count stays schematic"), PlacedChillers == 0);
-	TestTrue(TEXT("FWS return coil K runs through unit K"), Coils == 5 && MaxViaErr == 0.0);
+	TestTrue(TEXT("placed chillers drawn at their units, the model's extra one in the yard"), PlacedChillers == 3);
+	TestTrue(TEXT("FWS return coil K runs through unit K's connections"), Coils == 5 && MaxViaErr < 1e-9);
 	// Without placed units the snapshot is the F7 one (no unit flagged placed).
 	FPlantDisplayInput In0 = In; In0.FwsDryCoolers.Reset(); In0.CwDryCoolers.Reset(); In0.Chillers.Reset();
 	const FPlantDisplaySnapshot S0 = PlantDisplay::Build(Auto, In0);

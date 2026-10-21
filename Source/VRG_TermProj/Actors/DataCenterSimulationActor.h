@@ -278,7 +278,8 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Cooling|Plant")
 	bool bFacilityPlant = false;
 
-	// S8 F7: draw the plant yard (equipment and the plant networks' pipes) while the plant runs (vrg.Plant.Show).
+	// S8 F7: draw the plant yard (equipment and the plant networks' pipes) whenever a plant is built, in layout and
+	// simulation mode, with or without vrg.Plant.Enable (vrg.Plant.Show).
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Cooling|Plant")
 	bool bShowPlant = true;
 	class AFacilityPlantDisplayActor* GetPlantDisplay() const { return PlantDisplay.Get(); }
@@ -498,6 +499,9 @@ private:
 	// S8 F8-2: the same plant with the automatic counts (no placed units), built at the same entry; layout conversion only.
 	TUniquePtr<FFacilityPlant> AutomaticPlant;
 	bool bPlantActive = false;
+	bool bPlantBuilt = false;         // Plant built at the last coupling build (drawn even when not coupled)
+	bool bPlantPreviewTried = false;  // layout-mode start: one build so the yard shows before the first run
+	int32 LastPlantDisplayPipes = -1;
 	UPROPERTY(Transient)
 	TObjectPtr<class AFacilityPlantDisplayActor> PlantDisplay;
 	double LastPlantDisplayWallS = -1.0;

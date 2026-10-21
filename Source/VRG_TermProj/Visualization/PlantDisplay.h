@@ -4,6 +4,7 @@
 
 #include "CoreMinimal.h"
 #include "Simulation/Plant/FacilityPlant.h"
+#include "Visualization/PlantVisual.h"
 
 // S8 F7 (Tools/설비냉각_계획.md): what the facility plant looks like on screen, built from the plant's own networks.
 //
@@ -11,6 +12,13 @@
 // that edge's solved flow; a topology draws the pipes its network has, nothing else. Equipment boxes are the units the
 // plant model counts (pumps incl. standby, dry cooler units of the thermal bank, chillers incl. standby, trim chillers,
 // the economizer). Leak markers sit on the leaking nodes with the solved leak flow.
+//
+// Layout (2026-10-21, "patch" routing like Visualization/PatchManager): a header node of the network (supply / return /
+// middle header, plant supply / return, pump suction) is drawn as a header pipe, and every pipe leaves it at its own
+// anchor and runs orthogonally in its own lane: no diagonal lines. Branches into the room run in the room's lanes over
+// the ceiling (one lane per branch, shared by all loops, so no two runs overlap), supply in the lower layer and return
+// in the upper one, and drop onto the consumer; the yard coils and condenser branches run in aisle lanes beside their
+// unit row and drop to the unit's connections. Each loop has its own heights, so loops never cross in a layer.
 //
 // The positions are a SCHEMATIC: the plant has no piping geometry, so the layout puts a plant yard beside the room
 // (one lane per loop) and runs each branch to the consumer it feeds (the CDU of the group, the CRAH unit, the chiller
@@ -29,9 +37,13 @@ struct FPlantDisplayInput
 	FBox RoomM = FBox(ForceInit);         // air domain (or rack) bounds; the yard goes beyond its +X side
 	TArray<FVector> CduPositionsM;        // per CDU group (FWS branch / combined CHW branch order)
 	TArray<FVector> CrahPositionsM;       // per CRAH unit (CHW branch order)
-	// F8: placed units per kind, in the model's unit order. Used when the count equals the model's units of that kind
-	// (placed units set that count, FacilityPlantLayout); otherwise that kind keeps the schematic yard positions.
+	// F8: placed units per kind, in the model's unit order: model unit K is drawn at placed unit K (placed units set that
+	// count at the next simulation entry, FacilityPlantLayout); model units beyond the placed ones keep the yard positions
+	// (layout mode right after an addition / deletion, before the plant is rebuilt).
 	TArray<FPlantDisplayUnit> FwsDryCoolers, CwDryCoolers, Chillers, TrimChillers;
+	// The plant is computed and coupled now (simulation mode with vrg.Plant.Enable 1). Otherwise the yard shows the
+	// structure only: loop colours, no flow brightness, no running / failed state.
+	bool bLive = true;
 };
 
 enum class EPlantPipeRole : uint8 { Pump, CheckValve, SupplyMain, SupplyRun, Valve, Exchanger, ReturnRun, ReturnMain, ReturnCoil, Bypass, Other };
@@ -42,11 +54,24 @@ struct FPlantDisplayPipe
 	EPlantPipeRole Role = EPlantPipeRole::Other;
 	int32 Edge = INDEX_NONE;              // network pipe index, or pump index for Role == Pump
 	int32 Branch = INDEX_NONE;            // branch of the loop for branch pipes
-	TArray<FVector> PointsM;              // polyline (2 points, or 3 for a return coil through its equipment)
+	int32 FromNode = INDEX_NONE, ToNode = INDEX_NONE;   // network nodes (pump: suction -> discharge)
+	TArray<FVector> PointsM;              // orthogonal polyline: starts on the From node's shape, ends on the To node's
 	double FlowM3s = 0.0;                 // solved flow of that edge (sign: From -> To)
 	double TempK = 0.0;                   // the loop volume this pipe belongs to (supply / return / series middle)
-	bool bClosed = false, bReversed = false, bHeader = false;
+	bool bClosed = false, bReversed = false, bHeader = false;   // bHeader: mains and bypass (drawn thicker)
 };
+
+// A network node drawn as a header pipe (supply / return / middle header, plant supply / return, pump suction).
+struct FPlantDisplayHeader
+{
+	EPlantLoopId Loop = EPlantLoopId::Fws;
+	int32 Node = INDEX_NONE;
+	TArray<FVector> PointsM;
+	double TempK = 0.0;
+};
+
+// Display-only supports: a tray under parallel lanes (box) and a pipe rack post (floor to TopM).
+struct FPlantDisplayTray { EPlantLoopId Loop = EPlantLoopId::Fws; FVector CenterM = FVector::ZeroVector, SizeM = FVector::ZeroVector; };
 
 enum class EPlantEquipmentKind : uint8 { Pump, DryCooler, Chiller, TrimChiller, Economizer };
 
@@ -72,13 +97,29 @@ struct FPlantDisplayLeak
 struct FPlantDisplaySnapshot
 {
 	TArray<FPlantDisplayPipe> Pipes;
+	TArray<FPlantDisplayHeader> Headers;
+	TArray<FPlantDisplayTray> Trays;
+	TArray<FVector> PostTopsM;
 	TArray<FPlantDisplayEquipment> Equipment;
 	TArray<FPlantDisplayLeak> Leaks;
 	// Structure key: rebuild meshes only when this changes (counts and topology), recolour otherwise.
 	uint32 StructureHash = 0;
-	// Network node positions per loop (the pipe end points come from these; tests compare against them).
+	// Network node positions per loop (a header's midpoint; leak markers sit here) and every node's drawn shape
+	// (one point, or the header polyline the pipes attach to; tests check the pipe ends against these).
 	TArray<FVector> NodePositionsM[3];
+	TArray<TArray<FVector>> NodeShapesM[3];
+	bool bLive = true;
 };
+
+// Drawn diameters [m] (schematic, not the modelled pipe sizes).
+namespace PlantDisplayStyle
+{
+	constexpr double HeaderDiameterM = 0.16, MainDiameterM = 0.14, PipeDiameterM = 0.08;
+}
+
+// Two drawn pipes / headers closer than touching (centre lines nearer than the mean diameter), outside the ends where
+// they meet at a shared node. A display check like Patch::FindInterferences, not a routing constraint.
+struct FPlantDisplayClash { int32 A = INDEX_NONE, B = INDEX_NONE; bool bAHeader = false, bBHeader = false; double GapM = 0.0; };
 
 namespace PlantDisplay
 {
@@ -86,5 +127,12 @@ namespace PlantDisplay
 	// Display colour of a pipe: temperature mode uses the fixed pipe range (PipeTemperatureDisplay), flow mode the loop's
 	// hue with brightness by |flow| relative to the loop's largest flow. Closed / zero flow = grey, reversed = magenta.
 	VRG_TERMPROJ_API FLinearColor PipeColor(const FPlantDisplaySnapshot& S, const FPlantDisplayPipe& P, bool bTemperatureMode);
+	VRG_TERMPROJ_API FLinearColor HeaderColor(const FPlantDisplaySnapshot& S, const FPlantDisplayHeader& H, bool bTemperatureMode);
+	// Accent (status) colour of a unit: failed red, stopped grey, running its kind's colour; structure-only = kind colour.
 	VRG_TERMPROJ_API FLinearColor EquipmentColor(const FPlantDisplayEquipment& E);
+	VRG_TERMPROJ_API FLinearColor KindColor(EPlantLoopId Loop, EPlantEquipmentKind Kind);
+	VRG_TERMPROJ_API TArray<FPlantDisplayClash> FindClashes(const FPlantDisplaySnapshot& S);
+	VRG_TERMPROJ_API EPlantVisualKind VisualKind(EPlantEquipmentKind Kind);
+	// World position of a unit's connection [m] (its centre, size and rotation).
+	VRG_TERMPROJ_API FVector PortM(const FPlantDisplayEquipment& E, EPlantPort Port);
 }

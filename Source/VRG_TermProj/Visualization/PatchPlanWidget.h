@@ -28,5 +28,10 @@ private:
 	FBox BoundsM{ForceInit};
 	float RefreshSeconds=1;
 	int32 Selected=0;
+	// S8 plant yard on the same plan (P toggles): header and pipe polylines by loop colour, unit footprints.
+	bool bShowPlant=true;
+	TArray<TPair<TArray<FVector>,FLinearColor>> PlantLines, PlantHeaders;
+	TArray<TArray<FVector>> PlantUnits;
+	int32 PlantPipes=0, PlantClashes=0;
 	FVector2D Project(const FVector& PointM, const FVector2D& Size) const;
 };

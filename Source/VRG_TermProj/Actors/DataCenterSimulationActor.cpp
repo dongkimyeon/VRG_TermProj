@@ -115,7 +115,7 @@ static FAutoConsoleCommand GVrgSimCoolantCommand(
 
 static FAutoConsoleCommand GVrgPlantEnableCommand(
 	TEXT("vrg.Plant.Enable"),
-	TEXT("S8 설비수(FWS) 수력망. 0 = CDU 설비수 유량 고정(기본), 1 = FWS 망 해(펌프 N+1·차압 제어·밸브). 다음 시뮬레이션 진입 때 적용. vrg.Plant.Enable <0|1>"),
+	TEXT("S8 설비 계통 결합. 0 = CDU 설비수·CRAH 냉수 고정 경계(기본, 설비 마당은 표시만), 1 = 설비 망·열 모델이 CDU·CRAH에 결합. 다음 시뮬레이션 진입 때 적용. vrg.Plant.Enable <0|1>"),
 	FConsoleCommandWithArgsDelegate::CreateLambda([](const TArray<FString>& Args)
 	{
 		if (Args.Num() == 0 || GEngine == nullptr) return;
@@ -166,7 +166,7 @@ static FAutoConsoleCommand GVrgPlantFaultCommand(
 
 static FAutoConsoleCommand GVrgPlantShowCommand(
 	TEXT("vrg.Plant.Show"),
-	TEXT("S8 설비 마당(장비·설비 배관) 표시. 0 = 숨김, 1 = 표시(기본, 설비가 도는 시뮬레이션 모드에서만). 색은 유량, vrg.Pipes.Temperature 1이면 온도. vrg.Plant.Show <0|1>"),
+	TEXT("S8 설비 마당(장비·설비 배관) 표시. 0 = 숨김, 1 = 표시(기본, 배치·시뮬레이션 모드, vrg.Plant.Enable과 무관). 설비가 계산될 때 색은 유량, vrg.Pipes.Temperature 1이면 온도, 아니면 계통 색. vrg.Plant.Show <0|1>"),
 	FConsoleCommandWithArgsDelegate::CreateLambda([](const TArray<FString>& Args)
 	{
 		if (Args.Num() == 0 || GEngine == nullptr) return;
@@ -266,7 +266,7 @@ void ADataCenterSimulationActor::EnterLayoutMode()
 	PendingWarmupSteps = 0;
 	VrgPerf::PendingWarmupSteps() = 0;
 	HoldModelsForLayout();
-	UpdatePlantDisplay(true);   // S8 F7: the plant yard is a simulation-mode display
+	UpdatePlantDisplay(true);   // the yard stays (structure colours) while the layout is edited
 	UE_LOG(LogTemp, Display, TEXT("[VrgSim] 배치 모드: 물리 정지. 배치를 바꾼 뒤 시뮬레이션 모드로 들어가면 새로 구성한다."));
 }
 
@@ -1087,6 +1087,7 @@ void ADataCenterSimulationActor::BuildCoupling()
 	LastSetupMessage = Missing.Num() > 0
 		? FString::Printf(TEXT("안 붙은 도메인: %s"), *FString::Join(Missing, TEXT(", ")))
 		: FString();
+	UpdatePlantDisplay(true);   // the plant was rebuilt: draw it now, not after the display throttle
 }
 
 void ADataCenterSimulationActor::BuildFanFaces(int32 CabinetIndex, const AActor& Cabinet, const FUniformAirGrid& Grid,
@@ -1145,6 +1146,7 @@ void ADataCenterSimulationActor::BuildFanFaces(int32 CabinetIndex, const AActor&
 
 void ADataCenterSimulationActor::BuildCduGroups()
 {
+	bPlantBuilt = false;
 	CduSummaries.Reset();
 	CduGroupRows.Reset();
 	TArray<FCduCouplingGroup> Groups;
@@ -1209,7 +1211,8 @@ void ADataCenterSimulationActor::BuildCduGroups()
 			S.FacilityMassFlowKgs = Hx.FacilityMassFlowKgs;
 		}
 		bPlantActive = false;
-		if (bFacilityPlant) BuildFacilityLoop(Groups);
+		// Built with vrg.Plant.Enable 0 too (2026-10-21): the yard is always drawn; only Enable 1 couples it.
+		BuildFacilityLoop(Groups);
 	}
 	Bridge.SetCduGroups(Groups);
 }
@@ -1269,6 +1272,14 @@ void ADataCenterSimulationActor::BuildFacilityLoop(TArray<FCduCouplingGroup>& Gr
 		UE_LOG(LogTemp, Warning, TEXT("[Plant] 설비를 만들지 못했다(CDU 분기 %d, 수력 %s, 차압 잔차 %.3e, 속도 %.4f%s). 고정 설비수 경계를 쓴다."),
 			Groups.Num(), R.Hydraulics.bConverged ? TEXT("수렴") : TEXT("실패"), R.ControlResidual, R.PumpSpeedRatio,
 			R.bSpeedSaturatedHigh ? TEXT(", 최고 속도에서 차압 미달") : TEXT(""));
+		return;
+	}
+	bPlantBuilt = true;
+	if (!bFacilityPlant)
+	{
+		// Display only: the CDUs keep the fixed facility water and the CRAH coils their fixed chilled water.
+		UE_LOG(LogTemp, Display, TEXT("[Plant] 설비 계통은 표시만 한다(vrg.Plant.Enable 0): 구성 %s, FWS 드라이쿨러 %d, CW 드라이쿨러 %d. CDU·CRAH는 고정 경계."),
+			FFacilityPlant::TopologyName(Plant.GetTopology()), Plant.GetNumDryCoolers(), Plant.GetNumCwDryCoolers());
 		return;
 	}
 	bPlantActive = true;
@@ -1911,6 +1922,19 @@ void ADataCenterSimulationActor::Tick(float DeltaTime)
 	{
 		// Racks placed or spawned while in layout must not start integrating on their own.
 		HoldModelsForLayout();
+		// The plant yard is drawn from a built plant. A game that starts in layout mode has none yet: enter the
+		// simulation once and come straight back (the same as Enter twice), so the yard shows from the first frame.
+		if (!bPlantPreviewTried && GetWorld() != nullptr && GetWorld()->HasBegunPlay())
+		{
+			bPlantPreviewTried = true;
+			if (!bPlantBuilt && bShowPlant)
+			{
+				UE_LOG(LogTemp, Display, TEXT("[Plant] 배치 모드 시작: 설비 계통을 그리려고 한 번 구성한다(물리 시간은 진행하지 않음)."));
+				EnterSimulationMode();
+				if (Mode == ESimMode::Simulation) EnterLayoutMode();
+			}
+		}
+		UpdatePlantDisplay(false);   // placed units move while dragged
 		// The controller's one-line key hint covers layout mode; this banner is a debug readout now.
 		if (bShowSummary && GEngine != nullptr && VrgHud::ShowDebugText())
 		{
@@ -2033,7 +2057,7 @@ bool ADataCenterSimulationActor::CaptureAutomaticPlantUnits(EPlantUnitKind Kind,
 	Out.Reset();
 	if (!AutomaticPlant.IsValid() || !AutomaticPlant->IsBuilt())
 	{
-		Reason = TEXT("설비 자동 대수를 아직 모른다: 설비를 켜고(vrg.Plant.Enable 1) 한 번 시뮬레이션에 들어간 뒤 추가할 수 있다.");
+		Reason = TEXT("설비 자동 대수를 아직 모른다: CDU가 있는 배치로 한 번 시뮬레이션에 들어간 뒤 추가할 수 있다.");
 		return false;
 	}
 	if (!VrgPlantEquipment::Gather(GetWorld(), Kind).IsEmpty()) return true;
@@ -2057,7 +2081,9 @@ bool ADataCenterSimulationActor::CaptureAutomaticPlantUnits(EPlantUnitKind Kind,
 
 void ADataCenterSimulationActor::UpdatePlantDisplay(bool bForce)
 {
-	const bool bWant = Mode != ESimMode::Layout && bShowPlant && bPlantActive && Plant.IsThermalActive() && GetWorld() != nullptr;
+	// Shown whenever a plant is built (layout and simulation mode, vrg.Plant.Enable 0 or 1); flows and status only
+	// while it is live (coupled and stepping).
+	const bool bWant = bShowPlant && bPlantBuilt && Plant.IsBuilt() && GetWorld() != nullptr;
 	if (!bWant)
 	{
 		if (PlantDisplay != nullptr) PlantDisplay->Destroy();
@@ -2076,7 +2102,36 @@ void ADataCenterSimulationActor::UpdatePlantDisplay(bool bForce)
 	const double NowS = FPlatformTime::Seconds();
 	if (!bForce && NowS - LastPlantDisplayWallS < 0.25) return;
 	LastPlantDisplayWallS = NowS;
-	if (PlantDisplay != nullptr) PlantDisplay->ShowSnapshot(PlantDisplay::Build(Plant, MakePlantDisplayInput()));
+	if (PlantDisplay == nullptr) return;
+	FPlantDisplayInput In = MakePlantDisplayInput();
+	In.bLive = Mode == ESimMode::Simulation && bPlantActive && Plant.IsThermalActive();
+	const FPlantDisplaySnapshot S = PlantDisplay::Build(Plant, In);
+	PlantDisplay->ShowSnapshot(S);
+	// Placed units draw themselves: give them their status (live) or their kind colour back.
+	TMap<const APlantEquipmentActor*, FLinearColor> Status;
+	const TArray<APlantEquipmentActor*> Kinds[4] = { VrgPlantEquipment::Gather(GetWorld(), EPlantUnitKind::FwsDryCooler),
+		VrgPlantEquipment::Gather(GetWorld(), EPlantUnitKind::CwDryCooler), VrgPlantEquipment::Gather(GetWorld(), EPlantUnitKind::Chiller),
+		VrgPlantEquipment::Gather(GetWorld(), EPlantUnitKind::TrimChiller) };
+	if (In.bLive)
+		for (const FPlantDisplayEquipment& E : S.Equipment)
+		{
+			if (!E.bPlaced) continue;
+			const int32 K = E.Kind == EPlantEquipmentKind::DryCooler ? (E.Loop == EPlantLoopId::Fws ? 0 : 1) : E.Kind == EPlantEquipmentKind::Chiller ? 2 : 3;
+			if (Kinds[K].IsValidIndex(E.Index)) Status.Add(Kinds[K][E.Index], PlantDisplay::EquipmentColor(E));
+		}
+	for (const TArray<APlantEquipmentActor*>& Units : Kinds)
+		for (APlantEquipmentActor* U : Units)
+		{
+			const FLinearColor* C = Status.Find(U);
+			U->SetStatusColor(C ? *C : FLinearColor::Transparent);
+		}
+	if (bForce && S.Pipes.Num() != LastPlantDisplayPipes)
+	{
+		LastPlantDisplayPipes = S.Pipes.Num();
+		const int32 Clashes = PlantDisplay::FindClashes(S).Num();
+		UE_LOG(LogTemp, Display, TEXT("[Plant] 설비 마당 표시: 배관 %d, 헤더 %d, 장비 %d, 표시 겹침 %d쌍 (%s)"), S.Pipes.Num(), S.Headers.Num(), S.Equipment.Num(),
+			Clashes, In.bLive ? TEXT("계산값") : TEXT("구조만: 설비가 꺼졌거나 배치 모드"));
+	}
 }
 
 const FCouplingSnapshot& ADataCenterSimulationActor::GetCachedDisplaySnapshot() const

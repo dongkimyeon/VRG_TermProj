@@ -10,8 +10,10 @@
 #include "Engine/StaticMesh.h"
 #include "Engine/World.h"
 #include "EngineUtils.h"
-#include "Materials/MaterialInstanceDynamic.h"
+#include "Components/InstancedStaticMeshComponent.h"
 #include "Materials/MaterialInterface.h"
+#include "Visualization/PlantDisplay.h"
+#include "Visualization/PlantVisual.h"
 #include "UObject/ConstructorHelpers.h"
 #include "UObject/UObjectGlobals.h"
 
@@ -20,15 +22,12 @@ APlantEquipmentActor::APlantEquipmentActor()
 	PrimaryActorTick.bCanEverTick = false;
 	RootComponent = CreateDefaultSubobject<USceneComponent>(TEXT("Root"));
 	RootComponent->SetMobility(EComponentMobility::Movable);
-
-	Body = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("Body"));
-	Body->SetupAttachment(RootComponent);
-	Body->SetCollisionEnabled(ECollisionEnabled::NoCollision);
-	// Referenced from the CDO so the cooker packages them.
+	// Referenced from the CDO so the cooker packages the shapes the parts are drawn with.
 	static ConstructorHelpers::FObjectFinder<UStaticMesh> Cube(TEXT("/Engine/BasicShapes/Cube.Cube"));
+	static ConstructorHelpers::FObjectFinder<UStaticMesh> Cylinder(TEXT("/Engine/BasicShapes/Cylinder.Cylinder"));
 	static ConstructorHelpers::FObjectFinder<UMaterialInterface> Material(TEXT("/Engine/BasicShapes/BasicShapeMaterial.BasicShapeMaterial"));
-	Body->SetStaticMesh(Cube.Object);
-	if (Material.Succeeded()) Body->SetMaterial(0, Material.Object);
+	CookedShapes = { Cube.Object, Cylinder.Object };
+	CookedMaterial = Material.Object;
 }
 
 void APlantEquipmentActor::OnConstruction(const FTransform& Transform)
@@ -39,19 +38,39 @@ void APlantEquipmentActor::OnConstruction(const FTransform& Transform)
 
 void APlantEquipmentActor::RefreshVisuals()
 {
-	if (!Body || HasAnyFlags(RF_ClassDefaultObject)) return;
-	// The engine cube is 100 cm centred: scale it to the box and lift it so the actor origin is the bottom centre.
-	const FVector SizeCm = SimUnits::MetersToUnreal(SizeM.ComponentMax(FVector(0.01)));
-	Body->SetRelativeLocation(FVector(0.0, 0.0, 0.5 * SizeCm.Z));
-	Body->SetRelativeScale3D(SizeCm / 100.0);
-	if (!BodyMaterial) BodyMaterial = Body->CreateDynamicMaterialInstance(0);
-	// Display colours only, the hues of the F7 yard (FWS orange-grey, CW green-grey, chillers blue).
-	if (BodyMaterial)
+	if (HasAnyFlags(RF_ClassDefaultObject) || !RootComponent) return;
+	const FVector Size = SizeM.ComponentMax(FVector(0.01));
+	const FLinearColor Accent = StatusColor.A > 0.f ? StatusColor : IdentityColor(Kind);
+	bool bSetsAlive = true;
+	for (const auto& Pair : PartSets) bSetsAlive &= IsValid(Pair.Value);
+	if (bDrawn && bSetsAlive && DrawnSizeM.Equals(Size, 0.0) && DrawnKind == Kind && DrawnColor.Equals(Accent, 0.f)) return;
+	// Parts in actor space [cm]: the actor origin is the box's bottom centre, like the parts' own origin.
+	const bool bChiller = Kind == EPlantUnitKind::Chiller || Kind == EPlantUnitKind::TrimChiller;
+	TArray<FPlantVisualPart> Parts;
+	PlantVisual::BuildParts(bChiller ? EPlantVisualKind::Chiller : EPlantVisualKind::DryCooler, Size, Parts);
+	TArray<FPlantInstance> List;
+	for (const FPlantVisualPart& P : Parts)
+		List.Add({ P.bCylinder ? PlantInstances::Cylinder() : PlantInstances::Cube(), PlantVisual::ToneColor(P.Tone, Accent), PlantVisual::PartTransformCm(P) });
+	PlantInstances::Apply(this, RootComponent, PartSets, List, true);
+	DrawnSizeM = Size; DrawnKind = Kind; DrawnColor = Accent; bDrawn = true;
+}
+
+void APlantEquipmentActor::SetStatusColor(const FLinearColor& Color)
+{
+	if (StatusColor.Equals(Color, 0.f)) return;
+	StatusColor = Color;
+	RefreshVisuals();
+}
+
+FLinearColor APlantEquipmentActor::IdentityColor(EPlantUnitKind Kind)
+{
+	// The yard's kind colours (FWS orange, CW green, chillers blue, trim violet).
+	switch (Kind)
 	{
-		const FLinearColor Color = Kind == EPlantUnitKind::FwsDryCooler ? FLinearColor(.75f, .6f, .45f)
-			: Kind == EPlantUnitKind::CwDryCooler ? FLinearColor(.5f, .7f, .5f)
-			: Kind == EPlantUnitKind::Chiller ? FLinearColor(.35f, .5f, .8f) : FLinearColor(.55f, .45f, .8f);
-		BodyMaterial->SetVectorParameterValue(TEXT("Color"), Color);
+	case EPlantUnitKind::FwsDryCooler: return PlantDisplay::KindColor(EPlantLoopId::Fws, EPlantEquipmentKind::DryCooler);
+	case EPlantUnitKind::CwDryCooler: return PlantDisplay::KindColor(EPlantLoopId::Cw, EPlantEquipmentKind::DryCooler);
+	case EPlantUnitKind::Chiller: return PlantDisplay::KindColor(EPlantLoopId::Chw, EPlantEquipmentKind::Chiller);
+	default: return PlantDisplay::KindColor(EPlantLoopId::Fws, EPlantEquipmentKind::TrimChiller);
 	}
 }
 

@@ -3,7 +3,8 @@
 // S8 F7 (Tools/설비냉각_계획.md, "보이는 것 = 계산하는 것"): the plant yard drawn from the plant's networks.
 // Every network pipe and pump of every built loop appears exactly once with its solved flow and its end points on its
 // nodes, the topology decides which pipes exist, equipment counts are the model's, faults and leaks show where the
-// solve put them, and the integrated actor shows the yard only in simulation mode.
+// solve put them. 2026-10-21: every route is orthogonal and no two drawn pipes / headers clash, and the integrated
+// actor shows the yard in layout and simulation mode, also with vrg.Plant.Enable 0 (structure only, not coupled).
 
 #include "Misc/AutomationTest.h"
 #include "Visualization/PlantDisplay.h"
@@ -43,6 +44,26 @@ namespace
 		return Plant;
 	}
 
+	double DistanceToPolyline(const FVector& P, const TArray<FVector>& Line)
+	{
+		if (Line.Num() == 1) return FVector::Distance(P, Line[0]);
+		double Best = TNumericLimits<double>::Max();
+		for (int32 K = 0; K + 1 < Line.Num(); ++K) Best = FMath::Min(Best, FMath::PointDistToSegment(P, Line[K], Line[K + 1]));
+		return Best;
+	}
+
+	// Every segment runs along one axis (no diagonal line on screen).
+	bool IsOrthogonal(const TArray<FVector>& Line)
+	{
+		for (int32 K = 0; K + 1 < Line.Num(); ++K)
+		{
+			const FVector D = (Line[K + 1] - Line[K]).GetAbs();
+			const int32 Moving = (D.X > 1e-9 ? 1 : 0) + (D.Y > 1e-9 ? 1 : 0) + (D.Z > 1e-9 ? 1 : 0);
+			if (Moving != 1) return false;
+		}
+		return Line.Num() >= 2;
+	}
+
 	FPlantDisplayInput MakeDisplayInput()
 	{
 		FPlantDisplayInput In;
@@ -78,25 +99,36 @@ bool FPlantDisplayPipesTest::RunTest(const FString& Parameters)
 				if (!Seen.IsValidIndex(D.Edge)) { bOnce = false; continue; }
 				++Seen[D.Edge];
 				bFlowsExact &= D.FlowM3s == (N.IsPipeClosed(D.Edge) ? 0.0 : N.GetPipeFlowM3s(D.Edge));
-				const TArray<FVector>& Pos = S.NodePositionsM[uint8(Id)];
-				bEnds &= D.PointsM[0] == Pos[N.GetPipeFromNodeIndex(D.Edge)] && D.PointsM.Last() == Pos[N.GetPipeToNodeIndex(D.Edge)];
+				const TArray<TArray<FVector>>& Shapes = S.NodeShapesM[uint8(Id)];
+				bEnds &= D.PointsM.Num() >= 2 && DistanceToPolyline(D.PointsM[0], Shapes[N.GetPipeFromNodeIndex(D.Edge)]) < 1e-9
+					&& DistanceToPolyline(D.PointsM.Last(), Shapes[N.GetPipeToNodeIndex(D.Edge)]) < 1e-9;
 			}
 			for (const int32 C : Seen) bOnce &= C == 1;
 		}
 		const bool bFws = P.GetLoopFor(EPlantLoopId::Fws) != nullptr;
 		bool bAnyBypass = false, bFwsPipe = false;
 		for (const FPlantDisplayPipe& D : S.Pipes) { bAnyBypass |= D.Role == EPlantPipeRole::Bypass; bFwsPipe |= D.Loop == EPlantLoopId::Fws; }
+		// Orthogonal routes (pipes and headers) and no clash between drawn pipes / headers.
+		int32 Diagonal = 0;
+		for (const FPlantDisplayPipe& D : S.Pipes) Diagonal += IsOrthogonal(D.PointsM) ? 0 : 1;
+		for (const FPlantDisplayHeader& Hd : S.Headers) Diagonal += IsOrthogonal(Hd.PointsM) ? 0 : 1;
+		const TArray<FPlantDisplayClash> Clashes = PlantDisplay::FindClashes(S);
+		for (const FPlantDisplayClash& C : Clashes)
+			AddInfo(FString::Printf(TEXT("%s clash: %s %d / %s %d, gap %.3f m"), FFacilityPlant::TopologyName(T), C.bAHeader ? TEXT("header") : TEXT("pipe"), C.A,
+				C.bBHeader ? TEXT("header") : TEXT("pipe"), C.B, C.GapM));
 		int32 DryCoolers = 0, Chillers = 0;
 		for (const FPlantDisplayEquipment& E : S.Equipment)
 		{
 			DryCoolers += E.Kind == EPlantEquipmentKind::DryCooler ? 1 : 0;
 			Chillers += E.Kind == EPlantEquipmentKind::Chiller ? 1 : 0;
 		}
-		Lines += FString::Printf(TEXT(" [%s: 배관 %d(망 %d), 펌프 %d, 드라이쿨러 %d(모델 %d + %d), 칠러 %d, 바이패스 %d]"), FFacilityPlant::TopologyName(T),
-			S.Pipes.Num(), Expected, Pumps, DryCoolers, P.GetNumDryCoolers(), P.GetNumCwDryCoolers(), Chillers, bAnyBypass ? 1 : 0);
+		Lines += FString::Printf(TEXT(" [%s: 배관 %d(망 %d), 헤더 %d, 펌프 %d, 드라이쿨러 %d(모델 %d + %d), 칠러 %d, 바이패스 %d, 대각선 %d, 겹침 %d]"), FFacilityPlant::TopologyName(T),
+			S.Pipes.Num(), Expected, S.Headers.Num(), Pumps, DryCoolers, P.GetNumDryCoolers(), P.GetNumCwDryCoolers(), Chillers, bAnyBypass ? 1 : 0, Diagonal, Clashes.Num());
 		const TCHAR* Name = FFacilityPlant::TopologyName(T);
 		TestTrue(FString::Printf(TEXT("%s: every network pipe and pump drawn exactly once"), Name), bOnce && S.Pipes.Num() == Expected);
 		TestTrue(FString::Printf(TEXT("%s: drawn flows are the solved flows (exact) and ends sit on their nodes"), Name), bFlowsExact && bEnds);
+		TestTrue(FString::Printf(TEXT("%s: every pipe and header runs along the axes (no diagonal)"), Name), Diagonal == 0);
+		TestTrue(FString::Printf(TEXT("%s: no two drawn pipes / headers clash"), Name), Clashes.IsEmpty());
 		TestTrue(FString::Printf(TEXT("%s: the topology decides the pipes (FWS only when separate, bypass only in series)"), Name),
 			bFwsPipe == bFws && bFws == (T == EPlantTopology::Separate) && bAnyBypass == (T == EPlantTopology::Series));
 		TestTrue(FString::Printf(TEXT("%s: equipment counts are the model's"), Name), DryCoolers == P.GetNumDryCoolers() + P.GetNumCwDryCoolers()
@@ -149,7 +181,7 @@ bool FPlantDisplayFaultTest::RunTest(const FString& Parameters)
 	return true;
 }
 
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FPlantDisplayActorTest, "VRG.Plant.Display.ActorOnlyInSimulation", VrgPlantDisplayFlags)
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FPlantDisplayActorTest, "VRG.Plant.Display.ActorInBothModes", VrgPlantDisplayFlags)
 bool FPlantDisplayActorTest::RunTest(const FString& Parameters)
 {
 	UWorld* World = UWorld::CreateWorld(EWorldType::Game, false);
@@ -168,24 +200,35 @@ bool FPlantDisplayActorTest::RunTest(const FString& Parameters)
 	}
 	World->SpawnActor<ACoolingDistributionUnitActor>(FVector(-300, 100, 0), FRotator::ZeroRotator);
 	Room->RebuildRoomNow();
-	const bool bNoneInLayout = Sim->GetPlantDisplay() == nullptr;
+	const bool bNoneBeforeBuilt = Sim->GetPlantDisplay() == nullptr;
 	Sim->EnterSimulationMode();
 	for (int32 F = 0; F < 20; ++F) Sim->Tick(.1f);
 	AFacilityPlantDisplayActor* D = Sim->GetPlantDisplay();
-	const int32 PipeMeshes = D ? D->GetNumPipeMeshes() : -1, EquipMeshes = D ? D->GetNumEquipmentMeshes() : -1;
+	const int32 PipeSegs = D ? D->GetNumPipeSegments() : -1, EquipDrawn = D ? D->GetNumEquipmentDrawn() : -1;
 	int32 Segments = 0;
 	if (D) for (const FPlantDisplayPipe& P : D->GetSnapshot().Pipes) Segments += P.PointsM.Num() - 1;
 	const int32 Equip = D ? D->GetSnapshot().Equipment.Num() : -2;
+	const bool bLive = D && D->GetSnapshot().bLive;
 	// A facility leak through the console path: a marker appears at once.
 	const bool bFault = Sim->ApplyPlantFault({ TEXT("leak"), TEXT("fws"), TEXT("branchsupply"), TEXT("0"), TEXT("10") });
-	const int32 LeakMeshes = D ? D->GetNumLeakMeshes() : -1;
+	const int32 Leaks = D ? D->GetNumLeakMarkers() : -1;
 	Sim->EnterLayoutMode();
-	const bool bGoneInLayout = Sim->GetPlantDisplay() == nullptr;
-	AddInfo(FString::Printf(TEXT("배치 모드 표시 없음 %d, 시뮬레이션: 배관 메쉬 %d = 선분 %d, 장비 메쉬 %d = %d, 누수 표시 %d, 다시 배치 모드: 없어짐 %d"),
-		bNoneInLayout ? 1 : 0, PipeMeshes, Segments, EquipMeshes, Equip, LeakMeshes, bGoneInLayout ? 1 : 0));
-	TestTrue(TEXT("no plant yard in layout mode"), bNoneInLayout && bGoneInLayout);
-	TestTrue(TEXT("simulation mode: one pipe mesh per drawn segment, one box per equipment unit"), D != nullptr && PipeMeshes == Segments && Segments > 0 && EquipMeshes == Equip);
-	TestTrue(TEXT("a facility leak shows a marker immediately"), bFault && LeakMeshes == 1);
+	AFacilityPlantDisplayActor* DL = Sim->GetPlantDisplay();
+	const bool bLayoutStructure = DL != nullptr && !DL->GetSnapshot().bLive && DL->GetNumPipeSegments() == PipeSegs;
+	// vrg.Plant.Enable 0: the plant is still built and drawn (structure only) but not coupled.
+	Sim->bFacilityPlant = false;
+	Sim->EnterSimulationMode();
+	for (int32 F = 0; F < 5; ++F) Sim->Tick(.1f);
+	AFacilityPlantDisplayActor* DOff = Sim->GetPlantDisplay();
+	const bool bOffDrawn = DOff != nullptr && !DOff->GetSnapshot().bLive && DOff->GetNumPipeSegments() > 0 && !Sim->IsFacilityPlantActive();
+	Sim->EnterLayoutMode();
+	AddInfo(FString::Printf(TEXT("빌드 전 표시 없음 %d, 시뮬레이션(설비 켬): 배관 선분 %d = %d, 장비 %d = %d, 계산값 %d, 누수 표시 %d | 배치 모드: 구조 표시 %d | 설비 끔: 표시 %d"),
+		bNoneBeforeBuilt ? 1 : 0, PipeSegs, Segments, EquipDrawn, Equip, bLive ? 1 : 0, Leaks, bLayoutStructure ? 1 : 0, bOffDrawn ? 1 : 0));
+	TestTrue(TEXT("nothing drawn before a plant is built"), bNoneBeforeBuilt);
+	TestTrue(TEXT("simulation mode: every pipe segment drawn, every automatic unit drawn, live colours"), D != nullptr && PipeSegs == Segments && Segments > 0 && EquipDrawn == Equip && bLive);
+	TestTrue(TEXT("a facility leak shows a marker immediately"), bFault && Leaks == 1);
+	TestTrue(TEXT("layout mode keeps the yard (structure colours)"), bLayoutStructure);
+	TestTrue(TEXT("vrg.Plant.Enable 0: yard drawn, plant not coupled"), bOffDrawn);
 	GEngine->DestroyWorldContext(World);
 	World->DestroyWorld(false);
 	return true;

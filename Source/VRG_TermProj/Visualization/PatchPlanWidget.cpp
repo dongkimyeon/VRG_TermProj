@@ -1,6 +1,8 @@
 #include "Visualization/PatchPlanWidget.h"
 #include "Interaction/DataCenterDebugController.h"
 #include "Actors/DataCenterRoomActor.h"
+#include "Actors/DataCenterSimulationActor.h"
+#include "Actors/FacilityPlantDisplayActor.h"
 #include "EngineUtils.h"
 #include "GameFramework/PlayerController.h"
 #include "HAL/IConsoleManager.h"
@@ -22,6 +24,24 @@ void UPatchPlanWidget::NativeTick(const FGeometry& Geometry,float DeltaSeconds)
 	Snapshot={}; Devices.Reset(); BoundsM=FBox(ForceInit);
 	if (Room.IsValid()) { Snapshot=Room->GetPatchPlan(); Devices=Room->GetPatchDevices(); }
 	for (const Patch::FCable& Cable:Snapshot.Cables) for (const FVector& Point:Cable.PointsM) BoundsM+=Point;
+	PlantLines.Reset(); PlantHeaders.Reset(); PlantUnits.Reset(); PlantPipes=PlantClashes=0;
+	const AFacilityPlantDisplayActor* Plant=nullptr;
+	if (UWorld* World=GetWorld()) for (TActorIterator<ADataCenterSimulationActor> It(World);It;++It) { Plant=It->GetPlantDisplay(); break; }
+	if (bShowPlant && Plant)
+	{
+		const FPlantDisplaySnapshot& S=Plant->GetSnapshot();
+		auto Hue=[](EPlantLoopId Loop){ return Loop==EPlantLoopId::Fws?FLinearColor(1,.45f,.1f):Loop==EPlantLoopId::Chw?FLinearColor(.2f,.5f,1):FLinearColor(.25f,.85f,.35f); };
+		for (const FPlantDisplayHeader& H:S.Headers) PlantHeaders.Add({H.PointsM,Hue(H.Loop)});
+		for (const FPlantDisplayPipe& P:S.Pipes) PlantLines.Add({P.PointsM,Hue(P.Loop)*.8f});
+		for (const FPlantDisplayEquipment& E:S.Equipment)
+		{
+			TArray<FVector>& Corners=PlantUnits.AddDefaulted_GetRef();
+			for (FVector C:{FVector(-1,-1,0),FVector(1,-1,0),FVector(1,1,0),FVector(-1,1,0),FVector(-1,-1,0)})
+				Corners.Add(E.CenterM+E.Rotation.RotateVector(C*.5*E.SizeM));
+		}
+		PlantPipes=S.Pipes.Num(); PlantClashes=PlantDisplay::FindClashes(S).Num();
+		for (const auto* Set:{&PlantLines,&PlantHeaders}) for (const auto& Line:*Set) for (const FVector& Point:Line.Key) BoundsM+=Point;
+	}
 	for (const Patch::FDevice& Device:Devices)
 		for (int32 X:{-1,1}) for (int32 Y:{-1,1})
 			BoundsM+=Device.ToWorld.TransformPosition(FVector(X*Device.HalfExtentM.X,Y*Device.HalfExtentM.Y,0));
@@ -55,7 +75,11 @@ int32 UPatchPlanWidget::NativePaint(const FPaintArgs& Args,const FGeometry& Geom
 	Text({24,20},TEXT("PATCH MAP | world XY (m) | click cable / Left-Right select | Escape close"),FLinearColor::White);
 	Text({24,48},FString::Printf(TEXT("%d cables | %d unconnected | %d rejected port claims | %d interfering pairs"),
 		Snapshot.Cables.Num(),Snapshot.Unconnected.Num(),Snapshot.RejectedClaims,Snapshot.Interferences.Num()),FLinearColor(.7f,.85f,1));
-	Text({24,76},TEXT("Cyan: uplink  White: spine  Red: 3D segment interference  Yellow: selected"),FLinearColor::White);
+	Text({24,76},TEXT("Cyan: uplink  White: spine  Red: 3D segment interference  Yellow: selected  |  P: plant yard on/off"),FLinearColor::White);
+	if (bShowPlant) Text({24,100},FString::Printf(TEXT("Plant: %d pipes (orange FWS, blue CHW, green CW, thick = header) | %d drawn clashes"),PlantPipes,PlantClashes),FLinearColor(1,.8f,.5f));
+	for (const TArray<FVector>& Unit:PlantUnits) Line(Unit,FLinearColor(.55f,.55f,.6f),1);
+	for (const auto& Plant:PlantLines) Line(Plant.Key,Plant.Value,1);
+	for (const auto& Plant:PlantHeaders) Line(Plant.Key,Plant.Value,3);
 	for (const Patch::FDevice& Device:Devices)
 	{
 		TArray<FVector> Corners;
@@ -121,6 +145,7 @@ FReply UPatchPlanWidget::NativeOnKeyDown(const FGeometry& Geometry,const FKeyEve
 		{ Controller->SetInputMode(FInputModeGameOnly()); Controller->bShowMouseCursor=false; }
 		return FReply::Handled();
 	}
+	if (Event.GetKey()==EKeys::P) { bShowPlant=!bShowPlant; RefreshSeconds=1; return FReply::Handled(); }
 	if (Event.GetKey()==EKeys::Left || Event.GetKey()==EKeys::Right)
 	{
 		Selected=FMath::Clamp(Selected+(Event.GetKey()==EKeys::Right?1:-1),0,FMath::Max(0,Snapshot.Cables.Num()-1));
