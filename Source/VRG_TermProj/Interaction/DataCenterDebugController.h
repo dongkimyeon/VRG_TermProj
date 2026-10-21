@@ -9,6 +9,7 @@
 #include "Actors/SpineCabinetActor.h"
 #include "Actors/CoolingDistributionUnitActor.h"
 #include "Actors/LayoutBarrierActor.h"
+#include "Actors/PlantEquipmentActor.h"
 #include "Interaction/VrgCrahLifecycle.h"
 #include "Simulation/Air/RoomAirDomain.h"
 #include "DataCenterDebugController.generated.h"
@@ -196,6 +197,13 @@ public:
 	bool BeginBarrierDuplication(); // Entire barrier selection; kind and full transform (size) only.
 	ALayoutBarrierActor* ConfirmBarrierAddition();
 	bool TryDeleteLayoutBarrier(); // Entire barrier selection, one Undo command.
+	// S8 F8-2 plant units (outside the room). The first addition of a kind turns that kind's automatic units (the last
+	// simulation entry's sizing) into actors at their yard positions, in the same command as the new unit, so one Undo
+	// returns to the automatic plant. Refused before any plant was built (the automatic count is not known yet).
+	void BeginPlantAddition(EPlantUnitKind Kind);
+	APlantEquipmentActor* ConfirmPlantAddition();
+	bool TryDeleteLayoutPlant(); // Entire plant unit selection, one Undo command (no units of a kind = automatic again).
+	bool IsAddingPlant() const { return bAddingPlant; }
 	void CancelRackAddition();
 	void UpdateRackAdditionAlongRay(const FVector& EyeCm, const FVector& Direction);
 	bool GetRackAdditionPreview(FTransform& Out, FVector& SizeM, int32 MemberIndex = 0) const;
@@ -220,7 +228,7 @@ public:
 	void ResetLayoutEditsForLoad();
 	void RefreshLayoutEquipmentReferences(bool bKeepSelection = false);
 	void NotifyLayoutBarrierRecreated(ALayoutBarrierActor* Barrier, ALayoutBarrierActor* Previous = nullptr);
-	void NotifyLayoutPlantRecreated(class APlantEquipmentActor* Unit, class APlantEquipmentActor* Previous = nullptr);
+	void NotifyLayoutPlantRecreated(APlantEquipmentActor* Unit, APlantEquipmentActor* Previous = nullptr);
 	void NotifyLayoutRackRecreated(ARackThermalActor* Rack, ARackThermalActor* Previous = nullptr) { RebindLayoutRack(Rack, Previous); }
  void NotifyLayoutCrahRecreated(ACrahUnitActor* Crah, ACrahUnitActor* Previous = nullptr);
 	void NotifyLayoutCduRecreated(ACoolingDistributionUnitActor* Cdu, ACoolingDistributionUnitActor* Previous = nullptr);
@@ -342,6 +350,7 @@ private:
 		TArray<FLayoutCduMember> Cdus;
   TArray<FLayoutCrahMember> Crahs;
   TArray<FLayoutBarrierRecord> Barriers;
+  TArray<FPlantEquipmentRecord> PlantUnits;   // S8 F8-2 presence (added / converted / deleted units)
   bool bCrahAutomaticBefore = false;
   uint8 CrahLayoutBefore = 0;
 	};
@@ -412,6 +421,9 @@ private:
 	EBarrierKind BarrierAdditionKind = EBarrierKind::Wall;
 	TArray<FLayoutBarrierRecord> BarrierDuplicationMembers; // Kind and full transform only.
 	bool RestoreBarrierPresence(const FLayoutTransformCommand& Command, bool bRedo);
+	bool bAddingPlant = false;
+	EPlantUnitKind PlantAdditionKind = EPlantUnitKind::FwsDryCooler;
+	bool RestorePlantPresence(const FLayoutTransformCommand& Command, bool bRedo);
 	ELayoutGizmoMode GizmoMode = ELayoutGizmoMode::Translate;
 	int32 GizmoHoverAxis = INDEX_NONE;
 	struct FGizmoDrag

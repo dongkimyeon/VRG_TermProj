@@ -343,4 +343,111 @@ bool FPlantLayoutCoupledTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+// S8 F8-2: palette addition / deletion with one-command Undo / Redo. The first addition of a kind turns the automatic
+// units of the last simulation entry into actors at their yard positions in the same command.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FPlantLayoutAddDeleteTest, "VRG.Plant.Layout.AddDeleteUndo", VrgPlantLayoutFlags)
+bool FPlantLayoutAddDeleteTest::RunTest(const FString& Parameters)
+{
+	UWorld* World = UWorld::CreateWorld(EWorldType::Game, false);
+	GEngine->CreateNewWorldContext(EWorldType::Game).SetCurrentWorld(World);
+	ADataCenterSimulationActor* Sim = World->SpawnActor<ADataCenterSimulationActor>();
+	Sim->bShowSummary = false;
+	Sim->MaxStepsPerFrame = 16;
+	Sim->bFacilityPlant = true;
+	Sim->PlantThermalSpec.AmbientK = 298.15;
+	auto* C = World->SpawnActor<ADataCenterDebugController>();
+	ADataCenterRoomActor* Room = World->SpawnActor<ADataCenterRoomActor>();
+	World->SpawnActor<AAirFieldDebugActor>()->bShowSummary = false;
+	for (const double Y : { 0.0, 66.0 })
+	{
+		ARackThermalActor* Rack = World->SpawnActor<ARackThermalActor>(FVector(0, Y, 0), FRotator::ZeroRotator);
+		Rack->ApplyGb200Nvl72Preset(); Rack->bShowReadout = false;
+		Rack->RackSizeM = FVector(GjRackLayout::FrameDepthM, GjRackLayout::FrameWidthM, GjRackLayout::FrameHeightM);
+	}
+	World->SpawnActor<ACoolingDistributionUnitActor>(FVector(-300, 100, 0), FRotator::ZeroRotator);
+	Room->RebuildRoomNow();
+	Sim->EnterLayoutMode();
+	const FVector Down(0, 0, -1);
+	auto Above = [](const FVector& P) { return P + FVector(0, 0, 1000); };
+	auto CountFws = [&]() { return VrgPlantEquipment::Gather(World, EPlantUnitKind::FwsDryCooler).Num(); };
+
+	// No plant built yet: the automatic count is unknown, the addition does not start.
+	C->BeginPlantAddition(EPlantUnitKind::FwsDryCooler);
+	TestFalse(TEXT("refused before any plant was built"), C->IsAddingPlant());
+
+	Sim->EnterSimulationMode();
+	for (int32 F = 0; F < 10; ++F) Sim->Tick(.1f);
+	const int32 AutoFws = Sim->GetFacilityPlant().GetNumDryCoolers();
+	Sim->EnterLayoutMode();
+	TArray<FPlantEquipmentRecord> Expected; FString Reason;
+	const bool bCaptured = Sim->CaptureAutomaticPlantUnits(EPlantUnitKind::FwsDryCooler, Expected, Reason);
+	if (!TestTrue(TEXT("automatic FWS units captured"), bCaptured && Expected.Num() == AutoFws && AutoFws > 0)) { DestroyLayoutWorld(World); return false; }
+
+	C->BeginPlantAddition(EPlantUnitKind::FwsDryCooler);
+	TestTrue(TEXT("addition starts after a plant was built"), C->IsAddingPlant());
+	C->UpdateRackAdditionAlongRay(Above(FVector::ZeroVector), Down);
+	TestTrue(TEXT("over the room is blocked"), C->IsRackAdditionBlocked());
+	C->UpdateRackAdditionAlongRay(Above(Expected[0].Transform.GetLocation()), Down);
+	TestTrue(TEXT("over an automatic unit to be converted is blocked"), C->IsRackAdditionBlocked());
+	TestNull(TEXT("blocked confirm adds nothing"), C->ConfirmPlantAddition());
+	C->UpdateRackAdditionAlongRay(Above(FVector(5002, -498, 0)), Down);
+	TestFalse(TEXT("yard spot is free"), C->IsRackAdditionBlocked());
+	APlantEquipmentActor* Added = C->ConfirmPlantAddition();
+	if (!TestNotNull(TEXT("first addition"), Added)) { DestroyLayoutWorld(World); return false; }
+	const FString AddedId = VrgPlantEquipment::Identity(Added);
+	const FName AddedName = Added->GetFName();
+	const FTransform AddedT = Added->GetActorTransform();
+	// Converted units stand where the automatic yard drew them.
+	double MaxErrCm = 0.0;
+	int32 Matched = 0;
+	for (const FPlantEquipmentRecord& R : Expected)
+		for (const APlantEquipmentActor* U : VrgPlantEquipment::Gather(World, EPlantUnitKind::FwsDryCooler))
+			if (U != Added && FVector::Distance(U->GetActorLocation(), R.Transform.GetLocation()) < 1.0)
+			{ ++Matched; MaxErrCm = FMath::Max(MaxErrCm, FVector::Distance(U->GetActorLocation(), R.Transform.GetLocation())); }
+	AddInfo(FString::Printf(TEXT("자동 FWS 드라이쿨러 %d대 → 첫 추가 뒤 %d대(전환 위치 일치 %d, 최대 차 %.3e cm), 새 장비 %s"),
+		AutoFws, CountFws(), Matched, MaxErrCm, *AddedT.GetLocation().ToCompactString()));
+	TestTrue(TEXT("first addition = automatic units + 1, one command"), CountFws() == AutoFws + 1 && C->GetLayoutUndoCount() == 1);
+	TestTrue(TEXT("converted units at the automatic positions"), Matched == AutoFws && MaxErrCm == 0.0);
+	TestTrue(TEXT("snapped to 5 cm, new unit selected"), AddedT.GetLocation().Equals(FVector(5000, -500, 0), 1e-9) && C->GetSelectedLayoutActor() == Added);
+	TestTrue(TEXT("nothing left to convert"), Sim->CaptureAutomaticPlantUnits(EPlantUnitKind::FwsDryCooler, Expected, Reason) && Expected.IsEmpty());
+
+	// One Undo returns to the automatic plant (no FWS units), Redo brings all of them back with the same identity.
+	TestTrue(TEXT("Undo removes converted + new"), C->TryUndoLayout() && CountFws() == 0);
+	TestTrue(TEXT("Redo restores them"), C->TryRedoLayout() && CountFws() == AutoFws + 1);
+	Added = VrgPlantEquipment::Find(World, AddedId);
+	TestTrue(TEXT("same name / transform after Redo"), Added && Added->GetFName() == AddedName && Added->GetActorTransform().Equals(AddedT, 1e-9));
+
+	// A second addition converts nothing.
+	C->BeginPlantAddition(EPlantUnitKind::FwsDryCooler);
+	C->UpdateRackAdditionAlongRay(Above(FVector(5600, -500, 0)), Down);
+	APlantEquipmentActor* Second = C->ConfirmPlantAddition();
+	TestTrue(TEXT("second addition adds one"), Second != nullptr && CountFws() == AutoFws + 2 && C->GetLayoutUndoCount() == 2);
+
+	// Delete the first (one command), Undo puts back the same unit.
+	C->SelectLayoutAlongRay(Above(AddedT.GetLocation()), Down);
+	TestTrue(TEXT("first unit selected"), C->GetSelectedLayoutActor() == Added);
+	TestTrue(TEXT("delete one command"), C->TryDeleteLayoutPlant() && CountFws() == AutoFws + 1 && C->GetLayoutUndoCount() == 3);
+	TestTrue(TEXT("Undo delete"), C->TryUndoLayout() && CountFws() == AutoFws + 2);
+	Added = VrgPlantEquipment::Find(World, AddedId);
+	TestTrue(TEXT("restored same name / transform"), Added && Added->GetFName() == AddedName && Added->GetActorTransform().Equals(AddedT, 1e-9));
+	// A rack selection is not a plant deletion.
+	C->SelectLayoutAlongRay(Above(FVector(0, 0, 0)), Down);
+	TestFalse(TEXT("rack selection is not deleted as plant"), C->TryDeleteLayoutPlant());
+
+	// The plant at the next entry has the placed count.
+	Sim->EnterSimulationMode();
+	for (int32 F = 0; F < 10; ++F) Sim->Tick(.1f);
+	const FFacilityPlant& Plant = Sim->GetFacilityPlant();
+	int32 Drawn = 0;
+	if (const AFacilityPlantDisplayActor* D = Sim->GetPlantDisplay())
+		for (const FPlantDisplayEquipment& E : D->GetSnapshot().Equipment) Drawn += E.bPlaced && E.Loop == EPlantLoopId::Fws ? 1 : 0;
+	AddInfo(FString::Printf(TEXT("진입: FWS 드라이쿨러 %d대(배치로 그림 %d), 설비 장부 %.3e, 외기까지 %.3e"), Plant.GetNumDryCoolers(), Drawn,
+		Plant.GetLedgerResidual(), Sim->GetSiteEnergyResidual()));
+	TestTrue(TEXT("plant built with the placed count"), Plant.GetNumDryCoolers() == AutoFws + 2 && Drawn == AutoFws + 2);
+	TestTrue(TEXT("ledgers close"), FMath::Abs(Plant.GetLedgerResidual()) < 1e-9 && FMath::Abs(Sim->GetSiteEnergyResidual()) < 1e-9);
+	Sim->EnterLayoutMode();
+	DestroyLayoutWorld(World);
+	return true;
+}
+
 #endif

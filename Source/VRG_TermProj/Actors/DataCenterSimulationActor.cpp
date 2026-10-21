@@ -1247,6 +1247,10 @@ void ADataCenterSimulationActor::BuildFacilityLoop(TArray<FCduCouplingGroup>& Gr
 		}
 	}
 	// S8 F8: units placed in layout mode set the count of their kind; kinds with none keep the automatic sizing rule.
+	// F8-2: the automatic plant (no placed units) is built too; its units become actors on the first direct addition.
+	AutomaticPlant = MakeUnique<FFacilityPlant>();
+	if (Groups.Num() == 0 || !AutomaticPlant->Build(Spec, PlantThermalSpec, DesignHeatW, CoolantDensityKgM3, WaterCp, FHydraulicSolveSettings(), Coils, CoilSupplyTempK))
+		AutomaticPlant.Reset();
 	FFacilityThermalSpec Thermal = PlantThermalSpec;
 	const FPlantEquipmentCounts Placed = VrgPlantEquipment::CountInWorld(GetWorld());
 	FacilityPlantLayout::ApplyEquipmentCounts(Placed, Thermal, Spec);
@@ -2022,6 +2026,33 @@ FPlantDisplayInput ADataCenterSimulationActor::MakePlantDisplayInput() const
 	In.Chillers = Units(EPlantUnitKind::Chiller);
 	In.TrimChillers = Units(EPlantUnitKind::TrimChiller);
 	return In;
+}
+
+bool ADataCenterSimulationActor::CaptureAutomaticPlantUnits(EPlantUnitKind Kind, TArray<FPlantEquipmentRecord>& Out, FString& Reason) const
+{
+	Out.Reset();
+	if (!AutomaticPlant.IsValid() || !AutomaticPlant->IsBuilt())
+	{
+		Reason = TEXT("설비 자동 대수를 아직 모른다: 설비를 켜고(vrg.Plant.Enable 1) 한 번 시뮬레이션에 들어간 뒤 추가할 수 있다.");
+		return false;
+	}
+	if (!VrgPlantEquipment::Gather(GetWorld(), Kind).IsEmpty()) return true;
+	// Schematic positions of the automatic plant beside the room as it is now (no placed units in the input).
+	FPlantDisplayInput In = MakePlantDisplayInput();
+	In.FwsDryCoolers.Reset(); In.CwDryCoolers.Reset(); In.Chillers.Reset(); In.TrimChillers.Reset();
+	const FPlantDisplaySnapshot S = PlantDisplay::Build(*AutomaticPlant, In);
+	for (const FPlantDisplayEquipment& E : S.Equipment)
+	{
+		const bool bMatch = Kind == EPlantUnitKind::FwsDryCooler ? E.Kind == EPlantEquipmentKind::DryCooler && E.Loop == EPlantLoopId::Fws
+			: Kind == EPlantUnitKind::CwDryCooler ? E.Kind == EPlantEquipmentKind::DryCooler && E.Loop == EPlantLoopId::Cw
+			: Kind == EPlantUnitKind::Chiller ? E.Kind == EPlantEquipmentKind::Chiller : E.Kind == EPlantEquipmentKind::TrimChiller;
+		if (!bMatch) continue;
+		FPlantEquipmentRecord& R = Out.AddDefaulted_GetRef();
+		R.Kind = Kind;
+		R.SizeM = E.SizeM;
+		R.Transform = FTransform(SimUnits::MetersToUnreal(E.CenterM - FVector(0, 0, 0.5 * E.SizeM.Z)));
+	}
+	return true;
 }
 
 void ADataCenterSimulationActor::UpdatePlantDisplay(bool bForce)

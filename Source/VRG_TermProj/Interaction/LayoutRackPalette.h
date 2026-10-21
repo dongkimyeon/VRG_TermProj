@@ -39,4 +39,9 @@ private:
 	UFUNCTION() void OnRoomBounds();
 	UFUNCTION() void OnAddWall();
 	UFUNCTION() void OnAddCurtain();
+	// S8 F8-2 plant units (outside the room).
+	UFUNCTION() void OnAddFwsDryCooler();
+	UFUNCTION() void OnAddCwDryCooler();
+	UFUNCTION() void OnAddChiller();
+	UFUNCTION() void OnAddTrimChiller();
 };

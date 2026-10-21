@@ -9,6 +9,7 @@
 #include "Simulation/Evaluation/VrgEvaluation.h"
 #include "Simulation/Evaluation/VrgFaultMonitor.h"
 #include "Simulation/Plant/FacilityPlant.h"
+#include "Actors/PlantEquipmentActor.h"
 #include "Simulation/Evaluation/VrgDashboardSummary.h"
 #include "Interaction/VrgCrahLifecycle.h"
 #include "Simulation/Air/RoomAirDomain.h"
@@ -308,6 +309,10 @@ public:
 	// air, coolant and plant water. (residual J) / (all inputs J); 0 without the plant model.
 	double GetSiteEnergyResidual() const;
 	double GetSiteEnergyInJ() const;
+	// S8 F8-2: the units of one kind the automatic sizing rule gave at the last simulation entry with the plant on, as
+	// layout records at their schematic yard positions (beside the current room). Empty with true when units of that kind
+	// are already placed (nothing to convert) or that plant had none; false (Reason) when no plant was built yet.
+	bool CaptureAutomaticPlantUnits(EPlantUnitKind Kind, TArray<FPlantEquipmentRecord>& Out, FString& Reason) const;
 
 	// Blanking / cold-aisle roof. Default off: the level's own layout (gaps and all) is the reference.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Cooling|Containment")
@@ -490,6 +495,8 @@ private:
 	};
 	TArray<FCduSummary> CduSummaries;
 	FFacilityPlant Plant;
+	// S8 F8-2: the same plant with the automatic counts (no placed units), built at the same entry; layout conversion only.
+	TUniquePtr<FFacilityPlant> AutomaticPlant;
 	bool bPlantActive = false;
 	UPROPERTY(Transient)
 	TObjectPtr<class AFacilityPlantDisplayActor> PlantDisplay;

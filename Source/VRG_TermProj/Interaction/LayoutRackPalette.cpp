@@ -91,6 +91,21 @@ void ULayoutRackPalette::NativeOnInitialized()
 	auto* EditSlot=Canvas->AddChildToCanvas(CeilingHoleEditButton); EditSlot->SetAnchors(FAnchors(0,1)); EditSlot->SetAlignment(FVector2D(0,1));
 	EditSlot->SetPosition(FVector2D(270,-128)); EditSlot->SetSize(FVector2D(240,44));
 	CeilingHoleEditButton->SetIsEnabled(false); CeilingHoleEditButton->OnClicked.AddDynamic(this,&ULayoutRackPalette::OnRoomCeilingHoleEdit);
+	// S8 F8-2: plant units, third row after the hole buttons (UI pixels only).
+	auto AddPlantButton = [&](const TCHAR* Text, float X)
+	{
+		auto* PlantButton = WidgetTree->ConstructWidget<ULayoutRackButton>();
+		auto* PlantLabel = WidgetTree->ConstructWidget<UTextBlock>();
+		PlantLabel->SetText(FText::FromString(Text)); PlantLabel->SetFont(Font); PlantButton->AddChild(PlantLabel);
+		auto* PlantSlot = Canvas->AddChildToCanvas(PlantButton);
+		PlantSlot->SetAnchors(FAnchors(0, 1)); PlantSlot->SetAlignment(FVector2D(0, 1));
+		PlantSlot->SetPosition(FVector2D(X, -128)); PlantSlot->SetSize(FVector2D(200, 44));
+		return PlantButton;
+	};
+	AddPlantButton(TEXT("FWS 드라이쿨러"), 520)->OnClicked.AddDynamic(this, &ULayoutRackPalette::OnAddFwsDryCooler);
+	AddPlantButton(TEXT("CW 드라이쿨러"), 730)->OnClicked.AddDynamic(this, &ULayoutRackPalette::OnAddCwDryCooler);
+	AddPlantButton(TEXT("냉수 칠러"), 940)->OnClicked.AddDynamic(this, &ULayoutRackPalette::OnAddChiller);
+	AddPlantButton(TEXT("트림 칠러"), 1150)->OnClicked.AddDynamic(this, &ULayoutRackPalette::OnAddTrimChiller);
 }
 
 void ULayoutRackPalette::OnAddRack()
@@ -178,4 +193,24 @@ void ULayoutRackPalette::OnAddWall()
 void ULayoutRackPalette::OnAddCurtain()
 {
 	if (auto* Controller = Cast<ADataCenterDebugController>(GetOwningPlayer())) Controller->BeginCurtainAddition();
+}
+
+void ULayoutRackPalette::OnAddFwsDryCooler()
+{
+	if (auto* Controller = Cast<ADataCenterDebugController>(GetOwningPlayer())) Controller->BeginPlantAddition(EPlantUnitKind::FwsDryCooler);
+}
+
+void ULayoutRackPalette::OnAddCwDryCooler()
+{
+	if (auto* Controller = Cast<ADataCenterDebugController>(GetOwningPlayer())) Controller->BeginPlantAddition(EPlantUnitKind::CwDryCooler);
+}
+
+void ULayoutRackPalette::OnAddChiller()
+{
+	if (auto* Controller = Cast<ADataCenterDebugController>(GetOwningPlayer())) Controller->BeginPlantAddition(EPlantUnitKind::Chiller);
+}
+
+void ULayoutRackPalette::OnAddTrimChiller()
+{
+	if (auto* Controller = Cast<ADataCenterDebugController>(GetOwningPlayer())) Controller->BeginPlantAddition(EPlantUnitKind::TrimChiller);
 }

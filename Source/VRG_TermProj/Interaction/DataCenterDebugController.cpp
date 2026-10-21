@@ -703,6 +703,7 @@ void ADataCenterDebugController::BeginRackAddition()
 	bAddingSpine = false;
 	bAddingCdu = false;
 	bAddingBarrier = false;
+	bAddingPlant = false;
  bAddingCrah = false;
  CrahAdditionKind = ECrahUnitKind::InRow;
 	bAddingRack = true;
@@ -754,6 +755,25 @@ void ADataCenterDebugController::BeginBarrierAddition(EBarrierKind Kind)
 	bAddingBarrier = true;
 	BarrierAdditionKind = Kind;
 	RackAdditionTransform.SetScale3D(ALayoutBarrierActor::DefaultSizeM(Kind));
+	UpdateRackAdditionFromCursor();
+}
+
+void ADataCenterDebugController::BeginPlantAddition(EPlantUnitKind Kind)
+{
+	if (!GetWorld() || !GetWorld()->IsGameWorld() || !IsLayoutMode() || !IsEquipmentInputAvailable()
+		|| IsLayoutDragging() || bMarqueeActive || bAddingRack || Grabbed.IsValid() || IsInputKeyDown(EKeys::RightMouseButton)) return;
+	ADataCenterSimulationActor* Sim = FindSimActor();
+	TArray<FPlantEquipmentRecord> Automatic; FString Reason = TEXT("통합 액터가 없다.");
+	if (!Sim || !Sim->CaptureAutomaticPlantUnits(Kind, Automatic, Reason))
+	{
+		UE_LOG(LogTemp, Display, TEXT("[VrgLayout] %s 추가 거절: %s"), APlantEquipmentActor::KindName(Kind), *Reason);
+		if (GEngine) GEngine->AddOnScreenDebugMessage(static_cast<uint64>(GetUniqueID()) + 29, 6.0f, FColor::Red, Reason);
+		return;
+	}
+	BeginRackAddition();
+	if (!bAddingRack) return;
+	bAddingPlant = true;
+	PlantAdditionKind = Kind;
 	UpdateRackAdditionFromCursor();
 }
 
@@ -937,6 +957,7 @@ void ADataCenterDebugController::CancelRackAddition()
 {
 	bAddingRack = false;
 	bAddingBarrier = false;
+	bAddingPlant = false;
 	BarrierDuplicationMembers.Reset();
 	bAddingSpine = false;
 	bAddingCdu = false;
@@ -1011,6 +1032,7 @@ bool ADataCenterDebugController::GetRackAdditionPreview(FTransform& Out, FVector
 	if (!bAddingRack || !bRackAdditionHasFloor || !IsLayoutMode() || !IsEquipmentInputAvailable()
 		|| MemberIndex < 0 || MemberIndex >= GetRackAdditionPreviewCount()) return false;
 	Out = RackAdditionTransform;
+	if (bAddingPlant) { SizeM = APlantEquipmentActor::DefaultSizeM(PlantAdditionKind); return true; }
 	if (bAddingBarrier)
 	{
 		// Unit box: the preview transform's scale is the barrier size in metres.
@@ -1079,6 +1101,22 @@ bool ADataCenterDebugController::IsRackAdditionBlocked() const
   auto* Sim=FindSimActor();
   if(!Sim || !Sim->CaptureAutomaticCrahLayout(Automatic)) return true;
  }
+	if (bAddingPlant)
+	{
+		// The room footprint, and the automatic units that become actors with this addition.
+		FTransform Proposed; FVector SizeM; FLayoutFootprint Candidate; FString Reason;
+		TArray<FPlantEquipmentRecord> Converted;
+		const ADataCenterSimulationActor* Sim = FindSimActor();
+		if (!GetRackAdditionPreview(Proposed, SizeM) || !Sim || !Sim->CaptureAutomaticPlantUnits(PlantAdditionKind, Converted, Reason)
+			|| VrgPlantEquipment::OverlapsRoom(GetWorld(), SizeM, Proposed) || IsLayoutBoxBlocked(GetWorld(), SizeM, Proposed)
+			|| !MakeLayoutFootprint(SizeM, Proposed, Candidate)) return true;
+		for (const FPlantEquipmentRecord& R : Converted)
+		{
+			FLayoutFootprint Other;
+			if (!MakeLayoutFootprint(R.SizeM, R.Transform, Other) || FootprintsConflict(Candidate, Other)) return true;
+		}
+		return false;
+	}
 	for (int32 I = 0; I < GetRackAdditionPreviewCount(); ++I)
 	{
 		FTransform Proposed; FVector SizeM; FLayoutFootprint Candidate;
@@ -1097,6 +1135,7 @@ bool ADataCenterDebugController::IsRackAdditionBlocked() const
 
 ARackThermalActor* ADataCenterDebugController::ConfirmRackAddition()
 {
+	if (bAddingPlant) { ConfirmPlantAddition(); return nullptr; }
 	if (bAddingBarrier) { ConfirmBarrierAddition(); return nullptr; }
 	if (bAddingCrah) { ConfirmCrahAddition(); return nullptr; }
  if (bAddingCdu) { ConfirmCduAddition(); return nullptr; }
@@ -1300,7 +1339,7 @@ bool ADataCenterDebugController::TryDeleteLayoutRack()
 void ADataCenterDebugController::OnDeleteLayoutEquipment()
 {
 	if(bRoomCeilingEditing) { if(bRoomCeilingHoleEditing) TryDeleteRoomCeilingHole(); else TryDeleteRoomCeiling(); return; }
-	if (!TryDeleteLayoutRack() && !TryDeleteLayoutSpine() && !TryDeleteLayoutCdu() && !TryDeleteLayoutCrah() && !TryDeleteLayoutBarrier())
+	if (!TryDeleteLayoutRack() && !TryDeleteLayoutSpine() && !TryDeleteLayoutCdu() && !TryDeleteLayoutCrah() && !TryDeleteLayoutBarrier() && !TryDeleteLayoutPlant())
 		UE_LOG(LogTemp, Display, TEXT("[VrgLayout] 삭제 거절: 랙 선택 전체 또는 네이티브 스파인 선택 전체 또는 네이티브 CDU 선택 전체 또는 네이티브 CRAH 선택 전체와 배치 대기 상태가 필요합니다."));
 }
 
@@ -1480,6 +1519,117 @@ bool ADataCenterDebugController::RestoreBarrierPresence(const FLayoutTransformCo
 	return true;
 }
 
+APlantEquipmentActor* ADataCenterDebugController::ConfirmPlantAddition()
+{
+	UWorld* World = GetWorld();
+	FTransform Proposed; FVector SizeM; FString Reason;
+	TArray<FPlantEquipmentRecord> Converted;
+	const ADataCenterSimulationActor* Sim = FindSimActor();
+	if (!bAddingPlant || !World || !World->IsGameWorld() || !GetRackAdditionPreview(Proposed, SizeM) || IsRackAdditionBlocked()
+		|| !Sim || !Sim->CaptureAutomaticPlantUnits(PlantAdditionKind, Converted, Reason))
+	{
+		UE_LOG(LogTemp, Display, TEXT("[VrgLayout] %s 추가 거절: 목적지 없음, 방 공기 영역·장비와 겹침 또는 자동 대수 모름"), APlantEquipmentActor::KindName(PlantAdditionKind));
+		return nullptr;
+	}
+	const TCHAR* Prefix = PlantAdditionKind == EPlantUnitKind::FwsDryCooler ? TEXT("PlantFwsDryCooler_")
+		: PlantAdditionKind == EPlantUnitKind::CwDryCooler ? TEXT("PlantCwDryCooler_")
+		: PlantAdditionKind == EPlantUnitKind::Chiller ? TEXT("PlantChiller_") : TEXT("PlantTrimChiller_");
+	FLayoutTransformCommand Command;  // bBeforePresent=false: Undo removes the converted units and the new one together
+	auto Name = [&](FPlantEquipmentRecord& R)
+	{
+		R.Id = FGuid::NewGuid().ToString();
+		R.Name = MakeUniqueObjectName(World->PersistentLevel, APlantEquipmentActor::StaticClass(), FName(*(FString(Prefix) + R.Id)));
+	};
+	for (FPlantEquipmentRecord R : Converted) { Name(R); Command.PlantUnits.Add(R); }
+	FPlantEquipmentRecord New;
+	New.Kind = PlantAdditionKind; New.SizeM = SizeM; New.Transform = Proposed; New.Transform.SetScale3D(FVector::OneVector);
+	Name(New);
+	Command.PlantUnits.Add(New);
+	if (!RestorePlantPresence(Command, true)) return nullptr;
+	PushLayoutCommand(Command);
+	CancelRackAddition();
+	LayoutSelection.Reset();
+	APlantEquipmentActor* Added = VrgPlantEquipment::Find(World, New.Id);
+	LayoutSelection.Add(Added);
+	UE_LOG(LogTemp, Display, TEXT("[VrgLayout] %s 추가: 1대%s (이 종류 %d대, 다음 시뮬레이션 진입 때 설비가 이 대수로 지어진다)"),
+		APlantEquipmentActor::KindName(New.Kind),
+		Converted.IsEmpty() ? TEXT("") : *FString::Printf(TEXT(" + 자동 배치 %d대를 실제 장비로 전환"), Converted.Num()),
+		VrgPlantEquipment::Gather(World, New.Kind).Num());
+	return Added;
+}
+
+bool ADataCenterDebugController::TryDeleteLayoutPlant()
+{
+	UWorld* World = GetWorld();
+	if (!World || !World->IsGameWorld() || !IsLayoutMode() || !IsEquipmentInputAvailable()
+		|| bAddingRack || IsLayoutDragging() || bMarqueeActive || Grabbed.IsValid() || IsInputKeyDown(EKeys::RightMouseButton)) return false;
+	const auto Selected = GetSelectedLayoutActors();
+	if (Selected.IsEmpty()) return false;
+	FLayoutTransformCommand Command; Command.bBeforePresent = true;
+	for (auto* Actor : Selected)
+	{
+		auto* Unit = Cast<APlantEquipmentActor>(Actor);
+		if (!IsValid(Unit) || Unit->GetWorld() != World) return false;
+		Command.PlantUnits.Add(VrgPlantEquipment::Capture(Unit));
+	}
+	if (!RestorePlantPresence(Command, true)) return false;
+	PushLayoutCommand(MoveTemp(Command));
+	const FPlantEquipmentCounts Left = VrgPlantEquipment::CountInWorld(World);
+	UE_LOG(LogTemp, Display, TEXT("[VrgLayout] 설비 장비 삭제: %d대 (남은 FWS 드라이쿨러 %d, CW 드라이쿨러 %d, 냉수 칠러 %d, 트림 칠러 %d; 0인 종류는 다음 진입 때 자동 크기 규칙)"),
+		Selected.Num(), Left.FwsDryCoolers, Left.CwDryCoolers, Left.Chillers, Left.TrimChillers);
+	return true;
+}
+
+bool ADataCenterDebugController::RestorePlantPresence(const FLayoutTransformCommand& Command, bool bRedo)
+{
+	UWorld* World = GetWorld();
+	if (!World || !World->IsGameWorld() || Command.PlantUnits.IsEmpty()) return false;
+	const bool bTargetPresent = bRedo ? !Command.bBeforePresent : Command.bBeforePresent;
+	TSet<FString> Ids; TSet<FName> Names;
+	TArray<APlantEquipmentActor*> Present;
+	TArray<FLayoutFootprint> Footprints;
+	// Validate everything before touching the world: outside the room, 1 cm clearance to equipment and to each other.
+	for (const FPlantEquipmentRecord& R : Command.PlantUnits)
+	{
+		if (R.Id.IsEmpty() || Ids.Contains(R.Id) || Names.Contains(R.Name)) return false;
+		Ids.Add(R.Id); Names.Add(R.Name);
+		APlantEquipmentActor* Unit = VrgPlantEquipment::Find(World, R.Id);
+		if (bTargetPresent)
+		{
+			FLayoutFootprint Candidate;
+			if (Unit || FindObjectFast<UObject>(World->PersistentLevel, R.Name) || !VrgPlantEquipment::IsValidRecord(R)
+				|| VrgPlantEquipment::OverlapsRoom(World, R.SizeM, R.Transform) || IsLayoutBoxBlocked(World, R.SizeM, R.Transform)
+				|| !MakeLayoutFootprint(R.SizeM, R.Transform, Candidate)) return false;
+			for (const FLayoutFootprint& Other : Footprints) if (FootprintsConflict(Candidate, Other)) return false;
+			Footprints.Add(Candidate);
+		}
+		else
+		{
+			if (!Unit || Unit->GetFName() != R.Name || Unit->Kind != R.Kind || Unit->SizeM != R.SizeM || !Unit->GetActorTransform().Equals(R.Transform)) return false;
+			Present.Add(Unit);
+		}
+	}
+	if (bTargetPresent)
+	{
+		for (const FPlantEquipmentRecord& R : Command.PlantUnits)
+		{
+			APlantEquipmentActor* Unit = VrgPlantEquipment::Spawn(World, R);
+			if (!Unit)
+			{
+				if (!Present.IsEmpty()) verify(VrgPlantEquipment::RemoveBatch(Present));
+				return false;
+			}
+			Present.Add(Unit);
+		}
+		// Earlier move/rotate commands follow sanctioned recreation (Undo of a deletion, failed Load rollback).
+		for (APlantEquipmentActor* Unit : Present) NotifyLayoutPlantRecreated(Unit);
+	}
+	else if (!VrgPlantEquipment::RemoveBatch(Present)) return false;
+	// Plant units are outside the room and its routing; the plant is rebuilt at the next simulation entry.
+	RefreshLayoutEquipmentReferences(false);
+	return true;
+}
+
 bool ADataCenterDebugController::TryLayoutMove(AActor* Actor, const FVector& TargetCm)
 {
 	if (bAddingRack || bMarqueeActive) return false;
@@ -1586,6 +1736,11 @@ bool ADataCenterDebugController::RestoreLayoutTransform(bool bRedo)
 	if (!Command.Barriers.IsEmpty())
 	{
 		if (!RestoreBarrierPresence(Command, bRedo)) return false;
+		From.Pop(); To.Add(Command); return true;
+	}
+	if (!Command.PlantUnits.IsEmpty())
+	{
+		if (!RestorePlantPresence(Command, bRedo)) return false;
 		From.Pop(); To.Add(Command); return true;
 	}
 	if (!Command.Crahs.IsEmpty())
@@ -2855,6 +3010,15 @@ void ADataCenterDebugController::Tick(float DeltaTime)
 			if (GetRackAdditionPreview(AdditionPreview, SizeM, I))
 				DrawDebugBox(GetWorld(), AdditionPreview.TransformPosition(FVector(0, 0, SizeM.Z * 50.0)),
 					SizeM * 50.0 * AdditionPreview.GetScale3D().GetAbs(), AdditionPreview.GetRotation(), AdditionColor, false, 0.0f, 0, 3.0f);
+		}
+		// S8 F8-2: the automatic units this first addition of a kind turns into actors.
+		if (bAddingPlant)
+		{
+			TArray<FPlantEquipmentRecord> Converted; FString Reason;
+			if (const ADataCenterSimulationActor* Sim = FindSimActor(); Sim && Sim->CaptureAutomaticPlantUnits(PlantAdditionKind, Converted, Reason))
+				for (const FPlantEquipmentRecord& R : Converted)
+					DrawDebugBox(GetWorld(), R.Transform.TransformPosition(FVector(0, 0, R.SizeM.Z * 50.0)), R.SizeM * 50.0, R.Transform.GetRotation(),
+						FColor::Cyan, false, 0.0f, 0, 2.0f);
 		}
 	}
 	else
