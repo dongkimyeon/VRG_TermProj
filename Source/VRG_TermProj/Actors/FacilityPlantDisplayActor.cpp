@@ -46,26 +46,42 @@ void AFacilityPlantDisplayActor::ShowSnapshot(const FPlantDisplaySnapshot& Snaps
 	{
 		PipeSegments += Polyline(P.PointsM, P.bHeader ? MainDiameterM : PipeDiameterM, PlantDisplay::PipeColor(Shown, P, bTemperature));
 		if (P.PointsM.Num() < 2) continue;
-		// Valve bodies (control valve on its drop, check valve on the pump discharge), red when shut.
-		if (P.Role == EPlantPipeRole::Valve) Box(0.5 * (P.PointsM[0] + P.PointsM[1]), FVector(0.18, 0.18, 0.14), P.bClosed ? Shut : Fitting);
-		if (P.Role == EPlantPipeRole::CheckValve) Box(0.5 * (P.PointsM.Last(1) + P.PointsM.Last()), FVector(0.16, 0.14, 0.14), P.bClosed ? Shut : Fitting);
+		// Valve meshes follow the pipe axis. Their pipe centre is 0.1 m above the floor-centre pivot.
+		if (P.Role == EPlantPipeRole::Valve || P.Role == EPlantPipeRole::CheckValve)
+		{
+			const bool bCheck = P.Role == EPlantPipeRole::CheckValve;
+			const FVector A = bCheck ? P.PointsM.Last(1) : P.PointsM[0];
+			const FVector B = bCheck ? P.PointsM.Last() : P.PointsM[1];
+			const EPlantVisualKind K = bCheck ? EPlantVisualKind::CheckValve : EPlantVisualKind::Valve2Way;
+			if (PlantVisual::ReferenceMesh(K))
+			{
+				const FQuat Q = FRotationMatrix::MakeFromX((B - A).GetSafeNormal()).ToQuat();
+				const FVector Pivot = 0.5 * (A + B) - Q.RotateVector(FVector(0, 0, 0.1));
+				PlantVisual::AppendEquipment(K, PlantVisual::NominalSizeM(K), P.bClosed ? Shut : Fitting, List, FTransform(Q, Pivot * 100.0));
+			}
+			else Box(0.5 * (A + B), bCheck ? FVector(0.16, 0.14, 0.14) : FVector(0.18, 0.18, 0.14), P.bClosed ? Shut : Fitting);
+		}
 	}
 	// Units the yard places itself (placed ones are their own actors).
-	TArray<FPlantVisualPart> Parts;
 	for (const FPlantDisplayEquipment& E : Shown.Equipment)
 	{
 		if (E.bPlaced) continue;
 		const FLinearColor Accent = Shown.bLive ? PlantDisplay::EquipmentColor(E) : PlantDisplay::KindColor(E.Loop, E.Kind);
 		const FTransform Unit(E.Rotation, SimUnits::MetersToUnreal(E.CenterM + E.Rotation.RotateVector(FVector(0, 0, -0.5 * E.SizeM.Z))));
-		PlantVisual::BuildParts(PlantDisplay::VisualKind(E.Kind), E.SizeM, Parts);
-		for (const FPlantVisualPart& Part : Parts)
-			List.Add({ Part.bCylinder ? Cylinder : Cube, PlantVisual::ToneColor(Part.Tone, Accent), PlantVisual::PartTransformCm(Part) * Unit });
+		PlantVisual::AppendEquipment(PlantDisplay::VisualKind(E.Kind), E.SizeM, Accent, List, Unit);
 		++EquipmentDrawn;
 	}
 	// Supports: trays and crossbeams galvanised grey, posts dark.
 	for (const FPlantDisplayTray& T : Shown.Trays) Box(T.CenterM, T.SizeM, FLinearColor(.48f, .5f, .52f));
 	for (const FVector& Top : Shown.PostTopsM) Box(FVector(Top.X, Top.Y, 0.5 * Top.Z), FVector(0.08, 0.08, Top.Z), Fitting);
-	for (const FPlantDisplayLeak& L : Shown.Leaks) { Box(L.PositionM, FVector(0.35), FLinearColor(1.f, 0.f, 0.f)); ++LeakMarkers; }
+	for (const FPlantDisplayLeak& L : Shown.Leaks)
+	{
+		if (PlantVisual::ReferenceMesh(EPlantVisualKind::LeakMarker))
+			PlantVisual::AppendEquipment(EPlantVisualKind::LeakMarker, FVector(0.35, 0.35, 0.05), FLinearColor(1.f, 0.f, 0.f), List,
+				FTransform(FVector(L.PositionM.X * 100.0, L.PositionM.Y * 100.0, 0.2))); // display-only projection to the yard floor
+		else Box(L.PositionM, FVector(0.35), FLinearColor(1.f, 0.f, 0.f));
+		++LeakMarkers;
+	}
 
 	const uint32 Hash = PlantInstances::Hash(List);
 	if (bUploaded && Hash == UploadedHash) return;

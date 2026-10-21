@@ -41,17 +41,17 @@ void APlantEquipmentActor::RefreshVisuals()
 	if (HasAnyFlags(RF_ClassDefaultObject) || !RootComponent) return;
 	const FVector Size = SizeM.ComponentMax(FVector(0.01));
 	const FLinearColor Accent = StatusColor.A > 0.f ? StatusColor : IdentityColor(Kind);
+	const bool bChiller = Kind == EPlantUnitKind::Chiller || Kind == EPlantUnitKind::TrimChiller;
+	const EPlantVisualKind VisualKind = bChiller ? EPlantVisualKind::Chiller : EPlantVisualKind::DryCooler;
+	UStaticMesh* Reference = PlantVisual::ReferenceMesh(VisualKind);
 	bool bSetsAlive = true;
 	for (const auto& Pair : PartSets) bSetsAlive &= IsValid(Pair.Value);
-	if (bDrawn && bSetsAlive && DrawnSizeM.Equals(Size, 0.0) && DrawnKind == Kind && DrawnColor.Equals(Accent, 0.f)) return;
+	if (bDrawn && bSetsAlive && DrawnMesh == Reference && DrawnSizeM.Equals(Size, 0.0) && DrawnKind == Kind && DrawnColor.Equals(Accent, 0.f)) return;
 	// Parts in actor space [cm]: the actor origin is the box's bottom centre, like the parts' own origin.
-	const bool bChiller = Kind == EPlantUnitKind::Chiller || Kind == EPlantUnitKind::TrimChiller;
-	TArray<FPlantVisualPart> Parts;
-	PlantVisual::BuildParts(bChiller ? EPlantVisualKind::Chiller : EPlantVisualKind::DryCooler, Size, Parts);
 	TArray<FPlantInstance> List;
-	for (const FPlantVisualPart& P : Parts)
-		List.Add({ P.bCylinder ? PlantInstances::Cylinder() : PlantInstances::Cube(), PlantVisual::ToneColor(P.Tone, Accent), PlantVisual::PartTransformCm(P) });
+	PlantVisual::AppendEquipment(VisualKind, Size, Accent, List);
 	PlantInstances::Apply(this, RootComponent, PartSets, List, true);
+	DrawnMesh = Reference;
 	DrawnSizeM = Size; DrawnKind = Kind; DrawnColor = Accent; bDrawn = true;
 }
 

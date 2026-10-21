@@ -34,7 +34,7 @@ public:
 	int32 GetNumUploads() const { return Uploads; }
 
 private:
-	UPROPERTY(Transient) TMap<uint32, TObjectPtr<UInstancedStaticMeshComponent>> Sets;
+	UPROPERTY(Transient) TMap<uint64, TObjectPtr<UInstancedStaticMeshComponent>> Sets;
 	FPlantDisplaySnapshot Shown;
 	uint32 UploadedHash = 0;
 	bool bUploaded = false;

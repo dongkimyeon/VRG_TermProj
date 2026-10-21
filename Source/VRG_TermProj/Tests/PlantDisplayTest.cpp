@@ -235,3 +235,65 @@ bool FPlantDisplayActorTest::RunTest(const FString& Parameters)
 }
 
 #endif
+
+#include "Misc/AutomationTest.h"
+#include "Visualization/PlantVisual.h"
+#include "Actors/FacilityPlantDisplayActor.h"
+#include "Components/InstancedStaticMeshComponent.h"
+#include "Materials/MaterialInstanceDynamic.h"
+#include "Engine/StaticMesh.h"
+#include "Engine/World.h"
+#include "HAL/IConsoleManager.h"
+
+#if WITH_DEV_AUTOMATION_TESTS
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FPlantReferenceModelTest, "VRG.Plant.Display.ReferenceModelsAndAccent",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::CommandletContext | EAutomationTestFlags::EngineFilter)
+bool FPlantReferenceModelTest::RunTest(const FString& Parameters)
+{
+    UWorld* World=UWorld::CreateWorld(EWorldType::Game,false);
+    if(!TestNotNull(TEXT("World"),World))return false;
+    auto* Owner=World->SpawnActor<AFacilityPlantDisplayActor>();
+    TArray<FPlantInstance> List;
+    for(EPlantVisualKind Kind:{EPlantVisualKind::DryCooler,EPlantVisualKind::Chiller,EPlantVisualKind::Pump,EPlantVisualKind::Economizer,
+        EPlantVisualKind::Valve2Way,EPlantVisualKind::CheckValve,EPlantVisualKind::LeakMarker})
+    {
+        if(!TestNotNull(TEXT("Authored model available"),PlantVisual::ReferenceMesh(Kind)))continue;
+        const int32 Before=List.Num();
+        PlantVisual::AppendEquipment(Kind,PlantVisual::NominalSizeM(Kind),FLinearColor(.1f,.4f,.7f),List);
+        TestEqual(TEXT("One authored instance per equipment"),List.Num()-Before,1);
+    }
+    PlantInstances::FSets Sets;
+    TestEqual(TEXT("All seven models drawn together"),PlantInstances::Apply(Owner,Owner->GetRootComponent(),Sets,List,false),7);
+    TestEqual(TEXT("Distinct meshes never share an instance set"),Sets.Num(),7);
+    TSet<UStaticMesh*> Drawn;
+    for(const auto& Pair:Sets)
+    {
+        auto* C=Pair.Value.Get(); UStaticMesh* Mesh=C->GetStaticMesh(); Drawn.Add(Mesh);
+        TestEqual(TEXT("One instance in every set"),C->GetInstanceCount(),1);
+        for(int32 I=0;I<Mesh->GetStaticMaterials().Num();++I)
+        {
+            if(Mesh->GetStaticMaterials()[I].MaterialSlotName==TEXT("MC_Plant_Accent"))
+            {
+                auto* M=Cast<UMaterialInstanceDynamic>(C->GetMaterial(I));
+                if(TestNotNull(TEXT("Accent uses a dynamic material"),M))
+                    TestTrue(TEXT("Quantised status colour reaches the accent"),M->K2_GetVectorParameterValue(TEXT("Color")).Equals(FLinearColor(.1f,.4f,.7f),.016f));
+            }
+            else TestTrue(TEXT("Metal, coil and panel materials stay authored"),C->GetMaterial(I)==Mesh->GetMaterial(I));
+        }
+    }
+    TestEqual(TEXT("Seven unique mesh assets"),Drawn.Num(),7);
+    const uint32 OldHash=PlantInstances::Hash(List);
+    for(auto& I:List)I.Color=FLinearColor::Red;
+    TestTrue(TEXT("Fault colour changes the upload key"),PlantInstances::Hash(List)!=OldHash);
+    PlantInstances::Apply(Owner,Owner->GetRootComponent(),Sets,List,false);
+    int32 Live=0;for(const auto& Pair:Sets)Live+=Pair.Value->GetInstanceCount();
+    TestEqual(TEXT("Status changes replace rather than duplicate instances"),Live,7);
+    IConsoleVariable* Switch=IConsoleManager::Get().FindConsoleVariable(TEXT("vrg.Plant.ReferenceModels"));
+    const int32 Old=Switch->GetInt();Switch->Set(0,ECVF_SetByCode);
+    TArray<FPlantInstance> Fallback;
+    PlantVisual::AppendEquipment(EPlantVisualKind::DryCooler,FVector(2.4,1.2,1.3),FLinearColor::White,Fallback);
+    Switch->Set(Old,ECVF_SetByCode);
+    TestTrue(TEXT("Primitive fallback remains available"),Fallback.Num()>1);
+    World->DestroyWorld(false);return true;
+}
+#endif

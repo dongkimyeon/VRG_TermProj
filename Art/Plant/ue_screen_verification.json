@@ -1,0 +1,20 @@
+{
+  "models_drawn": {
+    "SM_Plant_Valve2Way": 15,
+    "SM_Plant_CheckValve": 9,
+    "SM_Plant_Pump": 9,
+    "SM_Plant_DryCooler": 32,
+    "SM_Plant_Chiller": 5,
+    "SM_Plant_PlateHx": 1
+  },
+  "level": "/Game/Maps/L_Test",
+  "context": "actual SIE layout yard; no level saved",
+  "screenshots": [
+    "ue_plant_yard.png",
+    "ue_plant_drycooler.png",
+    "ue_plant_chiller.png",
+    "ue_plant_pump.png",
+    "ue_plant_platehx.png"
+  ],
+  "simulation_mode_capture": true
+}

@@ -1,0 +1,135 @@
+{
+  "status": "PASS",
+  "models": {
+    "DryCooler": {
+      "bounds_min_m": [
+        -1.2000001525878907,
+        -0.6000001525878906,
+        0.0
+      ],
+      "bounds_max_m": [
+        1.2000001525878907,
+        0.6000001525878906,
+        1.3
+      ],
+      "max_import_error_m": 1.2874603272372553e-07,
+      "materials": [
+        "MC_Plant_Frame",
+        "MC_Plant_Pipe",
+        "MC_Plant_Fan",
+        "MC_Plant_Coil",
+        "MC_Plant_Accent",
+        "MC_Plant_Body"
+      ]
+    },
+    "Chiller": {
+      "bounds_min_m": [
+        -1.2000001525878907,
+        -0.6000001525878906,
+        0.0
+      ],
+      "bounds_max_m": [
+        1.2000001525878907,
+        0.6000001525878906,
+        1.8
+      ],
+      "max_import_error_m": 1.2874603272372553e-07,
+      "materials": [
+        "MC_Plant_Frame",
+        "MC_Plant_Accent",
+        "MC_Plant_Pipe",
+        "MC_Plant_Panel",
+        "MC_Plant_Body",
+        "MC_Plant_Screen"
+      ]
+    },
+    "Pump": {
+      "bounds_min_m": [
+        -0.3000000381469727,
+        -0.3000000381469727,
+        0.0
+      ],
+      "bounds_max_m": [
+        0.3000000381469727,
+        0.3000000381469727,
+        0.6000000381469727
+      ],
+      "max_import_error_m": 2.622604372559678e-08,
+      "materials": [
+        "MC_Plant_Frame",
+        "MC_Plant_Accent",
+        "MC_Plant_Pipe",
+        "MC_Plant_Body"
+      ]
+    },
+    "PlateHx": {
+      "bounds_min_m": [
+        -0.40000003814697266,
+        -0.25000003814697264,
+        0.0
+      ],
+      "bounds_max_m": [
+        0.40000003814697266,
+        0.25000003814697264,
+        1.6
+      ],
+      "max_import_error_m": 3.8146972636265986e-08,
+      "materials": [
+        "MC_Plant_Frame",
+        "MC_Plant_Accent",
+        "MC_Plant_Pipe"
+      ]
+    },
+    "Valve2Way": {
+      "bounds_min_m": [
+        -0.15000001907348634,
+        -0.10000000953674316,
+        0.0
+      ],
+      "bounds_max_m": [
+        0.15000001907348634,
+        0.10000000953674316,
+        0.4
+      ],
+      "max_import_error_m": 1.311302186279839e-08,
+      "materials": [
+        "MC_Plant_Pipe",
+        "MC_Plant_Accent",
+        "MC_Plant_Frame"
+      ]
+    },
+    "CheckValve": {
+      "bounds_min_m": [
+        -0.15000001907348634,
+        -0.10000000953674316,
+        0.0
+      ],
+      "bounds_max_m": [
+        0.15000001907348634,
+        0.10000000953674316,
+        0.2
+      ],
+      "max_import_error_m": 1.311302186279839e-08,
+      "materials": [
+        "MC_Plant_Pipe",
+        "MC_Plant_Accent"
+      ]
+    },
+    "LeakMarker": {
+      "bounds_min_m": [
+        -0.175,
+        -0.175,
+        0.0
+      ],
+      "bounds_max_m": [
+        0.175,
+        0.175,
+        0.05
+      ],
+      "max_import_error_m": 2.980232227667301e-09,
+      "materials": [
+        "MC_Plant_Accent"
+      ]
+    }
+  }
+}

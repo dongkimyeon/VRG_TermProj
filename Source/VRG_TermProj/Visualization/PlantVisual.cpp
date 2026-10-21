@@ -7,6 +7,7 @@
 #include "GameFramework/Actor.h"
 #include "Materials/MaterialInstanceDynamic.h"
 #include "Misc/Crc.h"
+#include "HAL/IConsoleManager.h"
 #include "Visualization/SimMeshBuilder.h"
 
 namespace
@@ -95,6 +96,8 @@ namespace
 		return FVector(SizeM.X > 0 ? SizeM.X / N.X : 1.0, SizeM.Y > 0 ? SizeM.Y / N.Y : 1.0, SizeM.Z > 0 ? SizeM.Z / N.Z : 1.0);
 	}
 
+	TAutoConsoleVariable<int32> CVarPlantReferenceModels(TEXT("vrg.Plant.ReferenceModels"), 1, TEXT("Use authored plant exterior meshes; 0 uses the primitive fallback."));
+
 	constexpr double ShapeCm = 100.0;   // engine basic shapes are 100 units, centred
 	constexpr int32 ColorSteps = 63;
 
@@ -113,8 +116,42 @@ FVector PlantVisual::NominalSizeM(EPlantVisualKind Kind)
 	case EPlantVisualKind::DryCooler: return FVector(2.4, 1.2, 1.3);
 	case EPlantVisualKind::Chiller: return FVector(2.4, 1.2, 1.8);
 	case EPlantVisualKind::Pump: return FVector(0.6, 0.6, 0.6);
+	case EPlantVisualKind::Valve2Way: return FVector(0.3, 0.2, 0.4);
+	case EPlantVisualKind::CheckValve: return FVector(0.3, 0.2, 0.2);
+	case EPlantVisualKind::LeakMarker: return FVector(0.35, 0.35, 0.05);
 	default: return FVector(0.8, 0.5, 1.6);
 	}
+}
+
+UStaticMesh* PlantVisual::ReferenceMesh(EPlantVisualKind Kind)
+{
+	if (CVarPlantReferenceModels.GetValueOnGameThread() == 0) return nullptr;
+	const TCHAR* Name = nullptr;
+	switch (Kind)
+	{
+	case EPlantVisualKind::DryCooler: Name = TEXT("SM_Plant_DryCooler"); break;
+	case EPlantVisualKind::Chiller: Name = TEXT("SM_Plant_Chiller"); break;
+	case EPlantVisualKind::Pump: Name = TEXT("SM_Plant_Pump"); break;
+	case EPlantVisualKind::Economizer: Name = TEXT("SM_Plant_PlateHx"); break;
+	case EPlantVisualKind::Valve2Way: Name = TEXT("SM_Plant_Valve2Way"); break;
+	case EPlantVisualKind::CheckValve: Name = TEXT("SM_Plant_CheckValve"); break;
+	case EPlantVisualKind::LeakMarker: Name = TEXT("SM_Plant_LeakMarker"); break;
+	}
+	return Name ? LoadObject<UStaticMesh>(nullptr, *FString::Printf(TEXT("/Game/Connections/%s.%s"), Name, Name), nullptr, LOAD_NoWarn | LOAD_Quiet) : nullptr;
+}
+
+void PlantVisual::AppendEquipment(EPlantVisualKind Kind, const FVector& SizeM, const FLinearColor& Accent,
+	TArray<FPlantInstance>& Out, const FTransform& Unit)
+{
+	if (UStaticMesh* Mesh = ReferenceMesh(Kind))
+	{
+		Out.Add({ Mesh, Accent, FTransform(FQuat::Identity, FVector::ZeroVector, Scale(SizeM, Kind)) * Unit, true });
+		return;
+	}
+	TArray<FPlantVisualPart> Parts;
+	BuildParts(Kind, SizeM, Parts);
+	for (const FPlantVisualPart& P : Parts)
+		Out.Add({ P.bCylinder ? PlantInstances::Cylinder() : PlantInstances::Cube(), ToneColor(P.Tone, Accent), PartTransformCm(P) * Unit });
 }
 
 void PlantVisual::BuildParts(EPlantVisualKind Kind, const FVector& SizeM, TArray<FPlantVisualPart>& Out)
@@ -183,14 +220,13 @@ UStaticMesh* PlantInstances::Cylinder() { return SimMeshBuilder::LoadCylinderMes
 int32 PlantInstances::Apply(AActor* Owner, USceneComponent* Parent, FSets& Sets, const TArray<FPlantInstance>& List, bool bCastShadow)
 {
 	if (Owner == nullptr || Parent == nullptr) return 0;
-	TMap<uint32, TArray<FTransform>> Groups;
-	TMap<uint32, UStaticMesh*> Meshes;
+	TMap<uint64, TArray<FTransform>> Groups;
+	TMap<uint64, UStaticMesh*> Meshes;
 	int32 Drawn = 0;
 	for (const FPlantInstance& I : List)
 	{
 		if (I.Mesh == nullptr || I.Transform.GetScale3D().IsNearlyZero()) continue;
-		const uint32 Slot = I.Mesh == Cube() ? 1u : I.Mesh == Cylinder() ? 2u : 3u;
-		const uint32 Key = (Slot << 18) | ColorKey(I.Color);   // exact: one set per mesh and quantised colour
+		const uint64 Key = (uint64(I.Mesh->GetUniqueID()) << 19) | (uint64(I.bUseMeshMaterials) << 18) | ColorKey(I.Color); // unique mesh, material mode, quantised accent
 		Groups.FindOrAdd(Key).Add(I.Transform);
 		Meshes.Add(Key, I.Mesh);
 				++Drawn;
@@ -210,11 +246,20 @@ int32 PlantInstances::Apply(AActor* Owner, USceneComponent* Parent, FSets& Sets,
 			C->SetCastShadow(bCastShadow);
 			C->SetupAttachment(Parent);
 			C->RegisterComponent();
-			if (UMaterialInterface* Base = SimMeshBuilder::LoadColorableMaterial())
+			if ((G.Key & (uint64(1) << 18)) != 0)
+			{
+				// Keep the equipment's metal / coil / screen materials; recolour the status accents only.
+				const auto& Slots = Meshes[G.Key]->GetStaticMaterials();
+				for (int32 Slot = 0; Slot < Slots.Num(); ++Slot)
+					if (Slots[Slot].MaterialSlotName == TEXT("MC_Plant_Accent"))
+						if (UMaterialInstanceDynamic* M = C->CreateDynamicMaterialInstance(Slot))
+							M->SetVectorParameterValue(TEXT("Color"), KeyColor(uint32(G.Key & 0x3FFFF)));
+			}
+			else if (UMaterialInterface* Base = SimMeshBuilder::LoadColorableMaterial())
 			{
 				if (UMaterialInstanceDynamic* M = C->CreateDynamicMaterialInstance(0, Base))
 				{
-					const FLinearColor Color = KeyColor(G.Key & 0x3FFFF);
+					const FLinearColor Color = KeyColor(uint32(G.Key & 0x3FFFF));
 					M->SetVectorParameterValue(TEXT("Color"), Color);
 					M->SetVectorParameterValue(TEXT("BaseColor"), Color);
 				}
@@ -236,7 +281,7 @@ uint32 PlantInstances::Hash(const TArray<FPlantInstance>& List)
 		const FQuat Q = I.Transform.GetRotation();
 		const int32 Q8[11] = { FMath::RoundToInt(L.X * 10), FMath::RoundToInt(L.Y * 10), FMath::RoundToInt(L.Z * 10),
 			FMath::RoundToInt(S.X * 1e4), FMath::RoundToInt(S.Y * 1e4), FMath::RoundToInt(S.Z * 1e4),
-			FMath::RoundToInt(Q.X * 1e5), FMath::RoundToInt(Q.Y * 1e5), FMath::RoundToInt(Q.Z * 1e5), FMath::RoundToInt(Q.W * 1e5), int32(ColorKey(I.Color)) };
+			FMath::RoundToInt(Q.X * 1e5), FMath::RoundToInt(Q.Y * 1e5), FMath::RoundToInt(Q.Z * 1e5), FMath::RoundToInt(Q.W * 1e5), int32(ColorKey(I.Color)) | (I.bUseMeshMaterials ? (1 << 18) : 0) };
 		H = FCrc::MemCrc32(Q8, sizeof(Q8), HashCombine(H, GetTypeHash(I.Mesh)));
 	}
 	return H;

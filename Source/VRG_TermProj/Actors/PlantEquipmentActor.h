@@ -45,6 +45,7 @@ public:
 	APlantEquipmentActor();
 
 	virtual void OnConstruction(const FTransform& Transform) override;
+	UFUNCTION(CallInEditor, BlueprintCallable, Category = "Visualization")
 	void RefreshVisuals();
 	// Accent colour (identity, or running / stopped / failed while the plant is live). Redraws only on a change.
 	void SetStatusColor(const FLinearColor& Color);
@@ -66,7 +67,7 @@ public:
 
 private:
 	UPROPERTY(Transient)
-	TMap<uint32, TObjectPtr<UInstancedStaticMeshComponent>> PartSets;
+	TMap<uint64, TObjectPtr<UInstancedStaticMeshComponent>> PartSets;
 	// Hard references so the cooker packages the engine shapes and material the parts use.
 	UPROPERTY() TArray<TObjectPtr<UStaticMesh>> CookedShapes;
 	UPROPERTY() TObjectPtr<UMaterialInterface> CookedMaterial;
@@ -74,6 +75,7 @@ private:
 	FVector DrawnSizeM = FVector::ZeroVector;
 	FLinearColor DrawnColor = FLinearColor::Transparent;
 	EPlantUnitKind DrawnKind = EPlantUnitKind::FwsDryCooler;
+	UPROPERTY(Transient) TObjectPtr<UStaticMesh> DrawnMesh;
 	bool bDrawn = false;
 };
 
