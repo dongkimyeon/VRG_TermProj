@@ -17,6 +17,7 @@
 #include "Actors/CrahUnitActor.h"
 #include "Actors/DataCenterRoomActor.h"
 #include "Actors/LayoutBarrierActor.h"
+#include "Actors/PlantEquipmentActor.h"
 #include "Actors/RackThermalActor.h"
 #include "Actors/SpineCabinetActor.h"
 #include "Interaction/DataCenterDebugController.h"
@@ -430,6 +431,8 @@ bool ADataCenterSimulationActor::ValidateRoomAirDomain(const FRoomAirDomainSetti
 		// Walls/curtains are clipped to the room (cells outside the grid are simply not solid); a wall on the
 		// room boundary is common and must not refuse the room.
 		if (It->IsA<ALayoutBarrierActor>()) continue;
+		// S8 F8: plant units stand outside the air domain by rule (layout placement refuses the room footprint).
+		if (It->IsA<APlantEquipmentActor>()) continue;
 		const ACrahUnitActor* Crah = Cast<ACrahUnitActor>(*It);
 		bPlacedCrahs |= Crah != nullptr;
 		if (!CheckBox(SizeM, It->GetActorTransform(), It->GetName(),
@@ -1243,7 +1246,20 @@ void ADataCenterSimulationActor::BuildFacilityLoop(TArray<FCduCouplingGroup>& Gr
 			C.CoilLeavingSetpointK = CoilSupplyTempK + CrahDesignApproachK;   // design coil leaving air (water + approach)
 		}
 	}
-	if (Groups.Num() == 0 || !Plant.Build(Spec, PlantThermalSpec, DesignHeatW, CoolantDensityKgM3, WaterCp, FHydraulicSolveSettings(), Coils, CoilSupplyTempK))
+	// S8 F8: units placed in layout mode set the count of their kind; kinds with none keep the automatic sizing rule.
+	FFacilityThermalSpec Thermal = PlantThermalSpec;
+	const FPlantEquipmentCounts Placed = VrgPlantEquipment::CountInWorld(GetWorld());
+	FacilityPlantLayout::ApplyEquipmentCounts(Placed, Thermal, Spec);
+	if (Placed.Any())
+	{
+		int32 InsideRoom = 0;
+		for (TActorIterator<APlantEquipmentActor> It(GetWorld()); It; ++It)
+			InsideRoom += VrgPlantEquipment::OverlapsRoom(GetWorld(), It->SizeM, It->GetActorTransform()) ? 1 : 0;
+		UE_LOG(LogTemp, Display, TEXT("[Plant] 배치한 설비 장비: FWS 드라이쿨러 %d, CW 드라이쿨러 %d, 냉수 칠러 %d, 트림 칠러 %d (0 = 자동 크기 규칙)%s"),
+			Placed.FwsDryCoolers, Placed.CwDryCoolers, Placed.Chillers, Placed.TrimChillers,
+			InsideRoom > 0 ? *FString::Printf(TEXT(", 경고: %d대가 공기 영역과 겹친다(공기 격자에는 없다)"), InsideRoom) : TEXT(""));
+	}
+	if (Groups.Num() == 0 || !Plant.Build(Spec, Thermal, DesignHeatW, CoolantDensityKgM3, WaterCp, FHydraulicSolveSettings(), Coils, CoilSupplyTempK))
 	{
 		const FFacilityLoopResult& R = Plant.GetLoopResult();
 		UE_LOG(LogTemp, Warning, TEXT("[Plant] 설비를 만들지 못했다(CDU 분기 %d, 수력 %s, 차압 잔차 %.3e, 속도 %.4f%s). 고정 설비수 경계를 쓴다."),
@@ -1252,6 +1268,14 @@ void ADataCenterSimulationActor::BuildFacilityLoop(TArray<FCduCouplingGroup>& Gr
 		return;
 	}
 	bPlantActive = true;
+	{
+		// Placed units of a kind this plant does not build (topology, no CRAH units, no trim gap) are not used.
+		const bool bFws = Plant.IsThermalActive() && Plant.GetTopology() == EPlantTopology::Separate;
+		const int32 Unused = (bFws ? 0 : Placed.FwsDryCoolers) + (Plant.IsCondenserActive() ? 0 : Placed.CwDryCoolers)
+			+ (Plant.IsChilledWaterActive() ? 0 : Placed.Chillers) + (Plant.IsTrimActive() ? 0 : Placed.TrimChillers);
+		if (Unused > 0)
+			UE_LOG(LogTemp, Warning, TEXT("[Plant] 배치한 설비 장비 %d대는 이 설비(구성 %s)에 없는 종류라 쓰이지 않는다."), Unused, FFacilityPlant::TopologyName(Plant.GetTopology()));
+	}
 	for (int32 G = 0; G < Groups.Num(); ++G)
 	{
 		Groups[G].Hx.FacilityMassFlowKgs = Plant.GetBranchMassFlowKgs(G);
@@ -1301,7 +1325,7 @@ void ADataCenterSimulationActor::BuildFacilityLoop(TArray<FCduCouplingGroup>& Gr
 	if (Plant.IsTrimActive())
 	{
 		UE_LOG(LogTemp, Display, TEXT("[Plant] 트림 칠러: 설계 외기에서 드라이쿨러가 남기는 열 %.1f kW, %d+%d대(기준 용량 %.1f kW 각), 이코노마이저 UA %.1f kW/K, 응축 설계 합계 %.1f kW"),
-			Plant.GetDesignTrimW() * 1e-3, PlantThermalSpec.TrimDutyChillers, PlantThermalSpec.TrimStandbyChillers, Plant.GetTrimRefCapacityW() * 1e-3,
+			Plant.GetDesignTrimW() * 1e-3, Plant.GetThermalSpec().TrimDutyChillers, Plant.GetThermalSpec().TrimStandbyChillers, Plant.GetTrimRefCapacityW() * 1e-3,
 			Plant.GetEconomizerUAWK() * 1e-3, Plant.GetDesignCondenserW() * 1e-3);
 	}
 }
@@ -1980,6 +2004,23 @@ FPlantDisplayInput ADataCenterSimulationActor::MakePlantDisplayInput() const
 		In.CduPositionsM.Add(Cdu != nullptr ? SimUnits::UnrealToMeters(Cdu->GetActorLocation()) : FVector::ZeroVector);
 	}
 	for (const FCrahUnitLabel& L : CrahUnitLabels) In.CrahPositionsM.Add(FVector(L.XYM.X, L.XYM.Y, 0.0));
+	// S8 F8: placed units in the model's unit order (VrgPlantEquipment::Gather).
+	auto Units = [this](EPlantUnitKind Kind)
+	{
+		TArray<FPlantDisplayUnit> Out;
+		for (const APlantEquipmentActor* A : VrgPlantEquipment::Gather(GetWorld(), Kind))
+		{
+			FPlantDisplayUnit& U = Out.AddDefaulted_GetRef();
+			U.CenterM = SimUnits::UnrealToMeters(A->GetActorTransform().TransformPosition(FVector(0, 0, 50.0 * A->SizeM.Z)));
+			U.SizeM = A->SizeM;
+			U.Rotation = A->GetActorQuat();
+		}
+		return Out;
+	};
+	In.FwsDryCoolers = Units(EPlantUnitKind::FwsDryCooler);
+	In.CwDryCoolers = Units(EPlantUnitKind::CwDryCooler);
+	In.Chillers = Units(EPlantUnitKind::Chiller);
+	In.TrimChillers = Units(EPlantUnitKind::TrimChiller);
 	return In;
 }
 
@@ -2064,6 +2105,8 @@ FVrgDashboardLayout ADataCenterSimulationActor::BuildDashboardLayout() const
 		{
 			FVector SizeM;
 			if (!ADataCenterDebugController::PlaceableBoxM(*It, SizeM)) continue;
+			// S8 F8: the plant yard joins the dashboard in its last web stage; until then the room layout stays as it was.
+			if (It->IsA<APlantEquipmentActor>()) continue;
 			FVrgDashboardEquipment& E = L.Equipment.AddDefaulted_GetRef();
 			if (const ARackThermalActor* Rack = Cast<ARackThermalActor>(*It))
 			{

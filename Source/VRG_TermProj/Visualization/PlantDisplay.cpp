@@ -54,8 +54,17 @@ FPlantDisplaySnapshot PlantDisplay::Build(const FFacilityPlant& Plant, const FPl
 	const FPlantLane* ChwLane = LaneOf(EPlantLoopId::Chw);
 	const FPlantLane* FwsLane = LaneOf(EPlantLoopId::Fws);
 
+	// F8: a kind whose placed units match the model's count is drawn at those units.
+	auto Placed = [](const TArray<FPlantDisplayUnit>& Units, int32 Count) { return Count > 0 && Units.Num() == Count ? &Units : nullptr; };
+	auto Place = [](FPlantDisplayEquipment& E, const TArray<FPlantDisplayUnit>* Units, int32 K)
+	{
+		if (Units == nullptr) return;
+		const FPlantDisplayUnit& U = (*Units)[K];
+		E.CenterM = U.CenterM; E.SizeM = U.SizeM; E.Rotation = U.Rotation; E.bPlaced = true;
+	};
+
 	// Equipment of the lanes (built first: condenser and evaporator branches run to these boxes).
-	TArray<FVector> ChillerPos, TrimPos;
+	TArray<FVector> ChillerPos, TrimPos, FwsUnitPos, CwUnitPos;
 	for (const FPlantLane& L : Lanes)
 	{
 		const FFacilityLoopHandles& H = L.Loop->GetHandles();
@@ -68,11 +77,13 @@ FPlantDisplaySnapshot PlantDisplay::Build(const FFacilityPlant& Plant, const FPl
 		}
 		if (L.Id == EPlantLoopId::Chw)
 		{
+			const TArray<FPlantDisplayUnit>* Units = Placed(In.Chillers, L.Units);
 			for (int32 K = 0; K < L.Units; ++K)
 			{
 				FPlantDisplayEquipment& E = S.Equipment.AddDefaulted_GetRef();
 				E.Loop = L.Id; E.Kind = EPlantEquipmentKind::Chiller; E.Index = K;
 				E.CenterM = UnitPosition(X0, L, K) + FVector(0, 0, 0.2); E.SizeM = FVector(2.4, 1.2, 1.8);
+				Place(E, Units, K);
 				// Healthy units first: the running count takes the lowest healthy indices, failed ones are the last.
 				const int32 Healthy = NChw - St.TrippedChillers;
 				E.bFailed = K >= Healthy; E.bRunning = !E.bFailed && K < St.ChillersRunning;
@@ -89,19 +100,25 @@ FPlantDisplaySnapshot PlantDisplay::Build(const FFacilityPlant& Plant, const FPl
 		else
 		{
 			const int32 Tripped = Plant.GetTrippedDryCoolers(L.Id);
+			const TArray<FPlantDisplayUnit>* Units = Placed(L.Id == EPlantLoopId::Fws ? In.FwsDryCoolers : In.CwDryCoolers, L.Units);
+			TArray<FVector>& UnitPos = L.Id == EPlantLoopId::Fws ? FwsUnitPos : CwUnitPos;
 			for (int32 K = 0; K < L.Units; ++K)
 			{
 				FPlantDisplayEquipment& E = S.Equipment.AddDefaulted_GetRef();
 				E.Loop = L.Id; E.Kind = EPlantEquipmentKind::DryCooler; E.Index = K;
 				E.CenterM = UnitPosition(X0, L, K); E.SizeM = FVector(2.4, 1.2, 1.3);
+				Place(E, Units, K);
 				E.bFailed = K >= L.Units - Tripped;
 				E.bRunning = !E.bFailed && (L.Id == EPlantLoopId::Fws ? St.FanRatio : St.CwDryCoolerHeatW > 0.0 ? 1.0 : 0.0) > 0.0;
+				UnitPos.Add(E.CenterM);
 			}
+			const TArray<FPlantDisplayUnit>* Trims = Placed(In.TrimChillers, L.ExtraUnits);
 			for (int32 K = 0; K < L.ExtraUnits; ++K)
 			{
 				FPlantDisplayEquipment& E = S.Equipment.AddDefaulted_GetRef();
 				E.Loop = L.Id; E.Kind = EPlantEquipmentKind::TrimChiller; E.Index = K;
 				E.CenterM = UnitPosition(X0, L, L.Units + K) + FVector(0, 0, 0.2); E.SizeM = FVector(2.4, 1.2, 1.8);
+				Place(E, Trims, K);
 				const int32 Healthy = NTrim - St.TrippedTrimChillers;
 				E.bFailed = K >= Healthy; E.bRunning = !E.bFailed && K < St.TrimRunning;
 				TrimPos.Add(E.CenterM);
@@ -201,7 +218,8 @@ FPlantDisplaySnapshot PlantDisplay::Build(const FFacilityPlant& Plant, const FPl
 				// coils are counted by flow and the thermal units by heat, so the two counts can differ: limitation).
 				const int32 Units = L.Id == EPlantLoopId::Chw ? FMath::Max(Th.DutyChillers, 1) : L.Units;
 				const int32 U = Units > 0 ? FMath::Min(R->Value * Units / FMath::Max(NumCoils, 1), Units - 1) : 0;
-				const FVector Via = (L.Id == EPlantLoopId::Chw && ChillerPos.IsValidIndex(U)) ? ChillerPos[U] : UnitPosition(X0, L, U);
+				const TArray<FVector>& Sinks = L.Id == EPlantLoopId::Chw ? ChillerPos : L.Id == EPlantLoopId::Fws ? FwsUnitPos : CwUnitPos;
+				const FVector Via = Sinks.IsValidIndex(U) ? Sinks[U] : UnitPosition(X0, L, U);
 				Pts.Insert(Via + FVector(0, 0, 0.9), 1);
 			}
 			// Series: the first stage returns into the middle header, the second stage leaves it.
@@ -228,6 +246,7 @@ FPlantDisplaySnapshot PlantDisplay::Build(const FFacilityPlant& Plant, const FPl
 		Hash = HashCombine(Hash, GetTypeHash(N.GetNumNodes()));
 	}
 	Hash = HashCombine(Hash, GetTypeHash(S.Equipment.Num()));
+	Hash = HashCombine(Hash, GetTypeHash(int32(S.Equipment.FilterByPredicate([](const FPlantDisplayEquipment& E) { return E.bPlaced; }).Num())));
 	Hash = HashCombine(Hash, GetTypeHash(S.Leaks.Num()));
 	Hash = HashCombine(Hash, GetTypeHash(In.CduPositionsM.Num()));
 	Hash = HashCombine(Hash, GetTypeHash(In.CrahPositionsM.Num()));

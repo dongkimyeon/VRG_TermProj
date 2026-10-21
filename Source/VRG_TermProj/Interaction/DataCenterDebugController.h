@@ -220,6 +220,7 @@ public:
 	void ResetLayoutEditsForLoad();
 	void RefreshLayoutEquipmentReferences(bool bKeepSelection = false);
 	void NotifyLayoutBarrierRecreated(ALayoutBarrierActor* Barrier, ALayoutBarrierActor* Previous = nullptr);
+	void NotifyLayoutPlantRecreated(class APlantEquipmentActor* Unit, class APlantEquipmentActor* Previous = nullptr);
 	void NotifyLayoutRackRecreated(ARackThermalActor* Rack, ARackThermalActor* Previous = nullptr) { RebindLayoutRack(Rack, Previous); }
  void NotifyLayoutCrahRecreated(ACrahUnitActor* Crah, ACrahUnitActor* Previous = nullptr);
 	void NotifyLayoutCduRecreated(ACoolingDistributionUnitActor* Cdu, ACoolingDistributionUnitActor* Previous = nullptr);
@@ -302,6 +303,7 @@ private:
 		FString CduId;
 		FString CrahId;
 		FString BarrierId;
+		FString PlantId;   // S8 F8 plant unit
 	};
 	struct FLayoutRackMember
 	{

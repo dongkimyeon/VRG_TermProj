@@ -52,6 +52,12 @@ void AFacilityPlantDisplayActor::Rebuild()
 	{
 		UStaticMeshComponent* Box = SimMeshBuilder::CreateMeshComponent(this, Cube, Material, TEXT("PlantEquipment"));
 		SimMeshBuilder::SetBox(Box, SimUnits::MetersToUnreal(E.CenterM), SimUnits::MetersToUnreal(E.SizeM));
+		// F8: a placed unit's box is its actor's box, 2 cm larger so the status colour shows over the actor's own body.
+		if (E.bPlaced)
+		{
+			SimMeshBuilder::SetBox(Box, SimUnits::MetersToUnreal(E.CenterM), SimUnits::MetersToUnreal(E.SizeM + FVector(0.02)));
+			Box->SetRelativeRotation(E.Rotation);
+		}
 		EquipmentMeshes.Add(Box);
 	}
 	for (const FPlantDisplayLeak& L : Shown.Leaks)

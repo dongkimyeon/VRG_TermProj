@@ -19,6 +19,7 @@
 #include "Actors/AirFieldDebugActor.h"
 #include "Actors/SpineCabinetActor.h"
 #include "Actors/LayoutBarrierActor.h"
+#include "Actors/PlantEquipmentActor.h"
 #include "Visualization/GjRackLayout.h"
 #include "Simulation/Core/SimUnits.h"
 #include "Simulation/Thermal/RackThermalModel.h"
@@ -488,6 +489,7 @@ bool ADataCenterDebugController::PlaceableBoxM(const AActor* Actor, FVector& Out
 	if (Cast<ASpineCabinetActor>(Actor)) { OutSizeM = FVector(GjRackLayout::FrameDepthM, GjRackLayout::FrameWidthM, GjRackLayout::FrameHeightM); return true; }
 	// Barrier: unit box; the actor scale carries its size in metres (footprints/projections use the full transform).
 	if (Cast<ALayoutBarrierActor>(Actor)) { OutSizeM = ALayoutBarrierActor::UnitBoxM(); return true; }
+	if (const APlantEquipmentActor* Unit = Cast<APlantEquipmentActor>(Actor)) { OutSizeM = Unit->SizeM; return true; }
 	return false;
 }
 
@@ -659,6 +661,8 @@ bool ADataCenterDebugController::IsLayoutPlacementBlocked(const AActor* Actor, c
 	if (!IsValid(Actor)) return true;
 	FVector SizeM;
 	if (!PlaceableBoxM(Actor, SizeM)) return true;
+	// S8 F8: plant units stand outside the air domain (the air grid has no plant equipment).
+	if (Actor->IsA<APlantEquipmentActor>() && VrgPlantEquipment::OverlapsRoom(Actor->GetWorld(), SizeM, Proposed)) return true;
 	TArray<AActor*> Excluded;
 	if (Ignored) Excluded = *Ignored;
 	Excluded.Add(const_cast<AActor*>(Actor));
@@ -1528,7 +1532,8 @@ void ADataCenterDebugController::RecordLayoutTransforms(const TArray<AActor*>& A
    Spine ? VrgSpineLifecycle::Identity(Spine) : FString(),
    Cast<ACoolingDistributionUnitActor>(Actors[I]) ? VrgCduLifecycle::Identity(CastChecked<ACoolingDistributionUnitActor>(Actors[I])) : FString(),
    Cast<ACrahUnitActor>(Actors[I]) ? VrgCrahLifecycle::Identity(CastChecked<ACrahUnitActor>(Actors[I])) : FString(),
-   Cast<ALayoutBarrierActor>(Actors[I]) ? VrgBarrierLifecycle::Identity(CastChecked<ALayoutBarrierActor>(Actors[I])) : FString()});
+   Cast<ALayoutBarrierActor>(Actors[I]) ? VrgBarrierLifecycle::Identity(CastChecked<ALayoutBarrierActor>(Actors[I])) : FString(),
+   Cast<APlantEquipmentActor>(Actors[I]) ? VrgPlantEquipment::Identity(CastChecked<APlantEquipmentActor>(Actors[I])) : FString()});
 	}
 	if (!bChanged) return;
 	PushLayoutCommand(MoveTemp(Command));
@@ -1659,6 +1664,21 @@ void ADataCenterDebugController::NotifyLayoutBarrierRecreated(ALayoutBarrierActo
 		const TWeakObjectPtr<AActor> Old(Previous);
 		for (auto& Selected : LayoutSelection) if (Selected == Old) Selected = Barrier;
 		if (HoveredPlaceable == Old) HoveredPlaceable = Barrier;
+	}
+}
+
+void ADataCenterDebugController::NotifyLayoutPlantRecreated(APlantEquipmentActor* Unit, APlantEquipmentActor* Previous)
+{
+	const FString Id = VrgPlantEquipment::Identity(Unit);
+	for (auto* Stack : {&LayoutUndo, &LayoutRedo})
+		for (FLayoutTransformCommand& C : *Stack)
+			for (FLayoutTransformMember& M : C.Members)
+				if (!M.PlantId.IsEmpty() && M.PlantId == Id) M.Actor = Unit;
+	if (Previous)
+	{
+		const TWeakObjectPtr<AActor> Old(Previous);
+		for (auto& Selected : LayoutSelection) if (Selected == Old) Selected = Unit;
+		if (HoveredPlaceable == Old) HoveredPlaceable = Unit;
 	}
 }
 

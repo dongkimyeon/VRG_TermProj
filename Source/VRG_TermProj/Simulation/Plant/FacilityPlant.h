@@ -54,6 +54,8 @@ struct FFacilityThermalSpec
 	// 0 = size by the catalog selection rule: units = ceil(design heat / (rated heat * ITD_design / ITD_rated)), with
 	// ITD_design = design return - design ambient (manufacturers' tables rate heat per degree of ITD).
 	UPROPERTY(EditAnywhere, Category = "Plant", meta = (ClampMin = "0")) int32 DryCoolers = 0;
+	// F8: condenser water dry coolers, the same way (0 = the selection rule on the design condenser heat).
+	UPROPERTY(EditAnywhere, Category = "Plant", meta = (ClampMin = "0")) int32 CwDryCoolers = 0;
 	// Fan speed range and ramp. Below the EC fans' minimum speed the units cycle; the model takes the time average,
 	// so the ratio runs continuously down to 0 (F4; F2 used 0.1 and over-cooled in cold air). Ramp: ESTIMATE.
 	UPROPERTY(EditAnywhere, Category = "Plant") double MinFanRatio = 0.0;
@@ -111,6 +113,24 @@ struct FFacilityThermalSpec
 	// (no site value; mains temperature follows the season).
 	UPROPERTY(EditAnywhere, Category = "Plant") double MakeupWaterK = 288.15;
 };
+
+// S8 F8: units placed by hand in layout mode, per kind (0 = none placed: that kind keeps its automatic sizing rule).
+struct FPlantEquipmentCounts
+{
+	int32 FwsDryCoolers = 0, CwDryCoolers = 0, Chillers = 0, TrimChillers = 0;
+	bool Any() const { return FwsDryCoolers > 0 || CwDryCoolers > 0 || Chillers > 0 || TrimChillers > 0; }
+};
+
+namespace FacilityPlantLayout
+{
+	// Placed units become the plant's unit counts (the same sizing rules decide everything else, D8):
+	//   dry coolers: that many catalog units of the bank (a fixed unit size, so too few cannot reach the setpoint); the
+	//     FWS hydraulic coils follow the same count (one coil per unit; the automatic rule counts the coils by flow);
+	//   chillers / trim chillers: N units = max(1, N - 1) duty + the rest standby; the duty units' reference capacity is
+	//     still the design load / (duty units x CAPFT at the design point), so the count changes the unit size, not the total.
+	// Kinds with 0 leave the spec untouched.
+	VRG_TERMPROJ_API void ApplyEquipmentCounts(const FPlantEquipmentCounts& Counts, FFacilityThermalSpec& Thermal, FFacilityLoopSpec& FwsLoop);
+}
 
 // S8 F6b: which of the plant's loops an action addresses.
 enum class EPlantLoopId : uint8 { Fws = 0, Chw = 1, Cw = 2 };

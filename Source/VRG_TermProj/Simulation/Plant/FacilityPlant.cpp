@@ -25,6 +25,22 @@ void FDryCoolerBank::Control(double DtS, double InK, double TotalKgs, double CpJ
 	if (bNotMet) NotMetS += DtS;
 }
 
+void FacilityPlantLayout::ApplyEquipmentCounts(const FPlantEquipmentCounts& Counts, FFacilityThermalSpec& Thermal, FFacilityLoopSpec& FwsLoop)
+{
+	if (Counts.FwsDryCoolers > 0) { Thermal.DryCoolers = Counts.FwsDryCoolers; FwsLoop.ReturnCoils = Counts.FwsDryCoolers; }
+	if (Counts.CwDryCoolers > 0) Thermal.CwDryCoolers = Counts.CwDryCoolers;
+	if (Counts.Chillers > 0)
+	{
+		Thermal.DutyChillers = FMath::Max(1, Counts.Chillers - 1);
+		Thermal.StandbyChillers = Counts.Chillers - Thermal.DutyChillers;
+	}
+	if (Counts.TrimChillers > 0)
+	{
+		Thermal.TrimDutyChillers = FMath::Max(1, Counts.TrimChillers - 1);
+		Thermal.TrimStandbyChillers = Counts.TrimChillers - Thermal.TrimDutyChillers;
+	}
+}
+
 bool FFacilityPlant::Build(const FFacilityLoopSpec& LoopSpec, const FFacilityThermalSpec& InThermal, double InDesignHeatW,
 	double WaterDensityKgM3, double WaterCpJKgK, const FHydraulicSolveSettings& Settings, const TArray<FPlantCrahCoil>& Crahs,
 	double InChwSetpointK)
@@ -214,7 +230,8 @@ bool FFacilityPlant::BuildCondenser(const FHydraulicSolveSettings& Settings)
 	for (int32 I = 0; I < NChw; ++I) CwSpec.BranchDesignFlowM3s.Add(ChwCondW / NChw / (WaterRho * WaterCp * CwRiseK));
 	for (int32 I = 0; I < NTrim; ++I) CwSpec.BranchDesignFlowM3s.Add(TrimCondW / NTrim / (WaterRho * WaterCp * CwRiseK));
 	const double CwItdK = CwDesignInK + CwRiseK - Thermal.DesignAmbientK;
-	CwBank.Units = FMath::Max(1, FMath::CeilToInt32(DesignCondW / (Thermal.DryCooler.RatedHeatW * FMath::Max(CwItdK, 0.1) / Thermal.DryCooler.RatedItdK) - 1e-9));
+	CwBank.Units = Thermal.CwDryCoolers > 0 ? Thermal.CwDryCoolers
+		: FMath::Max(1, FMath::CeilToInt32(DesignCondW / (Thermal.DryCooler.RatedHeatW * FMath::Max(CwItdK, 0.1) / Thermal.DryCooler.RatedItdK) - 1e-9));
 	CwSpec.ReturnCoils = CwBank.Units;
 	if (!CwLoop.Build(CwSpec)) return false;
 	CwLoop.GetMutableNetwork().SetFluidDensityKgM3(WaterRho);

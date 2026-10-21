@@ -17,6 +17,7 @@
 #include "Actors/CoolingDistributionUnitActor.h"
 #include "Actors/CrahUnitActor.h"
 #include "Actors/LayoutBarrierActor.h"
+#include "Actors/PlantEquipmentActor.h"
 #include "Actors/DataCenterSimulationActor.h"
 #include "Actors/RackThermalActor.h"
 #include "Actors/SpineCabinetActor.h"
@@ -198,6 +199,22 @@ bool VrgLayoutFile::Save(UWorld* World, const FString& Name, FString& OutSummary
 		Barriers.Add(MakeShared<FJsonValueObject>(O));
 	}
 	Root->SetArrayField(TEXT("barriers"), Barriers);
+	// S8 F8 plant units (optional v2): the complete plant inventory of the file. Size [m], transform with unit scale.
+	Root->SetBoolField(TEXT("plantInventory"), true);
+	TArray<TSharedPtr<FJsonValue>> PlantUnits;
+	for (TActorIterator<APlantEquipmentActor> It(World); It; ++It)
+	{
+		TSharedRef<FJsonObject> O = MakeShared<FJsonObject>();
+		const FVector M = SimUnits::UnrealToMeters(It->GetActorLocation());
+		const FRotator Rotation = It->GetActorRotation();
+		O->SetStringField(TEXT("name"), It->GetName()); O->SetStringField(TEXT("plantId"), VrgPlantEquipment::Identity(*It));
+		O->SetNumberField(TEXT("kind"), int32(It->Kind));
+		O->SetNumberField(TEXT("x_m"), M.X); O->SetNumberField(TEXT("y_m"), M.Y); O->SetNumberField(TEXT("z_m"), M.Z);
+		O->SetNumberField(TEXT("yaw_deg"), Rotation.Yaw); O->SetNumberField(TEXT("pitch_deg"), Rotation.Pitch); O->SetNumberField(TEXT("roll_deg"), Rotation.Roll);
+		O->SetNumberField(TEXT("size_x_m"), It->SizeM.X); O->SetNumberField(TEXT("size_y_m"), It->SizeM.Y); O->SetNumberField(TEXT("size_z_m"), It->SizeM.Z);
+		PlantUnits.Add(MakeShared<FJsonValueObject>(O));
+	}
+	Root->SetArrayField(TEXT("plantEquipment"), PlantUnits);
 
 
 	TSharedRef<FJsonObject> Settings = MakeShared<FJsonObject>();
@@ -206,6 +223,9 @@ bool VrgLayoutFile::Save(UWorld* World, const FString& Name, FString& OutSummary
 		Settings->SetNumberField(TEXT("containment"), int32(Sim->Containment));
 		Settings->SetNumberField(TEXT("crahLayout"), int32(Sim->CrahLayout));
 		Settings->SetNumberField(TEXT("coolantRejection"), int32(Sim->CoolantRejection));
+		// S8 F8 (optional v2): facility plant on/off and topology (absent = keep the current values, like the fields above).
+		Settings->SetBoolField(TEXT("plantEnabled"), Sim->bFacilityPlant);
+		Settings->SetNumberField(TEXT("plantTopology"), int32(Sim->PlantThermalSpec.Topology));
 		const auto& Room = Sim->GetRoomAirDomain();
 		TSharedRef<FJsonObject> Domain = MakeShared<FJsonObject>();
 		Domain->SetBoolField(TEXT("manual"), Room.bManual);
@@ -250,7 +270,7 @@ bool VrgLayoutFile::Save(UWorld* World, const FString& Name, FString& OutSummary
 		OutSummary = FString::Printf(TEXT("쓰기 실패: %s"), *Path);
 		return false;
 	}
-	OutSummary = FString::Printf(TEXT("장비 %d대, 벽/차단막 %d개 저장: %s"), Items.Num(), Barriers.Num(), *Path);
+	OutSummary = FString::Printf(TEXT("장비 %d대, 벽/차단막 %d개, 설비 장비 %d대 저장: %s"), Items.Num(), Barriers.Num(), PlantUnits.Num(), *Path);
 	return true;
 }
 
@@ -637,6 +657,59 @@ bool VrgLayoutFile::Load(UWorld* World, const FString& Name, FString& OutSummary
 			LoadedBarriers.Add(R);
 		}
 	}
+	// S8 F8 plant units: validate the whole list and the plant settings before anything changes. Absent flag = the plant
+	// units stay as they are (files written before F8).
+	bool bPlantInventory = false;
+	if (Version == 2 && Root->HasField(TEXT("plantInventory")) && !Root->TryGetBoolField(TEXT("plantInventory"), bPlantInventory))
+		return Fail(TEXT("설비 장비 목록 기능 표식 오류"));
+	TArray<FPlantEquipmentRecord> LoadedPlant;
+	if (bPlantInventory)
+	{
+		const TArray<TSharedPtr<FJsonValue>>* PlantValues = nullptr;
+		if (!Root->TryGetArrayField(TEXT("plantEquipment"), PlantValues)) return Fail(TEXT("설비 장비 목록 없음"));
+		// The room the units must stay out of: the loaded manual room, else the air grid's current (automatic) domain.
+		FBox2D RoomXY(ForceInit);
+		if (LoadedRoom.bManual) RoomXY = FBox2D(LoadedRoom.MinXYM, LoadedRoom.MaxXYM);
+		else if (const AAirFieldDebugActor* Air = LayoutFindFirst<AAirFieldDebugActor>(World))
+		{
+			const FBox B = Air->GetDomainBoundsM();
+			if (B.IsValid) RoomXY = FBox2D(FVector2D(B.Min.X, B.Min.Y), FVector2D(B.Max.X, B.Max.Y));
+		}
+		TSet<FString> PlantIds;
+		for (const auto& Value : *PlantValues)
+		{
+			if (!FiniteLayoutJson(Value) || Value->Type != EJson::Object) return Fail(TEXT("설비 장비 형식/유한값 오류"));
+			const auto O = Value->AsObject();
+			FPlantEquipmentRecord R; FString UnitName; double Kind, X, Y, Z, Yaw, Pitch, Roll;
+			if (!O->TryGetStringField(TEXT("name"), UnitName) || UnitName.IsEmpty() || SeenNames.Contains(UnitName)
+				|| UnitName.Contains(TEXT("/")) || UnitName.Contains(TEXT(".")) || UnitName.Contains(TEXT(":"))
+				|| !O->TryGetStringField(TEXT("plantId"), R.Id) || R.Id.IsEmpty() || PlantIds.Contains(R.Id)
+				|| !ReadLayoutNumber(O, TEXT("kind"), Kind) || Kind != FMath::FloorToDouble(Kind) || Kind < 0 || Kind > double(uint8(EPlantUnitKind::TrimChiller))
+				|| !ReadLayoutNumber(O, TEXT("x_m"), X) || !ReadLayoutNumber(O, TEXT("y_m"), Y) || !ReadLayoutNumber(O, TEXT("z_m"), Z)
+				|| !ReadLayoutNumber(O, TEXT("yaw_deg"), Yaw) || !ReadLayoutNumber(O, TEXT("pitch_deg"), Pitch) || !ReadLayoutNumber(O, TEXT("roll_deg"), Roll)
+				|| !ReadLayoutNumber(O, TEXT("size_x_m"), R.SizeM.X) || !ReadLayoutNumber(O, TEXT("size_y_m"), R.SizeM.Y) || !ReadLayoutNumber(O, TEXT("size_z_m"), R.SizeM.Z))
+				return Fail(TEXT("설비 장비 이름/ID/종류/변환 오류 또는 중복"));
+			SeenNames.Add(UnitName); PlantIds.Add(R.Id);
+			R.Name = FName(*UnitName); R.Kind = static_cast<EPlantUnitKind>(int32(Kind));
+			R.Transform = FTransform(FRotator(Pitch, Yaw, Roll), SimUnits::MetersToUnreal(FVector(X, Y, Z)));
+			if (!VrgPlantEquipment::IsValidRecord(R)) return Fail(TEXT("설비 장비 크기는 양수여야 합니다"));
+			if (RoomXY.bIsValid && VrgPlantEquipment::OverlapsBox(RoomXY, R.SizeM, R.Transform))
+				return Fail(FString::Printf(TEXT("설비 장비 %s가 방 공기 영역과 겹칩니다"), *UnitName));
+			LoadedPlant.Add(R);
+		}
+	}
+	bool bPlantEnabledStored = false, bLoadedPlantEnabled = false;
+	double LoadedPlantTopology = -1.0;
+	if (Version == 2 && (*SettingsObject)->HasField(TEXT("plantEnabled")))
+	{
+		if (!(*SettingsObject)->TryGetBoolField(TEXT("plantEnabled"), bLoadedPlantEnabled)) return Fail(TEXT("설비 켬 설정 형식 오류"));
+		bPlantEnabledStored = true;
+	}
+	if (Version == 2 && (*SettingsObject)->HasField(TEXT("plantTopology"))
+		&& (!ReadLayoutNumber(*SettingsObject, TEXT("plantTopology"), LoadedPlantTopology)
+			|| LoadedPlantTopology != FMath::FloorToDouble(LoadedPlantTopology) || LoadedPlantTopology < 0 || LoadedPlantTopology > 2))
+		return Fail(TEXT("설비 구성 설정 범위 오류"));
+	if ((bPlantEnabledStored || LoadedPlantTopology >= 0) && !Sim) return Fail(TEXT("설비 설정을 받을 통합 액터 없음"));
 	TArray<ARackThermalActor*> Remove;
 	if (Version==2) for (const auto& Pair:ById) if (!SeenIds.Contains(Pair.Key))
 	{
@@ -742,7 +815,28 @@ bool VrgLayoutFile::Load(UWorld* World, const FString& Name, FString& OutSummary
 		}
 		bBarriersReplaced = false;
 	};
+	// S8 F8 plant units: replaced right after the barriers, the same way.
+	TArray<FPlantEquipmentRecord> OldPlant;
+	TArray<APlantEquipmentActor*> OldPlantActors, NewPlant;
+	bool bPlantReplaced = false;
+	if (bPlantInventory) for (TActorIterator<APlantEquipmentActor> It(World); It; ++It)
+	{
+		OldPlantActors.Add(*It);
+		OldPlant.Add(VrgPlantEquipment::Capture(*It));
+	}
+	auto RollbackPlant=[&]() {
+		if (!bPlantReplaced) return;
+		for (auto* U : NewPlant) if (IsValid(U)) { U->Rename(*MakeUniqueObjectName(U->GetOuter(),U->GetClass(),TEXT("RetiredPlantEquipment")).ToString(),nullptr,REN_DontCreateRedirectors|REN_NonTransactional); U->Destroy(false,false); }
+		for (int32 I = 0; I < OldPlant.Num(); ++I)
+		{
+			auto* Restored = VrgPlantEquipment::Spawn(World, OldPlant[I]);
+			checkf(Restored, TEXT("Layout Load rollback could not restore plant unit %s"), *OldPlant[I].Name.ToString());
+			for (TActorIterator<ADataCenterDebugController> It(World); It; ++It) It->NotifyLayoutPlantRecreated(Restored, OldPlantActors[I]);
+		}
+		bPlantReplaced = false;
+	};
 	auto Rollback=[&]() {
+		RollbackPlant();
 		RollbackBarriers();
 		for (auto& Item:Items) if (Item.bSpawned && IsValid(Item.Actor))
 		{
@@ -803,6 +897,17 @@ bool VrgLayoutFile::Load(UWorld* World, const FString& Name, FString& OutSummary
 			auto* B = VrgBarrierLifecycle::Spawn(World, R);
 			if (!B) { Rollback(); return Fail(TEXT("벽/차단막 생성 실패: 이전 배치 유지")); }
 			NewBarriers.Add(B);
+		}
+	}
+	if (bPlantInventory)
+	{
+		if (!OldPlantActors.IsEmpty() && !VrgPlantEquipment::RemoveBatch(OldPlantActors)) { Rollback(); return Fail(TEXT("기존 설비 장비 제거 실패: 이전 배치 유지")); }
+		bPlantReplaced = true;
+		for (const auto& R : LoadedPlant)
+		{
+			auto* U = VrgPlantEquipment::Spawn(World, R);
+			if (!U) { Rollback(); return Fail(TEXT("설비 장비 생성 실패: 이전 배치 유지")); }
+			NewPlant.Add(U);
 		}
 	}
 	for (auto& Item:Items) if (!Item.Actor)
@@ -926,6 +1031,8 @@ bool VrgLayoutFile::Load(UWorld* World, const FString& Name, FString& OutSummary
 		if ((*SettingsObject)->TryGetNumberField(TEXT("containment"),V)) Sim->Containment=static_cast<EAisleContainment>(FMath::Clamp(int32(V),0,2));
 		if ((*SettingsObject)->TryGetNumberField(TEXT("crahLayout"),V)) Sim->CrahLayout=static_cast<ECrahLayout>(FMath::Clamp(int32(V),0,2));
 		if ((*SettingsObject)->TryGetNumberField(TEXT("coolantRejection"),V)) Sim->CoolantRejection=static_cast<ECoolantRejection>(FMath::Clamp(int32(V),0,1));
+		if (bPlantEnabledStored) Sim->bFacilityPlant=bLoadedPlantEnabled;
+		if (LoadedPlantTopology>=0) Sim->PlantThermalSpec.Topology=static_cast<EPlantTopology>(int32(LoadedPlantTopology));
 	}
 	if (auto* Air=LayoutFindFirst<AAirFieldDebugActor>(World))
 		if ((*SettingsObject)->TryGetNumberField(TEXT("cellSizeM"),V) && V>=0.01) Air->GridParams.CellSizeM=V;
@@ -935,6 +1042,9 @@ bool VrgLayoutFile::Load(UWorld* World, const FString& Name, FString& OutSummary
 	OutSummary += FString::Printf(TEXT(" | CDU%d 생성/%d 제거"), Items.FilterByPredicate([](const auto& I){return I.bSpawned && I.Cdu.IsSet();}).Num(), RemoveCdus.Num());
 	OutSummary += FString::Printf(TEXT(" | CRAH%d 생성/%d 제거"), Items.FilterByPredicate([](const auto& I){return I.bSpawned && I.Crah.IsSet();}).Num(), RemoveCrahs.Num());
 	if (bBarrierInventory) OutSummary += FString::Printf(TEXT(" | 벽/차단막 %d개 (이전 %d개 교체)"), NewBarriers.Num(), OldBarriers.Num());
+	if (bPlantInventory) OutSummary += FString::Printf(TEXT(" | 설비 장비 %d대 (이전 %d대 교체)"), NewPlant.Num(), OldPlant.Num());
+	if (bPlantEnabledStored || LoadedPlantTopology >= 0) OutSummary += FString::Printf(TEXT(" | 설비 %s, 구성 %s (진입 시 적용)"),
+		Sim->bFacilityPlant ? TEXT("켬") : TEXT("끔"), FFacilityPlant::TopologyName(Sim->PlantThermalSpec.Topology));
 	OutSummary += bRoomStored ? TEXT(" | 방 설정 복원 (격자는 진입 시 적용)") : TEXT(" | 현 방 설정 유지");
 	OutSummary += bCeilingsStored ? TEXT(" | 천장 판 목록 복원 (고체는 진입 시 적용)") : TEXT(" | 현 천장 판 목록 유지");
 	return true;

@@ -17,11 +17,21 @@
 // whose condenser it is). Lengths and sizes on screen are not the modelled pressure drops.
 // Plain C++ in metres (rule 1: the actor converts to cm); built on the game thread from the plant state (rule 5).
 
+// S8 F8: a unit placed by hand (APlantEquipmentActor): box centre, size and rotation [m].
+struct FPlantDisplayUnit
+{
+	FVector CenterM = FVector::ZeroVector, SizeM = FVector::OneVector;
+	FQuat Rotation = FQuat::Identity;
+};
+
 struct FPlantDisplayInput
 {
 	FBox RoomM = FBox(ForceInit);         // air domain (or rack) bounds; the yard goes beyond its +X side
 	TArray<FVector> CduPositionsM;        // per CDU group (FWS branch / combined CHW branch order)
 	TArray<FVector> CrahPositionsM;       // per CRAH unit (CHW branch order)
+	// F8: placed units per kind, in the model's unit order. Used when the count equals the model's units of that kind
+	// (placed units set that count, FacilityPlantLayout); otherwise that kind keeps the schematic yard positions.
+	TArray<FPlantDisplayUnit> FwsDryCoolers, CwDryCoolers, Chillers, TrimChillers;
 };
 
 enum class EPlantPipeRole : uint8 { Pump, CheckValve, SupplyMain, SupplyRun, Valve, Exchanger, ReturnRun, ReturnMain, ReturnCoil, Bypass, Other };
@@ -46,6 +56,8 @@ struct FPlantDisplayEquipment
 	EPlantEquipmentKind Kind = EPlantEquipmentKind::Pump;
 	int32 Index = 0;
 	FVector CenterM = FVector::ZeroVector, SizeM = FVector::OneVector;
+	FQuat Rotation = FQuat::Identity;     // F8: a placed unit's rotation (schematic units are axis aligned)
+	bool bPlaced = false;                 // F8: drawn where a placed unit is
 	bool bRunning = false, bFailed = false;
 };
 
