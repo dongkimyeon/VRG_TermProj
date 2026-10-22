@@ -695,6 +695,13 @@ namespace
 			}
 		return true;
 	}
+	// Group edits move members rigidly. A pair that already touched at the start (L_Test racks are flush with the
+	// level-placed in-row coolers at the row ends) may keep touching; other pairs keep the 1 cm clearance and no pair
+	// may overlap (2026-10-23, found by hand: such a group could never be moved or rotated).
+	bool GroupMembersConflict(const FLayoutFootprint& A, const FLayoutFootprint& B, const FLayoutFootprint& StartA, const FLayoutFootprint& StartB)
+	{
+		return FootprintsConflict(A, B) && (FootprintsConflict(A, B, -1e-6) || !FootprintsConflict(StartA, StartB));
+	}
 }
 
 bool ADataCenterDebugController::IsLayoutPlacementBlocked(const AActor* Actor, const FTransform& Proposed, const TArray<AActor*>* Ignored)
@@ -1876,7 +1883,12 @@ void ADataCenterDebugController::PushLayoutCommand(FLayoutTransformCommand Comma
 bool ADataCenterDebugController::RestoreLayoutTransform(bool bRedo)
 {
 	if (!IsLayoutMode() || !IsCameraInputAvailable() || bAddingRack || IsLayoutDragging() || bMarqueeActive
-		|| Grabbed.IsValid() || IsInputKeyDown(EKeys::RightMouseButton)) return false;
+		|| Grabbed.IsValid() || IsInputKeyDown(EKeys::RightMouseButton))
+	{
+		UE_LOG(LogTemp, Display, TEXT("[VrgLayout] Undo/Redo 입력 상태 거절: 배치 %d 카메라입력 %d 추가중 %d 드래그 %d 사각형 %d 잡기 %d 우클릭 %d"),
+			IsLayoutMode(), IsCameraInputAvailable(), bAddingRack, IsLayoutDragging(), bMarqueeActive, Grabbed.IsValid(), IsInputKeyDown(EKeys::RightMouseButton));
+		return false;
+	}
 	TArray<FLayoutTransformCommand>& From = bRedo ? LayoutRedo : LayoutUndo;
 	TArray<FLayoutTransformCommand>& To = bRedo ? LayoutUndo : LayoutRedo;
 	if (From.IsEmpty()) return false;
@@ -1949,17 +1961,40 @@ bool ADataCenterDebugController::RestoreLayoutTransform(bool bRedo)
 		AActor* Actor = Member.Actor.Get();
 		const FTransform& Current = bRedo ? Member.Before : Member.After;
 		if (!IsValid(Actor) || Actor->GetWorld() != GetWorld() || !Actor->GetActorTransform().Equals(Current)
-			|| !Actor->GetRootComponent() || Actor->GetRootComponent()->Mobility != EComponentMobility::Movable) return false;
+			|| !Actor->GetRootComponent() || Actor->GetRootComponent()->Mobility != EComponentMobility::Movable)
+		{
+			UE_LOG(LogTemp, Display, TEXT("[VrgLayout] 변환 기록 거절: %s 현재 %s / 기록 %s"), IsValid(Actor) ? *Actor->GetName() : TEXT("(없음)"),
+				IsValid(Actor) ? *Actor->GetActorTransform().ToString() : TEXT("-"), *Current.ToString());
+			return false;
+		}
 		Actors.Add(Actor); Expected.Add(Current); Targets.Add(bRedo ? Member.After : Member.Before);
 	}
-	TArray<FLayoutFootprint> Footprints;
+	TArray<FLayoutFootprint> Footprints, StartFootprints;
 	for (int32 I = 0; I < Actors.Num(); ++I)
 	{
-		if (IsLayoutPlacementBlocked(Actors[I], Targets[I], &Actors)) return false;
-		FLayoutFootprint Candidate;
-		if (!MakeLayoutFootprint(Actors[I], Targets[I], Candidate)) return false;
-		for (const FLayoutFootprint& Other : Footprints) if (FootprintsConflict(Candidate, Other)) return false;
-		Footprints.Add(Candidate);
+		// Undo/Redo puts an actor back where it already stood, so it may touch a neighbour again (a flush contact that
+		// existed, e.g. L_Test racks against level-placed in-row coolers, or a converted automatic cooler). Only a real
+		// overlap is refused here; ordinary moves, rotations and additions keep the 1 cm clearance (2026-10-23).
+		if (Actors[I]->IsA<APlantEquipmentActor>() && IsLayoutPlacementBlocked(Actors[I], Targets[I], &Actors)) return false;
+		FLayoutFootprint Mine; FVector MySize;
+		if (!PlaceableBoxM(Actors[I], MySize) || !MakeLayoutFootprint(MySize, Targets[I], Mine)) return false;
+		Mine.bBarrier = Actors[I]->IsA<ALayoutBarrierActor>();
+		for (TActorIterator<AActor> It(GetWorld()); It; ++It)
+		{
+			FVector OtherSize; FLayoutFootprint Other;
+			if (!IsValid(*It) || Actors.Contains(*It) || !PlaceableBoxM(*It, OtherSize)) continue;
+			if (!MakeLayoutFootprint(OtherSize, It->GetActorTransform(), Other)) return false;
+			Other.bBarrier = It->IsA<ALayoutBarrierActor>();
+			if (!FootprintsConflict(Mine, Other)) continue;
+			if (!FootprintsConflict(Mine, Other, -1e-6)) continue;   // touching only
+			UE_LOG(LogTemp, Display, TEXT("[VrgLayout] 변환 기록 거절: %s 되돌릴 자리 %s가 %s와 겹침"), *Actors[I]->GetName(),
+				*Targets[I].GetLocation().ToString(), *It->GetName());
+			return false;
+		}
+		FLayoutFootprint Candidate, Start;
+		if (!MakeLayoutFootprint(Actors[I], Targets[I], Candidate) || !MakeLayoutFootprint(Actors[I], Expected[I], Start)) return false;
+		for (int32 J = 0; J < Footprints.Num(); ++J) if (GroupMembersConflict(Candidate, Footprints[J], Start, StartFootprints[J])) return false;
+		Footprints.Add(Candidate); StartFootprints.Add(Start);
 	}
 	for (int32 I = 0; I < Actors.Num(); ++I)
 	{
@@ -2309,18 +2344,18 @@ bool ADataCenterDebugController::IsLayoutDragPreviewBlocked() const
 			|| !Member.Actor->GetActorTransform().Equals(Member.Start, 0.0)) return true;
 		Members.Add(Member.Actor.Get());
 	}
-	TArray<FLayoutFootprint> Footprints;
+	TArray<FLayoutFootprint> Footprints, StartFootprints;
 	for (const FLayoutDragMember& Member : DragMembers)
 	{
 		FTransform Proposed;
 		GetLayoutDragPreviewTransform(Member.Actor.Get(), Proposed);
 		if (IsLayoutPlacementBlocked(Member.Actor.Get(), Proposed, &Members)) return true;
-		FLayoutFootprint Candidate;
-		if (!MakeLayoutFootprint(Member.Actor.Get(), Proposed, Candidate)) return true;
+		FLayoutFootprint Candidate, Start;
+		if (!MakeLayoutFootprint(Member.Actor.Get(), Proposed, Candidate) || !MakeLayoutFootprint(Member.Actor.Get(), Member.Start, Start)) return true;
 		// Ignore members' old locations, but still check their proposed footprints against each other.
-		for (const FLayoutFootprint& Other : Footprints)
-			if (FootprintsConflict(Candidate, Other)) return true;
-		Footprints.Add(Candidate);
+		for (int32 J = 0; J < Footprints.Num(); ++J)
+			if (GroupMembersConflict(Candidate, Footprints[J], Start, StartFootprints[J])) return true;
+		Footprints.Add(Candidate); StartFootprints.Add(Start);
 	}
 	return false;
 }
@@ -2387,7 +2422,7 @@ bool ADataCenterDebugController::TryRotateLayoutSelection()
 	const FVector2D Pivot = Bounds.GetCenter();
 	// User-requested quarter turn about world Z, with the projected group AABB centre as pivot.
 	const FQuat QuarterTurn(FVector::UpVector, UE_DOUBLE_PI * .5);
-	TArray<FLayoutFootprint> Footprints;
+	TArray<FLayoutFootprint> Footprints, StartFootprints;
 	for (int32 I = 0; I < Selected.Num(); ++I)
 	{
 		FTransform Transform = Starts[I];
@@ -2395,10 +2430,10 @@ bool ADataCenterDebugController::TryRotateLayoutSelection()
 		Transform.SetLocation(FVector(Pivot.X - (Position.Y - Pivot.Y), Pivot.Y + (Position.X - Pivot.X), Position.Z));
 		Transform.SetRotation(QuarterTurn * Transform.GetRotation());
 		if (IsLayoutPlacementBlocked(Selected[I], Transform, &Selected)) return false;
-		FLayoutFootprint Candidate;
-		if (!MakeLayoutFootprint(Selected[I], Transform, Candidate)) return false;
-		for (const FLayoutFootprint& Other : Footprints) if (FootprintsConflict(Candidate, Other)) return false;
-		Footprints.Add(Candidate);
+		FLayoutFootprint Candidate, Start;
+		if (!MakeLayoutFootprint(Selected[I], Transform, Candidate) || !MakeLayoutFootprint(Selected[I], Starts[I], Start)) return false;
+		for (int32 J = 0; J < Footprints.Num(); ++J) if (GroupMembersConflict(Candidate, Footprints[J], Start, StartFootprints[J])) return false;
+		Footprints.Add(Candidate); StartFootprints.Add(Start);
 		Proposed.Add(Transform);
 	}
 	for (int32 I = 0; I < Selected.Num(); ++I)
