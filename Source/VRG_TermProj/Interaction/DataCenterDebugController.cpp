@@ -593,6 +593,34 @@ bool ADataCenterDebugController::EquipmentViewpoint(UWorld* World, double Horizo
 	return true;
 }
 
+bool ADataCenterDebugController::SetViewpointM(const FVector& EyeM, const FRotator& Look)
+{
+	APawn* ViewPawn = GetPawn();
+	if (ViewPawn == nullptr || EyeM.ContainsNaN() || Look.ContainsNaN()) return false;
+	StartFrameAttempts = -1;   // the start framing must not move it back
+	ViewPawn->ConsumeMovementInputVector();
+	if (UPawnMovementComponent* Movement = ViewPawn->GetMovementComponent()) Movement->StopMovementImmediately();
+	ViewPawn->SetActorLocation(SimUnits::MetersToUnreal(EyeM), false, nullptr, ETeleportType::TeleportPhysics);
+	FramedEyeCm = ViewPawn->GetActorLocation();
+	ViewPawn->SetActorRotation(Look);
+	SetControlRotation(Look);
+	UE_LOG(LogTemp, Display, TEXT("[VrgDebug] vrg.Cam: 눈 %s m, 피치 %.1f, 요 %.1f"), *EyeM.ToCompactString(), Look.Pitch, Look.Yaw);
+	return true;
+}
+
+static FAutoConsoleCommand GVrgCamCommand(
+	TEXT("vrg.Cam"),
+	TEXT("시점을 옮긴다(캡처·확인용). vrg.Cam <x m> <y m> <z m> <피치 도> <요 도>"),
+	FConsoleCommandWithArgsDelegate::CreateLambda([](const TArray<FString>& Args)
+	{
+		if (Args.Num() < 5 || GEngine == nullptr) { UE_LOG(LogTemp, Warning, TEXT("[VrgDebug] 사용법: vrg.Cam <x> <y> <z> <피치> <요>")); return; }
+		const FVector EyeM(FCString::Atod(*Args[0]), FCString::Atod(*Args[1]), FCString::Atod(*Args[2]));
+		const FRotator Look(FCString::Atod(*Args[3]), FCString::Atod(*Args[4]), 0.0);
+		for (const FWorldContext& Context : GEngine->GetWorldContexts())
+			if (UWorld* World = Context.World(); World != nullptr && World->IsGameWorld())
+				for (TActorIterator<ADataCenterDebugController> It(World); It; ++It) It->SetViewpointM(EyeM, Look);
+	}));
+
 bool ADataCenterDebugController::TryFrameEquipment(const AActor* OnlyActor, const TArray<AActor*>* OnlyActors)
 {
 	APawn* ViewPawn = GetPawn();

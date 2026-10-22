@@ -16,7 +16,9 @@ FInstrumentChannelSpec InstrumentSpecs::Make(FName Name, EInstrumentQuantity Qua
 	case EInstrumentQuantity::TemperatureK:   // immersion RTD in a thermowell
 		S.SamplePeriodS = 1.0; S.TimeConstantS = 5.0; S.NoiseStdK = 0.05; S.ResolutionK = 0.1; break;
 	case EInstrumentQuantity::FlowM3s:        // ultrasonic / magnetic flow meter, +-0.5 % of the expected flow
-		S.SamplePeriodS = 1.0; S.TimeConstantS = 1.0; S.NoiseStdK = 0.005 * M; S.ResolutionK = 1.0e-5; break;
+		S.SamplePeriodS = 1.0; S.TimeConstantS = 1.0; S.NoiseStdK = 0.005 * M; S.ResolutionK = 1.0e-5;
+		C.LowCutoff = 0.01 * M;   // low-flow cutoff 1 % of the expected flow: a shut branch reads 0, not noise
+		break;
 	case EInstrumentQuantity::PressurePa:     // pressure transmitter, 0.25 % of the expected value, 0.1 kPa
 		S.SamplePeriodS = 1.0; S.TimeConstantS = 0.5; S.NoiseStdK = 0.0025 * M; S.ResolutionK = 100.0; break;
 	case EInstrumentQuantity::Ratio:          // VFD speed feedback, 0.1 %
@@ -97,7 +99,9 @@ bool FInstrumentBank::HasReading(int32 PointIndex, int32 Channel) const
 
 double FInstrumentBank::GetReading(int32 PointIndex, int32 Channel) const
 {
-	return HasReading(PointIndex, Channel) ? Points[PointIndex].Sensors[Channel].GetLastReadingK() : 0.0;
+	if (!HasReading(PointIndex, Channel)) return 0.0;
+	const double R = Points[PointIndex].Sensors[Channel].GetLastReadingK();
+	return FMath::Abs(R) < Points[PointIndex].Def.Channels[Channel].LowCutoff ? 0.0 : R;
 }
 
 int32 FInstrumentBank::GetNumLeakCables() const

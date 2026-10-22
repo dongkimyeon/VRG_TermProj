@@ -141,6 +141,18 @@ bool FPlantDisplayPipesTest::RunTest(const FString& Parameters)
 			&& Chillers == P.GetThermalSpec().DutyChillers + P.GetThermalSpec().StandbyChillers);
 	}
 	AddInfo(FString::Printf(TEXT("구성별 설비 마당:%s"), *Lines));
+	// 2026-10-23: several CDU groups served by one CDU actor (L_Test: four branches on one CDU drew on top of each other).
+	{
+		const FFacilityPlant P = MakeDisplayPlant(EPlantTopology::Separate);
+		FPlantDisplayInput Shared = MakeDisplayInput();
+		Shared.CduPositionsM = { FVector(1, 1, 0), FVector(1, 1, 0) };
+		const FPlantDisplaySnapshot S = PlantDisplay::Build(P, Shared);
+		int32 Diagonal = 0;
+		for (const FPlantDisplayPipe& D : S.Pipes) Diagonal += IsOrthogonal(D.PointsM) ? 0 : 1;
+		const int32 Clashes = PlantDisplay::FindClashes(S).Num();
+		AddInfo(FString::Printf(TEXT("CDU 하나를 두 분기가 공유: 겹침 %d, 대각선 %d"), Clashes, Diagonal));
+		TestTrue(TEXT("branches sharing one CDU: no clash, no diagonal"), Clashes == 0 && Diagonal == 0);
+	}
 	return true;
 }
 

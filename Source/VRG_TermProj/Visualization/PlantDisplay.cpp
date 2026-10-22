@@ -22,6 +22,7 @@ namespace
 	constexpr double AisleOffsetM = 0.35, AisleLanePitchM = 0.18;
 	constexpr double ConsumerTopM = 1.9;                         // drop end above a CDU (1.9 m) / CRAH (2.24 m) base
 	constexpr double ConsumerHalfM = 0.2;                        // supply / return drops either side of the consumer centre
+	constexpr double NestStepM = 0.15;                           // branches sharing a consumer: each nested U wider and higher
 	constexpr double MainOffsetM = 0.3;                          // supply main at the lane centre - this, return main + this
 	constexpr double CoilOnUnitStepM = 0.12;                     // more coils than units: the next coil beside the first
 	constexpr double EconLinkZ = 2.0;                            // CW side to the economizer: over 1.3 / 1.8 m units, under the coil lanes
@@ -282,7 +283,7 @@ FPlantDisplaySnapshot PlantDisplay::Build(const FFacilityPlant& Plant, const FPl
 	// Consumers of the room branches, all loops together: one lane per branch, so no two runs in the room overlap.
 	const int32 NumCrah = In.CrahPositionsM.Num();
 	const int32 NChwCond = Plant.IsChilledWaterActive() ? FMath::Max(Th.DutyChillers, 1) : 0;
-	struct FRoomBranch { EPlantLoopId Loop; int32 Branch; FVector C; double LaneY = 0.0; };
+	struct FRoomBranch { EPlantLoopId Loop; int32 Branch; FVector C; double LaneY = 0.0; int32 Nest = 0; };
 	TArray<FRoomBranch> RoomBranches;
 	for (const FPlantLane& L : Lanes)
 	{
@@ -310,6 +311,26 @@ FPlantDisplaySnapshot PlantDisplay::Build(const FFacilityPlant& Plant, const FPl
 			Band.Sort([&](int32 A, int32 B) { return RoomBranches[A].C.X < RoomBranches[B].C.X || (RoomBranches[A].C.X == RoomBranches[B].C.X && A < B); });
 			for (int32 K = 0; K < Band.Num(); ++K) RoomBranches[Band[K]].LaneY = Mean + (K - 0.5 * (Band.Num() - 1)) * RoomLanePitchM;
 			First = End;
+		}
+	}
+	// Branches that end at one consumer (several CDU groups of one CDU actor, 2026-10-23: L_Test drew them on top of each
+	// other) nest: the branch whose lane is farthest from the consumer's centre line is the inner U, the others wider and
+	// higher around it, so no crossing passes over another branch's drops.
+	{
+		TMap<FIntVector, TArray<int32>> ByConsumer;
+		for (int32 I = 0; I < RoomBranches.Num(); ++I)
+		{
+			const FVector& C = RoomBranches[I].C;
+			ByConsumer.FindOrAdd(FIntVector(FMath::RoundToInt32(C.X * 20.0), FMath::RoundToInt32(C.Y * 20.0), FMath::RoundToInt32(C.Z * 20.0))).Add(I);
+		}
+		for (auto& G : ByConsumer)
+		{
+			G.Value.Sort([&](int32 A, int32 B)
+			{
+				const double DA = FMath::Abs(RoomBranches[A].LaneY - RoomBranches[A].C.Y), DB = FMath::Abs(RoomBranches[B].LaneY - RoomBranches[B].C.Y);
+				return DA > DB || (DA == DB && A < B);
+			});
+			for (int32 K = 0; K < G.Value.Num(); ++K) RoomBranches[G.Value[K]].Nest = K;
 		}
 	}
 	auto RoomBranch = [&](EPlantLoopId Id, int32 B) -> const FRoomBranch*
@@ -503,9 +524,11 @@ FPlantDisplaySnapshot PlantDisplay::Build(const FFacilityPlant& Plant, const FPl
 			const int32 SupNode = N.GetPipeFromNodeIndex(H.BranchSupplyRunPipes[B]), RetNode = N.GetPipeToNodeIndex(H.BranchReturnRunPipes[B]);
 			const double ZS = LayerOf(SupNode), ZR = LayerOf(RetNode);
 			const double Toward = XT >= C.X ? 1.0 : -1.0;
-			const double Near = C.X + Toward * ConsumerHalfM, Far = C.X - Toward * ConsumerHalfM;
+			const int32 Nest = R ? R->Nest : 0;
+			const double Half = ConsumerHalfM + Nest * NestStepM;
+			const double Near = C.X + Toward * Half, Far = C.X - Toward * Half;
 			const double XA = ZS > ZR ? Far : Near, XC = ZS > ZR ? Near : Far;
-			const double ZTop = C.Z + ConsumerTopM;
+			const double ZTop = C.Z + ConsumerTopM + Nest * NestStepM;
 			const FVector PA(XA, LY, ZTop + 0.45), PB(XA, LY, ZTop + 0.15), PC(XC, LY, ZTop + 0.15);
 			const int32 A = N.GetPipeToNodeIndex(H.BranchSupplyRunPipes[B]);
 			const int32 Bn = N.GetPipeToNodeIndex(H.ValvePipes[B]);

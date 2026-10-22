@@ -64,7 +64,7 @@ F0(근거 수집)·F1(FWS 수력망)·F2(드라이쿨러·설비수 열)·F3(냉
   겹침 방지(총 1 cm), 한 명령 Undo/Redo(상한 100), 저장 v2(`vrg.Layout.Save/Load`). 실패는 전체 원복.
 - **평가:** 가상 센서(D9, 지연·주기·잡음·분해능·경보), 리포트·A/B, 부분 PUE = (IT + CRAH 팬 + CDU 펌프) / IT, 시각 이벤트.
   계측 지점(`FInstrumentBank`): 모든 배관에 간격(`vrg.Sensors.PipeIntervalM`, 기본 3 m)마다 유량·수온·누수 감지 케이블, 설비 장비·CDU마다 핵심 값(D9 모의 계측값, 사양 추정).
-  누수 감지는 풀린 누수 유량의 흘러나온 물량(0.5 L, 추정)으로, 경보 유지. 리포트·웹에는 아직 없음.
+  누수 감지는 풀린 누수 유량의 흘러나온 물량(0.5 L, 추정)으로, 경보 유지. 리포트에 경보 표(웹에는 아직 없음).
 - **표시:** 온도 볼륨 레이마칭 + 기류 무늬(드로우 1개), 배관 유량/온도, GJ 랙·배관·케이블 메시, 패치 평면도, CRAH·CDU 외형 모델.
 - **웹 대시보드:** 127.0.0.1 전용(`vrg.Web.Enable 1`, 포트 18080, `/dashboard`). 요약·시계열·평면도·랙·리포트 A/B·3D(장비·배관·기류·센서·누수/밸브).
 
@@ -73,7 +73,7 @@ F0(근거 수집)·F1(FWS 수력망)·F2(드라이쿨러·설비수 열)·F3(냉
 - **설비 쪽(S8)** — 기본은 여전히 고정 경계(CDU 설비수 22 °C·CRAH 냉수 18 °C, `vrg.Plant.Enable 0`). 켜면 FWS·CHW·CW·드라이쿨러·칠러가 있지만
   냉각탑·UPS·배전·조명이 없어 냉각 PUE이지 시설 PUE가 아니다. 칠러 운전점은 늘 공개 곡선 범위 밖(카르노 외삽, 추정), 설비 물 체적·밸브 행정·보충수 온도는 추정,
   직렬의 바이패스는 고정 저항, 역류 분기는 열에서 유량 0, 보충수 공급 무제한, 이코노마이저는 꺼져도 물이 지난다(바이패스 밸브 없음).
-  설비 장비는 설계일 정확 용량(임의 여유율 없음), 드라이쿨러는 공기가 물보다 차갑지 않으면 팬 정지(자연대류 무시). 설비 마당 표시는 도식 위치(헤더 + 직교 차선, Enable 0·배치 모드에서는 구조만)이고 화면 확인 전이다.
+  설비 장비는 설계일 정확 용량(임의 여유율 없음), 드라이쿨러는 공기가 물보다 차갑지 않으면 팬 정지(자연대류 무시). 설비 마당 표시는 도식 위치(헤더 + 직교 차선, Enable 0·배치 모드에서는 구조만, L_Test 표시 겹침 0쌍)이고 사용자 화면 확인 전이다.
 - CDU 펌프 손실열의 냉각수/공기 분배, CDU·헤더 냉각수 체적의 열 지연.
 - S2b: 과열 판정 문턱 85 °C는 추정값(공개 Tj 최대 미확인). 재고 고갈은 "냉각수 유량 0"까지만(2상 거동·루프 열용량 감소 없음), 탱크 열용량 없음.
   탱크·사전 충전·보충 기본값은 추정값. 누수·밸브 상태는 저장하지 않는다.
@@ -101,7 +101,7 @@ RTX 4060 Laptop 노트북(Ryzen 7 8845HS, 15 GiB), 패키지 DX12 1280×720, L_T
   `9/0` 부하율, `E` 바라보는 유닛 하나 뽑기/꽂기, `R` 현재 배치로 t=0 재시작. 발열 손잡이는 각 부품 기본값에 배율로 적용한다.
 - **주요 콘솔:** `vrg.Air.RunSteps <N>`, `vrg.Air.CellSize <h> 0.25`, `vrg.Air.Gpu -1|0|1`, `vrg.Air.Turbulence`, `vrg.Sim.CrahLayout 0|1|2`,
   `vrg.Sim.Containment 0|1|2`, `vrg.Sim.CoolantRejection 0|1`, `vrg.Eval.Event/Report/ReportWhenDone/Compare`, `vrg.Layout.Save/Load`,
-  `vrg.Perf.Capture <초> [라벨] [quit]`, `vrg.Leak.Add/Size/Clear/Status`, `vrg.Valve`(이벤트 `valve`·`leak`), `vrg.Plant.Enable/Topology/Ambient/Fault/Show`(이벤트 `ambient`·`plant`), `vrg.Pipes.Temperature`, `vrg.Sensors.PipeIntervalM`, `vrg.Hud.Temps/TempsRange`, `vrg.Room.Shell`, `vrg.Patch.Map`, `vrg.Web.Enable`, `vrg.Hud.Debug`.
+  `vrg.Perf.Capture <초> [라벨] [quit]`, `vrg.Leak.Add/Size/Clear/Status`, `vrg.Valve`(이벤트 `valve`·`leak`), `vrg.Plant.Enable/Topology/Ambient/Fault/Show`(이벤트 `ambient`·`plant`), `vrg.Pipes.Temperature`, `vrg.Sensors.PipeIntervalM`, `vrg.Hud.Temps/TempsRange`, `vrg.Cam <x y z m> <피치> <요>`, `vrg.Room.Shell`, `vrg.Patch.Map`, `vrg.Web.Enable`, `vrg.Hud.Debug`.
   `-ExecCmds`로 여러 명령을 줄 때는 **쉼표**로 나눈다.
 
 화면에는 단축키 안내와 시뮬레이션 모드 계측 라벨(캐비닛 최고 부품, 흡기 센서·냉각수, 배관 지점 유량·수온, 설비 장비 값, 누수 경보; `vrg.Hud.Temps 0|1`·`vrg.Hud.TempsRange <m>`, 2026-10-22 사용자 요청)만 둔다.

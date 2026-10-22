@@ -28,6 +28,7 @@ struct FInstrumentChannelSpec
 	FName Name;                      // what the channel reads ("in", "out", "flow", "fan", ...)
 	EInstrumentQuantity Quantity = EInstrumentQuantity::TemperatureK;
 	FVirtualSensorSpec Sensor;       // the alarm threshold is unused (+inf)
+	double LowCutoff = 0.0;          // |reading| below it reads 0 (a flow meter's low-flow cutoff)
 };
 
 // Instrument specs per quantity (ESTIMATES). Scale: the channel's expected magnitude, for relative noise / resolution.

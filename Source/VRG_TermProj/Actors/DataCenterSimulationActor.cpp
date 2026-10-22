@@ -2199,9 +2199,17 @@ void ADataCenterSimulationActor::UpdatePlantDisplay(bool bForce)
 	if (bForce && S.Pipes.Num() != LastPlantDisplayPipes)
 	{
 		LastPlantDisplayPipes = S.Pipes.Num();
-		const int32 Clashes = PlantDisplay::FindClashes(S).Num();
+		const TArray<FPlantDisplayClash> Clashes = PlantDisplay::FindClashes(S);
 		UE_LOG(LogTemp, Display, TEXT("[Plant] 설비 마당 표시: 배관 %d, 헤더 %d, 장비 %d, 표시 겹침 %d쌍 (%s)"), S.Pipes.Num(), S.Headers.Num(), S.Equipment.Num(),
-			Clashes, In.bLive ? TEXT("계산값") : TEXT("구조만: 설비가 꺼졌거나 배치 모드"));
+			Clashes.Num(), In.bLive ? TEXT("계산값") : TEXT("구조만: 설비가 꺼졌거나 배치 모드"));
+		// Which drawn items touch (display check, not a model fault): loop / role / edge of a pipe, loop / node of a header.
+		auto Item = [&S](bool bHeader, int32 I)
+		{
+			return bHeader ? FString::Printf(TEXT("헤더(루프 %d 노드 %d)"), int32(S.Headers[I].Loop), S.Headers[I].Node)
+				: FString::Printf(TEXT("배관(루프 %d 역할 %d 간선 %d 분기 %d)"), int32(S.Pipes[I].Loop), int32(S.Pipes[I].Role), S.Pipes[I].Edge, S.Pipes[I].Branch);
+		};
+		for (const FPlantDisplayClash& C : Clashes)
+			UE_LOG(LogTemp, Display, TEXT("[Plant]   겹침: %s / %s, 간격 %.3f m"), *Item(C.bAHeader, C.A), *Item(C.bBHeader, C.B), C.GapM);
 	}
 }
 
@@ -3372,6 +3380,22 @@ bool ADataCenterSimulationActor::WriteEvaluationReport(const FString& Name, FStr
 	Root->SetObjectField(TEXT("layout"), BuildDashboardLayout().ToJsonObject());
 	// S2b step 5 (optional field; older reports lack it): leaks, valves, tank history, first fault times.
 	Root->SetObjectField(TEXT("s2b"), FaultMonitor.ToJsonObject());
+	// 2026-10-23 (optional field): the instrument points and the leak alarms of their detection cables (D9 / D4).
+	TSharedRef<FJsonObject> InstrumentsJson = MakeShared<FJsonObject>();
+	InstrumentsJson->SetNumberField(TEXT("points"), Instruments.Num());
+	InstrumentsJson->SetNumberField(TEXT("leakCables"), Instruments.GetNumLeakCables());
+	TArray<TSharedPtr<FJsonValue>> LeakAlarmItems;
+	for (const FLeakAlarm& A : Instruments.GetAlarmLog())
+	{
+		const FInstrumentPoint& Pt = Instruments.GetPoint(A.Point);
+		TSharedRef<FJsonObject> Item = MakeShared<FJsonObject>();
+		Item->SetNumberField(TEXT("timeS"), A.TimeS); Item->SetStringField(TEXT("label"), Pt.Label);
+		Item->SetNumberField(TEXT("x_m"), Pt.PositionM.X); Item->SetNumberField(TEXT("y_m"), Pt.PositionM.Y); Item->SetNumberField(TEXT("z_m"), Pt.PositionM.Z);
+		Item->SetNumberField(TEXT("coveredLeakLps"), A.FlowM3s * 1e3);
+		LeakAlarmItems.Add(MakeShared<FJsonValueObject>(Item));
+	}
+	InstrumentsJson->SetArrayField(TEXT("leakAlarms"), LeakAlarmItems);
+	Root->SetObjectField(TEXT("instruments"), InstrumentsJson);
 
 	FString Json;
 	FJsonSerializer::Serialize(Root, TJsonWriterFactory<>::Create(&Json));
@@ -3391,6 +3415,17 @@ bool ADataCenterSimulationActor::WriteEvaluationReport(const FString& Name, FStr
 		Md += FString::Printf(TEXT("| %d | (%.2f, %.2f) | %.2f | %.2f | %.1f | %.1f | %s |\n"), I, Item->GetNumberField(TEXT("x_m")), Item->GetNumberField(TEXT("y_m")),
 			St.WindowMeanK - 273.15, St.PeakK - 273.15, St.SecondsAboveRecommended, St.SensorLastK - 273.15,
 			St.SensorFirstAlarmS >= 0.0 ? *FString::Printf(TEXT("%.1f"), St.SensorFirstAlarmS) : TEXT("-"));
+	}
+	Md += FString::Printf(TEXT("\n## 누수 감지 센서\n\n계측 지점 %d개, 누수 감지 케이블 %d개, 경보 %d건 (모의 계측값, 덮는 반경은 게임용 추상화, D9).\n\n"),
+		Instruments.Num(), Instruments.GetNumLeakCables(), Instruments.GetAlarmLog().Num());
+	if (!Instruments.GetAlarmLog().IsEmpty())
+	{
+		Md += TEXT("| 시각 s | 지점 | 위치 (m) | 덮는 누수 L/s |\n|---|---|---|---|\n");
+		for (const FLeakAlarm& A : Instruments.GetAlarmLog())
+		{
+			const FInstrumentPoint& Pt = Instruments.GetPoint(A.Point);
+			Md += FString::Printf(TEXT("| %.1f | %s | (%.2f, %.2f, %.2f) | %.3f |\n"), A.TimeS, *Pt.Label, Pt.PositionM.X, Pt.PositionM.Y, Pt.PositionM.Z, A.FlowM3s * 1e3);
+		}
 	}
 	Md += FString::Printf(TEXT("\n## 점검\n\n전역 정규화 열수지 잔차 %.3e. %s\n"), Snap.NormalizedEnergyResidual, *Bridge.DescribeEnergyLedger());
 	const bool bOk = FFileHelper::SaveStringToFile(Json, *JsonPath, FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM)

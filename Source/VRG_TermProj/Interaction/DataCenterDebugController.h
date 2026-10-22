@@ -205,6 +205,9 @@ public:
 	// converted (the selected kinds already have units) and no plant needs to have been built.
 	bool BeginPlantDuplication();
 	APlantEquipmentActor* ConfirmPlantAddition();
+	// vrg.Cam (2026-10-23): puts the view at an eye point [m] looking at pitch / yaw [deg] and stops the start framing,
+	// so a scripted run can capture a chosen part of the scene (screenshots for checks; not a user camera mode).
+	bool SetViewpointM(const FVector& EyeM, const FRotator& Look);
 	// 2026-10-22: the yard's automatic units are drawn instances, not actors. A press on one (nearer than any placeable)
 	// turns its kind into actors at the drawn positions, the same conversion as the first addition (one Undo step), and
 	// returns the pressed unit's actor so it is selected and dragged like any placed unit. Null when nothing was hit.
