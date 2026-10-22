@@ -22,6 +22,7 @@
 #include "Engine/World.h"
 #include "EngineUtils.h"
 #include "HAL/FileManager.h"
+#include "Math/PerspectiveMatrix.h"
 #include "Misc/FileHelper.h"
 #include "Serialization/JsonReader.h"
 #include "Serialization/JsonSerializer.h"
@@ -457,6 +458,151 @@ bool FPlantLayoutAddDeleteTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("ledgers close"), FMath::Abs(Plant.GetLedgerResidual()) < 1e-9 && FMath::Abs(Sim->GetSiteEnergyResidual()) < 1e-9);
 	Sim->EnterLayoutMode();
 	DestroyLayoutWorld(World);
+	return true;
+}
+
+// S8 F8-3: Ctrl+D of a plant unit selection (one or several, kinds mixed) and the shared multi-selection edits
+// (rectangle selection, group drag / quarter turn / delete) on plant units, each one command with Undo / Redo.
+// No plant is built here: duplication converts nothing, so unlike a palette addition it needs no automatic count.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FPlantLayoutDuplicateMultiTest, "VRG.Plant.Layout.DuplicateMulti", VrgPlantLayoutFlags)
+bool FPlantLayoutDuplicateMultiTest::RunTest(const FString& Parameters)
+{
+	UWorld* W = UWorld::CreateWorld(EWorldType::Game, false);
+	GEngine->CreateNewWorldContext(EWorldType::Game).SetCurrentWorld(W);
+	auto* Sim = W->SpawnActor<ADataCenterSimulationActor>(); Sim->bShowSummary = false;
+	auto* C = W->SpawnActor<ADataCenterDebugController>();
+	ARackThermalActor* Rack = W->SpawnActor<ARackThermalActor>(FVector(300, 300, 0), FRotator::ZeroRotator);
+	// Air domain 10 x 8 x 3 m at the origin, as in MoveRotateUndoSave.
+	auto* Air = W->SpawnActor<AAirFieldDebugActor>(FVector::ZeroVector, FRotator::ZeroRotator);
+	Air->bShowSummary = false;
+	Air->GridParams.CellSizeM = 0.25; Air->GridParams.NumCellsX = 40; Air->GridParams.NumCellsY = 32; Air->GridParams.NumCellsZ = 12;
+	Sim->EnterLayoutMode();
+	const FVector Down(0, 0, -1);
+	auto Above = [](const FVector& P) { return P + FVector(0, 0, 1000); };
+	auto Count = [&]() { const FPlantEquipmentCounts N = VrgPlantEquipment::CountInWorld(W); return N.FwsDryCoolers + N.CwDryCoolers + N.Chillers + N.TrimChillers; };
+
+	FPlantEquipmentRecord RA{ TEXT("plant/test/dup-a"), TEXT("PlantDupA"), FTransform(FVector(1500, 200, 0)), EPlantUnitKind::FwsDryCooler,
+		APlantEquipmentActor::DefaultSizeM(EPlantUnitKind::FwsDryCooler) };
+	FPlantEquipmentRecord RB{ TEXT("plant/test/dup-b"), TEXT("PlantDupB"), FTransform(FRotator(0, 90, 0), FVector(1500, 600, 0)), EPlantUnitKind::Chiller,
+		APlantEquipmentActor::DefaultSizeM(EPlantUnitKind::Chiller) };
+	APlantEquipmentActor* A = VrgPlantEquipment::Spawn(W, RA);
+	APlantEquipmentActor* B = VrgPlantEquipment::Spawn(W, RB);
+	if (!TestTrue(TEXT("units spawned"), A && B)) { DestroyLayoutWorld(W); return false; }
+	const FTransform A0 = A->GetActorTransform(), B0 = B->GetActorTransform();
+
+	// Single duplication: same kind, size and rotation, a new identity, outside the room and clear of other units.
+	C->SelectLayoutAlongRay(Above(A0.GetLocation()), Down);
+	TestTrue(TEXT("plant duplication starts without a built plant"), C->BeginPlantDuplication() && C->IsAddingPlant() && C->GetRackAdditionPreviewCount() == 1);
+	C->UpdateRackAdditionAlongRay(Above(FVector(500, 400, 0)), Down);
+	TestTrue(TEXT("copy over the room is blocked"), C->IsRackAdditionBlocked());
+	C->UpdateRackAdditionAlongRay(Above(B0.GetLocation()), Down);
+	TestTrue(TEXT("copy onto another unit is blocked"), C->IsRackAdditionBlocked());
+	TestNull(TEXT("blocked confirm adds nothing"), C->ConfirmPlantAddition());
+	C->UpdateRackAdditionAlongRay(Above(FVector(2002, 201, 0)), Down);
+	TestFalse(TEXT("yard spot is free"), C->IsRackAdditionBlocked());
+	APlantEquipmentActor* Copy = C->ConfirmPlantAddition();
+	if (!TestNotNull(TEXT("single copy"), Copy)) { DestroyLayoutWorld(W); return false; }
+	const FString CopyId = VrgPlantEquipment::Identity(Copy);
+	const FName CopyName = Copy->GetFName();
+	const FTransform CopyT = Copy->GetActorTransform();
+	TestTrue(TEXT("copy: same kind / size, new identity, snapped, selected, one command"), Copy->Kind == A->Kind && Copy->SizeM == A->SizeM
+		&& CopyId != VrgPlantEquipment::Identity(A) && CopyName != A->GetFName() && CopyT.GetLocation().Equals(FVector(2000, 200, 0), 1e-9)
+		&& CopyT.GetRotation().Equals(A0.GetRotation(), 0.0) && C->GetSelectedLayoutActors().Num() == 1 && C->GetSelectedLayoutActor() == Copy
+		&& C->GetLayoutUndoCount() == 1 && Count() == 3 && !C->IsAddingRack());
+	TestTrue(TEXT("Undo removes the copy"), C->TryUndoLayout() && Count() == 2 && VrgPlantEquipment::Find(W, CopyId) == nullptr);
+	TestTrue(TEXT("Redo restores it with the same name / transform"), C->TryRedoLayout() && Count() == 3);
+	Copy = VrgPlantEquipment::Find(W, CopyId);
+	TestTrue(TEXT("same copy after Redo"), Copy && Copy->GetFName() == CopyName && Copy->GetActorTransform().Equals(CopyT, 0.0));
+	// Esc: the preview goes, nothing changes.
+	C->SelectLayoutAlongRay(Above(A0.GetLocation()), Down);
+	C->BeginPlantDuplication();
+	C->CancelRackAddition();
+	TestTrue(TEXT("cancelled duplication adds nothing"), !C->IsAddingRack() && Count() == 3 && C->GetLayoutUndoCount() == 1);
+
+	// Rectangle selection takes plant units: the projected boxes of A and B from a camera above the yard.
+	const FVector Eye(1500, 400, 3000);
+	const FMatrix ViewProjection = FLookAtMatrix(Eye, Eye + Down, FVector(1, 0, 0)) * FReversedZPerspectiveMatrix(UE_DOUBLE_PI / 4.0, 1.0, 1.0, 10.0);
+	const FIntRect View(0, 0, 400, 400);
+	FBox2D BoxA, BoxB;
+	const bool bProjected = ADataCenterDebugController::ProjectLayoutBoxToScreen(A, ViewProjection, View, BoxA)
+		&& ADataCenterDebugController::ProjectLayoutBoxToScreen(B, ViewProjection, View, BoxB);
+	TestTrue(TEXT("plant boxes project"), bProjected);
+	const FBox2D PairRect = BoxA + BoxB;
+	C->SelectLayoutInScreenRect(PairRect, ViewProjection, View, false);
+	const TArray<AActor*> Marquee = C->GetSelectedLayoutActors();
+	TestTrue(TEXT("rectangle selects A and B (not the copy or the rack)"), Marquee.Num() == 2 && Marquee.Contains(A) && Marquee.Contains(B));
+
+	// Multiple duplication, kinds mixed: each keeps its kind, size, rotation and offset from the first.
+	TestTrue(TEXT("group duplication starts"), C->BeginPlantDuplication() && C->GetRackAdditionPreviewCount() == 2);
+	const FVector Shift(0, 1500, 0);
+	C->UpdateRackAdditionAlongRay(Above(Marquee[0]->GetActorLocation() + Shift), Down);
+	TestFalse(TEXT("group copy in the yard is free"), C->IsRackAdditionBlocked());
+	TestNotNull(TEXT("group copy confirmed"), C->ConfirmPlantAddition());
+	const TArray<AActor*> Copies = C->GetSelectedLayoutActors();
+	double MaxErrCm = 0.0;
+	bool bKinds = Copies.Num() == 2;
+	for (int32 I = 0; I < Copies.Num() && bKinds; ++I)
+	{
+		const auto* Src = CastChecked<APlantEquipmentActor>(Marquee[I]);
+		const auto* Dup = Cast<APlantEquipmentActor>(Copies[I]);
+		bKinds &= Dup && Dup != Src && Dup->Kind == Src->Kind && Dup->SizeM == Src->SizeM && Dup->GetActorQuat().Equals(Src->GetActorQuat(), 0.0);
+		if (Dup) MaxErrCm = FMath::Max(MaxErrCm, FVector::Distance(Dup->GetActorLocation(), Src->GetActorLocation() + Shift));
+	}
+	const FPlantEquipmentCounts AfterGroup = VrgPlantEquipment::CountInWorld(W);
+	AddInfo(FString::Printf(TEXT("묶음 복제: %d대, 위치 최대 차 %.3e cm, FWS %d / 칠러 %d"), Copies.Num(), MaxErrCm, AfterGroup.FwsDryCoolers, AfterGroup.Chillers));
+	TestTrue(TEXT("copies keep kind / size / rotation / offsets"), bKinds && MaxErrCm == 0.0);
+	TestTrue(TEXT("counts per kind grow by the copies, one command"), AfterGroup.FwsDryCoolers == 3 && AfterGroup.Chillers == 2 && C->GetLayoutUndoCount() == 2);
+	TestTrue(TEXT("one Undo removes the whole group"), C->TryUndoLayout() && Count() == 3);
+	TestTrue(TEXT("Redo brings it back"), C->TryRedoLayout() && Count() == 5);
+	// A copy that would overlap its own sources is blocked (shifted by 50 cm).
+	C->SelectLayoutInScreenRect(PairRect, ViewProjection, View, false);
+	C->BeginPlantDuplication();
+	C->UpdateRackAdditionAlongRay(Above(Marquee[0]->GetActorLocation() + FVector(0, 50, 0)), Down);
+	TestTrue(TEXT("group copy over its sources is blocked"), C->IsRackAdditionBlocked());
+	C->CancelRackAddition();
+
+	// Mixed with a rack: neither plant duplication nor plant deletion takes the selection.
+	C->SelectLayoutAlongRay(Above(A0.GetLocation()), Down);
+	C->SelectLayoutAlongRay(Above(Rack->GetActorLocation()), Down, true);
+	TestTrue(TEXT("plant + rack selected"), C->GetSelectedLayoutActors().Num() == 2);
+	TestFalse(TEXT("mixed selection is not a plant duplication"), C->BeginPlantDuplication());
+	TestFalse(TEXT("mixed selection is not a plant deletion"), C->TryDeleteLayoutPlant());
+
+	// Group drag of A and B: into the room blocked, along the yard one command.
+	const int32 Undo0 = C->GetLayoutUndoCount();
+	C->SelectLayoutInScreenRect(PairRect, ViewProjection, View, false);
+	C->BeginLayoutDragAlongRay(Above(A0.GetLocation()), Down);
+	C->UpdateLayoutDragAlongRay(Above(A0.GetLocation()) - FVector(600, 0, 0), Down);
+	TestTrue(TEXT("group drag into the room is blocked"), C->IsLayoutDragPreviewBlocked());
+	C->EndLayoutDrag(true);
+	TestTrue(TEXT("blocked group release changes nothing"), A->GetActorTransform().Equals(A0, 0.0) && B->GetActorTransform().Equals(B0, 0.0)
+		&& C->GetLayoutUndoCount() == Undo0);
+	C->BeginLayoutDragAlongRay(Above(A0.GetLocation()), Down);
+	C->UpdateLayoutDragAlongRay(Above(A0.GetLocation()) + FVector(0, -1003, 0), Down);
+	TestFalse(TEXT("group drag along the yard is free"), C->IsLayoutDragPreviewBlocked());
+	C->EndLayoutDrag(true);
+	const FVector Moved(0, -1005, 0);
+	TestTrue(TEXT("both moved by the same snapped offset, one command"), A->GetActorLocation().Equals(A0.GetLocation() + Moved, 1e-9)
+		&& B->GetActorLocation().Equals(B0.GetLocation() + Moved, 1e-9) && C->GetLayoutUndoCount() == Undo0 + 1);
+	// Group quarter turn about the pair's footprint centre (stays outside the room), one command.
+	const FTransform A1 = A->GetActorTransform(), B1 = B->GetActorTransform();
+	TestTrue(TEXT("group turn"), C->TryRotateLayoutSelection() && C->GetLayoutUndoCount() == Undo0 + 2);
+	const double YawA = FRotator::NormalizeAxis(A->GetActorRotation().Yaw - A1.Rotator().Yaw);
+	const double YawB = FRotator::NormalizeAxis(B->GetActorRotation().Yaw - B1.Rotator().Yaw);
+	TestTrue(TEXT("both turned 90 deg, outside the room"), FMath::IsNearlyEqual(YawA, 90.0, 1e-6) && FMath::IsNearlyEqual(YawB, 90.0, 1e-6)
+		&& !VrgPlantEquipment::OverlapsRoom(W, A->SizeM, A->GetActorTransform()) && !VrgPlantEquipment::OverlapsRoom(W, B->SizeM, B->GetActorTransform()));
+	TestTrue(TEXT("Undo turn + drag"), C->TryUndoLayout() && C->TryUndoLayout() && A->GetActorTransform().Equals(A0, 1e-9) && B->GetActorTransform().Equals(B0, 1e-9));
+	TestTrue(TEXT("Redo drag + turn"), C->TryRedoLayout() && C->TryRedoLayout() && !A->GetActorTransform().Equals(A0, 1e-3));
+	TestTrue(TEXT("Undo again"), C->TryUndoLayout() && C->TryUndoLayout() && A->GetActorTransform().Equals(A0, 1e-9));
+
+	// Group deletion: one command, Undo brings both back with their identity.
+	C->SelectLayoutInScreenRect(PairRect, ViewProjection, View, false);
+	TestTrue(TEXT("group delete, one command"), C->TryDeleteLayoutPlant() && Count() == 3 && !VrgPlantEquipment::Find(W, RA.Id) && !VrgPlantEquipment::Find(W, RB.Id));
+	TestTrue(TEXT("Undo group delete"), C->TryUndoLayout() && Count() == 5);
+	A = VrgPlantEquipment::Find(W, RA.Id); B = VrgPlantEquipment::Find(W, RB.Id);
+	TestTrue(TEXT("same units back"), A && B && A->GetFName() == RA.Name && B->GetFName() == RB.Name
+		&& A->GetActorTransform().Equals(A0, 1e-9) && B->GetActorTransform().Equals(B0, 1e-9));
+	DestroyLayoutWorld(W);
 	return true;
 }
 

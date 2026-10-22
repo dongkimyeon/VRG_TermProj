@@ -201,13 +201,16 @@ public:
 	// simulation entry's sizing) into actors at their yard positions, in the same command as the new unit, so one Undo
 	// returns to the automatic plant. Refused before any plant was built (the automatic count is not known yet).
 	void BeginPlantAddition(EPlantUnitKind Kind);
+	// S8 F8-3: entire plant unit selection (kinds may mix); kind, size and transform only, new identities. Nothing is
+	// converted (the selected kinds already have units) and no plant needs to have been built.
+	bool BeginPlantDuplication();
 	APlantEquipmentActor* ConfirmPlantAddition();
 	bool TryDeleteLayoutPlant(); // Entire plant unit selection, one Undo command (no units of a kind = automatic again).
 	bool IsAddingPlant() const { return bAddingPlant; }
 	void CancelRackAddition();
 	void UpdateRackAdditionAlongRay(const FVector& EyeCm, const FVector& Direction);
 	bool GetRackAdditionPreview(FTransform& Out, FVector& SizeM, int32 MemberIndex = 0) const;
-	int32 GetRackAdditionPreviewCount() const { return bAddingRack ? FMath::Max(1, FMath::Max(CrahDuplicationMembers.Num(), FMath::Max(CduDuplicationMembers.Num(), FMath::Max(RackDuplicationMembers.Num(), FMath::Max(SpineDuplicationMembers.Num(), BarrierDuplicationMembers.Num()))))) : 0; }
+	int32 GetRackAdditionPreviewCount() const { return bAddingRack ? FMath::Max(1, FMath::Max(CrahDuplicationMembers.Num(), FMath::Max(CduDuplicationMembers.Num(), FMath::Max(RackDuplicationMembers.Num(), FMath::Max(SpineDuplicationMembers.Num(), FMath::Max(BarrierDuplicationMembers.Num(), PlantDuplicationMembers.Num())))))) : 0; }
 	bool TryRotateRackAddition();
 	bool IsRackAdditionBlocked() const;
 	ARackThermalActor* ConfirmRackAddition();
@@ -423,6 +426,10 @@ private:
 	bool RestoreBarrierPresence(const FLayoutTransformCommand& Command, bool bRedo);
 	bool bAddingPlant = false;
 	EPlantUnitKind PlantAdditionKind = EPlantUnitKind::FwsDryCooler;
+	TArray<FPlantEquipmentRecord> PlantDuplicationMembers; // Kind, size and transform only (no identity).
+	// Duplication previews keep the members' height; a fresh addition goes to the floor plane.
+	bool HasDuplicationMembers() const { return !RackDuplicationMembers.IsEmpty() || !SpineDuplicationMembers.IsEmpty() || !CduDuplicationMembers.IsEmpty()
+		|| !CrahDuplicationMembers.IsEmpty() || !BarrierDuplicationMembers.IsEmpty() || !PlantDuplicationMembers.IsEmpty(); }
 	bool RestorePlantPresence(const FLayoutTransformCommand& Command, bool bRedo);
 	ELayoutGizmoMode GizmoMode = ELayoutGizmoMode::Translate;
 	int32 GizmoHoverAxis = INDEX_NONE;

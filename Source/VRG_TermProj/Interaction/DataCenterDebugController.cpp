@@ -700,6 +700,7 @@ void ADataCenterDebugController::BeginRackAddition()
 	CduDuplicationMembers.Reset();
 	CrahDuplicationMembers.Reset();
 	BarrierDuplicationMembers.Reset();
+	PlantDuplicationMembers.Reset();
 	bAddingSpine = false;
 	bAddingCdu = false;
 	bAddingBarrier = false;
@@ -777,6 +778,31 @@ void ADataCenterDebugController::BeginPlantAddition(EPlantUnitKind Kind)
 	UpdateRackAdditionFromCursor();
 }
 
+bool ADataCenterDebugController::BeginPlantDuplication()
+{
+	UWorld* World = GetWorld();
+	if (!World || !World->IsGameWorld() || !IsLayoutMode() || !IsEquipmentInputAvailable()
+		|| bAddingRack || IsLayoutDragging() || bMarqueeActive || Grabbed.IsValid() || IsInputKeyDown(EKeys::RightMouseButton)) return false;
+	const auto Selected = GetSelectedLayoutActors();
+	if (Selected.IsEmpty()) return false;
+	TArray<FPlantEquipmentRecord> Members;
+	for (auto* Actor : Selected)
+	{
+		const auto* Unit = Cast<APlantEquipmentActor>(Actor);
+		if (!IsValid(Unit) || Unit->GetWorld() != World) return false;
+		FPlantEquipmentRecord R = VrgPlantEquipment::Capture(Unit);
+		if (!VrgPlantEquipment::IsValidRecord(R)) return false;
+		R.Id.Reset(); R.Name = NAME_None;  // no identity or actor reference
+		Members.Add(MoveTemp(R));
+	}
+	RackAdditionTransform = Members[0].Transform;
+	PlantAdditionKind = Members[0].Kind;
+	PlantDuplicationMembers = MoveTemp(Members);
+	bAddingRack = true; bAddingPlant = true; bAddingBarrier = bAddingSpine = bAddingCdu = bAddingCrah = false; bRackAdditionHasFloor = false;
+	UpdateRackAdditionFromCursor();
+	return true;
+}
+
 bool ADataCenterDebugController::BeginBarrierDuplication()
 {
 	UWorld* World = GetWorld();
@@ -826,8 +852,9 @@ bool ADataCenterDebugController::BeginRackDuplication()
 
 void ADataCenterDebugController::OnDuplicateLayoutRack()
 {
-	if (!BeginRackDuplication() && !BeginSpineDuplication() && !BeginCduDuplication() && !BeginCrahDuplication() && !BeginBarrierDuplication())
-		UE_LOG(LogTemp, Display, TEXT("[VrgLayout] 복제 거절: 랙 선택 전체 또는 네이티브 스파인 선택 전체 또는 네이티브 CDU 선택 전체 또는 네이티브 CRAH 선택 전체와 배치 대기 상태가 필요합니다."));
+	if (!BeginRackDuplication() && !BeginSpineDuplication() && !BeginCduDuplication() && !BeginCrahDuplication() && !BeginBarrierDuplication()
+		&& !BeginPlantDuplication())
+		UE_LOG(LogTemp, Display, TEXT("[VrgLayout] 복제 거절: 랙 선택 전체 또는 네이티브 스파인 선택 전체 또는 네이티브 CDU 선택 전체 또는 네이티브 CRAH 선택 전체 또는 벽 선택 전체 또는 설비 장비 선택 전체와 배치 대기 상태가 필요합니다."));
 	LogLayoutInputState(TEXT("Ctrl+D"));
 }
 
@@ -959,6 +986,7 @@ void ADataCenterDebugController::CancelRackAddition()
 	bAddingBarrier = false;
 	bAddingPlant = false;
 	BarrierDuplicationMembers.Reset();
+	PlantDuplicationMembers.Reset();
 	bAddingSpine = false;
 	bAddingCdu = false;
  bAddingCrah = false;
@@ -974,7 +1002,7 @@ void ADataCenterDebugController::UpdateRackAdditionAlongRay(const FVector& EyeCm
 	if (!bAddingRack) return;
 	FVector FloorCm;
 	bRackAdditionHasFloor = IsLayoutMode() && IsEquipmentInputAvailable()
-		&& FloorPointSnapped(EyeCm, Direction, (!RackDuplicationMembers.IsEmpty() || !SpineDuplicationMembers.IsEmpty() || !CduDuplicationMembers.IsEmpty() || !CrahDuplicationMembers.IsEmpty() || !BarrierDuplicationMembers.IsEmpty()) ? RackAdditionTransform.GetLocation().Z : 0.0, PlaceSnapM, FloorCm);
+		&& FloorPointSnapped(EyeCm, Direction, HasDuplicationMembers() ? RackAdditionTransform.GetLocation().Z : 0.0, PlaceSnapM, FloorCm);
 	if (bRackAdditionHasFloor) RackAdditionTransform.SetLocation(FloorCm);
 }
 
@@ -1009,7 +1037,7 @@ void ADataCenterDebugController::LogLayoutInputState(const TCHAR* Context) const
 	FVector EyeCm, Direction, FloorCm;
 	const bool bRay = DeprojectMousePositionToWorld(EyeCm, Direction);
 	const bool bFloor = bRay && FloorPointSnapped(EyeCm, Direction,
-		(!RackDuplicationMembers.IsEmpty() || !SpineDuplicationMembers.IsEmpty() || !CduDuplicationMembers.IsEmpty() || !CrahDuplicationMembers.IsEmpty() || !BarrierDuplicationMembers.IsEmpty()) ? RackAdditionTransform.GetLocation().Z : 0.0, PlaceSnapM, FloorCm);
+		HasDuplicationMembers() ? RackAdditionTransform.GetLocation().Z : 0.0, PlaceSnapM, FloorCm);
 	FTransform Proposed; FVector SizeM;
 	const bool bPreview = GetRackAdditionPreview(Proposed, SizeM);
 	// Opt-in, event-only diagnostics. Observing a ray does not update placement or weaken any guard.
@@ -1032,7 +1060,18 @@ bool ADataCenterDebugController::GetRackAdditionPreview(FTransform& Out, FVector
 	if (!bAddingRack || !bRackAdditionHasFloor || !IsLayoutMode() || !IsEquipmentInputAvailable()
 		|| MemberIndex < 0 || MemberIndex >= GetRackAdditionPreviewCount()) return false;
 	Out = RackAdditionTransform;
-	if (bAddingPlant) { SizeM = APlantEquipmentActor::DefaultSizeM(PlantAdditionKind); return true; }
+	if (bAddingPlant)
+	{
+		if (PlantDuplicationMembers.IsEmpty()) { SizeM = APlantEquipmentActor::DefaultSizeM(PlantAdditionKind); return true; }
+		// Members keep their size, rotation and offsets from the first one.
+		SizeM = PlantDuplicationMembers[MemberIndex].SizeM;
+		if (PlantDuplicationMembers.Num() > 1)
+		{
+			Out = PlantDuplicationMembers[MemberIndex].Transform;
+			Out.AddToTranslation(RackAdditionTransform.GetLocation() - PlantDuplicationMembers[0].Transform.GetLocation());
+		}
+		return true;
+	}
 	if (bAddingBarrier)
 	{
 		// Unit box: the preview transform's scale is the barrier size in metres.
@@ -1101,6 +1140,19 @@ bool ADataCenterDebugController::IsRackAdditionBlocked() const
   auto* Sim=FindSimActor();
   if(!Sim || !Sim->CaptureAutomaticCrahLayout(Automatic)) return true;
  }
+	if (bAddingPlant && !PlantDuplicationMembers.IsEmpty())
+	{
+		// Every copy outside the room, 1 cm clear of equipment and of each other.
+		for (int32 I = 0; I < GetRackAdditionPreviewCount(); ++I)
+		{
+			FTransform Proposed; FVector SizeM; FLayoutFootprint Candidate;
+			if (!GetRackAdditionPreview(Proposed, SizeM, I) || VrgPlantEquipment::OverlapsRoom(GetWorld(), SizeM, Proposed)
+				|| IsLayoutBoxBlocked(GetWorld(), SizeM, Proposed) || !MakeLayoutFootprint(SizeM, Proposed, Candidate)) return true;
+			for (const auto& Other : Footprints) if (FootprintsConflict(Candidate, Other)) return true;
+			Footprints.Add(Candidate);
+		}
+		return false;
+	}
 	if (bAddingPlant)
 	{
 		// The room footprint, and the automatic units that become actors with this addition.
@@ -1340,7 +1392,7 @@ void ADataCenterDebugController::OnDeleteLayoutEquipment()
 {
 	if(bRoomCeilingEditing) { if(bRoomCeilingHoleEditing) TryDeleteRoomCeilingHole(); else TryDeleteRoomCeiling(); return; }
 	if (!TryDeleteLayoutRack() && !TryDeleteLayoutSpine() && !TryDeleteLayoutCdu() && !TryDeleteLayoutCrah() && !TryDeleteLayoutBarrier() && !TryDeleteLayoutPlant())
-		UE_LOG(LogTemp, Display, TEXT("[VrgLayout] 삭제 거절: 랙 선택 전체 또는 네이티브 스파인 선택 전체 또는 네이티브 CDU 선택 전체 또는 네이티브 CRAH 선택 전체와 배치 대기 상태가 필요합니다."));
+		UE_LOG(LogTemp, Display, TEXT("[VrgLayout] 삭제 거절: 랙 선택 전체 또는 네이티브 스파인 선택 전체 또는 네이티브 CDU 선택 전체 또는 네이티브 CRAH 선택 전체 또는 벽 선택 전체 또는 설비 장비 선택 전체와 배치 대기 상태가 필요합니다."));
 }
 
 bool ADataCenterDebugController::TryDeleteLayoutCrah()
@@ -1523,6 +1575,40 @@ APlantEquipmentActor* ADataCenterDebugController::ConfirmPlantAddition()
 {
 	UWorld* World = GetWorld();
 	FTransform Proposed; FVector SizeM; FString Reason;
+	auto Name = [&](FPlantEquipmentRecord& R)
+	{
+		const TCHAR* Prefix = R.Kind == EPlantUnitKind::FwsDryCooler ? TEXT("PlantFwsDryCooler_")
+			: R.Kind == EPlantUnitKind::CwDryCooler ? TEXT("PlantCwDryCooler_")
+			: R.Kind == EPlantUnitKind::Chiller ? TEXT("PlantChiller_") : TEXT("PlantTrimChiller_");
+		R.Id = FGuid::NewGuid().ToString();
+		R.Name = MakeUniqueObjectName(World->PersistentLevel, APlantEquipmentActor::StaticClass(), FName(*(FString(Prefix) + R.Id)));
+	};
+	if (bAddingPlant && !PlantDuplicationMembers.IsEmpty())
+	{
+		// S8 F8-3: the copies as one presence command (Undo removes them all); the same validation as Undo / Redo.
+		if (!World || !World->IsGameWorld() || !GetRackAdditionPreview(Proposed, SizeM) || IsRackAdditionBlocked())
+		{
+			UE_LOG(LogTemp, Display, TEXT("[VrgLayout] 설비 장비 복제 거절: 목적지 없음 또는 방 공기 영역·장비와 겹침"));
+			return nullptr;
+		}
+		FLayoutTransformCommand Duplicate;
+		for (int32 I = 0; I < PlantDuplicationMembers.Num(); ++I)
+		{
+			FPlantEquipmentRecord R = PlantDuplicationMembers[I];
+			GetRackAdditionPreview(R.Transform, SizeM, I);
+			R.Transform.SetScale3D(FVector::OneVector);
+			Name(R);
+			Duplicate.PlantUnits.Add(MoveTemp(R));
+		}
+		if (!RestorePlantPresence(Duplicate, true)) return nullptr;
+		PushLayoutCommand(Duplicate);
+		CancelRackAddition();
+		for (const FPlantEquipmentRecord& R : Duplicate.PlantUnits) LayoutSelection.Add(VrgPlantEquipment::Find(World, R.Id));
+		const FPlantEquipmentCounts Now = VrgPlantEquipment::CountInWorld(World);
+		UE_LOG(LogTemp, Display, TEXT("[VrgLayout] 설비 장비 복제 확정: %d대 (FWS 드라이쿨러 %d, CW 드라이쿨러 %d, 냉수 칠러 %d, 트림 칠러 %d; 다음 진입 때 이 대수)"),
+			Duplicate.PlantUnits.Num(), Now.FwsDryCoolers, Now.CwDryCoolers, Now.Chillers, Now.TrimChillers);
+		return VrgPlantEquipment::Find(World, Duplicate.PlantUnits[0].Id);
+	}
 	TArray<FPlantEquipmentRecord> Converted;
 	const ADataCenterSimulationActor* Sim = FindSimActor();
 	if (!bAddingPlant || !World || !World->IsGameWorld() || !GetRackAdditionPreview(Proposed, SizeM) || IsRackAdditionBlocked()
@@ -1531,15 +1617,7 @@ APlantEquipmentActor* ADataCenterDebugController::ConfirmPlantAddition()
 		UE_LOG(LogTemp, Display, TEXT("[VrgLayout] %s 추가 거절: 목적지 없음, 방 공기 영역·장비와 겹침 또는 자동 대수 모름"), APlantEquipmentActor::KindName(PlantAdditionKind));
 		return nullptr;
 	}
-	const TCHAR* Prefix = PlantAdditionKind == EPlantUnitKind::FwsDryCooler ? TEXT("PlantFwsDryCooler_")
-		: PlantAdditionKind == EPlantUnitKind::CwDryCooler ? TEXT("PlantCwDryCooler_")
-		: PlantAdditionKind == EPlantUnitKind::Chiller ? TEXT("PlantChiller_") : TEXT("PlantTrimChiller_");
 	FLayoutTransformCommand Command;  // bBeforePresent=false: Undo removes the converted units and the new one together
-	auto Name = [&](FPlantEquipmentRecord& R)
-	{
-		R.Id = FGuid::NewGuid().ToString();
-		R.Name = MakeUniqueObjectName(World->PersistentLevel, APlantEquipmentActor::StaticClass(), FName(*(FString(Prefix) + R.Id)));
-	};
 	for (FPlantEquipmentRecord R : Converted) { Name(R); Command.PlantUnits.Add(R); }
 	FPlantEquipmentRecord New;
 	New.Kind = PlantAdditionKind; New.SizeM = SizeM; New.Transform = Proposed; New.Transform.SetScale3D(FVector::OneVector);
@@ -3012,7 +3090,7 @@ void ADataCenterDebugController::Tick(float DeltaTime)
 					SizeM * 50.0 * AdditionPreview.GetScale3D().GetAbs(), AdditionPreview.GetRotation(), AdditionColor, false, 0.0f, 0, 3.0f);
 		}
 		// S8 F8-2: the automatic units this first addition of a kind turns into actors.
-		if (bAddingPlant)
+		if (bAddingPlant && PlantDuplicationMembers.IsEmpty())
 		{
 			TArray<FPlantEquipmentRecord> Converted; FString Reason;
 			if (const ADataCenterSimulationActor* Sim = FindSimActor(); Sim && Sim->CaptureAutomaticPlantUnits(PlantAdditionKind, Converted, Reason))
