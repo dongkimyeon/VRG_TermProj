@@ -175,7 +175,7 @@ public:
 	// Barriers may overlap each other (wall corners) but not equipment footprints.
 	static bool IsLayoutPlacementBlocked(const AActor* Actor, const FTransform& Proposed, const TArray<AActor*>* Ignored = nullptr);
 	static bool IsLayoutBoxBlocked(UWorld* World, const FVector& SizeM, const FTransform& Proposed, const TArray<AActor*>* Ignored = nullptr,
-		bool bCandidateIsBarrier = false);
+		bool bCandidateIsBarrier = false, double ClearanceCm = 1.0);
 	// Addition is a value-only preview; no actors or pipes until confirmation.
 	void BeginRackAddition();
 	void BeginSpineAddition();
@@ -311,6 +311,7 @@ protected:
 	virtual void SetupInputComponent() override;
 
 private:
+ struct FLayoutCrahContact { FName Name; TWeakObjectPtr<UClass> Class; FTransform Transform; FVector SizeM; };
 	struct FLayoutTransformMember
 	{
 		TWeakObjectPtr<AActor> Actor;
@@ -322,6 +323,8 @@ private:
 		FString CrahId;
 		FString BarrierId;
 		FString PlantId;   // S8 F8 plant unit
+		// Neighbours touching the actor at Before / After when recorded: Undo / Redo may touch them again (2026-10-23).
+		TArray<FLayoutCrahContact> BeforeContacts, AfterContacts;
 	};
 	struct FLayoutRackMember
 	{
@@ -330,6 +333,7 @@ private:
 		TWeakObjectPtr<UClass> Class;
 		FTransform Transform;
 		FRackLayoutSettings Settings;
+		TArray<FLayoutCrahContact> Contacts;   // neighbours touching it when recorded (any class, despite the name)
 	};
 	struct FLayoutSpineMember
 	{
@@ -342,7 +346,6 @@ private:
 		bool bRuntime = true;
 	};
 	// Existing automatic boxes may touch rack ends. Preserve only those unchanged contacts on conversion/Redo.
- struct FLayoutCrahContact { FName Name; TWeakObjectPtr<UClass> Class; FTransform Transform; FVector SizeM; };
  struct FLayoutCrahMember { FCrahLayoutRecord Record; TArray<FLayoutCrahContact> ExistingContacts; };
  struct FLayoutTransformCommand
 	{

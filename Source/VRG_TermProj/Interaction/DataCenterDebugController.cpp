@@ -698,6 +698,8 @@ namespace
 	// Group edits move members rigidly. A pair that already touched at the start (L_Test racks are flush with the
 	// level-placed in-row coolers at the row ends) may keep touching; other pairs keep the 1 cm clearance and no pair
 	// may overlap (2026-10-23, found by hand: such a group could never be moved or rotated).
+	// Clearance that counts as a real overlap (touching is allowed) for contacts that existed before an Undo/Redo.
+	constexpr double RestoreClearanceCm = -1e-6;
 	bool GroupMembersConflict(const FLayoutFootprint& A, const FLayoutFootprint& B, const FLayoutFootprint& StartA, const FLayoutFootprint& StartB)
 	{
 		return FootprintsConflict(A, B) && (FootprintsConflict(A, B, -1e-6) || !FootprintsConflict(StartA, StartB));
@@ -718,7 +720,7 @@ bool ADataCenterDebugController::IsLayoutPlacementBlocked(const AActor* Actor, c
 }
 
 bool ADataCenterDebugController::IsLayoutBoxBlocked(UWorld* World, const FVector& SizeM, const FTransform& Proposed, const TArray<AActor*>* Ignored,
-	bool bCandidateIsBarrier)
+	bool bCandidateIsBarrier, double ClearanceCm)
 {
 	if (!World) return true;
 	FLayoutFootprint Candidate;
@@ -732,7 +734,7 @@ bool ADataCenterDebugController::IsLayoutBoxBlocked(UWorld* World, const FVector
 		FLayoutFootprint Other;
 		if (!MakeLayoutFootprint(OtherSizeM, It->GetActorTransform(), Other)) return true;
 		Other.bBarrier = It->IsA<ALayoutBarrierActor>();
-		if (FootprintsConflict(Candidate, Other)) return true;
+		if (FootprintsConflict(Candidate, Other, ClearanceCm)) return true;
 	}
 	return false;
 }
@@ -901,6 +903,7 @@ bool ADataCenterDebugController::BeginRackDuplication()
 		Members.Append(CaptureRackPresence(Rack, false).Racks);
 		// Preserve single duplication: native rack, authored settings only, no Blueprint state.
 		Members.Last().Class = ARackThermalActor::StaticClass();
+		Members.Last().Contacts.Reset();   // a copy is a new placement: no inherited contact exemption
 	}
 	RackAdditionTransform = Members[0].Transform;
 	RackDuplicationMembers = MoveTemp(Members);
@@ -1469,7 +1472,7 @@ bool ADataCenterDebugController::TryDeleteLayoutCrah()
  FLayoutCrahMember M{{VrgCrahLifecycle::Identity(Crah),Crah->GetFName(),Crah->GetActorTransform(),Crah->CaptureLayoutSettings(),
   Crah->bRuntimeLayoutCrah,Crah->bConvertedAutomaticCrah,Crah->AutomaticLayoutTransform,Crah->AutomaticLayoutSizeM},{}};
  // Only original automatic contacts qualify; moving/resizing the cooler cannot create new exemptions.
- if(Crah->PreservesAutomaticAirBounds()) {
+ {   // every cooler (2026-10-23; was converted automatic coolers only): recorded flush contacts may touch again on Undo
   FLayoutFootprint Candidate;
   if(!MakeLayoutFootprint(Crah->SizeM,Crah->GetActorTransform(),Candidate)) return false;
   for(TActorIterator<AActor> It(World);It;++It) {
@@ -1868,6 +1871,18 @@ void ADataCenterDebugController::RecordLayoutTransforms(const TArray<AActor*>& A
    Cast<ACrahUnitActor>(Actors[I]) ? VrgCrahLifecycle::Identity(CastChecked<ACrahUnitActor>(Actors[I])) : FString(),
    Cast<ALayoutBarrierActor>(Actors[I]) ? VrgBarrierLifecycle::Identity(CastChecked<ALayoutBarrierActor>(Actors[I])) : FString(),
    Cast<APlantEquipmentActor>(Actors[I]) ? VrgPlantEquipment::Identity(CastChecked<APlantEquipmentActor>(Actors[I])) : FString()});
+		// Members move together, so only non-members can be touching neighbours.
+		FVector SizeM; FLayoutFootprint AtBefore, AtAfter;
+		if (!PlaceableBoxM(Actors[I], SizeM) || !MakeLayoutFootprint(SizeM, Before[I], AtBefore) || !MakeLayoutFootprint(SizeM, After, AtAfter)) continue;
+		for (TActorIterator<AActor> It(GetWorld()); It; ++It)
+		{
+			FVector OtherSize; FLayoutFootprint Other;
+			if (Actors.Contains(*It) || !IsValid(*It) || !PlaceableBoxM(*It, OtherSize) || !MakeLayoutFootprint(OtherSize, It->GetActorTransform(), Other)) continue;
+			Other.bBarrier = It->IsA<ALayoutBarrierActor>();
+			const FLayoutCrahContact Contact{It->GetFName(), It->GetClass(), It->GetActorTransform(), OtherSize};
+			if (FootprintsConflict(AtBefore, Other) && !FootprintsConflict(AtBefore, Other, RestoreClearanceCm)) Command.Members.Last().BeforeContacts.Add(Contact);
+			if (FootprintsConflict(AtAfter, Other) && !FootprintsConflict(AtAfter, Other, RestoreClearanceCm)) Command.Members.Last().AfterContacts.Add(Contact);
+		}
 	}
 	if (!bChanged) return;
 	PushLayoutCommand(MoveTemp(Command));
@@ -1972,9 +1987,10 @@ bool ADataCenterDebugController::RestoreLayoutTransform(bool bRedo)
 	TArray<FLayoutFootprint> Footprints, StartFootprints;
 	for (int32 I = 0; I < Actors.Num(); ++I)
 	{
-		// Undo/Redo puts an actor back where it already stood, so it may touch a neighbour again (a flush contact that
-		// existed, e.g. L_Test racks against level-placed in-row coolers, or a converted automatic cooler). Only a real
-		// overlap is refused here; ordinary moves, rotations and additions keep the 1 cm clearance (2026-10-23).
+		// Undo/Redo puts an actor back where it already stood, so it may touch again a neighbour that touched it there when
+		// the command was recorded and has not moved since (L_Test racks against level-placed in-row coolers). Any other
+		// neighbour keeps the 1 cm clearance and a real overlap is refused (2026-10-23).
+		const TArray<FLayoutCrahContact>& Recorded = bRedo ? Command.Members[I].AfterContacts : Command.Members[I].BeforeContacts;
 		if (Actors[I]->IsA<APlantEquipmentActor>() && IsLayoutPlacementBlocked(Actors[I], Targets[I], &Actors)) return false;
 		FLayoutFootprint Mine; FVector MySize;
 		if (!PlaceableBoxM(Actors[I], MySize) || !MakeLayoutFootprint(MySize, Targets[I], Mine)) return false;
@@ -1986,7 +2002,9 @@ bool ADataCenterDebugController::RestoreLayoutTransform(bool bRedo)
 			if (!MakeLayoutFootprint(OtherSize, It->GetActorTransform(), Other)) return false;
 			Other.bBarrier = It->IsA<ALayoutBarrierActor>();
 			if (!FootprintsConflict(Mine, Other)) continue;
-			if (!FootprintsConflict(Mine, Other, -1e-6)) continue;   // touching only
+			if (!FootprintsConflict(Mine, Other, RestoreClearanceCm) && Recorded.ContainsByPredicate([&](const FLayoutCrahContact& Contact)
+				{ return Contact.Name == It->GetFName() && Contact.Class.Get() == It->GetClass() && Contact.Transform.Equals(It->GetActorTransform(), 1e-9) && Contact.SizeM.Equals(OtherSize, 1e-9); }))
+				continue;
 			UE_LOG(LogTemp, Display, TEXT("[VrgLayout] 변환 기록 거절: %s 되돌릴 자리 %s가 %s와 겹침"), *Actors[I]->GetName(),
 				*Targets[I].GetLocation().ToString(), *It->GetName());
 			return false;
@@ -2053,8 +2071,19 @@ ADataCenterDebugController::FLayoutTransformCommand ADataCenterDebugController::
 {
 	FLayoutTransformCommand Command;
 	Command.bRackPresence = true; Command.bBeforePresent = bBeforePresent;
-	Command.Racks.Add({VrgRackLifecycle::Identity(Rack), Rack->GetFName(), Rack->GetClass(),
+	FLayoutRackMember& Member = Command.Racks.Add_GetRef({VrgRackLifecycle::Identity(Rack), Rack->GetFName(), Rack->GetClass(),
 		Rack->GetActorTransform(), Rack->CaptureLayoutSettings()});
+	// Neighbours touching the rack now (inside the 1 cm clearance, not overlapping): its restoration may touch them again.
+	FLayoutFootprint Mine;
+	if (MakeLayoutFootprint(Rack->RackSizeM, Rack->GetActorTransform(), Mine))
+		for (TActorIterator<AActor> It(GetWorld()); It; ++It)
+		{
+			FVector OtherSize; FLayoutFootprint Other;
+			if (*It == Rack || !IsValid(*It) || !PlaceableBoxM(*It, OtherSize) || !MakeLayoutFootprint(OtherSize, It->GetActorTransform(), Other)) continue;
+			Other.bBarrier = It->IsA<ALayoutBarrierActor>();
+			if (FootprintsConflict(Mine, Other) && !FootprintsConflict(Mine, Other, RestoreClearanceCm))
+				Member.Contacts.Add({It->GetFName(), It->GetClass(), It->GetActorTransform(), OtherSize});
+		}
 	return Command;
 }
 
@@ -2091,10 +2120,22 @@ bool ADataCenterDebugController::RestoreRackPresence(const FLayoutTransformComma
 		auto* Rack = VrgRackLifecycle::Find(GetWorld(), Member.Id);
 		if (bTargetPresent)
 		{
-			if (Rack || FindObjectFast<UObject>(GetWorld()->PersistentLevel, Member.Name)
-				|| IsLayoutBoxBlocked(GetWorld(), Member.Settings.RackSizeM, Member.Transform)) return false;
+			if (Rack || FindObjectFast<UObject>(GetWorld()->PersistentLevel, Member.Name)) return false;
 			FLayoutFootprint Candidate;
 			if (!MakeLayoutFootprint(Member.Settings.RackSizeM, Member.Transform, Candidate)) return false;
+			// 1 cm to every neighbour, except one that already touched this rack when the command was recorded and has not
+			// moved since (L_Test racks stand flush against level-placed in-row coolers, 2026-10-23).
+			for (TActorIterator<AActor> It(GetWorld()); It; ++It)
+			{
+				FVector OtherSize; FLayoutFootprint Other;
+				if (!IsValid(*It) || !PlaceableBoxM(*It, OtherSize)) continue;
+				if (!MakeLayoutFootprint(OtherSize, It->GetActorTransform(), Other)) return false;
+				Other.bBarrier = It->IsA<ALayoutBarrierActor>();
+				if (!FootprintsConflict(Candidate, Other)) continue;
+				const bool bRecorded = !FootprintsConflict(Candidate, Other, RestoreClearanceCm) && Member.Contacts.ContainsByPredicate([&](const FLayoutCrahContact& Contact)
+					{ return Contact.Name == It->GetFName() && Contact.Class.Get() == It->GetClass() && Contact.Transform.Equals(It->GetActorTransform(), 1e-9) && Contact.SizeM.Equals(OtherSize, 1e-9); });
+				if (!bRecorded) return false;
+			}
 			for (const auto& Other : Footprints) if (FootprintsConflict(Candidate, Other)) return false;
 			Footprints.Add(Candidate);
 		}
@@ -2163,7 +2204,9 @@ bool ADataCenterDebugController::RestoreCrahPresence(const FLayoutTransformComma
     if(!PlaceableBoxM(*It,OtherSize)) continue;
     if(!MakeLayoutFootprint(OtherSize,It->GetActorTransform(),Other)) return false;
     if(!FootprintsConflict(Candidate,Other)) continue;
-    const bool bPreserved=R.bConvertedAutomatic && M.ExistingContacts.ContainsByPredicate([&](const auto& Contact) {
+    // A recorded contact that has not moved may touch again (L_Test's level-placed coolers stand flush, 2026-10-23);
+    // a converted automatic cooler keeps its original contacts as before.
+    const bool bPreserved=(R.bConvertedAutomatic || !FootprintsConflict(Candidate,Other,RestoreClearanceCm)) && M.ExistingContacts.ContainsByPredicate([&](const auto& Contact) {
      return Contact.Name==It->GetFName() && Contact.Class.Get()==It->GetClass()
       && Contact.Transform.Equals(It->GetActorTransform(),1e-9) && Contact.SizeM.Equals(OtherSize,1e-9);
     });
