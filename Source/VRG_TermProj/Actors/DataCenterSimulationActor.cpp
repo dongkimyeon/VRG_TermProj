@@ -383,6 +383,80 @@ bool ADataCenterSimulationActor::TrySetRoomCeilingPlates(const TArray<FRoomCeili
 	return true;
 }
 
+namespace
+{
+	// One required box against the manual room box and its ceiling plates (shared by ValidateRoomAirDomain and the
+	// layout placement check, so a placement the layout accepts is one Load and simulation entry accept, 2026-10-23).
+	bool VrgRoomBoxFits(const FBox& Requested, const TArray<FRoomCeilingPlan>& CeilingPlans, double H, const FBox& Required, const FString& Name, FString& Reason)
+	{
+		if (!Required.IsValid || Required.Min.ContainsNaN() || Required.Max.ContainsNaN())
+		{ Reason = Name + TEXT(": 유효하지 않은 장비/덕트 경계입니다."); return false; }
+		for (int32 Axis = 0; Axis < 3; ++Axis)
+			if (Required.Min[Axis] < Requested.Min[Axis] || Required.Max[Axis] > Requested.Max[Axis])
+			{
+				Reason = FString::Printf(TEXT("%s: %c축 필요 범위 [%.6f, %.6f]m가 방 [%.6f, %.6f]m 밖입니다."),
+					*Name, TCHAR('X' + Axis), Required.Min[Axis], Required.Max[Axis], Requested.Min[Axis], Requested.Max[Axis]);
+				return false;
+			}
+		for (int32 I = 0; I < CeilingPlans.Num(); ++I)
+		{
+			const FBox& B = CeilingPlans[I].ActualBoundsM;
+			if (VrgRoomAirDomain::CeilingIntersectsBox(CeilingPlans[I], Required, H))
+			{ Reason = FString::Printf(TEXT("천장 판 %d 계산 범위 %s m가 %s와 겹칩니다."), I, *B.ToString(), *Name); return false; }
+		}
+		return true;
+	}
+
+	bool VrgRoomEquipmentFits(const FBox& Requested, const TArray<FRoomCeilingPlan>& CeilingPlans, double H, double InletSampleDepthM, double ExhaustDepthM,
+		const FVector& SizeM, const FTransform& Transform, const FString& Name, bool bCabinet, bool bCrah, bool bTopIntake, FString& Reason)
+	{
+		if (SizeM.ContainsNaN() || SizeM.GetMin() <= 0 || !Transform.IsValid() || Transform.GetScale3D().GetAbsMin() <= 0)
+		{ Reason = Name + TEXT(": 장비 크기/변환이 유효하지 않습니다."); return false; }
+		FTransform M = Transform; M.SetTranslation(SimUnits::UnrealToMeters(Transform.GetTranslation()));
+		const FVector MinM(-SizeM.X * .5, -SizeM.Y * .5, 0), MaxM(SizeM.X * .5, SizeM.Y * .5, SizeM.Z);
+		if (!VrgRoomBoxFits(Requested, CeilingPlans, H, VrgRoomAirDomain::TransformedBoxM(MinM, MaxM, M), Name + TEXT(" 외형"), Reason)) return false;
+		if (!bCabinet && !bCrah) return true;
+		// Current coupling uses unscaled, upright boxes and a horizontal forward axis. Check this envelope
+		// in addition to the actual full actor transform; do not silently replace the existing physics model.
+		FVector Forward = Transform.GetRotation().GetForwardVector().GetSafeNormal2D();
+		if (Forward.IsNearlyZero()) { Reason = Name + TEXT(": 수평 공기 방향이 없습니다."); return false; }
+		if (bCrah) Forward = FMath::Abs(Forward.X) >= FMath::Abs(Forward.Y)
+			? FVector(Forward.X >= 0 ? 1 : -1, 0, 0) : FVector(0, Forward.Y >= 0 ? 1 : -1, 0);
+		M.SetRotation(Forward.Rotation().Quaternion()); M.SetScale3D(FVector::OneVector);
+		FVector DuctMin = MinM, DuctMax = MaxM;
+		if (bCabinet)
+		{
+			if (!FMath::IsFinite(InletSampleDepthM) || !FMath::IsFinite(ExhaustDepthM)
+				|| InletSampleDepthM <= 0 || ExhaustDepthM <= 0)
+			{ Reason = TEXT("흡기/배기 표본 깊이가 유효하지 않습니다."); return false; }
+			DuctMin.X -= FMath::Max(H, ExhaustDepthM); DuctMax.X += FMath::Max(H, InletSampleDepthM);
+		}
+		else
+		{
+			// Required neighbouring fluid cell: front supply; rear in-row intake or top perimeter intake.
+			DuctMax.X += H;
+			if (bTopIntake) DuctMax.Z += H; else DuctMin.X -= H;
+		}
+		return VrgRoomBoxFits(Requested, CeilingPlans, H, VrgRoomAirDomain::TransformedBoxM(DuctMin, DuctMax, M), Name + TEXT(" 공기 덕트"), Reason);
+	}
+}
+
+bool ADataCenterSimulationActor::CheckLayoutBoxInManualRoom(const FVector& SizeM, const FTransform& Transform, bool bCabinet, bool bCrah, bool bTopIntake, FString& Reason) const
+{
+	Reason.Reset();
+	if (!RoomAirDomain.bManual || GetWorld() == nullptr) return true;
+	const AAirFieldDebugActor* Field = nullptr;
+	for (TActorIterator<AAirFieldDebugActor> It(GetWorld()); It; ++It) { Field = *It; break; }
+	if (Field == nullptr) return true;
+	FAirGridParams Grid; FBox Actual(ForceInit);
+	TArray<FRoomCeilingPlan> CeilingPlans;
+	if (!VrgRoomAirDomain::BuildGrid(RoomAirDomain, Field->GridParams, Grid, Actual, Reason)
+		|| !VrgRoomAirDomain::BuildCeilingPlans(RoomAirDomain, RoomCeilingPlates, Grid, Actual, CeilingPlans, Reason)) return false;
+	const FBox Requested(FVector(RoomAirDomain.MinXYM.X, RoomAirDomain.MinXYM.Y, 0),
+		FVector(RoomAirDomain.MaxXYM.X, RoomAirDomain.MaxXYM.Y, RoomAirDomain.CeilingHeightM));
+	return VrgRoomEquipmentFits(Requested, CeilingPlans, Grid.CellSizeM, InletSampleDepthM, ExhaustDepthM, SizeM, Transform,
+		TEXT("배치 장비"), bCabinet, bCrah, bTopIntake, Reason);
+}
 bool ADataCenterSimulationActor::ValidateRoomAirDomain(const FRoomAirDomainSettings& Settings,
 	FAirGridParams& OutGrid, FBox& OutActualBoundsM, FString& Reason, const TArray<FRoomCeilingPlate>* CeilingOverride)
 {
@@ -410,56 +484,13 @@ bool ADataCenterSimulationActor::ValidateRoomAirDomain(const FRoomAirDomainSetti
 	if (!VrgRoomAirDomain::BuildCeilingPlans(Settings, Plates, Grid, Actual, CeilingPlans, Reason)) return false;
 	auto Contains = [&](const FBox& Required, const FString& Name)
 	{
-		if (!Required.IsValid || Required.Min.ContainsNaN() || Required.Max.ContainsNaN())
-		{ Reason = Name + TEXT(": 유효하지 않은 장비/덕트 경계입니다."); return false; }
-		for (int32 Axis = 0; Axis < 3; ++Axis)
-			if (Required.Min[Axis] < Requested.Min[Axis] || Required.Max[Axis] > Requested.Max[Axis])
-			{
-				Reason = FString::Printf(TEXT("%s: %c축 필요 범위 [%.6f, %.6f]m가 방 [%.6f, %.6f]m 밖입니다."),
-					*Name, TCHAR('X' + Axis), Required.Min[Axis], Required.Max[Axis], Requested.Min[Axis], Requested.Max[Axis]);
-				return false;
-			}
-		for (int32 I = 0; I < CeilingPlans.Num(); ++I)
-		{
-			const FBox& B = CeilingPlans[I].ActualBoundsM;
-			if (VrgRoomAirDomain::CeilingIntersectsBox(CeilingPlans[I], Required, H))
-			{ Reason = FString::Printf(TEXT("천장 판 %d 계산 범위 %s m가 %s와 겹칩니다."), I, *B.ToString(), *Name); return false; }
-		}
-		return true;
+		return VrgRoomBoxFits(Requested, CeilingPlans, H, Required, Name, Reason);
 	};
 	auto CheckBox = [&](const FVector& SizeM, const FTransform& Transform, const FString& Name,
 		bool bCabinet, bool bCrah, bool bTopIntake)
 	{
-		if (SizeM.ContainsNaN() || SizeM.GetMin() <= 0 || !Transform.IsValid() || Transform.GetScale3D().GetAbsMin() <= 0)
-		{ Reason = Name + TEXT(": 장비 크기/변환이 유효하지 않습니다."); return false; }
-		FTransform M = Transform; M.SetTranslation(SimUnits::UnrealToMeters(Transform.GetTranslation()));
-		const FVector MinM(-SizeM.X * .5, -SizeM.Y * .5, 0), MaxM(SizeM.X * .5, SizeM.Y * .5, SizeM.Z);
-		if (!Contains(VrgRoomAirDomain::TransformedBoxM(MinM, MaxM, M), Name + TEXT(" 외형"))) return false;
-		if (!bCabinet && !bCrah) return true;
-		// Current coupling uses unscaled, upright boxes and a horizontal forward axis. Check this envelope
-		// in addition to the actual full actor transform; do not silently replace the existing physics model.
-		FVector Forward = Transform.GetRotation().GetForwardVector().GetSafeNormal2D();
-		if (Forward.IsNearlyZero()) { Reason = Name + TEXT(": 수평 공기 방향이 없습니다."); return false; }
-		if (bCrah) Forward = FMath::Abs(Forward.X) >= FMath::Abs(Forward.Y)
-			? FVector(Forward.X >= 0 ? 1 : -1, 0, 0) : FVector(0, Forward.Y >= 0 ? 1 : -1, 0);
-		M.SetRotation(Forward.Rotation().Quaternion()); M.SetScale3D(FVector::OneVector);
-		FVector DuctMin = MinM, DuctMax = MaxM;
-		if (bCabinet)
-		{
-			if (!FMath::IsFinite(InletSampleDepthM) || !FMath::IsFinite(ExhaustDepthM)
-				|| InletSampleDepthM <= 0 || ExhaustDepthM <= 0)
-			{ Reason = TEXT("흡기/배기 표본 깊이가 유효하지 않습니다."); return false; }
-			DuctMin.X -= FMath::Max(H, ExhaustDepthM); DuctMax.X += FMath::Max(H, InletSampleDepthM);
-		}
-		else
-		{
-			// Required neighbouring fluid cell: front supply; rear in-row intake or top perimeter intake.
-			DuctMax.X += H;
-			if (bTopIntake) DuctMax.Z += H; else DuctMin.X -= H;
-		}
-		return Contains(VrgRoomAirDomain::TransformedBoxM(DuctMin, DuctMax, M), Name + TEXT(" 공기 덕트"));
-	};
-	bool bPlacedCrahs = false;
+		return VrgRoomEquipmentFits(Requested, CeilingPlans, H, InletSampleDepthM, ExhaustDepthM, SizeM, Transform, Name, bCabinet, bCrah, bTopIntake, Reason);
+	};	bool bPlacedCrahs = false;
 	for (TActorIterator<AActor> It(GetWorld()); It; ++It)
 	{
 		FVector SizeM;

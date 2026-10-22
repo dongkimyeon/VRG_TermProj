@@ -129,6 +129,9 @@ public:
 	const TArray<FRoomCeilingPlate>& GetRoomCeilingPlates() const { return RoomCeilingPlates; }
 	int32 GetNumCeilingCells() const { return CeilingSolidCells; } // newly owned cells, overlaps counted once
 	const FRoomAirDomainSettings& GetRoomAirDomain() const { return RoomAirDomain; }
+	// Layout check of one room equipment box against the manual room: the same outer box, air duct cells and ceiling plate
+	// tests as ValidateRoomAirDomain. True without a manual room (2026-10-23).
+	bool CheckLayoutBoxInManualRoom(const FVector& SizeM, const FTransform& Transform, bool bCabinet, bool bCrah, bool bTopIntake, FString& Reason) const;
 	const FString& GetRoomAirDomainMessage() const { return RoomAirDomainMessage; }
 
 	// Stops integration and drops the simulated state (the next EnterSimulationMode starts fresh).

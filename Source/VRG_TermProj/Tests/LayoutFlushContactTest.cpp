@@ -3,6 +3,7 @@
 #include "Actors/CrahUnitActor.h"
 #include "Actors/DataCenterSimulationActor.h"
 #include "Actors/RackThermalActor.h"
+#include "Actors/AirFieldDebugActor.h"
 #include "Visualization/GjRackLayout.h"
 #include "Engine/Engine.h"
 #include "Engine/World.h"
@@ -90,6 +91,47 @@ bool FLayoutFlushContactTest::RunTest(const FString& Parameters)
 	AddInfo(FString::Printf(TEXT("(1) 이동 %d·Undo %d·Redo %d, (2) 그룹 이동 %d·Undo %d·회전 %d·Undo %d, (4) 쿨러 삭제·Undo %d·%d, 랙 삭제·Undo %d·%d"),
 		bMoved, bUndo, bRedo, bGroupMoved, bGroupUndo, bRotated, bRotUndo, bCoolerDeleted, bCoolerUndo, bRackDeleted, bRackUndo));
 
+	W->DestroyWorld(false); GEngine->DestroyWorldContext(W);
+	return true;
+}
+
+// Found by hand (2026-10-23, B12): with a manual room, an in-row cooler could be added half outside it; the layout
+// file then saved fine but Load refused it ("outside the room"). Room equipment now has to stay inside a manual room
+// when it is added, moved or rotated (outer box; walls and plant equipment have their own rules).
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FLayoutManualRoomBoundsTest, "VRG.Interaction.Layout.ManualRoomBoundsPlacement",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::CommandletContext | EAutomationTestFlags::EngineFilter)
+bool FLayoutManualRoomBoundsTest::RunTest(const FString& Parameters)
+{
+	UWorld* W = UWorld::CreateWorld(EWorldType::Game, false);
+	GEngine->CreateNewWorldContext(EWorldType::Game).SetCurrentWorld(W);
+	auto* Sim = W->SpawnActor<ADataCenterSimulationActor>(); Sim->bShowSummary = false;
+	auto* C = W->SpawnActor<ADataCenterDebugController>();
+	W->SpawnActor<AAirFieldDebugActor>()->bShowSummary = false;
+	auto* Rack = W->SpawnActor<ARackThermalActor>(FVector::ZeroVector, FRotator::ZeroRotator);
+	Rack->RackSizeM = FVector(GjRackLayout::FrameDepthM, GjRackLayout::FrameWidthM, GjRackLayout::FrameHeightM);
+	Sim->EnterLayoutMode();
+	const FVector Down(0, 0, -1);
+	auto Above = [](const FVector& P) { return P + FVector(0, 0, 1000); };
+	const bool bFreeBefore = !ADataCenterDebugController::IsOutsideManualRoom(W, Rack->RackSizeM, FTransform(FVector(1000, 0, 0)));
+	FRoomAirDomainSettings Room; Room.bManual = true; Room.MinXYM = FVector2D(-3, -3); Room.MaxXYM = FVector2D(3, 3); Room.CeilingHeightM = 3.0;
+	FString Reason;
+	const bool bRoom = Sim->TrySetRoomAirDomain(Room, Reason);
+	const bool bMoveOut = C->TryLayoutMove(Rack, FVector(250, 0, 0));      // 2.5 + 0.534 m > 3 m
+	const bool bDuctOut = C->TryLayoutMove(Rack, FVector(230, 0, 0));    // box 2.83 m inside, front air cells to 3.23 m: outside
+	const bool bMoveIn = C->TryLayoutMove(Rack, FVector(150, 0, 0));
+	C->BeginRackAddition();
+	C->UpdateRackAdditionAlongRay(Above(FVector(-100, 280, 0)), Down);       // 2.8 + 0.3 m > 3 m
+	const bool bAddOutBlocked = C->IsRackAdditionBlocked();
+	C->UpdateRackAdditionAlongRay(Above(FVector(-100, 150, 0)), Down);
+	const bool bAddInFree = !C->IsRackAdditionBlocked();
+	C->CancelRackAddition();
+	AddInfo(FString::Printf(TEXT("자동 방에서는 검사 없음 %d, 수동 방 적용 %d(%s), 밖 이동 %d / 덕트만 밖 %d / 안 이동 %d, 밖 추가 막힘 %d / 안 추가 가능 %d"),
+		bFreeBefore, bRoom, *Reason, bMoveOut, bDuctOut, bMoveIn, bAddOutBlocked, bAddInFree));
+	TestTrue(TEXT("no check without a manual room"), bFreeBefore);
+	TestTrue(TEXT("manual room set"), bRoom);
+	TestTrue(TEXT("moving a rack partly out of the manual room is refused, inside is allowed"), !bMoveOut && bMoveIn);
+	TestFalse(TEXT("a rack whose air cells (not its box) leave the manual room is refused, as Load would"), bDuctOut);
+	TestTrue(TEXT("adding a rack partly outside is blocked, inside is free"), bAddOutBlocked && bAddInFree);
 	W->DestroyWorld(false); GEngine->DestroyWorldContext(W);
 	return true;
 }

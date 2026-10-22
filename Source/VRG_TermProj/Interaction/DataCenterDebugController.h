@@ -174,6 +174,9 @@ public:
 	// Projected equipment boxes, with 1 cm clearance on a separating axis (UI placement rule).
 	// Barriers may overlap each other (wall corners) but not equipment footprints.
 	static bool IsLayoutPlacementBlocked(const AActor* Actor, const FTransform& Proposed, const TArray<AActor*>* Ignored = nullptr);
+	// True when a manual room is set and the box (with its air duct cells for cabinets / coolers) would not fit it: the same
+	// test Load and simulation entry use (room equipment only, 2026-10-23).
+	static bool IsOutsideManualRoom(UWorld* World, const FVector& SizeM, const FTransform& Proposed, bool bCabinet = false, bool bCrah = false, bool bTopIntake = false);
 	static bool IsLayoutBoxBlocked(UWorld* World, const FVector& SizeM, const FTransform& Proposed, const TArray<AActor*>* Ignored = nullptr,
 		bool bCandidateIsBarrier = false, double ClearanceCm = 1.0);
 	// Addition is a value-only preview; no actors or pipes until confirmation.

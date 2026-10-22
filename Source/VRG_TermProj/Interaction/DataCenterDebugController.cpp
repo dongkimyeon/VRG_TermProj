@@ -713,12 +713,30 @@ bool ADataCenterDebugController::IsLayoutPlacementBlocked(const AActor* Actor, c
 	if (!PlaceableBoxM(Actor, SizeM)) return true;
 	// S8 F8: plant units stand outside the air domain (the air grid has no plant equipment).
 	if (Actor->IsA<APlantEquipmentActor>() && VrgPlantEquipment::OverlapsRoom(Actor->GetWorld(), SizeM, Proposed)) return true;
+	// Room equipment must stay inside a manual room (Load and simulation entry refuse it otherwise, 2026-10-23).
+	if (!Actor->IsA<APlantEquipmentActor>() && !Actor->IsA<ALayoutBarrierActor>())
+	{
+		const ACrahUnitActor* Cooler = Cast<ACrahUnitActor>(Actor);
+		if (IsOutsideManualRoom(Actor->GetWorld(), SizeM, Proposed, Actor->IsA<ARackThermalActor>() || Actor->IsA<ASpineCabinetActor>(),
+			Cooler != nullptr, Cooler && Cooler->Kind == ECrahUnitKind::Perimeter)) return true;
+	}
 	TArray<AActor*> Excluded;
 	if (Ignored) Excluded = *Ignored;
 	Excluded.Add(const_cast<AActor*>(Actor));
 	return IsLayoutBoxBlocked(Actor->GetWorld(), SizeM, Proposed, &Excluded, Actor->IsA<ALayoutBarrierActor>());
 }
 
+bool ADataCenterDebugController::IsOutsideManualRoom(UWorld* World, const FVector& SizeM, const FTransform& Proposed, bool bCabinet, bool bCrah, bool bTopIntake)
+{
+	if (World == nullptr) return false;
+	for (TActorIterator<ADataCenterSimulationActor> It(World); It; ++It)
+	{
+		// The same outer box, air duct cells and ceiling plate tests as Load and simulation entry (ValidateRoomAirDomain).
+		FString Reason;
+		return !It->CheckLayoutBoxInManualRoom(SizeM, Proposed, bCabinet, bCrah && It->CrahLayout != ECrahLayout::CeilingCoil, bTopIntake, Reason);
+	}
+	return false;
+}
 bool ADataCenterDebugController::IsLayoutBoxBlocked(UWorld* World, const FVector& SizeM, const FTransform& Proposed, const TArray<AActor*>* Ignored,
 	bool bCandidateIsBarrier, double ClearanceCm)
 {
@@ -1236,6 +1254,8 @@ bool ADataCenterDebugController::IsRackAdditionBlocked() const
 	{
 		FTransform Proposed; FVector SizeM; FLayoutFootprint Candidate;
 		if (!GetRackAdditionPreview(Proposed, SizeM, I) || IsLayoutBoxBlocked(GetWorld(), SizeM, Proposed, nullptr, bAddingBarrier)
+			|| (!bAddingBarrier && IsOutsideManualRoom(GetWorld(), SizeM, Proposed, !bAddingCrah && !bAddingCdu, bAddingCrah,
+				bAddingCrah && (CrahDuplicationMembers.IsValidIndex(I) ? CrahDuplicationMembers[I].Settings.Kind : CrahAdditionKind) == ECrahUnitKind::Perimeter))
 			|| !MakeLayoutFootprint(SizeM, Proposed, Candidate)) return true;
 		Candidate.bBarrier = bAddingBarrier;
 		for (const auto& Other : Footprints) if (FootprintsConflict(Candidate, Other)) return true;
