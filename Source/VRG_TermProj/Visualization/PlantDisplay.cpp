@@ -2,6 +2,7 @@
 
 #include "Visualization/PlantDisplay.h"
 #include "Visualization/PipeTemperatureDisplay.h"
+#include "Algo/Reverse.h"
 
 namespace
 {
@@ -23,6 +24,8 @@ namespace
 	constexpr double ConsumerHalfM = 0.2;                        // supply / return drops either side of the consumer centre
 	constexpr double MainOffsetM = 0.3;                          // supply main at the lane centre - this, return main + this
 	constexpr double CoilOnUnitStepM = 0.12;                     // more coils than units: the next coil beside the first
+	constexpr double EconLinkZ = 2.0;                            // CW side to the economizer: over 1.3 / 1.8 m units, under the coil lanes
+	constexpr double EconLinkGapM = 1.0;                         // ... leaving the CW lane through the middle of the lane gap
 
 	struct FPlantLane
 	{
@@ -133,6 +136,16 @@ namespace
 		return Out;
 	}
 
+	// From a header anchor to a unit's connection (2026-10-22, placed pumps and the economizer): to the lane height,
+	// along X, along Y, down to a point Offset off the connection along its outward normal, then into it.
+	TArray<FVector> ToPort(const FVector& Anchor, double LaneZ, const FVector& Port, const FVector& Normal, double Offset)
+	{
+		const FVector Ap = Port + Normal * Offset;
+		return Line({ Anchor, FVector(Anchor.X, Anchor.Y, LaneZ), FVector(Ap.X, Anchor.Y, LaneZ), FVector(Ap.X, Ap.Y, LaneZ), Ap, Port });
+	}
+	TArray<FVector> Reversed(TArray<FVector> P) { Algo::Reverse(P); return P; }
+	TArray<FVector> Joined(TArray<FVector> A, const TArray<FVector>& B) { for (const FVector& V : B) Push(A, V); return A; }
+
 	double SegmentGap(const FVector& A0, const FVector& A1, const FVector& B0, const FVector& B1)
 	{
 		FVector PA, PB;
@@ -147,6 +160,19 @@ FVector PlantDisplay::PortM(const FPlantDisplayEquipment& E, EPlantPort Port)
 {
 	const FVector Local = PlantVisual::PortLocalM(VisualOf(E.Kind), E.SizeM, Port) - FVector(0, 0, 0.5 * E.SizeM.Z);
 	return E.CenterM + E.Rotation.RotateVector(Local);
+}
+
+double PlantDisplay::VolumeTempK(const FFacilityPlant& Plant, EPlantLoopId Loop, uint8 Volume)
+{
+	const FFacilityPlantState& St = Plant.GetState();
+	if (Volume == 2) return Plant.GetSupplyTempK();   // series: the middle header carries the CDU inlet mix
+	const bool bSupply = Volume == 0;
+	switch (Loop)
+	{
+	case EPlantLoopId::Chw: return bSupply ? St.ChwSupplyK : St.ChwReturnK;
+	case EPlantLoopId::Cw: return bSupply ? St.CwSupplyK : St.CwReturnK;
+	default: return bSupply ? St.SupplyK : St.ReturnK;
+	}
 }
 
 FPlantDisplaySnapshot PlantDisplay::Build(const FFacilityPlant& Plant, const FPlantDisplayInput& In)
@@ -187,16 +213,20 @@ FPlantDisplaySnapshot PlantDisplay::Build(const FFacilityPlant& Plant, const FPl
 	};
 
 	// Equipment of the lanes (built first: coils and condenser branches run to these units).
-	TArray<int32> ChillerEq, TrimEq, FwsEq, CwEq;
+	TArray<int32> ChillerEq, TrimEq, FwsEq, CwEq, PumpEq[3];
+	int32 EconEq = INDEX_NONE;
 	for (const FPlantLane& L : Lanes)
 	{
 		const FFacilityLoopHandles& H = L.Loop->GetHandles();
+		const TArray<FPlantDisplayUnit>& PlacedPumps = L.Id == EPlantLoopId::Fws ? In.FwsPumps : L.Id == EPlantLoopId::Chw ? In.ChwPumps : In.CwPumps;
 		for (int32 P = 0; P < H.Pumps.Num(); ++P)
 		{
 			FPlantDisplayEquipment& E = S.Equipment.AddDefaulted_GetRef();
 			E.Loop = L.Id; E.Kind = EPlantEquipmentKind::Pump; E.Index = P;
 			E.CenterM = FVector(X0 + PumpDX, L.Y0 + 0.8 + P * PumpPitchM, 0.3); E.SizeM = FVector(0.6, 0.6, 0.6); E.Rotation = Turned;
+			Place(E, PlacedPumps, P);
 			E.bRunning = L.Loop->IsPumpRunning(P); E.bFailed = L.Loop->IsPumpTripped(P);
+			PumpEq[uint8(L.Id)].Add(S.Equipment.Num() - 1);
 		}
 		if (L.Id == EPlantLoopId::Chw)
 		{
@@ -211,12 +241,14 @@ FPlantDisplaySnapshot PlantDisplay::Build(const FFacilityPlant& Plant, const FPl
 				E.bFailed = K >= Healthy; E.bRunning = !E.bFailed && K < St.ChillersRunning;
 				ChillerEq.Add(S.Equipment.Num() - 1);
 			}
-			if (Plant.GetEconomizerUAWK() > 0.0)
+			if (Plant.HasEconomizer())
 			{
 				FPlantDisplayEquipment& E = S.Equipment.AddDefaulted_GetRef();
 				E.Loop = L.Id; E.Kind = EPlantEquipmentKind::Economizer;
 				E.CenterM = UnitPosition(X0, L, L.Units, 0.8); E.SizeM = FVector(0.8, 0.5, 1.6);
+				Place(E, In.Economizers, 0);
 				E.bRunning = St.bEconomizerOn;
+				EconEq = S.Equipment.Num() - 1;
 			}
 		}
 		else
@@ -328,8 +360,22 @@ FPlantDisplaySnapshot PlantDisplay::Build(const FFacilityPlant& Plant, const FPl
 		// Pumps and their check pipes into the plant supply header.
 		for (int32 P = 0; P < H.Pumps.Num(); ++P)
 		{
-			const double PY = L.Y0 + 0.8 + P * PumpPitchM;
 			const int32 Discharge = N.GetPumpToNodeIndex(H.Pumps[P]);
+			const FPlantDisplayEquipment* Unit = PumpEq[uint8(L.Id)].IsValidIndex(P) ? &S.Equipment[PumpEq[uint8(L.Id)][P]] : nullptr;
+			if (Unit != nullptr && Unit->bPlaced)
+			{
+				// A placed pump: suction header -> suction flange (low run), through the pump, discharge flange -> up to
+				// the plant supply header's height and along to it.
+				const FVector Suction = PortM(*Unit, EPlantPort::CoilIn), Out = PortM(*Unit, EPlantPort::CoilOut);
+				const FVector SuctionN = Unit->Rotation.RotateVector(FVector::ForwardVector);
+				SetPoint(Discharge, Out);
+				const FVector SA = Suction + SuctionN * 0.3;
+				PumpRoutes[P] = Joined(ToPort(PumpBar.At(SA.Y), PumpSuctionZ, Suction, SuctionN, 0.3), Line({ Suction, FVector(Out.X, Out.Y, Suction.Z), Out }));
+				if (H.PumpCheckPipes.IsValidIndex(P))
+					Routes[H.PumpCheckPipes[P]] = Reversed(ToPort(Bars[H.PlantSupplyNode].At(Out.Y), PlantSupplyZ, Out, FVector::UpVector, 0.3));
+				continue;
+			}
+			const double PY = L.Y0 + 0.8 + P * PumpPitchM;
 			const FVector Out(XPump, PY, PumpOutZ);
 			SetPoint(Discharge, Out);
 			PumpRoutes[P] = Line({ PumpBar.At(PY), FVector(XPump, PY, PumpSuctionZ), Out });
@@ -337,31 +383,79 @@ FPlantDisplaySnapshot PlantDisplay::Build(const FFacilityPlant& Plant, const FPl
 				Routes[H.PumpCheckPipes[P]] = Line({ Out, FVector(XPump, PY, PlantSupplyZ), Bars[H.PlantSupplyNode].At(PY) });
 		}
 		// Mains: plant supply header -> up -> along X -> supply header; return header -> along X -> down -> plant return.
+		const FPlantDisplayEquipment* Econ = H.SeriesHxPipe != INDEX_NONE && S.Equipment.IsValidIndex(EconEq) ? &S.Equipment[EconEq] : nullptr;
+		auto PlainSupplyMain = [&]()
 		{
 			const FVector From = Bars[H.PlantSupplyNode].At(YSupplyMain);
 			const FVector To = Bars[H.SupplyHeaderNode].At(YSupplyMain);
 			Routes[H.SupplyMainPipe] = Line({ From, FVector(From.X, From.Y, To.Z), To });
+		};
+		auto PlainReturnMain = [&]()
+		{
 			const FVector RFrom = Bars[H.ReturnHeaderNode].At(YReturnMain);
 			const FVector RTo = Bars[H.PlantReturnNode].At(YReturnMain);
 			Routes[H.ReturnMainPipe] = Line({ RFrom, FVector(RTo.X, RFrom.Y, RFrom.Z), RTo });
+		};
+		if (Econ != nullptr && L.Id == EPlantLoopId::Chw)
+		{
+			// Chilled water side in the return main: return header -> (high run) -> the exchanger's CHW inlet (top), down
+			// its plate pack to the outlet (bottom), out and up to the coil-lane height and along to the plant return.
+			const FVector EN = Econ->Rotation.RotateVector(FVector::ForwardVector);
+			const FVector InP = PortM(*Econ, EPlantPort::CoilIn), OutP = PortM(*Econ, EPlantPort::CoilOut);
+			SetPoint(H.SeriesHxNode, InP);
+			PlainSupplyMain();
+			Routes[H.ReturnMainPipe] = ToPort(Bars[H.ReturnHeaderNode].At(YReturnMain), ZRet, InP, EN, 0.3);
+			// The outlet run steps sideways (the unit's -Y) before rising, clear of the inlet drop on the same nozzle pair.
+			const FVector S1 = OutP + EN * 0.3, S2 = S1 + Econ->Rotation.RotateVector(FVector(0, -0.6, 0));
+			Routes[H.SeriesHxPipe] = Line({ InP, OutP, S1, S2, FVector(S2.X, S2.Y, CoilInZ), Bars[H.PlantReturnNode].At(S2.Y) });
+		}
+		else if (Econ != nullptr && L.Id == EPlantLoopId::Cw)
+		{
+			// Condenser water side in the supply main: plant supply -> (out of the lane, under the coil lanes) -> the
+			// exchanger's CW inlet (bottom), up its plate pack to the outlet (top), out and up to the branch layer and
+			// along to the supply header.
+			const FVector EN = Econ->Rotation.RotateVector(FVector::ForwardVector);
+			const FVector InP = PortM(*Econ, EPlantPort::CondenserIn), OutP = PortM(*Econ, EPlantPort::CondenserOut);
+			SetPoint(H.SeriesHxNode, OutP);
+			Routes[H.SeriesHxPipe] = Joined(ToPort(Bars[H.PlantSupplyNode].At(L.Y0 - EconLinkGapM), EconLinkZ, InP, EN, 0.3), Line({ InP, OutP }));
+			Routes[H.SupplyMainPipe] = Reversed(ToPort(Bars[H.SupplyHeaderNode].At(YSupplyMain), ZSup, OutP, EN, 0.55));
+			PlainReturnMain();
+		}
+		else
+		{
+			PlainSupplyMain();
+			PlainReturnMain();
 		}
 
 		// Branches: room consumers (FWS, CHW) or the chillers' condensers (CW).
 		TArray<FYardLink> Links;
+		// CW branches: duty chillers, duty trim chillers, then the isolated standby chillers and standby trim chillers.
+		const int32 NTrimCond = Plant.IsTrimActive() ? FMath::Max(Th.TrimDutyChillers, 1) : 0;
+		const int32 FirstStandby = Loop.GetNumBranches() - H.NumStandbyBranches;
 		auto BranchUnit = [&](int32 B) -> const FPlantDisplayEquipment*
 		{
 			if (L.Id != EPlantLoopId::Cw) return nullptr;
-			if (B < NChwCond && ChillerEq.IsValidIndex(B)) return &S.Equipment[ChillerEq[B]];
-			if (TrimEq.IsValidIndex(B - NChwCond)) return &S.Equipment[TrimEq[B - NChwCond]];
+			int32 Chw = INDEX_NONE, Trim = INDEX_NONE;
+			if (B >= FirstStandby)
+			{
+				const int32 NChwStandby = NChwCond > 0 ? FMath::Max(Th.StandbyChillers, 0) : 0;
+				if (B - FirstStandby < NChwStandby) Chw = NChwCond + (B - FirstStandby);
+				else Trim = NTrimCond + (B - FirstStandby - NChwStandby);
+			}
+			else if (B < NChwCond) Chw = B;
+			else Trim = B - NChwCond;
+			if (ChillerEq.IsValidIndex(Chw)) return &S.Equipment[ChillerEq[Chw]];
+			if (TrimEq.IsValidIndex(Trim)) return &S.Equipment[TrimEq[Trim]];
 			return nullptr;
 		};
 		for (int32 B = 0; B < Loop.GetNumBranches(); ++B)
 			if (const FPlantDisplayEquipment* E = BranchUnit(B)) Links.Add(MakeLink(*E, true, B, 0, XT, 100));
-		// Coils: each through the sink unit it stands for (coil K of NumCoils -> unit K * Units / NumCoils; the FWS
-		// hydraulic coils are counted by flow and the thermal units by heat, so the two counts can differ: limitation).
+		// Coils: each through the sink unit it stands for (coil K of NumCoils -> unit K * Units / NumCoils). One coil per
+		// unit: dry coolers (2026-10-22, also the automatic FWS bank) and chillers (duty evaporators, then the isolated
+		// standby ones), so coil K is unit K.
 		const int32 NumCoils = H.ReturnCoilPipes.Num();
-		const int32 CoilUnits = L.Id == EPlantLoopId::Chw ? FMath::Max(Th.DutyChillers, 1) : L.Units;
 		const TArray<int32>& Sinks = L.Id == EPlantLoopId::Chw ? ChillerEq : L.Id == EPlantLoopId::Fws ? FwsEq : CwEq;
+		const int32 CoilUnits = Sinks.Num() > 0 ? Sinks.Num() : L.Units;
 		TMap<int32, int32> CoilsOnUnit;
 		for (int32 K = 0; K < NumCoils; ++K)
 		{
@@ -499,6 +593,7 @@ FPlantDisplaySnapshot PlantDisplay::Build(const FFacilityPlant& Plant, const FPl
 		Roles.Add(H.SupplyMainPipe, TPair<EPlantPipeRole, int32>(EPlantPipeRole::SupplyMain, INDEX_NONE));
 		Roles.Add(H.ReturnMainPipe, TPair<EPlantPipeRole, int32>(EPlantPipeRole::ReturnMain, INDEX_NONE));
 		if (H.BypassPipe != INDEX_NONE) Roles.Add(H.BypassPipe, TPair<EPlantPipeRole, int32>(EPlantPipeRole::Bypass, INDEX_NONE));
+		if (H.SeriesHxPipe != INDEX_NONE) Roles.Add(H.SeriesHxPipe, TPair<EPlantPipeRole, int32>(EPlantPipeRole::Economizer, INDEX_NONE));
 		for (int32 B = 0; B < Loop.GetNumBranches(); ++B)
 		{
 			Roles.Add(H.BranchSupplyRunPipes[B], TPair<EPlantPipeRole, int32>(EPlantPipeRole::SupplyRun, B));
@@ -514,16 +609,19 @@ FPlantDisplaySnapshot PlantDisplay::Build(const FFacilityPlant& Plant, const FPl
 			const int32 Branch = R && Role != EPlantPipeRole::ReturnCoil ? R->Value : INDEX_NONE;
 			// Series: the first stage returns into the middle header, the second stage leaves it.
 			const bool bFirstStage = Branch != INDEX_NONE && Branch < H.NumFirstStage;
-			double T = Ts;
+			uint8 V = 0;   // 0 supply, 1 return, 2 series middle (VolumeTempK)
 			switch (Role)
 			{
-			case EPlantPipeRole::Exchanger: case EPlantPipeRole::ReturnRun: T = (bSeries && bFirstStage) ? Tmid : Tr; break;
-			case EPlantPipeRole::SupplyRun: case EPlantPipeRole::Valve: T = (bSeries && !bFirstStage) ? Tmid : Ts; break;
-			case EPlantPipeRole::ReturnMain: case EPlantPipeRole::ReturnCoil: T = Tr; break;
-			default: T = Ts; break;
+			case EPlantPipeRole::Exchanger: case EPlantPipeRole::ReturnRun: V = (bSeries && bFirstStage) ? 2 : 1; break;
+			case EPlantPipeRole::SupplyRun: case EPlantPipeRole::Valve: V = (bSeries && !bFirstStage) ? 2 : 0; break;
+			case EPlantPipeRole::ReturnMain: case EPlantPipeRole::ReturnCoil: V = 1; break;
+			case EPlantPipeRole::Economizer: V = L.Id == EPlantLoopId::Chw ? 1 : 0; break;
+			default: V = 0; break;
 			}
+			const double T = V == 2 ? Tmid : V == 1 ? Tr : Ts;
 			Add(Role, Edge, Branch, N.GetPipeFromNodeIndex(Edge), N.GetPipeToNodeIndex(Edge), Routes[Edge],
 				N.IsPipeClosed(Edge) ? 0.0 : N.GetPipeFlowM3s(Edge), T, N.IsPipeClosed(Edge));
+			S.Pipes.Last().Volume = V;
 		}
 		for (int32 K = 0; K < Loop.GetNumLeaks(); ++K)
 		{

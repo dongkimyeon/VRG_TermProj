@@ -20,6 +20,7 @@ bool FFacilityWaterLoop::Build(const FFacilityLoopSpec& InSpec)
 		if (!(Q > 0.0)) return false;
 		SecondM3s += Q;
 	}
+	for (const double Q : Spec.StandbyBranchDesignFlowM3s) if (!(Q > 0.0)) return false;
 	const bool bSeries = Spec.SecondStageDesignFlowM3s.Num() > 0;
 	// Every topology uses this one builder (F6): one stage of branches (separate / shared) or two in series.
 	const double TotalM3s = bSeries ? FMath::Max(FirstM3s, SecondM3s) : FirstM3s;
@@ -80,17 +81,51 @@ bool FFacilityWaterLoop::Build(const FFacilityLoopSpec& InSpec)
 			Handles.BypassPipe = AddPipe(Handles.SupplyHeaderNode, Handles.MiddleNode, BranchDropPa / (Qb * Qb));
 		}
 	}
+	// Standby branches: sized like a duty branch, valve shut (isolated), after every other branch so duty indices keep.
+	for (const double Q : Spec.StandbyBranchDesignFlowM3s)
+	{
+		AddBranch(Q, Handles.SupplyHeaderNode, Handles.ReturnHeaderNode);
+		SetValveOpening(Openings.Num() - 1, 0.0);
+	}
+	Handles.NumStandbyBranches = Spec.StandbyBranchDesignFlowM3s.Num();
 
 	// Mains between the plant and the headers.
 	const double Total2 = TotalM3s * TotalM3s;
-	Handles.SupplyMainPipe = AddPipe(Handles.PlantSupplyNode, Handles.SupplyHeaderNode, 0.5 * Spec.MainDesignDropPa / Total2);
-	Handles.ReturnMainPipe = AddPipe(Handles.ReturnHeaderNode, Handles.PlantReturnNode, 0.5 * Spec.MainDesignDropPa / Total2);
+	const double SeriesHxDropPa = FMath::Max(Spec.SeriesHxDesignDropPa, 0.0);
+	if (SeriesHxDropPa > 0.0)
+	{
+		// The economizer side splits one main: its node sits between the main and the exchanger.
+		Handles.SeriesHxNode = AddNode(false, Spec.SuctionPressurePa);
+		if (Spec.bSeriesHxOnSupply)
+		{
+			Handles.SeriesHxPipe = AddPipe(Handles.PlantSupplyNode, Handles.SeriesHxNode, SeriesHxDropPa / Total2);
+			Handles.SupplyMainPipe = AddPipe(Handles.SeriesHxNode, Handles.SupplyHeaderNode, 0.5 * Spec.MainDesignDropPa / Total2);
+			Handles.ReturnMainPipe = AddPipe(Handles.ReturnHeaderNode, Handles.PlantReturnNode, 0.5 * Spec.MainDesignDropPa / Total2);
+		}
+		else
+		{
+			Handles.SupplyMainPipe = AddPipe(Handles.PlantSupplyNode, Handles.SupplyHeaderNode, 0.5 * Spec.MainDesignDropPa / Total2);
+			Handles.ReturnMainPipe = AddPipe(Handles.ReturnHeaderNode, Handles.SeriesHxNode, 0.5 * Spec.MainDesignDropPa / Total2);
+			Handles.SeriesHxPipe = AddPipe(Handles.SeriesHxNode, Handles.PlantReturnNode, SeriesHxDropPa / Total2);
+		}
+	}
+	else
+	{
+		Handles.SupplyMainPipe = AddPipe(Handles.PlantSupplyNode, Handles.SupplyHeaderNode, 0.5 * Spec.MainDesignDropPa / Total2);
+		Handles.ReturnMainPipe = AddPipe(Handles.ReturnHeaderNode, Handles.PlantReturnNode, 0.5 * Spec.MainDesignDropPa / Total2);
+	}
 
 	// Dry cooler coils in parallel back to the pump suction.
 	const double RatedQ = FMath::Max(Spec.ReturnCoilRatedFlowM3s, UE_DOUBLE_SMALL_NUMBER);
 	const int32 NumDry = Spec.ReturnCoils > 0 ? Spec.ReturnCoils : FMath::Max(1, FMath::CeilToInt32(TotalM3s / RatedQ - 1e-9));
 	const double DryR = Spec.ReturnCoilRatedDropPa / (RatedQ * RatedQ);
 	for (int32 K = 0; K < NumDry; ++K) Handles.ReturnCoilPipes.Add(AddPipe(Handles.PlantReturnNode, Handles.SuctionNode, DryR));
+	for (int32 K = 0; K < Spec.StandbyReturnCoils; ++K)
+	{
+		Handles.ReturnCoilPipes.Add(AddPipe(Handles.PlantReturnNode, Handles.SuctionNode, DryR));
+		Network.SetPipeClosed(Handles.ReturnCoilPipes.Last(), true);
+	}
+	Handles.NumStandbyCoils = FMath::Max(Spec.StandbyReturnCoils, 0);
 	const double PerDryQ = TotalM3s / NumDry;
 	const double DryDropPa = DryR * PerDryQ * PerDryQ;
 
@@ -99,7 +134,7 @@ bool FFacilityWaterLoop::Build(const FFacilityLoopSpec& InSpec)
 	//   C = (H0 - H_design) / Q_pump^2 with Q_pump = total / duty pumps.
 	const double PumpQ = TotalM3s / Spec.DutyPumps;
 	const double CheckR = Spec.CheckValveDesignDropPa / (PumpQ * PumpQ);
-	DesignPumpHeadPa = Spec.CheckValveDesignDropPa + Spec.MainDesignDropPa + BranchDropPa + SeriesSecondDropPa + DryDropPa;
+	DesignPumpHeadPa = Spec.CheckValveDesignDropPa + Spec.MainDesignDropPa + SeriesHxDropPa + BranchDropPa + SeriesSecondDropPa + DryDropPa;
 	PumpShutoffPa = Spec.PumpShutoffToDesignHead * DesignPumpHeadPa;
 	PumpCurveCoeff = (PumpShutoffPa - DesignPumpHeadPa) / (PumpQ * PumpQ);
 	for (int32 I = 0; I < Spec.DutyPumps + Spec.StandbyPumps; ++I)

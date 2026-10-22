@@ -34,6 +34,7 @@ struct FPlantVisualPart
 
 // Pipe connection points [m, unit local, on the box face]. Coil = the water that passes the unit in its own loop
 // (dry cooler coil, chiller evaporator), Condenser = a chiller's condenser water (CW loop). "In" is the -X side one.
+// Pump: CoilIn = suction, CoilOut = discharge. Economizer: Coil = chilled water side, Condenser = condenser water side.
 enum class EPlantPort : uint8 { CoilIn, CoilOut, CondenserIn, CondenserOut };
 
 namespace PlantVisual

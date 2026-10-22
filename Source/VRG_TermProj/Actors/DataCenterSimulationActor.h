@@ -7,6 +7,7 @@
 #include "Simulation/Core/SimClock.h"
 #include "Simulation/Coupling/CouplingBridge.h"
 #include "Simulation/Evaluation/VrgEvaluation.h"
+#include "Simulation/Sensors/InstrumentBank.h"
 #include "Simulation/Evaluation/VrgFaultMonitor.h"
 #include "Simulation/Plant/FacilityPlant.h"
 #include "Actors/PlantEquipmentActor.h"
@@ -385,6 +386,11 @@ public:
 	// Writes Saved/Reports/<Name>.json and .md from the running evaluation; false before any simulation step.
 	bool WriteEvaluationReport(const FString& Name, FString& OutSummary) const;
 	const FVrgEvaluation& GetEvaluation() const { return Eval; }
+	// 2026-10-22 instruments on the pipes (flow, water temperature, leak-detection cable every vrg.Sensors.PipeIntervalM)
+	// and on the plant units / CDUs (DataCenterSimulationInstruments.cpp). Simulated measurements (D9).
+	const FInstrumentBank& GetInstruments() const { return Instruments; }
+	// One line of an instrument point's latest readings for the viewport (empty before its first reading).
+	FString DescribeInstrument(int32 Point) const;
 	// Web dashboard stage 1: summary card values at the current SimTime (window values = the report's).
 	FVrgDashboardSummary BuildDashboardSummary() const;
 	// Web dashboard stage 3: plan view of the equipment boxes in the world now, plus the inlet window means.
@@ -416,6 +422,10 @@ private:
 	UPROPERTY() TArray<FRoomCeilingPlate> RoomCeilingPlates;
 	FString RoomAirDomainMessage;
 	FVrgEvaluation Eval;
+	FInstrumentBank Instruments;
+	TArray<FVector> InstrumentPlantNodesM[3];   // plant network node positions at the build (where plant leaks sit)
+	void RebuildInstruments();
+	void InstrumentsAfterStep();
 	FVrgFaultMonitor FaultMonitor;
 	int32 LastTankSampleSecond = -1;
 	void FaultAfterStep();
@@ -510,6 +520,19 @@ private:
 	int32 LastPlantLogSecond = -1;
 	// S8 F1: builds and solves the FWS network from the sized CDU groups and hands each exchanger its branch flow.
 	void BuildFacilityLoop(TArray<FCduCouplingGroup>& Groups);
+	// 2026-10-22: the inputs of the last plant build, so layout mode can rebuild the drawn plant when placed units are
+	// added or deleted (their pipes show at once instead of at the next simulation entry). Display only: layout mode
+	// does not step the plant, and the next entry builds everything again.
+	struct FPlantBuildInputs
+	{
+		bool bValid = false;
+		FFacilityLoopSpec Spec;        // before the placed counts
+		double DesignHeatW = 0.0, WaterCp = 0.0;
+		TArray<FPlantCrahCoil> Coils;
+		FPlantEquipmentCounts Placed;  // the counts the current Plant was built with
+	} PlantBuild;
+	bool BuildPlantWithCounts(const FPlantEquipmentCounts& Placed);
+	void RebuildPlantIfCountsChanged();
 	// S8 F2: CDU inlet = plant supply before the coupling step; the plant advances with that step's duties after it.
 	void PlantBeforeStep();
 	void PlantAfterStep(double DtS);

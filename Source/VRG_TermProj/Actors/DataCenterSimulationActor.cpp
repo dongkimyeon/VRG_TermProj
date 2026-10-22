@@ -40,6 +40,11 @@
 #include "GameFramework/PlayerController.h"
 #include "Materials/MaterialInstanceDynamic.h"
 #include "Materials/MaterialInterface.h"
+#if WITH_EDITOR
+#include "Misc/PackageName.h"
+#include "UObject/Package.h"
+#include "UObject/SavePackage.h"
+#endif
 
 ADataCenterSimulationActor::ADataCenterSimulationActor()
 {
@@ -51,6 +56,37 @@ ADataCenterSimulationActor::ADataCenterSimulationActor()
 	static ConstructorHelpers::FObjectFinder<UMaterialInterface> ShellMaterial(TEXT("/Engine/BasicShapes/BasicShapeMaterial.BasicShapeMaterial"));
 	RoomShellMaterial = ShellMaterial.Object;
 }
+
+#if WITH_EDITOR
+// 2026-10-22 (docs/기록/09): a level default edited without the editor UI. Sets the containment of the integrated actor
+// in the open editor level and saves that actor's package (world partition external actor: Modify() before the change,
+// or nothing is saved). Run in the editor, not -game: UnrealEditor <proj> <map> -ExecCmds="vrg.Dev.SaveLevelContainment 2,quit".
+static FAutoConsoleCommand GVrgDevSaveLevelContainment(
+	TEXT("vrg.Dev.SaveLevelContainment"),
+	TEXT("에디터 전용: 열린 레벨의 통합 액터 컨테인먼트 기본값을 바꾸고 저장한다. vrg.Dev.SaveLevelContainment <0|1|2>"),
+	FConsoleCommandWithArgsDelegate::CreateLambda([](const TArray<FString>& Args)
+	{
+		if (Args.Num() == 0 || GEngine == nullptr) return;
+		const int32 Mode = FMath::Clamp(FCString::Atoi(*Args[0]), 0, 2);
+		for (const FWorldContext& Context : GEngine->GetWorldContexts())
+		{
+			UWorld* World = Context.World();
+			if (Context.WorldType != EWorldType::Editor || World == nullptr) continue;
+			for (TActorIterator<ADataCenterSimulationActor> It(World); It; ++It)
+			{
+				It->Modify();
+				It->Containment = static_cast<EAisleContainment>(Mode);
+				UPackage* Package = It->GetExternalPackage() ? It->GetExternalPackage() : It->GetPackage();
+				const FString File = FPackageName::LongPackageNameToFilename(Package->GetName(),
+					Package->ContainsMap() ? FPackageName::GetMapPackageExtension() : FPackageName::GetAssetPackageExtension());
+				FSavePackageArgs SaveArgs;
+				SaveArgs.TopLevelFlags = RF_Standalone;
+				const bool bSaved = UPackage::SavePackage(Package, nullptr, *File, SaveArgs);
+				UE_LOG(LogTemp, Display, TEXT("[VrgDev] %s 컨테인먼트 %d 저장 %s: %s"), *It->GetName(), Mode, bSaved ? TEXT("성공") : TEXT("실패"), *File);
+			}
+		}
+	}));
+#endif
 
 // Shows or hides the automatic room shell of every running integrated actor (display only).
 static FAutoConsoleCommand GVrgRoomShellCommand(
@@ -1230,6 +1266,10 @@ void ADataCenterSimulationActor::BuildFacilityLoop(TArray<FCduCouplingGroup>& Gr
 	{
 		Spec.BranchDesignFlowM3s.Add(Groups[G].Hx.FacilityMassFlowKgs / CoolantDensityKgM3);
 		if (CduSummaries.IsValidIndex(G)) DesignHeatW += CduSummaries[G].DesignDutyW;
+		// F5: the CDU pump's input ends up in the coolant and so in the facility water (2026-10-22 audit: left out of the
+		// design heat, the trim chiller was sized exactly that short; docs/기록/09).
+		const int32 Pump = Room != nullptr && CduGroupRows.IsValidIndex(G) ? Room->GetRowPumpIndex(CduGroupRows[G]) : INDEX_NONE;
+		if (Pump != INDEX_NONE) DesignHeatW += Room->GetNetwork().GetPumpElectricalInputPowerW(Pump);
 	}
 	const double WaterCp = Groups.Num() > 0 ? Groups[0].Hx.FacilityCpJKgK : 4180.0;
 	// S8 F3: the CRAH coils as sized by BuildCrahUnits (design air flow, old infinite-water UA). No units (ceiling coil
@@ -1254,9 +1294,9 @@ void ADataCenterSimulationActor::BuildFacilityLoop(TArray<FCduCouplingGroup>& Gr
 	AutomaticPlant = MakeUnique<FFacilityPlant>();
 	if (Groups.Num() == 0 || !AutomaticPlant->Build(Spec, PlantThermalSpec, DesignHeatW, CoolantDensityKgM3, WaterCp, FHydraulicSolveSettings(), Coils, CoilSupplyTempK))
 		AutomaticPlant.Reset();
-	FFacilityThermalSpec Thermal = PlantThermalSpec;
+	PlantBuild.bValid = Groups.Num() > 0;
+	PlantBuild.Spec = Spec; PlantBuild.DesignHeatW = DesignHeatW; PlantBuild.WaterCp = WaterCp; PlantBuild.Coils = Coils;
 	const FPlantEquipmentCounts Placed = VrgPlantEquipment::CountInWorld(GetWorld());
-	FacilityPlantLayout::ApplyEquipmentCounts(Placed, Thermal, Spec);
 	if (Placed.Any())
 	{
 		int32 InsideRoom = 0;
@@ -1266,7 +1306,7 @@ void ADataCenterSimulationActor::BuildFacilityLoop(TArray<FCduCouplingGroup>& Gr
 			Placed.FwsDryCoolers, Placed.CwDryCoolers, Placed.Chillers, Placed.TrimChillers,
 			InsideRoom > 0 ? *FString::Printf(TEXT(", 경고: %d대가 공기 영역과 겹친다(공기 격자에는 없다)"), InsideRoom) : TEXT(""));
 	}
-	if (Groups.Num() == 0 || !Plant.Build(Spec, Thermal, DesignHeatW, CoolantDensityKgM3, WaterCp, FHydraulicSolveSettings(), Coils, CoilSupplyTempK))
+	if (Groups.Num() == 0 || !BuildPlantWithCounts(Placed))
 	{
 		const FFacilityLoopResult& R = Plant.GetLoopResult();
 		UE_LOG(LogTemp, Warning, TEXT("[Plant] 설비를 만들지 못했다(CDU 분기 %d, 수력 %s, 차압 잔차 %.3e, 속도 %.4f%s). 고정 설비수 경계를 쓴다."),
@@ -1934,6 +1974,7 @@ void ADataCenterSimulationActor::Tick(float DeltaTime)
 				if (Mode == ESimMode::Simulation) EnterLayoutMode();
 			}
 		}
+		RebuildPlantIfCountsChanged();   // an added / deleted unit gets its pipes now
 		UpdatePlantDisplay(false);   // placed units move while dragged
 		// The controller's one-line key hint covers layout mode; this banner is a debug readout now.
 		if (bShowSummary && GEngine != nullptr && VrgHud::ShowDebugText())
@@ -2022,6 +2063,28 @@ void ADataCenterSimulationActor::Tick(float DeltaTime)
 	PublishDashboard();
 }
 
+bool ADataCenterSimulationActor::BuildPlantWithCounts(const FPlantEquipmentCounts& Placed)
+{
+	// S8 F8: units placed in layout mode set the count of their kind; kinds with none keep the automatic sizing rule.
+	FFacilityThermalSpec Thermal = PlantThermalSpec;
+	FFacilityLoopSpec Spec = PlantBuild.Spec;
+	FacilityPlantLayout::ApplyEquipmentCounts(Placed, Thermal, Spec);
+	PlantBuild.Placed = Placed;
+	return PlantBuild.bValid && Plant.Build(Spec, Thermal, PlantBuild.DesignHeatW, CoolantDensityKgM3, PlantBuild.WaterCp, FHydraulicSolveSettings(),
+		PlantBuild.Coils, CoilSupplyTempK);
+}
+
+void ADataCenterSimulationActor::RebuildPlantIfCountsChanged()
+{
+	if (Mode != ESimMode::Layout || !bPlantBuilt || !PlantBuild.bValid || GetWorld() == nullptr) return;
+	const FPlantEquipmentCounts Now = VrgPlantEquipment::CountInWorld(GetWorld());
+	if (Now == PlantBuild.Placed) return;
+	bPlantBuilt = BuildPlantWithCounts(Now);
+	UE_LOG(LogTemp, Display, TEXT("[Plant] 배치 모드: 설비 장비 대수가 바뀌어 표시용 설비를 다시 지었다(FWS 드라이쿨러 %d, CW 드라이쿨러 %d, 냉수 칠러 %d, 트림 칠러 %d; 0 = 자동)%s"),
+		Now.FwsDryCoolers, Now.CwDryCoolers, Now.Chillers, Now.TrimChillers, bPlantBuilt ? TEXT("") : TEXT(" - 실패: 다음 진입 때 다시 짓는다"));
+	UpdatePlantDisplay(true);
+}
+
 FPlantDisplayInput ADataCenterSimulationActor::MakePlantDisplayInput() const
 {
 	FPlantDisplayInput In;
@@ -2049,6 +2112,10 @@ FPlantDisplayInput ADataCenterSimulationActor::MakePlantDisplayInput() const
 	In.CwDryCoolers = Units(EPlantUnitKind::CwDryCooler);
 	In.Chillers = Units(EPlantUnitKind::Chiller);
 	In.TrimChillers = Units(EPlantUnitKind::TrimChiller);
+	In.FwsPumps = Units(EPlantUnitKind::FwsPump);
+	In.ChwPumps = Units(EPlantUnitKind::ChwPump);
+	In.CwPumps = Units(EPlantUnitKind::CwPump);
+	In.Economizers = Units(EPlantUnitKind::Economizer);
 	return In;
 }
 
@@ -2061,20 +2128,23 @@ bool ADataCenterSimulationActor::CaptureAutomaticPlantUnits(EPlantUnitKind Kind,
 		return false;
 	}
 	if (!VrgPlantEquipment::Gather(GetWorld(), Kind).IsEmpty()) return true;
-	// Schematic positions of the automatic plant beside the room as it is now (no placed units in the input).
+	// The units as drawn now (2026-10-22): the drawn plant has the automatic count of every kind with no placed unit
+	// (layout mode rebuilds it when placed counts change), and its yard lanes already make room for the other kinds'
+	// placed units, so the converted actors stand exactly where the user saw them. Before a drawn plant exists, the
+	// automatic plant's schematic positions (no placed units in the input).
 	FPlantDisplayInput In = MakePlantDisplayInput();
-	In.FwsDryCoolers.Reset(); In.CwDryCoolers.Reset(); In.Chillers.Reset(); In.TrimChillers.Reset();
-	const FPlantDisplaySnapshot S = PlantDisplay::Build(*AutomaticPlant, In);
+	const bool bDrawn = bPlantBuilt && Plant.IsBuilt();
+	if (!bDrawn) In.ClearPlaced();
+	const FPlantDisplaySnapshot S = PlantDisplay::Build(bDrawn ? Plant : *AutomaticPlant, In);
 	for (const FPlantDisplayEquipment& E : S.Equipment)
 	{
-		const bool bMatch = Kind == EPlantUnitKind::FwsDryCooler ? E.Kind == EPlantEquipmentKind::DryCooler && E.Loop == EPlantLoopId::Fws
-			: Kind == EPlantUnitKind::CwDryCooler ? E.Kind == EPlantEquipmentKind::DryCooler && E.Loop == EPlantLoopId::Cw
-			: Kind == EPlantUnitKind::Chiller ? E.Kind == EPlantEquipmentKind::Chiller : E.Kind == EPlantEquipmentKind::TrimChiller;
-		if (!bMatch) continue;
+		EPlantUnitKind EKind;
+		if (!VrgPlantEquipment::KindOf(E, EKind) || EKind != Kind || E.bPlaced) continue;
 		FPlantEquipmentRecord& R = Out.AddDefaulted_GetRef();
 		R.Kind = Kind;
 		R.SizeM = E.SizeM;
-		R.Transform = FTransform(SimUnits::MetersToUnreal(E.CenterM - FVector(0, 0, 0.5 * E.SizeM.Z)));
+		// Pumps are drawn turned (suction toward the header); the box origin is its bottom centre.
+		R.Transform = FTransform(E.Rotation, SimUnits::MetersToUnreal(E.CenterM - E.Rotation.RotateVector(FVector(0, 0, 0.5 * E.SizeM.Z))));
 	}
 	return true;
 }
@@ -2101,6 +2171,7 @@ void ADataCenterSimulationActor::UpdatePlantDisplay(bool bForce)
 	// Wall time throttles the display upload only; it never advances or changes the simulation clock.
 	const double NowS = FPlatformTime::Seconds();
 	if (!bForce && NowS - LastPlantDisplayWallS < 0.25) return;
+	VRG_SCOPE_COST(STAT_VrgPlantDisplay, PlantDisplayMs);
 	LastPlantDisplayWallS = NowS;
 	if (PlantDisplay == nullptr) return;
 	FPlantDisplayInput In = MakePlantDisplayInput();
@@ -2109,15 +2180,15 @@ void ADataCenterSimulationActor::UpdatePlantDisplay(bool bForce)
 	PlantDisplay->ShowSnapshot(S);
 	// Placed units draw themselves: give them their status (live) or their kind colour back.
 	TMap<const APlantEquipmentActor*, FLinearColor> Status;
-	const TArray<APlantEquipmentActor*> Kinds[4] = { VrgPlantEquipment::Gather(GetWorld(), EPlantUnitKind::FwsDryCooler),
-		VrgPlantEquipment::Gather(GetWorld(), EPlantUnitKind::CwDryCooler), VrgPlantEquipment::Gather(GetWorld(), EPlantUnitKind::Chiller),
-		VrgPlantEquipment::Gather(GetWorld(), EPlantUnitKind::TrimChiller) };
+	TArray<APlantEquipmentActor*> Kinds[NumPlantUnitKinds];
+	for (int32 K = 0; K < NumPlantUnitKinds; ++K) Kinds[K] = VrgPlantEquipment::Gather(GetWorld(), static_cast<EPlantUnitKind>(K));
 	if (In.bLive)
 		for (const FPlantDisplayEquipment& E : S.Equipment)
 		{
-			if (!E.bPlaced) continue;
-			const int32 K = E.Kind == EPlantEquipmentKind::DryCooler ? (E.Loop == EPlantLoopId::Fws ? 0 : 1) : E.Kind == EPlantEquipmentKind::Chiller ? 2 : 3;
-			if (Kinds[K].IsValidIndex(E.Index)) Status.Add(Kinds[K][E.Index], PlantDisplay::EquipmentColor(E));
+			EPlantUnitKind Kind;
+			if (!E.bPlaced || !VrgPlantEquipment::KindOf(E, Kind)) continue;
+			const TArray<APlantEquipmentActor*>& Placed = Kinds[int32(Kind)];
+			if (Placed.IsValidIndex(E.Index)) Status.Add(Placed[E.Index], PlantDisplay::EquipmentColor(E));
 		}
 	for (const TArray<APlantEquipmentActor*>& Units : Kinds)
 		for (APlantEquipmentActor* U : Units)
@@ -3113,6 +3184,7 @@ void ADataCenterSimulationActor::EvalAfterStep()
 	{
 		Eval.Reset(EvalSettings, Inlets.Num(), Inlets);
 		bEvalReady = true;
+		RebuildInstruments();   // the run's pipes, units and CDUs exist by its first step
 	}
 	FVrgEvaluationSample Power;
 	Power.ItW = Bridge.GetLastItHeatW();
@@ -3125,6 +3197,7 @@ void ADataCenterSimulationActor::EvalAfterStep()
 	Power.bPlant = bPlantActive && Plant.IsThermalActive();
 	Power.PlantW = Power.bPlant ? Plant.GetPlantElectricW() : 0.0;
 	Eval.AfterStep(Clock.GetSimTimeS(), Clock.GetFixedStepS(), Inlets, Power);
+	InstrumentsAfterStep();
 }
 
 double ADataCenterSimulationActor::GetSiteEnergyInJ() const

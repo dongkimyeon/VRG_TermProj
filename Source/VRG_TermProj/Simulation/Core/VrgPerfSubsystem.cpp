@@ -214,7 +214,7 @@ void UVrgPerfSubsystem::FinishCapture()
 	// 첫 몇 프레임은 레벨 로드와 셰이더 컴파일이 섞여 대표값이 아니다.
 	const int32 WarmupFrames = FMath::Min(Samples.Num() / 4, 30);
 
-	FString Csv = TEXT("TimeS,FrameMs,GameMs,DrawMs,GpuMs,SolverMs,PressureMs,CouplingMs,DebugDrawMs,SolverSteps,PressureIterations,DrawnPrimitives,DashboardMs\n");
+	FString Csv = TEXT("TimeS,FrameMs,GameMs,DrawMs,GpuMs,SolverMs,PressureMs,CouplingMs,DebugDrawMs,SolverSteps,PressureIterations,DrawnPrimitives,DashboardMs,LayoutEditMs,PlantDisplayMs,RoomTickMs\n");
 	TArray<double> FrameMs;
 	TArray<double> GameMs;
 	TArray<double> DrawMs;
@@ -225,13 +225,18 @@ void UVrgPerfSubsystem::FinishCapture()
 	double DrawnSum = 0.0;
 	double IterationSum = 0.0;
 	double DashboardSum = 0.0;
+	// Layout-mode costs: the median hides a 0.25 s throttled cost, so the summary gives the 95% and the max.
+	TArray<double> LayoutEditMs;
+	TArray<double> PlantDisplayMs;
+	TArray<double> RoomTickMs;
 	for (int32 Index = 0; Index < Samples.Num(); ++Index)
 	{
 		const FVrgPerfSample& S = Samples[Index];
-		Csv += FString::Printf(TEXT("%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%d,%d,%d,%.4f\n"),
+		Csv += FString::Printf(TEXT("%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%d,%d,%d,%.4f,%.4f,%.4f,%.4f\n"),
 			S.TimeS, S.FrameMs, S.GameMs, S.DrawMs, S.GpuMs,
 			S.Costs.SolverMs, S.Costs.PressureMs, S.Costs.CouplingMs, S.Costs.DebugDrawMs,
-			S.Costs.SolverSteps, S.Costs.PressureIterations, S.Costs.DrawnPrimitives, S.Costs.DashboardMs);
+			S.Costs.SolverSteps, S.Costs.PressureIterations, S.Costs.DrawnPrimitives, S.Costs.DashboardMs,
+			S.Costs.LayoutEditMs, S.Costs.PlantDisplayMs, S.Costs.RoomTickMs);
 		if (Index < WarmupFrames)
 		{
 			continue;
@@ -246,7 +251,11 @@ void UVrgPerfSubsystem::FinishCapture()
 		DrawnSum += S.Costs.DrawnPrimitives;
 		IterationSum += S.Costs.PressureIterations;
 		DashboardSum += S.Costs.DashboardMs;
+		LayoutEditMs.Add(S.Costs.LayoutEditMs);
+		PlantDisplayMs.Add(S.Costs.PlantDisplayMs);
+		RoomTickMs.Add(S.Costs.RoomTickMs);
 	}
+	auto MaxMs = [](const TArray<double>& V) { double M = 0.0; for (double X : V) M = FMath::Max(M, X); return M; };
 
 	const int32 Counted = FMath::Max(1, FrameMs.Num());
 	const FString Summary = FString::Printf(
@@ -255,6 +264,7 @@ void UVrgPerfSubsystem::FinishCapture()
 		TEXT("  95%% ms     Frame %.2f | Game %.2f | Draw %.2f | GPU %.2f\n")
 		TEXT("  중앙값 ms  솔버 %.2f | 압력 %.2f | 디버그 드로우 %.2f\n")
 		TEXT("  프레임당 평균 압력 반복 %.1f회 | 디버그 프리미티브 %.0f개 | 웹 요약 생성 프레임당 평균 %.4f ms\n")
+		TEXT("  배치 ms (중앙/95%%/최대)  편집 %.2f/%.2f/%.2f | 설비 마당 %.2f/%.2f/%.2f | 방 Tick %.2f/%.2f/%.2f\n")
 		TEXT("  측정값이다. 보장값이 아니다 (D10)."),
 		*CaptureLabel, Samples.Num(), WarmupFrames, FrameMs.Num(),
 		PercentileMs(FrameMs, 0.5), PercentileMs(GameMs, 0.5),
@@ -262,7 +272,10 @@ void UVrgPerfSubsystem::FinishCapture()
 		PercentileMs(FrameMs, 0.95), PercentileMs(GameMs, 0.95),
 		PercentileMs(DrawMs, 0.95), PercentileMs(GpuMs, 0.95),
 		PercentileMs(SolverMs, 0.5), PercentileMs(PressureMs, 0.5), PercentileMs(DebugDrawMs, 0.5),
-		IterationSum / Counted, DrawnSum / Counted, DashboardSum / Counted);
+		IterationSum / Counted, DrawnSum / Counted, DashboardSum / Counted,
+		PercentileMs(LayoutEditMs, 0.5), PercentileMs(LayoutEditMs, 0.95), MaxMs(LayoutEditMs),
+		PercentileMs(PlantDisplayMs, 0.5), PercentileMs(PlantDisplayMs, 0.95), MaxMs(PlantDisplayMs),
+		PercentileMs(RoomTickMs, 0.5), PercentileMs(RoomTickMs, 0.95), MaxMs(RoomTickMs));
 
 	const FString Directory = FPaths::ProjectSavedDir() / TEXT("Profiling");
 	IFileManager::Get().MakeDirectory(*Directory, true);

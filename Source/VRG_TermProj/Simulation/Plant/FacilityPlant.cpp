@@ -9,7 +9,11 @@ void FDryCoolerBank::Control(double DtS, double InK, double TotalKgs, double CpJ
 	auto Outlet = [&](double R) { return WaterWK > 0.0 ? InK - Heat(R, InK, TotalKgs, CpJKgK, AirK) / WaterWK : InK; };
 	const double Min = FMath::Clamp(MinFan, 0.0, 1.0);
 	double T;
-	if (Outlet(1.0) > SetpointK) T = 1.0 + 1e-6;            // above full speed: setpoint not met
+	// Air not colder than the water (2026-10-22 audit, docs/기록/09): the fans could only warm it, so the controller
+	// stops them (natural convection neglected, as for a failed fan); the setpoint is not met by the coolers.
+	const bool bAirNotColder = InK <= AirK;
+	if (bAirNotColder) T = InK > SetpointK ? -1.0 : 0.0;
+	else if (Outlet(1.0) > SetpointK) T = 1.0 + 1e-6;       // above full speed: setpoint not met
 	else if (Outlet(Min) <= SetpointK) T = Min;
 	else
 	{
@@ -17,9 +21,9 @@ void FDryCoolerBank::Control(double DtS, double InK, double TotalKgs, double CpJ
 		for (int32 I = 0; I < 80; ++I) { const double Mid = 0.5 * (Lo + Hi); (Outlet(Mid) > SetpointK ? Lo : Hi) = Mid; }
 		T = 0.5 * (Lo + Hi);
 	}
-	bNotMet = T > 1.0;
-	Target = FMath::Min(T, 1.0);
-	bOverCooling = Target <= Min && Outlet(Min) < SetpointK - 1e-6;
+	bNotMet = T > 1.0 || T < 0.0;
+	Target = FMath::Clamp(T, 0.0, 1.0);
+	bOverCooling = !bAirNotColder && Target <= Min && Outlet(Min) < SetpointK - 1e-6;
 	const double MaxChange = FMath::Max(RampPerS, 0.0) * DtS;
 	Fan = FMath::Clamp(Target, Fan - MaxChange, Fan + MaxChange);
 	if (bNotMet) NotMetS += DtS;
@@ -38,6 +42,25 @@ void FacilityPlantLayout::ApplyEquipmentCounts(const FPlantEquipmentCounts& Coun
 	{
 		Thermal.TrimDutyChillers = FMath::Max(1, Counts.TrimChillers - 1);
 		Thermal.TrimStandbyChillers = Counts.TrimChillers - Thermal.TrimDutyChillers;
+	}
+	if (Counts.FwsPumps > 0)
+	{
+		FwsLoop.DutyPumps = FMath::Max(1, Counts.FwsPumps - 1);
+		FwsLoop.StandbyPumps = Counts.FwsPumps - FwsLoop.DutyPumps;
+	}
+	if (Counts.ChwPumps > 0) Thermal.ChwPumps = Counts.ChwPumps;
+	if (Counts.CwPumps > 0) Thermal.CwPumps = Counts.CwPumps;
+	if (Counts.Economizers > 0) Thermal.bEconomizer = true;
+}
+
+namespace
+{
+	// Placed pump count N of a loop: max(1, N - 1) duty + the rest standby (0 = the spec's default).
+	void ApplyPumpCount(int32 N, FFacilityLoopSpec& Spec)
+	{
+		if (N <= 0) return;
+		Spec.DutyPumps = FMath::Max(1, N - 1);
+		Spec.StandbyPumps = N - Spec.DutyPumps;
 	}
 }
 
@@ -99,6 +122,25 @@ bool FFacilityPlant::Build(const FFacilityLoopSpec& LoopSpec, const FFacilityThe
 	if (Thermal.DryCoolers > 0) FwsBank.Units = Thermal.DryCoolers;
 	else if (DesignItdK > 0.0) FwsBank.Units = FMath::Max(1, FMath::CeilToInt32(DesignHeatW / (Thermal.DryCooler.RatedHeatW * DesignItdK / Thermal.DryCooler.RatedItdK) - 1e-9));
 	else FwsBank.Units = FMath::Max(1, Loop.GetHandles().ReturnCoilPipes.Num());   // return colder than the design air: by flow
+	// One coil per unit (2026-10-22, the rule placed units already follow): the automatic loop counted its coils by the
+	// rated coil flow, the bank its units by heat, so units without a coil were drawn with no pipe. Rebuild the loop with
+	// the bank's count; at design the branch flows stay the design flows (the pumps are sized to them).
+	if (FwsBank.Units != Loop.GetHandles().ReturnCoilPipes.Num())
+	{
+		FFacilityLoopSpec OneCoilPerUnit = LoopSpec;
+		OneCoilPerUnit.ReturnCoils = FwsBank.Units;
+		if (!Loop.Build(OneCoilPerUnit)) return false;
+		Loop.GetMutableNetwork().SetFluidDensityKgM3(WaterDensityKgM3);
+		LoopResult = Loop.Solve(Settings);
+		if (!LoopResult.bControlConverged) return false;
+		BranchKgs.Reset();
+		TotalKgs = 0.0;
+		for (int32 G = 0; G < Loop.GetNumBranches(); ++G)
+		{
+			BranchKgs.Add(FMath::Max(Loop.GetBranchFlowM3s(G), 0.0) * WaterDensityKgM3);
+			TotalKgs += BranchKgs.Last();
+		}
+	}
 	FwsBank.SetpointK = Thermal.SupplySetpointK;
 	FwsBank.MinFan = Thermal.MinFanRatio; FwsBank.RampPerS = Thermal.FanRampPerS;
 	FwsBank.Fan = FwsBank.Target = FMath::Clamp(Thermal.MinFanRatio, 0.0, 1.0);
@@ -186,6 +228,10 @@ bool FFacilityPlant::BuildChilledWater(const TArray<FPlantCrahCoil>& Crahs, cons
 	const FChillerCurves& K = Thermal.Chiller;
 	const int32 NDuty = FMath::Max(Thermal.DutyChillers, 1);
 	ChwSpec.ReturnCoils = NDuty;
+	ChwSpec.StandbyReturnCoils = FMath::Max(Thermal.StandbyChillers, 0);   // isolated evaporators of the standby units
+	ApplyPumpCount(Thermal.ChwPumps, ChwSpec);
+	// The economizer's chilled water side in the return main (the CW side is added by BuildCondenser).
+	if (Thermal.bEconomizer) ChwSpec.SeriesHxDesignDropPa = Thermal.EconomizerDesignDropPa;
 	double ChwTotalM3s = 0.0;
 	for (const double Q : ChwSpec.BranchDesignFlowM3s) ChwTotalM3s += Q;
 	if (ChwSpec.SecondStageDesignFlowM3s.Num() > 0)
@@ -229,7 +275,12 @@ bool FFacilityPlant::BuildCondenser(const FHydraulicSolveSettings& Settings)
 	CwSpec.BranchHxDesignDropPa = Thermal.CondenserDesignDropPa;
 	for (int32 I = 0; I < NChw; ++I) CwSpec.BranchDesignFlowM3s.Add(ChwCondW / NChw / (WaterRho * WaterCp * CwRiseK));
 	for (int32 I = 0; I < NTrim; ++I) CwSpec.BranchDesignFlowM3s.Add(TrimCondW / NTrim / (WaterRho * WaterCp * CwRiseK));
+	// Isolated condensers of the standby units (chillers, then trim chillers), after the duty branches.
+	for (int32 I = 0; I < (bChw ? FMath::Max(Thermal.StandbyChillers, 0) : 0); ++I) CwSpec.StandbyBranchDesignFlowM3s.Add(CwSpec.BranchDesignFlowM3s[0]);
+	for (int32 I = 0; I < (bTrim ? FMath::Max(Thermal.TrimStandbyChillers, 0) : 0); ++I) CwSpec.StandbyBranchDesignFlowM3s.Add(CwSpec.BranchDesignFlowM3s.Last());
 	const double CwItdK = CwDesignInK + CwRiseK - Thermal.DesignAmbientK;
+	ApplyPumpCount(Thermal.CwPumps, CwSpec);
+	if (bChw && Thermal.bEconomizer) { CwSpec.SeriesHxDesignDropPa = Thermal.EconomizerDesignDropPa; CwSpec.bSeriesHxOnSupply = true; }
 	CwBank.Units = Thermal.CwDryCoolers > 0 ? Thermal.CwDryCoolers
 		: FMath::Max(1, FMath::CeilToInt32(DesignCondW / (Thermal.DryCooler.RatedHeatW * FMath::Max(CwItdK, 0.1) / Thermal.DryCooler.RatedItdK) - 1e-9));
 	CwSpec.ReturnCoils = CwBank.Units;
@@ -716,3 +767,103 @@ double FFacilityPlant::GetPlantElectricW() const
 	if (!IsThermalActive()) return 0.0;
 	return GetPumpElectricW() + GetFanElectricW() + GetCwFanElectricW() + State.ChillerPowerW + State.TrimPowerW;
 }
+
+FPlantUnitTruth FFacilityPlant::GetDryCoolerTruth(EPlantLoopId Id, int32 Unit) const
+{
+	FPlantUnitTruth T;
+	const bool bFws = Id == EPlantLoopId::Fws;
+	if ((bFws && IsCombined()) || (!bFws && (Id != EPlantLoopId::Cw || !bCw))) return T;
+	const FDryCoolerBank& B = bFws ? FwsBank : CwBank;
+	const FFacilityWaterLoop* L = GetLoopFor(Id);
+	if (B.Units <= 0 || Unit < 0 || Unit >= B.Units || L == nullptr) return T;
+	const int32 Working = FMath::Max(B.Units - B.Tripped, 0);
+	T.bFailed = Unit >= B.Units - B.Tripped;
+	const double UnitKgs = (bFws ? TotalKgs : CwKgs) / B.Units;
+	T.WaterInK = bFws ? Fws.ReturnK : Cw.ReturnK;
+	T.HeatW = !T.bFailed && Working > 0 ? B.HeatW / Working : 0.0;
+	T.WaterOutK = UnitKgs > 0.0 ? T.WaterInK - T.HeatW / (UnitKgs * WaterCp) : T.WaterInK;
+	const TArray<int32>& Coils = L->GetHandles().ReturnCoilPipes;
+	T.FlowM3s = Coils.IsValidIndex(Unit) ? L->GetNetwork().GetPipeFlowM3s(Coils[Unit]) : UnitKgs / WaterRho;
+	T.FanRatio = T.bFailed ? 0.0 : B.Fan;
+	T.PowerW = DryCooler::FanElectricW(B.Dc, T.FanRatio);
+	T.bRunning = T.FanRatio > 0.0;
+	return T;
+}
+
+FPlantUnitTruth FFacilityPlant::GetChillerTruth(int32 Unit, bool bTrimChiller) const
+{
+	FPlantUnitTruth T;
+	if (bTrimChiller ? !bTrim : !bChw) return T;
+	const int32 Duty = bTrimChiller ? FMath::Max(Thermal.TrimDutyChillers, 1) : FMath::Max(Thermal.DutyChillers, 1);
+	const int32 Units = Duty + FMath::Max(bTrimChiller ? Thermal.TrimStandbyChillers : Thermal.StandbyChillers, 0);
+	if (Unit < 0 || Unit >= Units) return T;
+	const int32 Running = bTrimChiller ? State.TrimRunning : State.ChillersRunning;
+	T.bFailed = Unit >= Units - (bTrimChiller ? State.TrippedTrimChillers : State.TrippedChillers);
+	T.bRunning = !T.bFailed && Unit < Running;
+	// Evaporator: after the economizer (CHW) or after the dry coolers (FWS trim), the flow shared among running units.
+	const double EvapWK = bTrimChiller ? Fws.FlowWK : Chw.FlowWK;
+	T.WaterInK = bTrimChiller ? (Fws.FlowWK > 0.0 ? Fws.ReturnK - FwsBank.HeatW / Fws.FlowWK : Fws.ReturnK)
+		: (Chw.FlowWK > 0.0 ? Chw.ReturnK - State.EconomizerW / Chw.FlowWK : Chw.ReturnK);
+	const double LoadW = Running > 0 ? (bTrimChiller ? State.TrimLoadW : State.ChillerLoadW) / Running : 0.0;
+	const double PowerW = Running > 0 ? (bTrimChiller ? State.TrimPowerW : State.ChillerPowerW) / Running : 0.0;
+	T.HeatW = T.bRunning ? LoadW : 0.0;
+	T.PowerW = T.bRunning ? PowerW : 0.0;
+	T.Cop = T.bRunning && PowerW > 0.0 ? LoadW / PowerW : NAN;
+	T.WaterOutK = T.bRunning && Running > 0 && EvapWK > 0.0 ? T.WaterInK - LoadW / (EvapWK / Running) : T.WaterInK;
+	if (bTrimChiller) T.FlowM3s = T.bRunning && Running > 0 ? TotalKgs / WaterRho / Running : 0.0;
+	else
+	{
+		const TArray<int32>& Coils = ChwLoop.GetHandles().ReturnCoilPipes;
+		T.FlowM3s = Coils.IsValidIndex(Unit) ? ChwLoop.GetNetwork().GetPipeFlowM3s(Coils[Unit]) : 0.0;
+	}
+	// Condenser branch: duty chillers, duty trims, then the isolated standby chillers and standby trims (BuildCondenser).
+	if (bCw)
+	{
+		const int32 NChw = bChw ? FMath::Max(Thermal.DutyChillers, 1) : 0, NTrim = bTrim ? FMath::Max(Thermal.TrimDutyChillers, 1) : 0;
+		const int32 NChwStandby = bChw ? FMath::Max(Thermal.StandbyChillers, 0) : 0;
+		const int32 FirstStandby = CwLoop.GetNumBranches() - CwLoop.GetHandles().NumStandbyBranches;
+		const int32 Branch = bTrimChiller ? (Unit < NTrim ? NChw + Unit : FirstStandby + NChwStandby + (Unit - NTrim))
+			: (Unit < NChw ? Unit : FirstStandby + (Unit - NChw));
+		T.CondFlowM3s = Branch >= 0 && Branch < CwLoop.GetNumBranches() ? CwLoop.GetBranchFlowM3s(Branch) : 0.0;
+		T.CondInK = Cw.FlowWK > 0.0 ? Cw.SupplyK + State.EconomizerW / Cw.FlowWK : Cw.SupplyK;
+		const double CondKgs = FMath::Max(T.CondFlowM3s, 0.0) * WaterRho;
+		T.CondOutK = T.bRunning && CondKgs > 0.0 ? T.CondInK + (LoadW + PowerW) / (CondKgs * WaterCp) : T.CondInK;
+	}
+	return T;
+}
+
+FPlantUnitTruth FFacilityPlant::GetPumpTruth(EPlantLoopId Id, int32 Pump) const
+{
+	FPlantUnitTruth T;
+	const FFacilityWaterLoop* L = GetLoopFor(Id);
+	if (L == nullptr || !L->GetHandles().Pumps.IsValidIndex(Pump)) return T;
+	const FHydraulicNetwork& N = L->GetNetwork();
+	const int32 P = L->GetHandles().Pumps[Pump];
+	T.bRunning = L->IsPumpRunning(Pump);
+	T.bFailed = L->IsPumpTripped(Pump);
+	const FFacilityLoopResult& R = Id == EPlantLoopId::Fws ? LoopResult : Id == EPlantLoopId::Chw ? ChwResult : CwResult;
+	T.SpeedRatio = T.bRunning ? R.PumpSpeedRatio : 0.0;
+	T.FlowM3s = T.bRunning ? N.GetPumpFlowM3s(P) : 0.0;
+	T.HeadPa = T.bRunning ? N.GetNodePressurePa(N.GetPumpToNodeIndex(P)) - N.GetNodePressurePa(N.GetPumpFromNodeIndex(P)) : 0.0;
+	T.PowerW = T.bRunning ? N.GetPumpElectricalInputPowerW(P) : 0.0;
+	// The pumps take the water after the sinks (dry coolers / chillers): the loop supply temperature.
+	T.WaterInK = Id == EPlantLoopId::Fws ? Fws.SupplyK : Id == EPlantLoopId::Chw ? Chw.SupplyK : Cw.SupplyK;
+	return T;
+}
+
+FPlantUnitTruth FFacilityPlant::GetEconomizerTruth() const
+{
+	FPlantUnitTruth T;
+	if (!HasEconomizer()) return T;
+	T.bRunning = bEconOn;
+	T.HeatW = State.EconomizerW;
+	T.WaterInK = Chw.ReturnK;
+	T.WaterOutK = Chw.FlowWK > 0.0 ? Chw.ReturnK - State.EconomizerW / Chw.FlowWK : Chw.ReturnK;
+	T.CondInK = Cw.SupplyK;
+	T.CondOutK = Cw.FlowWK > 0.0 ? Cw.SupplyK + State.EconomizerW / Cw.FlowWK : Cw.SupplyK;
+	const int32 ChwHx = ChwLoop.GetHandles().SeriesHxPipe, CwHx = CwLoop.GetHandles().SeriesHxPipe;
+	T.FlowM3s = ChwHx != INDEX_NONE ? ChwLoop.GetNetwork().GetPipeFlowM3s(ChwHx) : Chw.FlowWK / (WaterCp * WaterRho);
+	T.CondFlowM3s = CwHx != INDEX_NONE ? CwLoop.GetNetwork().GetPipeFlowM3s(CwHx) : Cw.FlowWK / (WaterCp * WaterRho);
+	return T;
+}
+

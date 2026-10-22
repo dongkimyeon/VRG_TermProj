@@ -114,8 +114,14 @@ bool FPlantDisplayPipesTest::RunTest(const FString& Parameters)
 		for (const FPlantDisplayHeader& Hd : S.Headers) Diagonal += IsOrthogonal(Hd.PointsM) ? 0 : 1;
 		const TArray<FPlantDisplayClash> Clashes = PlantDisplay::FindClashes(S);
 		for (const FPlantDisplayClash& C : Clashes)
-			AddInfo(FString::Printf(TEXT("%s clash: %s %d / %s %d, gap %.3f m"), FFacilityPlant::TopologyName(T), C.bAHeader ? TEXT("header") : TEXT("pipe"), C.A,
-				C.bBHeader ? TEXT("header") : TEXT("pipe"), C.B, C.GapM));
+		{
+			auto Describe = [&](bool bHeader, int32 I)
+			{
+				return bHeader ? FString::Printf(TEXT("header %d (loop %d node %d)"), I, int32(S.Headers[I].Loop), S.Headers[I].Node)
+					: FString::Printf(TEXT("pipe %d (loop %d role %d edge %d)"), I, int32(S.Pipes[I].Loop), int32(S.Pipes[I].Role), S.Pipes[I].Edge);
+			};
+			AddInfo(FString::Printf(TEXT("%s clash: %s / %s, gap %.3f m"), FFacilityPlant::TopologyName(T), *Describe(C.bAHeader, C.A), *Describe(C.bBHeader, C.B), C.GapM));
+		}
 		int32 DryCoolers = 0, Chillers = 0;
 		for (const FPlantDisplayEquipment& E : S.Equipment)
 		{
@@ -231,6 +237,82 @@ bool FPlantDisplayActorTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("vrg.Plant.Enable 0: yard drawn, plant not coupled"), bOffDrawn);
 	GEngine->DestroyWorldContext(World);
 	World->DestroyWorld(false);
+	return true;
+}
+
+// 2026-10-22 user report: some yard units had no pipe at all (standby chillers, the automatic FWS dry coolers beyond the
+// flow-counted coils, the economizer that had no network element). Every drawn unit must have a drawn pipe reaching it, with the
+// automatic counts and with placed counts (FacilityPlantLayout::ApplyEquipmentCounts), in every topology.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FPlantDisplayConnectedTest, "VRG.Plant.Display.EveryUnitConnected", VrgPlantDisplayFlags)
+bool FPlantDisplayConnectedTest::RunTest(const FString& Parameters)
+{
+	// A pipe reaches a unit when one of its vertices lies on the unit's box (5 cm display tolerance, not a physical one).
+	auto Reaches = [](const FPlantDisplayPipe& P, const FPlantDisplayEquipment& E)
+	{
+		const FVector Half = 0.5 * E.SizeM + FVector(0.05);
+		for (const FVector& V : P.PointsM)
+		{
+			const FVector L = E.Rotation.UnrotateVector(V - E.CenterM).GetAbs();
+			if (L.X <= Half.X && L.Y <= Half.Y && L.Z <= Half.Z) return true;
+		}
+		return false;
+	};
+	auto KindName = [](const FPlantDisplayEquipment& E)
+	{
+		switch (E.Kind)
+		{
+		case EPlantEquipmentKind::Pump: return TEXT("펌프");
+		case EPlantEquipmentKind::DryCooler: return E.Loop == EPlantLoopId::Fws ? TEXT("FWS 드라이쿨러") : TEXT("CW 드라이쿨러");
+		case EPlantEquipmentKind::Chiller: return TEXT("냉수 칠러");
+		case EPlantEquipmentKind::TrimChiller: return TEXT("트림 칠러");
+		default: return TEXT("이코노마이저");
+		}
+	};
+	FString Lines;
+	for (const bool bPlaced : { false, true })
+		for (const EPlantTopology T : { EPlantTopology::Separate, EPlantTopology::SharedChw, EPlantTopology::Series })
+		{
+			FFacilityLoopSpec Loop;
+			Loop.BranchDesignFlowM3s = { 0.4e6 / (DisplayCp * 10.0) / DisplayRho, 0.4e6 / (DisplayCp * 10.0) / DisplayRho };
+			FFacilityThermalSpec Th;
+			Th.AmbientK = 303.15;
+			Th.Topology = T;
+			if (bPlaced)
+			{
+				FPlantEquipmentCounts Counts;
+				Counts.FwsDryCoolers = 5; Counts.CwDryCoolers = 4; Counts.Chillers = 4; Counts.TrimChillers = 3;
+				FacilityPlantLayout::ApplyEquipmentCounts(Counts, Th, Loop);
+			}
+			TArray<FPlantCrahCoil> Coils;
+			for (int32 U = 0; U < 4; ++U)
+			{
+				FPlantCrahCoil& C = Coils.AddDefaulted_GetRef();
+				C.AirWK = 1.184 * 5.0 * 1005.0; C.DesignAirEps = 12.0 / 17.0; C.DesignDutyW = C.AirWK * 12.0;
+				C.OldUAWK = -FMath::Loge(1.0 - C.DesignAirEps) * C.AirWK;
+			}
+			FFacilityPlant P;
+			const bool bBuilt = P.Build(Loop, Th, 0.8e6, DisplayRho, DisplayCp, FHydraulicSolveSettings(), Coils, 291.15);
+			const FPlantDisplaySnapshot S = PlantDisplay::Build(P, MakeDisplayInput());
+			TMap<FString, FIntPoint> ByKind;   // kind -> (units, unconnected)
+			for (const FPlantDisplayEquipment& E : S.Equipment)
+			{
+				bool bAny = false;
+				for (const FPlantDisplayPipe& D : S.Pipes) if (Reaches(D, E)) { bAny = true; break; }
+				FIntPoint& C = ByKind.FindOrAdd(KindName(E));
+				++C.X; C.Y += bAny ? 0 : 1;
+			}
+			int32 Loose = 0;
+			FString Kinds;
+			for (const auto& K : ByKind)
+			{
+				Loose += K.Value.Y;   // 2026-10-22: the economizer too (its two sides are in the CHW / CW mains)
+				Kinds += FString::Printf(TEXT(" %s %d(안 이어짐 %d)"), *K.Key, K.Value.X, K.Value.Y);
+			}
+			Lines += FString::Printf(TEXT(" [%s %s:%s]"), bPlaced ? TEXT("배치 대수") : TEXT("자동 대수"), FFacilityPlant::TopologyName(T), *Kinds);
+			TestTrue(FString::Printf(TEXT("%s %s: plant built"), bPlaced ? TEXT("placed") : TEXT("automatic"), FFacilityPlant::TopologyName(T)), bBuilt);
+			TestEqual(FString::Printf(TEXT("%s %s: units with no pipe"), bPlaced ? TEXT("placed") : TEXT("automatic"), FFacilityPlant::TopologyName(T)), Loose, 0);
+		}
+	AddInfo(FString::Printf(TEXT("장비별 배관 연결:%s"), *Lines));
 	return true;
 }
 

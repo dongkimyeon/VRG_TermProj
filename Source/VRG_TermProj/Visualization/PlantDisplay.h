@@ -41,12 +41,19 @@ struct FPlantDisplayInput
 	// count at the next simulation entry, FacilityPlantLayout); model units beyond the placed ones keep the yard positions
 	// (layout mode right after an addition / deletion, before the plant is rebuilt).
 	TArray<FPlantDisplayUnit> FwsDryCoolers, CwDryCoolers, Chillers, TrimChillers;
+	// 2026-10-22: placed pumps per loop (model pump K at placed pump K) and the placed economizer (at most one).
+	TArray<FPlantDisplayUnit> FwsPumps, ChwPumps, CwPumps, Economizers;
+	void ClearPlaced()
+	{
+		FwsDryCoolers.Reset(); CwDryCoolers.Reset(); Chillers.Reset(); TrimChillers.Reset();
+		FwsPumps.Reset(); ChwPumps.Reset(); CwPumps.Reset(); Economizers.Reset();
+	}
 	// The plant is computed and coupled now (simulation mode with vrg.Plant.Enable 1). Otherwise the yard shows the
 	// structure only: loop colours, no flow brightness, no running / failed state.
 	bool bLive = true;
 };
 
-enum class EPlantPipeRole : uint8 { Pump, CheckValve, SupplyMain, SupplyRun, Valve, Exchanger, ReturnRun, ReturnMain, ReturnCoil, Bypass, Other };
+enum class EPlantPipeRole : uint8 { Pump, CheckValve, SupplyMain, SupplyRun, Valve, Exchanger, ReturnRun, ReturnMain, ReturnCoil, Bypass, Economizer, Other };
 
 struct FPlantDisplayPipe
 {
@@ -58,6 +65,7 @@ struct FPlantDisplayPipe
 	TArray<FVector> PointsM;              // orthogonal polyline: starts on the From node's shape, ends on the To node's
 	double FlowM3s = 0.0;                 // solved flow of that edge (sign: From -> To)
 	double TempK = 0.0;                   // the loop volume this pipe belongs to (supply / return / series middle)
+	uint8 Volume = 0;                     // that volume: 0 supply, 1 return, 2 series middle (PlantDisplay::VolumeTempK)
 	bool bClosed = false, bReversed = false, bHeader = false;   // bHeader: mains and bypass (drawn thicker)
 };
 
@@ -135,4 +143,6 @@ namespace PlantDisplay
 	VRG_TERMPROJ_API EPlantVisualKind VisualKind(EPlantEquipmentKind Kind);
 	// World position of a unit's connection [m] (its centre, size and rotation).
 	VRG_TERMPROJ_API FVector PortM(const FPlantDisplayEquipment& E, EPlantPort Port);
+	// Temperature of a loop volume now (0 supply, 1 return, 2 series middle) [K]: what a pipe of that volume carries.
+	VRG_TERMPROJ_API double VolumeTempK(const FFacilityPlant& Plant, EPlantLoopId Loop, uint8 Volume);
 }

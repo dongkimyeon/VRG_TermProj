@@ -184,4 +184,28 @@ bool FFwsThermalCoupledTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+// 2026-10-22 audit (docs/기록/09): with the outdoor air warmer than the water the fans only warm it. Before the fix the
+// controller ran them at full speed (L_Test at 35 C: -829 kW into the water, 126 kW of fans); now they stop.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFwsWarmAirStopsFansTest, "VRG.Plant.FwsThermal.WarmAirStopsFans", VrgPlantThermalFlags)
+bool FFwsWarmAirStopsFansTest::RunTest(const FString& Parameters)
+{
+	FFacilityPlant Plant = MakePlant(35.0, 60.0, false);   // water starts at the 32 C setpoint, air 35 C
+	double MaxFan = 0.0, MinHeatW = 0.0;
+	const TArray<double> Duty = { 0.1e6 };   // small enough that the water stays below the 35 C air for these 20 s
+	for (int32 I = 0; I < 400; ++I)
+	{
+		Plant.Step(0.05, Duty);
+		MaxFan = FMath::Max(MaxFan, Plant.GetState().FanRatio);
+		MinHeatW = FMath::Min(MinHeatW, Plant.GetState().DryCoolerHeatW);
+	}
+	const FFacilityPlantState& S = Plant.GetState();
+	AddInfo(FString::Printf(TEXT("외기 35 C, 물 %.3f C: 팬 최대 %.3f -> 끝 %.3f, 드라이쿨러 열 최소 %.1f kW -> 끝 %.3f kW, 팬 전력 %.3f kW, 설정 미달 %d"),
+		S.ReturnK - 273.15, MaxFan, S.FanRatio, MinHeatW * 1e-3, S.DryCoolerHeatW * 1e-3, Plant.GetFanElectricW() * 1e-3, S.bSetpointNotMet ? 1 : 0));
+	TestTrue(TEXT("fans never rise above their starting minimum and end stopped"), MaxFan <= 0.1 + 1e-12 && S.FanRatio == 0.0);
+	TestTrue(TEXT("stopped fans add no heat"), S.DryCoolerHeatW == 0.0);
+	TestTrue(TEXT("the warming while they ramp down is the minimum fan's only (> -50 kW)"), MinHeatW > -50e3);
+	TestTrue(TEXT("reported as not met by the coolers"), S.bSetpointNotMet);
+	return true;
+}
+
 #endif

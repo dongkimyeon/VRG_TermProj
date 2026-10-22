@@ -13,7 +13,7 @@ namespace
 		| EAutomationTestFlags::CommandletContext
 		| EAutomationTestFlags::EngineFilter;
 
-	constexpr double WaterCpJKgK = 4182.0;
+	constexpr double RadiatorTestWaterCpJKgK = 4182.0;
 }
 
 // 해석해: eps = 1 - exp(-UA/(m*Cp)). 식 자체를 직접 맞춰 본다.
@@ -28,14 +28,14 @@ bool FRadiatorEffectivenessAnalyticTest::RunTest(const FString& Parameters)
 
 	// GB200 NVL72 랙 1대의 설계점 (2026-09-27, 15 kW 하이브리드 기준에서 바꿨다).
 	const double MassFlowKgs = 2.3;
-	const double CapacityRateWK = MassFlowKgs * WaterCpJKgK;
+	const double CapacityRateWK = MassFlowKgs * RadiatorTestWaterCpJKgK;
 	const double InletTempK = 303.15;
 
 	const double Eps = RadiatorModel::Effectiveness(Params.UAWK, CapacityRateWK);
 	const double AnalyticEps = 1.0 - FMath::Exp(-Params.UAWK / CapacityRateWK);
 	const double EpsErrorAbs = FMath::Abs(Eps - AnalyticEps);
 
-	const double OutletTempK = RadiatorModel::OutletTempK(Params, InletTempK, MassFlowKgs, WaterCpJKgK);
+	const double OutletTempK = RadiatorModel::OutletTempK(Params, InletTempK, MassFlowKgs, RadiatorTestWaterCpJKgK);
 	const double AnalyticOutletTempK = InletTempK - AnalyticEps * (InletTempK - Params.AmbientTempK);
 	const double OutletErrorAbs = FMath::Abs(OutletTempK - AnalyticOutletTempK);
 
@@ -74,10 +74,10 @@ bool FRadiatorEnergyBalanceTest::RunTest(const FString& Parameters)
 		{
 			Params.UAWK = UAWK;
 			const double InletTempK = 308.15;
-			const double CapacityRateWK = MassFlowKgs * WaterCpJKgK;
+			const double CapacityRateWK = MassFlowKgs * RadiatorTestWaterCpJKgK;
 
-			const double OutletTempK = RadiatorModel::OutletTempK(Params, InletTempK, MassFlowKgs, WaterCpJKgK);
-			const double HeatRejectedW = RadiatorModel::HeatRejectedW(Params, InletTempK, MassFlowKgs, WaterCpJKgK);
+			const double OutletTempK = RadiatorModel::OutletTempK(Params, InletTempK, MassFlowKgs, RadiatorTestWaterCpJKgK);
+			const double HeatRejectedW = RadiatorModel::HeatRejectedW(Params, InletTempK, MassFlowKgs, RadiatorTestWaterCpJKgK);
 			const double EnthalpyDropW = CapacityRateWK * (InletTempK - OutletTempK);
 
 			const double NormalizedError = FMath::Abs(HeatRejectedW - EnthalpyDropW)
@@ -109,7 +109,7 @@ bool FRadiatorSaturationTest::RunTest(const FString& Parameters)
 
 	const double MassFlowKgs = 2.3;
 	const double InletTempK = 308.15;
-	const double CapacityRateWK = MassFlowKgs * WaterCpJKgK;
+	const double CapacityRateWK = MassFlowKgs * RadiatorTestWaterCpJKgK;
 	const double MaxPossibleW = CapacityRateWK * (InletTempK - Params.AmbientTempK);
 
 	AddInfo(FString::Printf(TEXT("열용량률 %.1f W/K, 이론 최대 반출 %.1f W (입구 %.2f C, 외기 %.2f C)"),
@@ -130,7 +130,7 @@ bool FRadiatorSaturationTest::RunTest(const FString& Parameters)
 	for (int32 StepIndex = 1; StepIndex <= 16; ++StepIndex)
 	{
 		Params.UAWK = UAStepWK * StepIndex;
-		const double HeatW = RadiatorModel::HeatRejectedW(Params, InletTempK, MassFlowKgs, WaterCpJKgK);
+		const double HeatW = RadiatorModel::HeatRejectedW(Params, InletTempK, MassFlowKgs, RadiatorTestWaterCpJKgK);
 		const double GainW = HeatW - PreviousHeatW;
 
 		AddInfo(FString::Printf(TEXT("UA %8.0f W/K -> 반출 %8.1f W (직전 +%.0f W/K 대비 +%7.1f W, 최대의 %.1f%%)"),
@@ -151,9 +151,9 @@ bool FRadiatorSaturationTest::RunTest(const FString& Parameters)
 
 	// 기준 운전점에서 UA를 두 배로 키우면 반출열이 두 배보다 훨씬 적게 는다.
 	Params.UAWK = 1.1e4;
-	const double BaseHeatW = RadiatorModel::HeatRejectedW(Params, InletTempK, MassFlowKgs, WaterCpJKgK);
+	const double BaseHeatW = RadiatorModel::HeatRejectedW(Params, InletTempK, MassFlowKgs, RadiatorTestWaterCpJKgK);
 	Params.UAWK = 2.2e4;
-	const double DoubledHeatW = RadiatorModel::HeatRejectedW(Params, InletTempK, MassFlowKgs, WaterCpJKgK);
+	const double DoubledHeatW = RadiatorModel::HeatRejectedW(Params, InletTempK, MassFlowKgs, RadiatorTestWaterCpJKgK);
 	const double Ratio = DoubledHeatW / BaseHeatW;
 
 	AddInfo(FString::Printf(TEXT("UA 11000 -> 22000 W/K: 반출 %.1f -> %.1f W (배율 %.4f)"),
@@ -165,7 +165,7 @@ bool FRadiatorSaturationTest::RunTest(const FString& Parameters)
 
 	// UA를 아주 크게 키우면 출구가 외기에 수렴한다.
 	Params.UAWK = 1.0e7;
-	const double HugeUAOutletTempK = RadiatorModel::OutletTempK(Params, InletTempK, MassFlowKgs, WaterCpJKgK);
+	const double HugeUAOutletTempK = RadiatorModel::OutletTempK(Params, InletTempK, MassFlowKgs, RadiatorTestWaterCpJKgK);
 	AddInfo(FString::Printf(TEXT("UA 1e7 W/K -> 출구 %.6f C (외기 %.6f C, 접근온도 %.3e K)"),
 		HugeUAOutletTempK - 273.15, Params.AmbientTempK - 273.15,
 		HugeUAOutletTempK - Params.AmbientTempK));
@@ -189,8 +189,8 @@ bool FRadiatorZeroFlowTest::RunTest(const FString& Parameters)
 	Params.AmbientTempK = 295.15;
 
 	const double InletTempK = 308.15;
-	const double OutletTempK = RadiatorModel::OutletTempK(Params, InletTempK, 0.0, WaterCpJKgK);
-	const double HeatRejectedW = RadiatorModel::HeatRejectedW(Params, InletTempK, 0.0, WaterCpJKgK);
+	const double OutletTempK = RadiatorModel::OutletTempK(Params, InletTempK, 0.0, RadiatorTestWaterCpJKgK);
+	const double HeatRejectedW = RadiatorModel::HeatRejectedW(Params, InletTempK, 0.0, RadiatorTestWaterCpJKgK);
 
 	AddInfo(FString::Printf(TEXT("유량 0 | 출구 %.6f C / 반출 %.6e W"),
 		OutletTempK - 273.15, HeatRejectedW));
@@ -201,7 +201,7 @@ bool FRadiatorZeroFlowTest::RunTest(const FString& Parameters)
 
 	// UA가 0이면 아무 일도 일어나지 않는다.
 	Params.UAWK = 0.0;
-	const double NoUAOutletTempK = RadiatorModel::OutletTempK(Params, InletTempK, 2.3, WaterCpJKgK);
+	const double NoUAOutletTempK = RadiatorModel::OutletTempK(Params, InletTempK, 2.3, RadiatorTestWaterCpJKgK);
 	TestEqual(TEXT("UA 0이면 출구가 입구와 같아야 한다"), NoUAOutletTempK, InletTempK);
 
 	return true;

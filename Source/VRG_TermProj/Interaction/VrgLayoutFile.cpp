@@ -684,7 +684,7 @@ bool VrgLayoutFile::Load(UWorld* World, const FString& Name, FString& OutSummary
 			if (!O->TryGetStringField(TEXT("name"), UnitName) || UnitName.IsEmpty() || SeenNames.Contains(UnitName)
 				|| UnitName.Contains(TEXT("/")) || UnitName.Contains(TEXT(".")) || UnitName.Contains(TEXT(":"))
 				|| !O->TryGetStringField(TEXT("plantId"), R.Id) || R.Id.IsEmpty() || PlantIds.Contains(R.Id)
-				|| !ReadLayoutNumber(O, TEXT("kind"), Kind) || Kind != FMath::FloorToDouble(Kind) || Kind < 0 || Kind > double(uint8(EPlantUnitKind::TrimChiller))
+				|| !ReadLayoutNumber(O, TEXT("kind"), Kind) || Kind != FMath::FloorToDouble(Kind) || Kind < 0 || Kind >= double(NumPlantUnitKinds)
 				|| !ReadLayoutNumber(O, TEXT("x_m"), X) || !ReadLayoutNumber(O, TEXT("y_m"), Y) || !ReadLayoutNumber(O, TEXT("z_m"), Z)
 				|| !ReadLayoutNumber(O, TEXT("yaw_deg"), Yaw) || !ReadLayoutNumber(O, TEXT("pitch_deg"), Pitch) || !ReadLayoutNumber(O, TEXT("roll_deg"), Roll)
 				|| !ReadLayoutNumber(O, TEXT("size_x_m"), R.SizeM.X) || !ReadLayoutNumber(O, TEXT("size_y_m"), R.SizeM.Y) || !ReadLayoutNumber(O, TEXT("size_z_m"), R.SizeM.Z))

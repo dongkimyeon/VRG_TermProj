@@ -10,4 +10,6 @@ class VRG_TERMPROJ_API ADataCenterLayoutHud : public AHUD
 	GENERATED_BODY()
 public:
 	virtual void DrawHUD() override;
+private:
+	void DrawTemperatureLabels();
 };

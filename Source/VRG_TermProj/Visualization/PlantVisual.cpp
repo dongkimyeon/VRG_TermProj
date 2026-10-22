@@ -177,6 +177,9 @@ FVector PlantVisual::PortLocalM(EPlantVisualKind Kind, const FVector& SizeM, EPl
 	if (Kind == EPlantVisualKind::DryCooler) P = FVector(bIn ? -0.85 : 0.85, -0.6, 0.65);
 	else if (Kind == EPlantVisualKind::Chiller) P = FVector(bIn ? -0.75 : 0.6, bCondenser ? 0.6 : -0.6, 0.55);
 	else if (Kind == EPlantVisualKind::Pump) P = bIn ? FVector(0.3, 0, 0.3) : FVector(0.13, 0, 0.6);
+	// Plate exchanger nozzles on the +X frame plate (counterflow): chilled water (Coil) in at the top / out at the bottom
+	// on the -Y pair, condenser water in at the bottom / out at the top on the +Y pair.
+	else if (Kind == EPlantVisualKind::Economizer) P = FVector(0.4, bCondenser ? 0.1 : -0.1, bIn != bCondenser ? 1.3 : 0.35);
 	return P * Scale(SizeM, Kind);
 }
 

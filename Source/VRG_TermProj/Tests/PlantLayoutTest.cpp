@@ -606,4 +606,137 @@ bool FPlantLayoutDuplicateMultiTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+// 2026-10-22 user report: "배치 모드에서는 모든 오브젝트들을 옮길 수 있어야 한다" - the yard's automatic units were drawn
+// instances that no click could pick, and a unit added in layout mode had no pipe until the next simulation entry.
+// A press on an automatic unit converts its kind at the drawn positions (one command) and the unit then drags like any
+// placed one; adding / moving units in layout mode redraws the plant at once with every unit piped.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FPlantLayoutAutomaticMovableTest, "VRG.Plant.Layout.AutomaticUnitsMovable", VrgPlantLayoutFlags)
+bool FPlantLayoutAutomaticMovableTest::RunTest(const FString& Parameters)
+{
+	UWorld* World = UWorld::CreateWorld(EWorldType::Game, false);
+	GEngine->CreateNewWorldContext(EWorldType::Game).SetCurrentWorld(World);
+	ADataCenterSimulationActor* Sim = World->SpawnActor<ADataCenterSimulationActor>();
+	Sim->bShowSummary = false;
+	Sim->MaxStepsPerFrame = 16;
+	Sim->bFacilityPlant = true;
+	Sim->PlantThermalSpec.AmbientK = 298.15;
+	auto* C = World->SpawnActor<ADataCenterDebugController>();
+	ADataCenterRoomActor* Room = World->SpawnActor<ADataCenterRoomActor>();
+	World->SpawnActor<AAirFieldDebugActor>()->bShowSummary = false;
+	for (const double Y : { 0.0, 66.0 })
+	{
+		ARackThermalActor* Rack = World->SpawnActor<ARackThermalActor>(FVector(0, Y, 0), FRotator::ZeroRotator);
+		Rack->ApplyGb200Nvl72Preset(); Rack->bShowReadout = false;
+		Rack->RackSizeM = FVector(GjRackLayout::FrameDepthM, GjRackLayout::FrameWidthM, GjRackLayout::FrameHeightM);
+	}
+	World->SpawnActor<ACoolingDistributionUnitActor>(FVector(-300, 100, 0), FRotator::ZeroRotator);
+	Room->RebuildRoomNow();
+	Sim->EnterSimulationMode();
+	for (int32 F = 0; F < 10; ++F) Sim->Tick(.1f);
+	Sim->EnterLayoutMode();
+	const FVector Down(0, 0, -1);
+	auto Above = [](const FVector& P) { return P + FVector(0, 0, 1000); };
+	// The display redraws on a 0.25 s wall-clock throttle (display only): wait it out, then tick the layout frame.
+	auto Redraw = [&]() { FPlatformProcess::Sleep(0.3f); Sim->Tick(.1f); return Sim->GetPlantDisplay(); };
+	// Units of the drawn yard with no drawn pipe reaching their box (5 cm display tolerance).
+	auto Loose = [](const FPlantDisplaySnapshot& S)
+	{
+		int32 N = 0;
+		for (const FPlantDisplayEquipment& E : S.Equipment)
+		{
+			const FVector Half = 0.5 * E.SizeM + FVector(0.05);
+			bool bAny = false;
+			for (const FPlantDisplayPipe& P : S.Pipes)
+				for (const FVector& V : P.PointsM)
+				{
+					const FVector L = E.Rotation.UnrotateVector(V - E.CenterM).GetAbs();
+					bAny |= L.X <= Half.X && L.Y <= Half.Y && L.Z <= Half.Z;
+				}
+			N += bAny ? 0 : 1;
+		}
+		return N;
+	};
+	auto Chillers = [&]() { return VrgPlantEquipment::Gather(World, EPlantUnitKind::Chiller).Num(); };
+
+	TArray<FPlantEquipmentRecord> Auto; FString Reason;
+	if (!TestTrue(TEXT("automatic chillers drawn"), Sim->CaptureAutomaticPlantUnits(EPlantUnitKind::Chiller, Auto, Reason) && Auto.Num() >= 2))
+	{ DestroyLayoutWorld(World); return false; }
+	const AFacilityPlantDisplayActor* D0 = Redraw();
+	const int32 Loose0 = D0 ? Loose(D0->GetSnapshot()) : -1;
+
+	// A press beside the yard converts nothing.
+	TestNull(TEXT("press on empty ground converts nothing"), C->ConvertAutomaticPlantAlongRay(Above(FVector(9000, -3000, 0)), Down));
+	// A press on automatic chiller 1: the kind becomes actors where they were drawn, the pressed one is returned.
+	const FVector P1 = Auto[1].Transform.GetLocation();
+	APlantEquipmentActor* U1 = C->ConvertAutomaticPlantAlongRay(Above(P1 + FVector(0, 0, 50)), Down);
+	if (!TestNotNull(TEXT("press converts the pressed unit"), U1)) { DestroyLayoutWorld(World); return false; }
+	TestTrue(TEXT("whole kind converted at the drawn positions, one command"), Chillers() == Auto.Num()
+		&& U1->GetActorLocation().Equals(P1, 1e-9) && C->GetLayoutUndoCount() == 1);
+	// Through the normal press path the converted unit is selected and drags along the yard (one more command).
+	C->BeginLayoutDragAlongRay(Above(P1), Down);
+	TestTrue(TEXT("converted unit selected and drag armed"), C->IsLayoutDragging() && C->GetSelectedLayoutActor() == U1);
+	const FVector Delta(6000.0 - P1.X, -800.0 - P1.Y, 0.0);
+	C->UpdateLayoutDragAlongRay(Above(P1) + Delta, Down);
+	TestFalse(TEXT("free yard spot"), C->IsLayoutDragPreviewBlocked());
+	C->EndLayoutDrag(true);
+	TestTrue(TEXT("moved, one command"), U1->GetActorLocation().Equals(FVector(6000, -800, P1.Z), 1e-9) && C->GetLayoutUndoCount() == 2);
+	const AFacilityPlantDisplayActor* D1 = Redraw();
+	const int32 Loose1 = D1 ? Loose(D1->GetSnapshot()) : -1;
+	TestEqual(TEXT("moved chiller and every other unit still piped"), Loose1, 0);
+
+	// A unit added in layout mode: the drawn plant takes the new count at once and pipes it.
+	const int32 Fws0 = Sim->GetFacilityPlant().GetNumDryCoolers();
+	C->BeginPlantAddition(EPlantUnitKind::FwsDryCooler);
+	C->UpdateRackAdditionAlongRay(Above(FVector(7000, -800, 0)), Down);
+	APlantEquipmentActor* Added = C->ConfirmPlantAddition();
+	const AFacilityPlantDisplayActor* D2 = Redraw();
+	const int32 Loose2 = D2 ? Loose(D2->GetSnapshot()) : -1;
+	const int32 Fws2 = Sim->GetFacilityPlant().GetNumDryCoolers();
+	TestTrue(TEXT("added in layout mode: the drawn plant has the new count"), Added != nullptr && Fws2 == Fws0 + 1);
+	TestEqual(TEXT("added unit piped at once"), Loose2, 0);
+
+	// Undo addition, move and conversion: the automatic yard again.
+	TestTrue(TEXT("Undo x3 back to automatic"), C->TryUndoLayout() && C->TryUndoLayout() && C->TryUndoLayout() && Chillers() == 0
+		&& VrgPlantEquipment::Gather(World, EPlantUnitKind::FwsDryCooler).Num() == 0);
+
+	// Pumps and the economizer press and drag the same way; their moved pipes still reach them, the plant keeps its
+	// counts (one economizer, the loops' pump counts), and a second economizer is refused.
+	FString Moved;
+	int32 LooseMoved = 0;
+	double Nx = 6000.0;
+	for (const EPlantUnitKind Kind : { EPlantUnitKind::FwsPump, EPlantUnitKind::ChwPump, EPlantUnitKind::CwPump, EPlantUnitKind::Economizer })
+	{
+		TArray<FPlantEquipmentRecord> Drawn;
+		if (!TestTrue(FString::Printf(TEXT("%s drawn"), APlantEquipmentActor::KindName(Kind)), Sim->CaptureAutomaticPlantUnits(Kind, Drawn, Reason) && Drawn.Num() > 0)) continue;
+		const FVector P = Drawn[0].Transform.GetLocation();
+		APlantEquipmentActor* U = C->ConvertAutomaticPlantAlongRay(Above(P + FVector(0, 0, 10)), Down);
+		if (!TestNotNull(FString::Printf(TEXT("%s converts on a press"), APlantEquipmentActor::KindName(Kind)), U)) continue;
+		C->BeginLayoutDragAlongRay(Above(P), Down);
+		C->UpdateLayoutDragAlongRay(Above(P) + FVector(Nx - P.X, -1500.0 - P.Y, 0), Down);
+		const bool bFree = !C->IsLayoutDragPreviewBlocked();
+		C->EndLayoutDrag(true);
+		const bool bMovedThere = U->GetActorLocation().Equals(FVector(Nx, -1500.0, P.Z), 1e-9);
+		TestTrue(FString::Printf(TEXT("%s dragged to a free yard spot"), APlantEquipmentActor::KindName(Kind)), bFree && bMovedThere);
+		Nx += 300.0;
+		const AFacilityPlantDisplayActor* D = Redraw();
+		const int32 L = D ? Loose(D->GetSnapshot()) : -1;
+		LooseMoved = FMath::Max(LooseMoved, L);
+		Moved += FString::Printf(TEXT(" %s %d대(안 이어짐 %d)"), APlantEquipmentActor::KindName(Kind), Drawn.Num(), L);
+	}
+	const FFacilityPlant& Built = Sim->GetFacilityPlant();
+	TestEqual(TEXT("moved pumps / economizer still piped"), LooseMoved, 0);
+	TestTrue(TEXT("plant keeps the economizer and 2 + 1 pumps per loop"), Built.HasEconomizer()
+		&& Built.GetLoop().GetSpec().DutyPumps == 2 && Built.GetLoop().GetSpec().StandbyPumps == 1
+		&& Built.GetChwLoop().GetHandles().Pumps.Num() == 3 && Built.GetCwLoop().GetHandles().Pumps.Num() == 3);
+	C->BeginPlantAddition(EPlantUnitKind::Economizer);
+	TestFalse(TEXT("a second economizer is refused"), C->IsAddingPlant());
+	AddInfo(FString::Printf(TEXT("펌프·이코노마이저 눌러 옮기기:%s"), *Moved));
+	const AFacilityPlantDisplayActor* D3 = Redraw();
+	AddInfo(FString::Printf(TEXT("자동 칠러 %d대 누름 전환 → 이동, 안 이어진 장비: 처음 %d / 이동 뒤 %d / 배치 모드 추가 뒤 %d (FWS %d → %d대) / Undo 뒤 자동 FWS %d대"),
+		Auto.Num(), Loose0, Loose1, Loose2, Fws0, Fws2, Sim->GetFacilityPlant().GetNumDryCoolers()));
+	TestTrue(TEXT("Undo: the drawn plant is automatic again"), D3 != nullptr && Sim->GetFacilityPlant().GetNumDryCoolers() == Fws0);
+	DestroyLayoutWorld(World);
+	return true;
+}
+
 #endif

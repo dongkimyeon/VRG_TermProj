@@ -73,6 +73,11 @@ public:
 
 	void RebuildRoomNow() { if (bNeedsRebuild || Rows.Num() == 0 || GjLayoutHash() != LastGjLayoutHash) RebuildTimed(); }
 
+	// 2026-10-22: the layout controller holds the settle rebuild while an equipment drag / grab is live, and the room
+	// rebuilds once right after the release. Before, the 0.4 s settle rebuild (~50 ms of cable and pipe meshes) fired
+	// in the middle of the next drag when equipment was moved in quick succession, which read as drag lag.
+	void SetLayoutRebuildHeld(bool bHeld) { bLayoutRebuildHeld = bHeld; }
+
 	// Immediate editor/script refresh; the numerical graph still comes from InRowLoopBuilder.
 	UFUNCTION(BlueprintCallable, CallInEditor, Category = "Visualization|GJ")
 	void RefreshGjConnections();
@@ -426,6 +431,7 @@ private:
 	// Debounce of layout changes (see Tick): the hash seen last frame and when it last changed [s, real time].
 	uint32 PendingLayoutHash = 0;
 	double LayoutChangedAtS = 0.0;
+	bool bLayoutRebuildHeld = false, bLayoutRebuildHeldLastTick = false;
 	void RebuildTimed();
 
 	// Pipe routing around cabinets (display only; the solver's topology does not change). Boxes of every rack,

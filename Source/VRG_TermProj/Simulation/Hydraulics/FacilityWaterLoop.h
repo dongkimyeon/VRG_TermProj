@@ -105,6 +105,22 @@ struct FFacilityLoopSpec
 	// 0 = as many as the total design flow needs at the rated coil flow (F2 sizes them by heat).
 	UPROPERTY(EditAnywhere, Category = "Plant", meta = (ClampMin = "0"))
 	int32 ReturnCoils = 0;
+	// Standby units (2026-10-22): piped like the duty ones but isolated, so they show where the plant has them. Built
+	// after the duty coils / every other branch with their pipe closed (like a standby pump's check valve) and left out of
+	// the design total, the pump sizing and the differential-pressure setpoint, so they change no solved flow.
+	UPROPERTY(EditAnywhere, Category = "Plant", meta = (ClampMin = "0"))
+	int32 StandbyReturnCoils = 0;
+	UPROPERTY(EditAnywhere, Category = "Plant")
+	TArray<double> StandbyBranchDesignFlowM3s;
+	// S8 F4 water-side economizer, one side of the plate exchanger in series in a main (2026-10-22: the exchanger the
+	// plant's heat balance already passes the whole loop flow through). Design drop at the design total flow [Pa];
+	// 0 = none. Return side: return header -> return main -> exchanger -> plant return (chilled water, before the
+	// evaporators). Supply side: plant supply -> exchanger -> supply main -> supply header (condenser water, before the
+	// condensers). Counted in the pump design head; always flowing (no bypass valve: limitation).
+	UPROPERTY(EditAnywhere, Category = "Plant", meta = (ClampMin = "0.0"))
+	double SeriesHxDesignDropPa = 0.0;
+	UPROPERTY(EditAnywhere, Category = "Plant")
+	bool bSeriesHxOnSupply = false;
 
 	// Pump curve: shutoff head / design head (centrifugal pumps commonly 1.1-1.3; ESTIMATE 1.25) and the combined
 	// pump + motor efficiency used for the electric input at the operating point (D8; ESTIMATE, same as the CDU pump).
@@ -131,6 +147,8 @@ struct FFacilityLoopHandles
 	int32 SupplyMainPipe = INDEX_NONE, ReturnMainPipe = INDEX_NONE;
 	TArray<int32> BranchSupplyRunPipes, ValvePipes, HxPipes, BranchReturnRunPipes;   // per CDU branch
 	TArray<int32> ReturnCoilPipes;
+	int32 NumStandbyBranches = 0, NumStandbyCoils = 0;   // the last ones of the branches / return coils (isolated)
+	int32 SeriesHxPipe = INDEX_NONE, SeriesHxNode = INDEX_NONE;   // economizer side and its node on the main side
 };
 
 // Result of one controlled solve (D5).

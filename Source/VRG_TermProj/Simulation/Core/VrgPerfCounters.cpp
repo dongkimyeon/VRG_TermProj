@@ -7,6 +7,9 @@ DEFINE_STAT(STAT_VrgPressureSolve);
 DEFINE_STAT(STAT_VrgDebugDraw);
 DEFINE_STAT(STAT_VrgDashboardPublish);
 DEFINE_STAT(STAT_VrgCouplingStep);
+DEFINE_STAT(STAT_VrgLayoutEdit);
+DEFINE_STAT(STAT_VrgPlantDisplay);
+DEFINE_STAT(STAT_VrgRoomTick);
 
 namespace VrgPerf
 {

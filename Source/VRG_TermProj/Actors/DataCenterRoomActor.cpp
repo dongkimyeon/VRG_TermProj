@@ -21,6 +21,7 @@
 #include "Engine/World.h"
 #include "EngineUtils.h"
 #include "HAL/IConsoleManager.h"
+#include "Simulation/Core/VrgPerfCounters.h"
 
 namespace
 {
@@ -1038,6 +1039,7 @@ void ADataCenterRoomActor::DestroySpawnedRackGrid()
 void ADataCenterRoomActor::Tick(float DeltaTime)
 {
 	Super::Tick(DeltaTime);
+	VRG_SCOPE_COST(STAT_VrgRoomTick, RoomTickMs);
 	// A moved rack / CDU changes the layout hash every frame while it is dragged. Rebuilding on each of those
 	// frames froze the editor (a full rebuild takes seconds with the GJ meshes), so wait until the layout has
 	// stopped changing for LayoutSettleS of real time, then rebuild once. Explicit RebuildRoom() stays immediate.
@@ -1045,9 +1047,20 @@ void ADataCenterRoomActor::Tick(float DeltaTime)
 	{
 		const uint32 Hash = GjLayoutHash();
 		const double NowS = FPlatformTime::Seconds();
+		const bool bReleased = bLayoutRebuildHeldLastTick && !bLayoutRebuildHeld;
+		bLayoutRebuildHeldLastTick = bLayoutRebuildHeld;
 		if (Hash == LastGjLayoutHash)
 		{
 			PendingLayoutHash = Hash;
+		}
+		else if (bLayoutRebuildHeld)
+		{
+			PendingLayoutHash = Hash;   // a drag / grab is live: nothing until it ends
+			LayoutChangedAtS = NowS;
+		}
+		else if (bReleased)
+		{
+			bNeedsRebuild = true;       // released with a change: once, now
 		}
 		else if (Hash != PendingLayoutHash)
 		{

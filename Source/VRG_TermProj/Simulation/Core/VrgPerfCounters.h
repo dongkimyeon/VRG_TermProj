@@ -31,6 +31,9 @@ DECLARE_CYCLE_STAT_EXTERN(TEXT("VRG Pressure Solve"), STAT_VrgPressureSolve, STA
 DECLARE_CYCLE_STAT_EXTERN(TEXT("VRG Debug Draw"), STAT_VrgDebugDraw, STATGROUP_VRG, VRG_TERMPROJ_API);
 DECLARE_CYCLE_STAT_EXTERN(TEXT("VRG Coupling Step"), STAT_VrgCouplingStep, STATGROUP_VRG, VRG_TERMPROJ_API);
 DECLARE_CYCLE_STAT_EXTERN(TEXT("VRG Web Dashboard Publish"), STAT_VrgDashboardPublish, STATGROUP_VRG, VRG_TERMPROJ_API);
+DECLARE_CYCLE_STAT_EXTERN(TEXT("VRG Layout Edit"), STAT_VrgLayoutEdit, STATGROUP_VRG, VRG_TERMPROJ_API);
+DECLARE_CYCLE_STAT_EXTERN(TEXT("VRG Plant Display"), STAT_VrgPlantDisplay, STATGROUP_VRG, VRG_TERMPROJ_API);
+DECLARE_CYCLE_STAT_EXTERN(TEXT("VRG Room Tick"), STAT_VrgRoomTick, STATGROUP_VRG, VRG_TERMPROJ_API);
 
 namespace VrgPerf
 {
@@ -43,6 +46,9 @@ namespace VrgPerf
 		double CouplingMs = 0.0;
 		double DebugDrawMs = 0.0;
 		double DashboardMs = 0.0;   // web dashboard summary build (0.5 s real-time throttle, so mostly 0)
+		double LayoutEditMs = 0.0;   // layout-mode controller tick: hover, drag preview, overlap, row snap
+		double PlantDisplayMs = 0.0; // plant yard routing + upload (0.25 s real-time throttle)
+		double RoomTickMs = 0.0;     // room actor tick: settle-triggered pipe rebuild, mesh drain, pipe colours
 		int32 SolverSteps = 0;
 		int32 PressureIterations = 0;
 		int32 DrawnPrimitives = 0;

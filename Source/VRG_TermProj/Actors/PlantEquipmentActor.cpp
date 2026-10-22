@@ -41,8 +41,7 @@ void APlantEquipmentActor::RefreshVisuals()
 	if (HasAnyFlags(RF_ClassDefaultObject) || !RootComponent) return;
 	const FVector Size = SizeM.ComponentMax(FVector(0.01));
 	const FLinearColor Accent = StatusColor.A > 0.f ? StatusColor : IdentityColor(Kind);
-	const bool bChiller = Kind == EPlantUnitKind::Chiller || Kind == EPlantUnitKind::TrimChiller;
-	const EPlantVisualKind VisualKind = bChiller ? EPlantVisualKind::Chiller : EPlantVisualKind::DryCooler;
+	const EPlantVisualKind VisualKind = VisualKindOf(Kind);
 	UStaticMesh* Reference = PlantVisual::ReferenceMesh(VisualKind);
 	bool bSetsAlive = true;
 	for (const auto& Pair : PartSets) bSetsAlive &= IsValid(Pair.Value);
@@ -70,13 +69,35 @@ FLinearColor APlantEquipmentActor::IdentityColor(EPlantUnitKind Kind)
 	case EPlantUnitKind::FwsDryCooler: return PlantDisplay::KindColor(EPlantLoopId::Fws, EPlantEquipmentKind::DryCooler);
 	case EPlantUnitKind::CwDryCooler: return PlantDisplay::KindColor(EPlantLoopId::Cw, EPlantEquipmentKind::DryCooler);
 	case EPlantUnitKind::Chiller: return PlantDisplay::KindColor(EPlantLoopId::Chw, EPlantEquipmentKind::Chiller);
+	case EPlantUnitKind::FwsPump: return PlantDisplay::KindColor(EPlantLoopId::Fws, EPlantEquipmentKind::Pump);
+	case EPlantUnitKind::ChwPump: return PlantDisplay::KindColor(EPlantLoopId::Chw, EPlantEquipmentKind::Pump);
+	case EPlantUnitKind::CwPump: return PlantDisplay::KindColor(EPlantLoopId::Cw, EPlantEquipmentKind::Pump);
+	case EPlantUnitKind::Economizer: return PlantDisplay::KindColor(EPlantLoopId::Chw, EPlantEquipmentKind::Economizer);
 	default: return PlantDisplay::KindColor(EPlantLoopId::Fws, EPlantEquipmentKind::TrimChiller);
 	}
 }
 
 FVector APlantEquipmentActor::DefaultSizeM(EPlantUnitKind Kind)
 {
-	return Kind == EPlantUnitKind::FwsDryCooler || Kind == EPlantUnitKind::CwDryCooler ? FVector(2.4, 1.2, 1.3) : FVector(2.4, 1.2, 1.8);
+	// The yard's schematic sizes (PlantDisplay::Build).
+	switch (Kind)
+	{
+	case EPlantUnitKind::FwsDryCooler: case EPlantUnitKind::CwDryCooler: return FVector(2.4, 1.2, 1.3);
+	case EPlantUnitKind::FwsPump: case EPlantUnitKind::ChwPump: case EPlantUnitKind::CwPump: return FVector(0.6, 0.6, 0.6);
+	case EPlantUnitKind::Economizer: return FVector(0.8, 0.5, 1.6);
+	default: return FVector(2.4, 1.2, 1.8);
+	}
+}
+
+EPlantVisualKind APlantEquipmentActor::VisualKindOf(EPlantUnitKind Kind)
+{
+	switch (Kind)
+	{
+	case EPlantUnitKind::FwsDryCooler: case EPlantUnitKind::CwDryCooler: return EPlantVisualKind::DryCooler;
+	case EPlantUnitKind::FwsPump: case EPlantUnitKind::ChwPump: case EPlantUnitKind::CwPump: return EPlantVisualKind::Pump;
+	case EPlantUnitKind::Economizer: return EPlantVisualKind::Economizer;
+	default: return EPlantVisualKind::Chiller;
+	}
 }
 
 const TCHAR* APlantEquipmentActor::KindName(EPlantUnitKind Kind)
@@ -86,6 +107,10 @@ const TCHAR* APlantEquipmentActor::KindName(EPlantUnitKind Kind)
 	case EPlantUnitKind::FwsDryCooler: return TEXT("FWS 드라이쿨러");
 	case EPlantUnitKind::CwDryCooler: return TEXT("CW 드라이쿨러");
 	case EPlantUnitKind::Chiller: return TEXT("냉수 칠러");
+	case EPlantUnitKind::FwsPump: return TEXT("FWS 펌프");
+	case EPlantUnitKind::ChwPump: return TEXT("냉수 펌프");
+	case EPlantUnitKind::CwPump: return TEXT("응축수 펌프");
+	case EPlantUnitKind::Economizer: return TEXT("이코노마이저");
 	default: return TEXT("트림 칠러");
 	}
 }
@@ -105,7 +130,7 @@ APlantEquipmentActor* VrgPlantEquipment::Find(UWorld* World, const FString& Id)
 bool VrgPlantEquipment::IsValidRecord(const FPlantEquipmentRecord& R)
 {
 	return !R.Transform.ContainsNaN() && R.Transform.GetRotation().IsNormalized() && R.Transform.GetScale3D().Equals(FVector::OneVector, 0.0)
-		&& !R.SizeM.ContainsNaN() && R.SizeM.GetMin() > 0.0 && uint8(R.Kind) <= uint8(EPlantUnitKind::TrimChiller);
+		&& !R.SizeM.ContainsNaN() && R.SizeM.GetMin() > 0.0 && int32(R.Kind) < NumPlantUnitKinds;
 }
 
 APlantEquipmentActor* VrgPlantEquipment::Spawn(UWorld* World, const FPlantEquipmentRecord& R)
@@ -190,6 +215,10 @@ FPlantEquipmentCounts VrgPlantEquipment::CountInWorld(UWorld* World)
 	C.CwDryCoolers = Gather(World, EPlantUnitKind::CwDryCooler).Num();
 	C.Chillers = Gather(World, EPlantUnitKind::Chiller).Num();
 	C.TrimChillers = Gather(World, EPlantUnitKind::TrimChiller).Num();
+	C.FwsPumps = Gather(World, EPlantUnitKind::FwsPump).Num();
+	C.ChwPumps = Gather(World, EPlantUnitKind::ChwPump).Num();
+	C.CwPumps = Gather(World, EPlantUnitKind::CwPump).Num();
+	C.Economizers = Gather(World, EPlantUnitKind::Economizer).Num();
 	return C;
 }
 
@@ -228,4 +257,20 @@ bool VrgPlantEquipment::OverlapsBox(const FBox2D& Room, const FVector& SizeM, co
 		Box += FVector2D(P.X, P.Y);
 	}
 	return Box.Min.X < Room.Max.X && Box.Max.X > Room.Min.X && Box.Min.Y < Room.Max.Y && Box.Max.Y > Room.Min.Y;
+}
+
+bool VrgPlantEquipment::KindOf(const FPlantDisplayEquipment& E, EPlantUnitKind& Out)
+{
+	switch (E.Kind)
+	{
+	case EPlantEquipmentKind::DryCooler:
+		if (E.Loop == EPlantLoopId::Chw) return false;
+		Out = E.Loop == EPlantLoopId::Fws ? EPlantUnitKind::FwsDryCooler : EPlantUnitKind::CwDryCooler; return true;
+	case EPlantEquipmentKind::Chiller: Out = EPlantUnitKind::Chiller; return true;
+	case EPlantEquipmentKind::TrimChiller: Out = EPlantUnitKind::TrimChiller; return true;
+	case EPlantEquipmentKind::Pump:
+		Out = E.Loop == EPlantLoopId::Fws ? EPlantUnitKind::FwsPump : E.Loop == EPlantLoopId::Chw ? EPlantUnitKind::ChwPump : EPlantUnitKind::CwPump; return true;
+	case EPlantEquipmentKind::Economizer: Out = EPlantUnitKind::Economizer; return true;
+	}
+	return false;
 }

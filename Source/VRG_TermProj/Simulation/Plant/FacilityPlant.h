@@ -100,6 +100,15 @@ struct FFacilityThermalSpec
 	UPROPERTY(EditAnywhere, Category = "Plant") double EconomizerApproachK = 2.0;
 	UPROPERTY(EditAnywhere, Category = "Plant") double EconomizerOnMarginK = 1.0;
 	UPROPERTY(EditAnywhere, Category = "Plant") double EconomizerOffMarginK = 0.3;
+	// Each side's design pressure drop at its loop's design flow [Pa] (2026-10-22: the exchanger is now in the CHW return
+	// main and the CW supply main). 15 ft of water = 44.8 kPa, the ASHRAE 90.1-2013 limit for an economizer exchanger
+	// served by the system pumps (summarised in Deppmann, "Water Side Economizers Part 9: Heat Exchanger Pressure Drop");
+	// the upper limit used as the design value: ESTIMATE, no product selection.
+	UPROPERTY(EditAnywhere, Category = "Plant", meta = (ClampMin = "0.0")) double EconomizerDesignDropPa = 4.48e4;
+	// Pumps of the chilled / condenser water loops (2026-10-22, placed pumps set them): 0 = the loop spec's default
+	// (2 duty + 1 standby, the FWS default).
+	UPROPERTY(EditAnywhere, Category = "Plant", meta = (ClampMin = "0")) int32 ChwPumps = 0;
+	UPROPERTY(EditAnywhere, Category = "Plant", meta = (ClampMin = "0")) int32 CwPumps = 0;
 
 	// ---- F6 ----
 	// Which water the CDU primaries take (Tools/설비냉각_계획.md "설비 구성 세 가지"): Separate = their own warm FWS loop
@@ -118,7 +127,16 @@ struct FFacilityThermalSpec
 struct FPlantEquipmentCounts
 {
 	int32 FwsDryCoolers = 0, CwDryCoolers = 0, Chillers = 0, TrimChillers = 0;
-	bool Any() const { return FwsDryCoolers > 0 || CwDryCoolers > 0 || Chillers > 0 || TrimChillers > 0; }
+	int32 FwsPumps = 0, ChwPumps = 0, CwPumps = 0, Economizers = 0;   // 2026-10-22
+	bool Any() const
+	{
+		return FwsDryCoolers > 0 || CwDryCoolers > 0 || Chillers > 0 || TrimChillers > 0 || FwsPumps > 0 || ChwPumps > 0 || CwPumps > 0 || Economizers > 0;
+	}
+	bool operator==(const FPlantEquipmentCounts& O) const
+	{
+		return FwsDryCoolers == O.FwsDryCoolers && CwDryCoolers == O.CwDryCoolers && Chillers == O.Chillers && TrimChillers == O.TrimChillers
+			&& FwsPumps == O.FwsPumps && ChwPumps == O.ChwPumps && CwPumps == O.CwPumps && Economizers == O.Economizers;
+	}
 };
 
 namespace FacilityPlantLayout
@@ -128,9 +146,25 @@ namespace FacilityPlantLayout
 	//     FWS hydraulic coils follow the same count (one coil per unit; the automatic rule counts the coils by flow);
 	//   chillers / trim chillers: N units = max(1, N - 1) duty + the rest standby; the duty units' reference capacity is
 	//     still the design load / (duty units x CAPFT at the design point), so the count changes the unit size, not the total.
+	//   pumps of a loop: the same N = max(1, N - 1) duty + standby rule; the duty pumps share the design flow (each pump's
+	//     curve is sized to total / duty), so the count changes the pump size, not the design point;
+	//   economizer: one placed unit keeps it (its position only; at most one, the layout refuses a second).
 	// Kinds with 0 leave the spec untouched.
 	VRG_TERMPROJ_API void ApplyEquipmentCounts(const FPlantEquipmentCounts& Counts, FFacilityThermalSpec& Thermal, FFacilityLoopSpec& FwsLoop);
 }
+
+// 2026-10-22: what the instruments on one unit read, as model values before any sensor model (FInstrumentBank adds
+// the sensor's response, sampling, noise and resolution, D9). NaN = the unit has no such reading. Per-unit splits follow
+// the plant model: identical units of a bank share the bank's flow and heat equally (failed units carry their water
+// uncooled), running chillers share the load; the trim chiller's evaporator has no network element (limitation), so
+// its water flow is the FWS flow it is modelled to see.
+struct FPlantUnitTruth
+{
+	double WaterInK = NAN, WaterOutK = NAN, FlowM3s = NAN;     // the unit's own water (coil, evaporator, pump)
+	double CondInK = NAN, CondOutK = NAN, CondFlowM3s = NAN;   // chillers: condenser water; economizer: CW side
+	double FanRatio = NAN, PowerW = NAN, HeadPa = NAN, HeatW = NAN, Cop = NAN, SpeedRatio = NAN;
+	bool bRunning = false, bFailed = false;
+};
 
 // S8 F6b: which of the plant's loops an action addresses.
 enum class EPlantLoopId : uint8 { Fws = 0, Chw = 1, Cw = 2 };
@@ -271,6 +305,8 @@ public:
 	double GetTrimRefCapacityW() const { return TrimCapRefW; }
 	double GetDesignTrimW() const { return DesignTrimW; }
 	double GetEconomizerUAWK() const { return HxUA; }
+	// The economizer exists in this plant (sized, enabled, and its two sides in the CHW / CW networks).
+	bool HasEconomizer() const { return HxUA > 0.0 && Thermal.bEconomizer; }
 
 	// CDU inlet temperature for this step: the FWS supply (separate), the CHW supply (shared), or the CHW supply warmed
 	// by the CRAH coils' heat of the last step mixed over the whole loop flow (series; one step of lag because the air
@@ -352,6 +388,11 @@ public:
 	double GetChillerMaxCop() const { return ChillerMaxCop; }
 	double GetWaterCpJKgK() const { return WaterCp; }
 	double GetChwSetpointK() const { return ChwSetpointK; }
+	// 2026-10-22 instruments: per-unit model values (see FPlantUnitTruth). Loop: Fws or Cw for dry coolers, any for pumps.
+	FPlantUnitTruth GetDryCoolerTruth(EPlantLoopId Loop, int32 Unit) const;
+	FPlantUnitTruth GetChillerTruth(int32 Unit, bool bTrimChiller) const;
+	FPlantUnitTruth GetPumpTruth(EPlantLoopId Loop, int32 Pump) const;
+	FPlantUnitTruth GetEconomizerTruth() const;
 
 private:
 	FFacilityWaterLoop Loop, ChwLoop, CwLoop;

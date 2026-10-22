@@ -5,9 +5,11 @@
 #include "CoreMinimal.h"
 #include "GameFramework/Actor.h"
 #include "Simulation/Plant/FacilityPlant.h"
+#include "Visualization/PlantVisual.h"
 #include "PlantEquipmentActor.generated.h"
 
 class UInstancedStaticMeshComponent;
+struct FPlantDisplayEquipment;
 class UMaterialInterface;
 class UStaticMesh;
 
@@ -19,7 +21,13 @@ enum class EPlantUnitKind : uint8
 	CwDryCooler,    // condenser water bank (chiller condensers)
 	Chiller,        // chilled water chillers (duty + standby)
 	TrimChiller,    // FWS trim chillers (duty + standby)
+	// 2026-10-22 ("배치 모드에서는 모든 오브젝트를 옮길 수 있어야 한다"): the yard's pumps and the economizer.
+	FwsPump,        // FWS pumps (duty + standby)
+	ChwPump,        // chilled water pumps
+	CwPump,         // condenser water pumps
+	Economizer,     // water-side economizer plate exchanger (at most one)
 };
+constexpr int32 NumPlantUnitKinds = 8;
 
 struct FPlantEquipmentRecord
 {
@@ -64,6 +72,7 @@ public:
 	// Schematic box sizes [m] (the same as the F7 yard; not catalog dimensions).
 	static FVector DefaultSizeM(EPlantUnitKind Kind);
 	static const TCHAR* KindName(EPlantUnitKind Kind);
+	static EPlantVisualKind VisualKindOf(EPlantUnitKind Kind);
 
 private:
 	UPROPERTY(Transient)
@@ -93,6 +102,8 @@ namespace VrgPlantEquipment
 	// Units of one kind in a stable order (by identity): unit K of the plant model is the K-th actor.
 	VRG_TERMPROJ_API TArray<APlantEquipmentActor*> Gather(UWorld* World, EPlantUnitKind Kind);
 	VRG_TERMPROJ_API FPlantEquipmentCounts CountInWorld(UWorld* World);
+	// The placeable kind a drawn yard unit is (false: not placeable).
+	VRG_TERMPROJ_API bool KindOf(const FPlantDisplayEquipment& E, EPlantUnitKind& Out);
 	// XY footprint of the air domain the layout currently has: the manual room, else the air grid actor's domain.
 	VRG_TERMPROJ_API bool RoomFootprintM(UWorld* World, FBox2D& Out);
 	// True when the box (UE transform, size in m) overlaps the room footprint in XY (touching is allowed).

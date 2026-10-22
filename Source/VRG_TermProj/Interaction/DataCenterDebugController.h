@@ -167,8 +167,8 @@ public:
 	// ---- Layout mode placement (2026-09-27) ----
 	// Racks, spines, CDUs and CRAH units: box of SizeM (depth, width, height) with the origin at the bottom centre.
 	static bool PlaceableBoxM(const AActor* Actor, FVector& OutSizeM);
-	// Nearest placeable whose box the ray enters within MaxDistanceCm, or null.
-	static AActor* PickPlaceableAlongRay(UWorld* World, const FVector& EyeCm, const FVector& Dir, double MaxDistanceCm);
+	// Nearest placeable whose box the ray enters within MaxDistanceCm, or null (OutDistanceCm: where it enters).
+	static AActor* PickPlaceableAlongRay(UWorld* World, const FVector& EyeCm, const FVector& Dir, double MaxDistanceCm, double* OutDistanceCm = nullptr);
 	// Where the ray meets the horizontal plane at PlaneZCm, snapped in X and Y to SnapM; false if it never does.
 	static bool FloorPointSnapped(const FVector& EyeCm, const FVector& Dir, double PlaneZCm, double SnapM, FVector& OutCm);
 	// Projected equipment boxes, with 1 cm clearance on a separating axis (UI placement rule).
@@ -205,6 +205,10 @@ public:
 	// converted (the selected kinds already have units) and no plant needs to have been built.
 	bool BeginPlantDuplication();
 	APlantEquipmentActor* ConfirmPlantAddition();
+	// 2026-10-22: the yard's automatic units are drawn instances, not actors. A press on one (nearer than any placeable)
+	// turns its kind into actors at the drawn positions, the same conversion as the first addition (one Undo step), and
+	// returns the pressed unit's actor so it is selected and dragged like any placed unit. Null when nothing was hit.
+	APlantEquipmentActor* ConvertAutomaticPlantAlongRay(const FVector& EyeCm, const FVector& Direction);
 	bool TryDeleteLayoutPlant(); // Entire plant unit selection, one Undo command (no units of a kind = automatic again).
 	bool IsAddingPlant() const { return bAddingPlant; }
 	void CancelRackAddition();

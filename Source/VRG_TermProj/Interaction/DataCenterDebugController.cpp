@@ -43,6 +43,7 @@
 #include "InputMappingContext.h"
 #include "HAL/IConsoleManager.h"
 #include "Widgets/SViewport.h"
+#include "Simulation/Core/VrgPerfCounters.h"
 
 static TAutoConsoleVariable<int32> CVarLayoutInputDiagnostics(TEXT("vrg.Layout.InputDiagnostics"), 0,
 	TEXT("Log placement input gates at duplicate/confirm/patch/capture events; 0 disables diagnostics."));
@@ -493,7 +494,31 @@ bool ADataCenterDebugController::PlaceableBoxM(const AActor* Actor, FVector& Out
 	return false;
 }
 
-AActor* ADataCenterDebugController::PickPlaceableAlongRay(UWorld* World, const FVector& EyeCm, const FVector& Dir, double MaxDistanceCm)
+namespace
+{
+	// Slab test of a ray against a box with its origin at the bottom centre, in the box's own (unscaled) frame [cm].
+	bool RayEntersBottomCentredBox(const FVector& EyeCm, const FVector& Dir, const FTransform& Box, const FVector& SizeCm, double MaxT, double& OutT)
+	{
+		const FQuat Q = Box.GetRotation();
+		const FVector Axes[3] = { Q.GetForwardVector(), Q.GetRightVector(), Q.GetUpVector() };
+		const double Lo[3] = { -.5 * SizeCm.X, -.5 * SizeCm.Y, 0.0 }, Hi[3] = { .5 * SizeCm.X, .5 * SizeCm.Y, SizeCm.Z };
+		const FVector Rel = EyeCm - Box.GetLocation();
+		double TMin = 0.0, TMax = MaxT;
+		for (int32 A = 0; A < 3; ++A)
+		{
+			const double O = FVector::DotProduct(Rel, Axes[A]), D = FVector::DotProduct(Dir, Axes[A]);
+			if (FMath::Abs(D) < 1e-9) { if (O < Lo[A] || O > Hi[A]) return false; continue; }
+			double T0 = (Lo[A] - O) / D, T1 = (Hi[A] - O) / D;
+			if (T0 > T1) Swap(T0, T1);
+			TMin = FMath::Max(TMin, T0); TMax = FMath::Min(TMax, T1);
+			if (TMin > TMax) return false;
+		}
+		OutT = TMin;
+		return true;
+	}
+}
+
+AActor* ADataCenterDebugController::PickPlaceableAlongRay(UWorld* World, const FVector& EyeCm, const FVector& Dir, double MaxDistanceCm, double* OutDistanceCm)
 {
 	if (World == nullptr) return nullptr;
 	AActor* Best = nullptr;
@@ -503,23 +528,11 @@ AActor* ADataCenterDebugController::PickPlaceableAlongRay(UWorld* World, const F
 		FVector SizeM;
 		if (!PlaceableBoxM(*It, SizeM)) continue;
 		// Same slab test as the rack pick, in the actor's own (unscaled) frame. A barrier's size is its scale.
-		const FVector Axes[3] = { It->GetActorForwardVector(), It->GetActorRightVector(), It->GetActorUpVector() };
 		const FVector SizeCm = SizeM * 100.0 * (It->IsA<ALayoutBarrierActor>() ? It->GetActorScale3D().GetAbs() : FVector::OneVector);
-		const double Lo[3] = { -.5 * SizeCm.X, -.5 * SizeCm.Y, 0.0 }, Hi[3] = { .5 * SizeCm.X, .5 * SizeCm.Y, SizeCm.Z };
-		const FVector Rel = EyeCm - It->GetActorLocation();
-		double TMin = 0.0, TMax = BestT;
-		bool bHit = true;
-		for (int32 A = 0; A < 3 && bHit; ++A)
-		{
-			const double O = FVector::DotProduct(Rel, Axes[A]), D = FVector::DotProduct(Dir, Axes[A]);
-			if (FMath::Abs(D) < 1e-9) { bHit = O >= Lo[A] && O <= Hi[A]; continue; }
-			double T0 = (Lo[A] - O) / D, T1 = (Hi[A] - O) / D;
-			if (T0 > T1) Swap(T0, T1);
-			TMin = FMath::Max(TMin, T0); TMax = FMath::Min(TMax, T1);
-			bHit = TMin <= TMax;
-		}
-		if (bHit && TMin < BestT) { BestT = TMin; Best = *It; }
+		double T = 0.0;
+		if (RayEntersBottomCentredBox(EyeCm, Dir, It->GetActorTransform(), SizeCm, BestT, T) && T < BestT) { BestT = T; Best = *It; }
 	}
+	if (OutDistanceCm) *OutDistanceCm = BestT;
 	return Best;
 }
 
@@ -765,7 +778,14 @@ void ADataCenterDebugController::BeginPlantAddition(EPlantUnitKind Kind)
 		|| IsLayoutDragging() || bMarqueeActive || bAddingRack || Grabbed.IsValid() || IsInputKeyDown(EKeys::RightMouseButton)) return;
 	ADataCenterSimulationActor* Sim = FindSimActor();
 	TArray<FPlantEquipmentRecord> Automatic; FString Reason = TEXT("통합 액터가 없다.");
-	if (!Sim || !Sim->CaptureAutomaticPlantUnits(Kind, Automatic, Reason))
+	bool bCaptured = Sim && Sim->CaptureAutomaticPlantUnits(Kind, Automatic, Reason);
+	// The plant has one economizer: a second one is refused (the drawn one can be pressed and moved instead).
+	if (bCaptured && Kind == EPlantUnitKind::Economizer && (!Automatic.IsEmpty() || !VrgPlantEquipment::Gather(GetWorld(), Kind).IsEmpty()))
+	{
+		bCaptured = false;
+		Reason = TEXT("이코노마이저는 설비에 하나뿐이다: 있는 것을 눌러 옮긴다.");
+	}
+	if (!bCaptured)
 	{
 		UE_LOG(LogTemp, Display, TEXT("[VrgLayout] %s 추가 거절: %s"), APlantEquipmentActor::KindName(Kind), *Reason);
 		if (GEngine) GEngine->AddOnScreenDebugMessage(static_cast<uint64>(GetUniqueID()) + 29, 6.0f, FColor::Red, Reason);
@@ -792,6 +812,11 @@ bool ADataCenterDebugController::BeginPlantDuplication()
 		if (!IsValid(Unit) || Unit->GetWorld() != World) return false;
 		FPlantEquipmentRecord R = VrgPlantEquipment::Capture(Unit);
 		if (!VrgPlantEquipment::IsValidRecord(R)) return false;
+		if (R.Kind == EPlantUnitKind::Economizer)
+		{
+			UE_LOG(LogTemp, Display, TEXT("[VrgLayout] 설비 장비 복제 거절: 이코노마이저는 설비에 하나뿐이다"));
+			return false;
+		}
 		R.Id.Reset(); R.Name = NAME_None;  // no identity or actor reference
 		Members.Add(MoveTemp(R));
 	}
@@ -1571,18 +1596,64 @@ bool ADataCenterDebugController::RestoreBarrierPresence(const FLayoutTransformCo
 	return true;
 }
 
+namespace
+{
+	// A new identity for a plant unit record (added, converted or copied).
+	void NamePlantRecord(UWorld* World, FPlantEquipmentRecord& R)
+	{
+		static const TCHAR* Prefixes[NumPlantUnitKinds] = { TEXT("PlantFwsDryCooler_"), TEXT("PlantCwDryCooler_"), TEXT("PlantChiller_"),
+			TEXT("PlantTrimChiller_"), TEXT("PlantFwsPump_"), TEXT("PlantChwPump_"), TEXT("PlantCwPump_"), TEXT("PlantEconomizer_") };
+		const TCHAR* Prefix = Prefixes[FMath::Clamp(int32(R.Kind), 0, NumPlantUnitKinds - 1)];
+		R.Id = FGuid::NewGuid().ToString();
+		R.Name = MakeUniqueObjectName(World->PersistentLevel, APlantEquipmentActor::StaticClass(), FName(*(FString(Prefix) + R.Id)));
+	}
+}
+
+APlantEquipmentActor* ADataCenterDebugController::ConvertAutomaticPlantAlongRay(const FVector& EyeCm, const FVector& Direction)
+{
+	UWorld* World = GetWorld();
+	const ADataCenterSimulationActor* Sim = FindSimActor();
+	if (!World || !World->IsGameWorld() || !Sim || !IsLayoutMode() || !IsEquipmentInputAvailable()
+		|| EyeCm.ContainsNaN() || Direction.ContainsNaN() || Direction.IsNearlyZero()) return nullptr;
+	const FVector Dir = Direction.GetSafeNormal();
+	double ActorT = TNumericLimits<double>::Max();
+	PickPlaceableAlongRay(World, EyeCm, Dir, TNumericLimits<double>::Max(), &ActorT);
+	TArray<FPlantEquipmentRecord> Hit;
+	int32 HitIndex = INDEX_NONE;
+	double BestT = ActorT;   // a placed unit / equipment in front of the yard instance wins
+	for (int32 K = 0; K < NumPlantUnitKinds; ++K)
+	{
+		const EPlantUnitKind Kind = static_cast<EPlantUnitKind>(K);
+		TArray<FPlantEquipmentRecord> Units; FString Reason;
+		if (!Sim->CaptureAutomaticPlantUnits(Kind, Units, Reason)) return nullptr;   // no plant drawn yet
+		for (int32 I = 0; I < Units.Num(); ++I)
+		{
+			double T = 0.0;
+			if (RayEntersBottomCentredBox(EyeCm, Dir, Units[I].Transform, Units[I].SizeM * 100.0, BestT, T) && T < BestT)
+			{
+				BestT = T; Hit = Units; HitIndex = I;
+			}
+		}
+	}
+	if (HitIndex == INDEX_NONE) return nullptr;
+	FLayoutTransformCommand Command;  // bBeforePresent=false: Undo removes the converted units (automatic again)
+	for (FPlantEquipmentRecord R : Hit) { NamePlantRecord(World, R); Command.PlantUnits.Add(MoveTemp(R)); }
+	if (!RestorePlantPresence(Command, true))
+	{
+		UE_LOG(LogTemp, Display, TEXT("[VrgLayout] %s 자동 배치 전환 거절: 실제 장비로 놓을 자리가 방 공기 영역·장비와 겹친다"), APlantEquipmentActor::KindName(Hit[0].Kind));
+		return nullptr;
+	}
+	PushLayoutCommand(Command);
+	UE_LOG(LogTemp, Display, TEXT("[VrgLayout] %s 자동 배치 %d대를 실제 장비로 전환(누른 장비 %d번, Undo로 자동 배치 복귀)"),
+		APlantEquipmentActor::KindName(Hit[0].Kind), Hit.Num(), HitIndex);
+	return VrgPlantEquipment::Find(World, Command.PlantUnits[HitIndex].Id);
+}
+
 APlantEquipmentActor* ADataCenterDebugController::ConfirmPlantAddition()
 {
 	UWorld* World = GetWorld();
 	FTransform Proposed; FVector SizeM; FString Reason;
-	auto Name = [&](FPlantEquipmentRecord& R)
-	{
-		const TCHAR* Prefix = R.Kind == EPlantUnitKind::FwsDryCooler ? TEXT("PlantFwsDryCooler_")
-			: R.Kind == EPlantUnitKind::CwDryCooler ? TEXT("PlantCwDryCooler_")
-			: R.Kind == EPlantUnitKind::Chiller ? TEXT("PlantChiller_") : TEXT("PlantTrimChiller_");
-		R.Id = FGuid::NewGuid().ToString();
-		R.Name = MakeUniqueObjectName(World->PersistentLevel, APlantEquipmentActor::StaticClass(), FName(*(FString(Prefix) + R.Id)));
-	};
+	auto Name = [&](FPlantEquipmentRecord& R) { NamePlantRecord(World, R); };
 	if (bAddingPlant && !PlantDuplicationMembers.IsEmpty())
 	{
 		// S8 F8-3: the copies as one presence command (Undo removes them all); the same validation as Undo / Redo.
@@ -2377,6 +2448,7 @@ void ADataCenterDebugController::OnSelectLayoutEquipment()
 			if (Axis != INDEX_NONE && BeginLayoutGizmoDrag(Axis, EyeCm, Direction, FVector2D(GizmoX, GizmoY))) return;
 		}
 		const bool bShift = IsInputKeyDown(EKeys::LeftShift) || IsInputKeyDown(EKeys::RightShift);
+		ConvertAutomaticPlantAlongRay(EyeCm, Direction);   // a pressed yard instance becomes a placed unit, picked below
 		if (!PickPlaceableAlongRay(GetWorld(), EyeCm, Direction, TNumericLimits<double>::Max()))
 		{
 			float X = 0, Y = 0;
@@ -3017,6 +3089,7 @@ void ADataCenterDebugController::Tick(float DeltaTime)
 	// Layout mode: hover / move the equipment under the crosshair. The room re-routes pipes once it settles.
 	if (IsLayoutMode())
 	{
+		VRG_SCOPE_COST(STAT_VrgLayoutEdit, LayoutEditMs);
 		FVector EyeCm; FRotator ViewRotation;
 		GetPlayerViewPoint(EyeCm, ViewRotation);
 		if (AActor* Held = Grabbed.Get())
@@ -3159,20 +3232,26 @@ void ADataCenterDebugController::PlayerTick(float DeltaTime)
 	// A focus/input-mode change can flush pressed keys without routing their release events here.
 	if (!IsInputKeyDown(EKeys::LeftControl)) bLayoutLeftControl = false;
 	if (!IsInputKeyDown(EKeys::RightControl)) bLayoutRightControl = false;
-	UpdateRackAdditionFromCursor();
-	if (bMarqueeActive)
 	{
-		if (!IsInputKeyDown(EKeys::LeftMouseButton)) EndLayoutMarquee(false);
-		else UpdateLayoutMarqueeFromCursor();
-	}
-	if (IsLayoutDragging())
-	{
-		if (!IsInputKeyDown(EKeys::LeftMouseButton))
+		VRG_SCOPE_COST(STAT_VrgLayoutEdit, LayoutEditMs); // a separate scope from Tick's, so the two never nest
+		UpdateRackAdditionFromCursor();
+		if (bMarqueeActive)
 		{
-			LogLayoutInputState(TEXT("TickNoLmbCancel"));
-			EndLayoutDrag(false);
+			if (!IsInputKeyDown(EKeys::LeftMouseButton)) EndLayoutMarquee(false);
+			else UpdateLayoutMarqueeFromCursor();
 		}
-		else UpdateLayoutDragFromCursor();
+		if (IsLayoutDragging())
+		{
+			if (!IsInputKeyDown(EKeys::LeftMouseButton))
+			{
+				LogLayoutInputState(TEXT("TickNoLmbCancel"));
+				EndLayoutDrag(false);
+			}
+			else UpdateLayoutDragFromCursor();
+		}
+		// Pipes and cables are re-routed once after the release, never during a drag (the release commits the move).
+		const bool bHold = IsLayoutMode() && (IsLayoutDragging() || Grabbed.IsValid());
+		for (TActorIterator<ADataCenterRoomActor> It(GetWorld()); It; ++It) It->SetLayoutRebuildHeld(bHold);
 	}
 	if (IsLayoutMode() || OpenPatchMaps > 0)
 	{
