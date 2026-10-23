@@ -305,6 +305,33 @@ public:
 	// False (with a warning) when the plant thermal model is not running or the arguments do not apply.
 	bool ApplyPlantFault(const TArray<FString>& Args);
 	bool IsFacilityPlantActive() const { return bPlantActive; }
+
+	// ---- W1 live leaks (Tools/누수_실시간_계획.md L1, 2026-10-23) ----
+	// Every place a leak can start during a run: the room's closed sites (three per rack, ADataCenterRoomActor) and,
+	// while the plant runs, the facility loops' header and branch nodes. A leak is a hole size change at a site; the
+	// network re-solves, nothing is rebuilt (the coupling keeps its pipe numbers). Positions [m]: the room's node
+	// positions, the plant yard's drawn node positions (schematic, F7).
+	struct FLiveLeakSite
+	{
+		bool bPlant = false;
+		int32 RoomSpec = INDEX_NONE;
+		EPlantLoopId Loop = EPlantLoopId::Fws;
+		EPlantLeakSite PlantSite = EPlantLeakSite::SupplyHeader;
+		int32 Branch = INDEX_NONE;
+		FVector PositionM = FVector::ZeroVector;
+		FString Label;
+	};
+	// Rebuilt at simulation entry and by vrg.Leak.Sites (plant sites only while the plant is built).
+	void RebuildLiveLeakSites();
+	const TArray<FLiveLeakSite>& GetLiveLeakSites() const { return LiveLeakSites; }
+	// Nearest site to a point within MaxDistanceM, INDEX_NONE if none.
+	int32 FindLiveLeakSite(const FVector& PointM, double MaxDistanceM = 2.0) const;
+	// Current hole [m] of a site, and the pipe inner diameter a full rupture opens.
+	double GetLiveLeakHoleDiameterM(int32 Site) const;
+	double GetLiveLeakRuptureDiameterM(int32 Site) const;
+	// Opens / resizes / repairs (0) a site now, in simulation mode only: logs "[Leak] ... 실시간 누수(Source)" and records
+	// it in the fault monitor (report s2b.leaks). False outside a run or for a bad site.
+	bool SetLiveLeak(int32 Site, double HoleDiameterM, const TCHAR* Source);
 	const FFacilityWaterLoop& GetFacilityLoop() const { return Plant.GetLoop(); }
 	const FCouplingBridge& GetCouplingBridge() const { return Bridge; }
 	const FFacilityLoopResult& GetFacilityLoopResult() const { return Plant.GetLoopResult(); }
@@ -509,6 +536,7 @@ private:
 	};
 	TArray<FCduSummary> CduSummaries;
 	FFacilityPlant Plant;
+	TArray<FLiveLeakSite> LiveLeakSites;
 	// S8 F8-2: the same plant with the automatic counts (no placed units), built at the same entry; layout conversion only.
 	TUniquePtr<FFacilityPlant> AutomaticPlant;
 	bool bPlantActive = false;

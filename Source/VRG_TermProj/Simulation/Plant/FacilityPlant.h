@@ -340,6 +340,8 @@ public:
 	bool HasLoop(EPlantLoopId Id) const;
 	static const TCHAR* LoopName(EPlantLoopId Id) { return Id == EPlantLoopId::Chw ? TEXT("CHW") : Id == EPlantLoopId::Cw ? TEXT("CW") : TEXT("FWS"); }
 	int32 AddLeak(EPlantLoopId Id, EPlantLeakSite Site, int32 Branch, double HoleDiameterM, double TimeS = 0.0);
+	// W1: a leak at a site of a built loop: adds the orifice the first time, then changes its hole (0 = repaired).
+	int32 SetLeakAt(EPlantLoopId Id, EPlantLeakSite Site, int32 Branch, double HoleDiameterM, double TimeS = 0.0);
 	void ClearLeaks(double TimeS = 0.0);
 	// A running pump trips and a healthy standby takes over when one is left.
 	bool TripPump(EPlantLoopId Id, int32 Pump, double TimeS = 0.0);

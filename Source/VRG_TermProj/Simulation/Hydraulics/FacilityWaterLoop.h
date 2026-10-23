@@ -190,6 +190,9 @@ public:
 	// Returns the leak index or INDEX_NONE (bad site / branch). Takes effect at the next Solve.
 	int32 AddLeak(EPlantLeakSite Site, int32 Branch, double HoleDiameterM, double DischargeCoefficient = 0.61);
 	void SetLeakDiameterM(int32 Leak, double HoleDiameterM);
+	// W1: the node a site's orifice sits on (INDEX_NONE for a bad site / branch), and the leak already at a site.
+	int32 GetLeakSiteNode(EPlantLeakSite Site, int32 Branch) const;
+	int32 FindLeak(EPlantLeakSite Site, int32 Branch) const;
 	// Every hole to zero diameter (the orifices stay so indices hold; a zero hole adds exactly nothing to the solve).
 	void ClearLeaks();
 	int32 GetNumLeaks() const { return LoopLeaks.Num(); }

@@ -35,7 +35,9 @@ struct VRG_TERMPROJ_API FVrgFaultRecord
 struct VRG_TERMPROJ_API FVrgLeakRecord
 {
 	double TimeS = 0.0; int32 Rack = INDEX_NONE; bool bReturnBranch = false; double HoleDiameterM = 0.0;
-	bool operator==(const FVrgLeakRecord& O) const { return TimeS == O.TimeS && Rack == O.Rack && bReturnBranch == O.bReturnBranch && HoleDiameterM == O.HoleDiameterM; }
+	// W1 live leak: which site (label) and where [m]; empty / zero for the S2b rack-branch events.
+	FString Site; FVector PointM = FVector::ZeroVector;
+	bool operator==(const FVrgLeakRecord& O) const { return TimeS == O.TimeS && Rack == O.Rack && bReturnBranch == O.bReturnBranch && HoleDiameterM == O.HoleDiameterM && Site == O.Site && PointM == O.PointM; }
 };
 
 struct VRG_TERMPROJ_API FVrgValveRecord

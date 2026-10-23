@@ -475,6 +475,14 @@ private:
 	void UpdateRackAdditionFromCursor();
 	void LogLayoutInputState(const TCHAR* Context) const;
 	int32 OpenPatchMaps = 0;
+	// W1 live leak tool (simulation mode, L): 0 off, 1 small hole, 2 30 mm, 3 rupture, 4 repair. The aimed site is the one
+	// nearest to the cursor ray (drawn yellow); a click applies the mode to it (ADataCenterSimulationActor::SetLiveLeak).
+	int32 LeakToolMode = 0;
+	int32 LeakToolAimed = INDEX_NONE;
+	bool bLastCursorInputMode = false;
+	void OnCycleLeakTool();
+	void UpdateLeakTool();
+	bool ApplyLeakToolClick();
 	bool bInputModeInitialized = false;
 	bool bLastLayoutInputMode = false;
 	// UI tuning, not equipment/physical parameters: 3 m/s, wheel x1.25, limits 0.25..24 m/s.

@@ -92,6 +92,12 @@ TSharedRef<FJsonObject> FVrgFaultMonitor::ToJsonObject() const
 		TSharedRef<FJsonObject> O = MakeShared<FJsonObject>();
 		O->SetNumberField(TEXT("timeS"), R.TimeS); O->SetNumberField(TEXT("rack"), R.Rack);
 		O->SetBoolField(TEXT("returnBranch"), R.bReturnBranch); O->SetNumberField(TEXT("holeDiameterM"), R.HoleDiameterM);
+		if (!R.Site.IsEmpty())
+		{
+			// W1 live leak (optional fields; older reports lack them).
+			O->SetStringField(TEXT("site"), R.Site);
+			O->SetArrayField(TEXT("pointM"), { MakeShared<FJsonValueNumber>(R.PointM.X), MakeShared<FJsonValueNumber>(R.PointM.Y), MakeShared<FJsonValueNumber>(R.PointM.Z) });
+		}
 		L.Add(MakeShared<FJsonValueObject>(O));
 	}
 	for (const FVrgValveRecord& R : Valves)
@@ -145,6 +151,9 @@ bool FVrgFaultMonitor::FromJsonObject(const TSharedPtr<FJsonObject>& Object, FVr
 			FVrgLeakRecord R;
 			R.TimeS = O->GetNumberField(TEXT("timeS")); R.Rack = int32(O->GetNumberField(TEXT("rack")));
 			R.bReturnBranch = O->GetBoolField(TEXT("returnBranch")); R.HoleDiameterM = O->GetNumberField(TEXT("holeDiameterM"));
+			O->TryGetStringField(TEXT("site"), R.Site);
+			const TArray<TSharedPtr<FJsonValue>>* P = nullptr;
+			if (O->TryGetArrayField(TEXT("pointM"), P) && P->Num() == 3) R.PointM = FVector((*P)[0]->AsNumber(), (*P)[1]->AsNumber(), (*P)[2]->AsNumber());
 			Out.Leaks.Add(R);
 		}
 	if (Object->TryGetArrayField(TEXT("valves"), A))

@@ -461,6 +461,22 @@ int32 FFacilityPlant::AddLeak(EPlantLoopId Id, EPlantLeakSite Site, int32 Branch
 	return K;
 }
 
+int32 FFacilityPlant::SetLeakAt(EPlantLoopId Id, EPlantLeakSite Site, int32 Branch, double HoleDiameterM, double TimeS)
+{
+	FFacilityWaterLoop* L = MutableLoopFor(Id);
+	if (L == nullptr || !(HoleDiameterM >= 0.0)) return INDEX_NONE;
+	const int32 Existing = L->FindLeak(Site, Branch);
+	if (Existing == INDEX_NONE) return HoleDiameterM > 0.0 ? AddLeak(Id, Site, Branch, HoleDiameterM, TimeS) : INDEX_NONE;
+	// W1: the same site again changes its hole (repair = 0); the reach is the re-solved network's as for any fault (D4).
+	static const TCHAR* Sites[] = { TEXT("supply header"), TEXT("return header"), TEXT("branch supply"), TEXT("branch return") };
+	FPlantFaultReport R = BeginFault(Id, FString::Printf(TEXT("%s leak %s%s -> %.1f mm"), LoopName(Id), Sites[uint8(Site) & 3],
+		(Site == EPlantLeakSite::BranchSupply || Site == EPlantLeakSite::BranchReturn) ? *FString::Printf(TEXT(" %d"), Branch) : TEXT(""), HoleDiameterM * 1e3), TimeS);
+	L->SetLeakDiameterM(Existing, HoleDiameterM);
+	ResolveLoop(Id);
+	EndFault(R);
+	return Existing;
+}
+
 void FFacilityPlant::ClearLeaks(double TimeS)
 {
 	for (const EPlantLoopId Id : { EPlantLoopId::Fws, EPlantLoopId::Chw, EPlantLoopId::Cw })

@@ -331,6 +331,25 @@ public:
 	const ARackThermalActor* GetLeakSpecRack(int32 LeakSpec) const { return LeakSpecs.IsValidIndex(LeakSpec) ? LeakSpecs[LeakSpec].Rack.Get() : nullptr; }
 	bool IsLeakSpecReturnBranch(int32 LeakSpec) const { return LeakSpecs.IsValidIndex(LeakSpec) && LeakSpecs[LeakSpec].bReturnBranch; }
 	FVector GetNodePositionM(int32 NodeIndex) const { return NodePositionM.IsValidIndex(NodeIndex) ? NodePositionM[NodeIndex] : FVector::ZeroVector; }
+
+	// ---- W1 live leak sites (Tools/누수_실시간_계획.md L1, 2026-10-23) ----
+	// Every rebuild gives every routed rack three closed leak sites: mid supply branch, mid return branch (split like a
+	// hand-placed leak) and its supply header tee (an existing node). A closed hole adds exactly nothing to the solve
+	// and keeps the coolant inventory idle, so normal runs are unchanged; during a run a leak is a hole size change on
+	// one of them (SetLeakHoleDiameterM), never a topology change (the coupling holds the pipe numbers).
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Room|Leak")
+	bool bLiveLeakSites = true;
+	bool IsLeakSpecHeader(int32 LeakSpec) const { return LeakSpecs.IsValidIndex(LeakSpec) && LeakSpecs[LeakSpec].bHeader; }
+	bool IsLeakSpecLatent(int32 LeakSpec) const { return LeakSpecs.IsValidIndex(LeakSpec) && LeakSpecs[LeakSpec].bLatent; }
+	// Shown (web layer, tank leak counts, inventory log): a hand-placed / event leak, or a live site opened in this run.
+	bool IsLeakSpecShown(int32 LeakSpec) const;
+	// The orifice node's position [m] and current hole [m] (INDEX_NONE / 0 before the spec is built).
+	FVector GetLeakSpecPositionM(int32 LeakSpec) const;
+	double GetLeakSpecHoleDiameterM(int32 LeakSpec) const;
+	// Inner diameter of the pipe the site is on [m]: a full rupture opens this hole.
+	double GetLeakSpecRuptureDiameterM(int32 LeakSpec) const { return IsLeakSpecHeader(LeakSpec) ? HeaderDiameterM : BranchDiameterM; }
+	// Network leak indices counted for a tank: built orifices of shown specs only.
+	int32 CountShownTankLeaks(const TArray<int32>& TankLeakIndices) const;
 	const FCoolantInventory& GetCoolantInventory() const { return Inventory; }
 	// One integrated step [s]: re-solves the network only while a leak is open / make-up is filling / a loop just
 	// depleted (otherwise nothing changes and the static solution stays). Called by the integrated actor before the
@@ -397,6 +416,9 @@ private:
 		double HoleDiameterM = 0.0;
 		double DischargeCoefficient = 0.61;
 		int32 NetworkLeak = INDEX_NONE;
+		bool bHeader = false;       // W1: the orifice sits on the rack's supply header tee (no split), not mid branch
+		bool bLatent = false;       // W1: a live leak site made by the room (closed until opened during a run)
+		bool bEverOpened = false;   // W1: opened at least once in the current run (shown from then on)
 	};
 	TArray<FRoomLeakSpec> LeakSpecs;
 	bool bLeakTopologyLocked = false;

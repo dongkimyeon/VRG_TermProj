@@ -215,21 +215,33 @@ int32 FFacilityWaterLoop::GetNumRunningPumps() const
 	return N;
 }
 
+int32 FFacilityWaterLoop::GetLeakSiteNode(EPlantLeakSite Site, int32 Branch) const
+{
+	if (!bBuilt) return INDEX_NONE;
+	switch (Site)
+	{
+	case EPlantLeakSite::SupplyHeader: return Handles.SupplyHeaderNode;
+	case EPlantLeakSite::ReturnHeader: return Handles.ReturnHeaderNode;
+	case EPlantLeakSite::BranchSupply:
+		return Handles.BranchSupplyRunPipes.IsValidIndex(Branch) ? Network.GetPipeToNodeIndex(Handles.BranchSupplyRunPipes[Branch]) : INDEX_NONE;
+	case EPlantLeakSite::BranchReturn:
+		return Handles.BranchReturnRunPipes.IsValidIndex(Branch) ? Network.GetPipeFromNodeIndex(Handles.BranchReturnRunPipes[Branch]) : INDEX_NONE;
+	}
+	return INDEX_NONE;
+}
+
+int32 FFacilityWaterLoop::FindLeak(EPlantLeakSite Site, int32 Branch) const
+{
+	const bool bBranch = Site == EPlantLeakSite::BranchSupply || Site == EPlantLeakSite::BranchReturn;
+	for (int32 K = 0; K < LoopLeaks.Num(); ++K)
+		if (LoopLeaks[K].Site == Site && (!bBranch || LoopLeaks[K].Branch == Branch)) return K;
+	return INDEX_NONE;
+}
+
 int32 FFacilityWaterLoop::AddLeak(EPlantLeakSite Site, int32 Branch, double HoleDiameterM, double DischargeCoefficient)
 {
 	if (!bBuilt) return INDEX_NONE;
-	int32 Node = INDEX_NONE;
-	switch (Site)
-	{
-	case EPlantLeakSite::SupplyHeader: Node = Handles.SupplyHeaderNode; break;
-	case EPlantLeakSite::ReturnHeader: Node = Handles.ReturnHeaderNode; break;
-	case EPlantLeakSite::BranchSupply:
-		if (Handles.BranchSupplyRunPipes.IsValidIndex(Branch)) Node = Network.GetPipeToNodeIndex(Handles.BranchSupplyRunPipes[Branch]);
-		break;
-	case EPlantLeakSite::BranchReturn:
-		if (Handles.BranchReturnRunPipes.IsValidIndex(Branch)) Node = Network.GetPipeFromNodeIndex(Handles.BranchReturnRunPipes[Branch]);
-		break;
-	}
+	const int32 Node = GetLeakSiteNode(Site, Branch);
 	if (Node == INDEX_NONE) return INDEX_NONE;
 	FHydraulicLeak L;
 	L.NodeIndex = Node;

@@ -133,6 +133,17 @@ int32 ADataCenterRoomActor::AddLeak(ARackThermalActor* Rack, bool bReturnBranch,
 		UE_LOG(LogTemp, Warning, TEXT("[Leak] 시뮬레이션 실행 중에는 누수를 추가하지 않는다(배관 번호·탱크가 바뀐다). 배치 모드에서 추가하거나 vrg.Eval.Event로 미리 예약한다."));
 		return INDEX_NONE;
 	}
+	// W1: the branch already has a live site: it becomes this hand-placed leak (no second orifice on the branch).
+	for (int32 S = 0; S < LeakSpecs.Num(); ++S)
+	{
+		FRoomLeakSpec& Site = LeakSpecs[S];
+		if (Site.Rack.Get() != Rack || Site.bReturnBranch != bReturnBranch || Site.bHeader || !Site.bLatent) continue;
+		Site.bLatent = false;
+		Site.HoleDiameterM = HoleDiameterM;
+		Site.DischargeCoefficient = DischargeCoefficient;
+		RebuildRoom();
+		return S;
+	}
 	FRoomLeakSpec& Leak = LeakSpecs.AddDefaulted_GetRef();
 	Leak.Rack = Rack;
 	Leak.bReturnBranch = bReturnBranch;
@@ -157,7 +168,9 @@ void ADataCenterRoomActor::ClearLeaks()
 bool ADataCenterRoomActor::SetLeakHoleDiameterM(int32 LeakSpec, double HoleDiameterM)
 {
 	if (!LeakSpecs.IsValidIndex(LeakSpec) || !(HoleDiameterM >= 0.0)) return false;
-	LeakSpecs[LeakSpec].HoleDiameterM = HoleDiameterM;
+	// W1: a live site stays closed as built (the next run starts closed again); it is shown once it has been opened.
+	if (!LeakSpecs[LeakSpec].bLatent) LeakSpecs[LeakSpec].HoleDiameterM = HoleDiameterM;
+	LeakSpecs[LeakSpec].bEverOpened |= HoleDiameterM > 0.0;
 	// A live size change needs no rebuild; the next inventory step solves with it. Restart restores the built size,
 	// so record the new size as the as-built one only through a rebuild (an event-driven opening is step 5).
 	Network.SetLeakHoleDiameterM(LeakSpecs[LeakSpec].NetworkLeak, HoleDiameterM);
@@ -200,7 +213,7 @@ void ADataCenterRoomActor::StepCoolantInventory(double DtS, double NowS)
 	for (int32 T = 0; T < Tanks.Num(); ++T)
 	{
 		const FCoolantInventory::FTank& Tank = Tanks[T];
-		if (Tank.LeakIndices.Num() == 0 && !Tank.State.bDepleted) continue;
+		if (CountShownTankLeaks(Tank.LeakIndices) == 0 && !Tank.State.bDepleted) continue;
 		UE_LOG(LogTemp, Display, TEXT("[Leak] t=%.2f s 줄 %d: 탱크 %.1f kPa(g), 탱크 물 %.3f L (처음 %.3f), 누수 %.4f L/s, 누적 누수 %.3f L, 보충 %.3f L, 펌프 %.3f L/s%s"),
 			NowS, T, Inventory.GetTankGaugePressurePa(T) * 1e-3, Tank.State.WaterVolumeM3 * 1e3, Tank.State.InitialWaterM3 * 1e3,
 			Tank.LastLeakM3s * 1e3, Tank.State.LeakedM3 * 1e3, Tank.State.MakeupM3 * 1e3, Network.GetPumpFlowM3s(Tank.PumpIndex) * 1e3,
@@ -211,8 +224,38 @@ void ADataCenterRoomActor::StepCoolantInventory(double DtS, double NowS)
 int32 ADataCenterRoomActor::EnsureLeakSpec(ARackThermalActor* Rack, bool bReturnBranch)
 {
 	for (int32 S = 0; S < LeakSpecs.Num(); ++S)
-		if (LeakSpecs[S].Rack.Get() == Rack && LeakSpecs[S].bReturnBranch == bReturnBranch) return S;
+		if (LeakSpecs[S].Rack.Get() == Rack && LeakSpecs[S].bReturnBranch == bReturnBranch && !LeakSpecs[S].bHeader)
+		{
+			// W1: an event claims the branch's live site: it is a prepared leak from now on (shown closed, as before W1).
+			LeakSpecs[S].bLatent = false;
+			return S;
+		}
 	return AddLeak(Rack, bReturnBranch, 0.0);
+}
+
+bool ADataCenterRoomActor::IsLeakSpecShown(int32 LeakSpec) const
+{
+	return LeakSpecs.IsValidIndex(LeakSpec) && (!LeakSpecs[LeakSpec].bLatent || LeakSpecs[LeakSpec].bEverOpened);
+}
+
+FVector ADataCenterRoomActor::GetLeakSpecPositionM(int32 LeakSpec) const
+{
+	const int32 NL = GetLeakNetworkIndex(LeakSpec);
+	return NL != INDEX_NONE && NL < Network.GetNumLeaks() ? GetNodePositionM(Network.GetLeak(NL).NodeIndex) : FVector::ZeroVector;
+}
+
+double ADataCenterRoomActor::GetLeakSpecHoleDiameterM(int32 LeakSpec) const
+{
+	const int32 NL = GetLeakNetworkIndex(LeakSpec);
+	return NL != INDEX_NONE && NL < Network.GetNumLeaks() ? Network.GetLeak(NL).HoleDiameterM : 0.0;
+}
+
+int32 ADataCenterRoomActor::CountShownTankLeaks(const TArray<int32>& TankLeakIndices) const
+{
+	int32 N = 0;
+	for (int32 S = 0; S < LeakSpecs.Num(); ++S)
+		if (LeakSpecs[S].NetworkLeak != INDEX_NONE && TankLeakIndices.Contains(LeakSpecs[S].NetworkLeak) && IsLeakSpecShown(S)) ++N;
+	return N;
 }
 
 bool ADataCenterRoomActor::IsRackLoopDepleted(int32 RoutedIndex) const
@@ -291,6 +334,7 @@ void ADataCenterRoomActor::OpenAllValves()
 void ADataCenterRoomActor::RestartCoolantInventory()
 {
 	OpenAllValves();
+	for (FRoomLeakSpec& Spec : LeakSpecs) Spec.bEverOpened = Spec.HoleDiameterM > 0.0;
 	FHydraulicSolveResult Result;
 	if (Inventory.Restart(Network, SolveSettings, Result))
 	{
@@ -518,6 +562,8 @@ void ADataCenterRoomActor::BuildNetwork()
 	Network.Reset();
 	Inventory.Reset();
 	LeakBranchPipes.Reset();
+	// W1: live sites of racks that are gone are dropped; the rows below add the missing ones.
+	LeakSpecs.RemoveAll([](const FRoomLeakSpec& Leak) { return Leak.bLatent && !Leak.Rack.IsValid(); });
 	for (FRoomLeakSpec& Leak : LeakSpecs) Leak.NetworkLeak = INDEX_NONE;
 	LastInventoryLogSecond = -1;
 	NodePositionM.Reset();
@@ -648,10 +694,37 @@ void ADataCenterRoomActor::BuildNetwork()
 		// the rack keeps reading the half that enters it (supply) or leaves it (return), so a supply leak lowers the
 		// rack's coolant flow. The original pipe keeps its start; its end override (GJ port) moves to the new half.
 		TArray<int32> RowLeaks;
+		if (bLiveLeakSites)
+		{
+			// W1: three closed sites per rack (supply branch, return branch, supply header tee), appended in a stable order.
+			for (const TObjectPtr<ARackThermalActor>& Rack : Row.Racks)
+			{
+				if (Rack == nullptr) continue;
+				for (int32 Kind = 0; Kind < 3; ++Kind)
+				{
+					const bool bReturn = Kind == 1, bHeader = Kind == 2;
+					if (LeakSpecs.ContainsByPredicate([&](const FRoomLeakSpec& L) { return L.Rack.Get() == Rack && L.bReturnBranch == bReturn && L.bHeader == bHeader; })) continue;
+					FRoomLeakSpec& Site = LeakSpecs.AddDefaulted_GetRef();
+					Site.Rack = Rack; Site.bReturnBranch = bReturn; Site.bHeader = bHeader; Site.bLatent = true;
+				}
+			}
+		}
 		for (FRoomLeakSpec& Leak : LeakSpecs)
 		{
 			const int32 Column = Row.Racks.IndexOfByKey(Leak.Rack.Get());
 			if (Column == INDEX_NONE) continue;
+			if (Leak.bHeader)
+			{
+				// The supply header node of this rack's tee: same water as the rack inlet (the coupling books its leak heat
+				// with the rack's supply leaks), no split, so no pipe changes.
+				FHydraulicLeak Tee;
+				Tee.NodeIndex = Handles.SupplyNodeIndices[Column];
+				Tee.HoleDiameterM = Leak.HoleDiameterM;
+				Tee.DischargeCoefficient = Leak.DischargeCoefficient;
+				Leak.NetworkLeak = Network.AddLeak(Tee);
+				RowLeaks.Add(Leak.NetworkLeak);
+				continue;
+			}
 			const int32 Pipe = Leak.bReturnBranch ? Handles.RackReturnPipeIndices[Column] : Handles.RackBranchPipeIndices[Column];
 			if (Pipe == INDEX_NONE) continue;
 			FVector A = NodePositionM[Network.GetPipeFromNodeIndex(Pipe)], B = NodePositionM[Network.GetPipeToNodeIndex(Pipe)];
@@ -1605,10 +1678,10 @@ static FAutoConsoleCommand GVrgLeakStatusCommand(
 				const FCoolantInventory::FTank& Tank = Inv.GetTanks()[T];
 				UE_LOG(LogTemp, Display, TEXT("[Leak] 줄 %d: 탱크 %.1f L, 사전 충전 = 충전 - %.0f kPa, 압력 %.1f kPa(g) (충전 %.1f), 물 %.3f / %.3f L, 누수 %d개, 누적 누수 %.3f L, 보충 %s, 고갈 %s, 펌프 %.3f L/s"),
 					T, Tank.Params.TankVolumeM3 * 1e3, Tank.Params.PrechargeBelowFillPa * 1e-3, Inv.GetTankGaugePressurePa(T) * 1e-3, Tank.FillGaugePa * 1e-3,
-					Tank.State.WaterVolumeM3 * 1e3, Tank.State.InitialWaterM3 * 1e3, Tank.LeakIndices.Num(), Tank.State.LeakedM3 * 1e3,
+					Tank.State.WaterVolumeM3 * 1e3, Tank.State.InitialWaterM3 * 1e3, Room->CountShownTankLeaks(Tank.LeakIndices), Tank.State.LeakedM3 * 1e3,
 					Tank.Params.bMakeupWater ? TEXT("켬") : TEXT("끔"), Tank.State.bDepleted ? TEXT("예") : TEXT("아니오"), Net.GetPumpFlowM3s(Tank.PumpIndex) * 1e3);
 				for (const int32 L : Tank.LeakIndices)
-					UE_LOG(LogTemp, Display, TEXT("[Leak]   누수 망 %d: 구멍 %.2f mm, Cd %.2f, 노드 정압 %.1f kPa(g), 높이 %.3f m, 유량 %.4f L/s"),
+					if (Room->CountShownTankLeaks({ L }) > 0) UE_LOG(LogTemp, Display, TEXT("[Leak]   누수 망 %d: 구멍 %.2f mm, Cd %.2f, 노드 정압 %.1f kPa(g), 높이 %.3f m, 유량 %.4f L/s"),
 						L, Net.GetLeak(L).HoleDiameterM * 1e3, Net.GetLeak(L).DischargeCoefficient, Net.GetNodePressurePa(Net.GetLeak(L).NodeIndex) * 1e-3,
 						Net.GetNodeElevationM(Net.GetLeak(L).NodeIndex), Net.GetLeakFlowM3s(L) * 1e3);
 			}

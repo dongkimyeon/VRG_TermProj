@@ -883,7 +883,8 @@ bool FWebDashboardLeakRowMappingTest::RunTest(const FString& Parameters)
 	Sim->EnterSimulationMode();
 	const int32 PipesAtEntry = Room->GetNetwork().GetNumPipes();
 	TestTrue(TEXT("two rows routed, the hole prepared at entry"), Room->GetNumRows() == 2 && Room->GetRoutedRacks().Num() == 4
-		&& Room->GetNumLeakSpecs() == 1 && Room->GetLeakNetworkIndex(0) != INDEX_NONE);
+		&& Room->GetNumLeakSpecs() == 4 * 3 && Room->IsLeakSpecShown(0) && Room->GetLeakNetworkIndex(0) != INDEX_NONE   // W1: three live sites per rack,
+		&& !Room->IsLeakSpecShown(1));                                                                                 // the event claimed rack 0's supply branch
 	for (int32 F = 0; F < 6; ++F) Sim->Tick(.1f);
 	const FVrgDashboardLeaks D = Sim->BuildDashboardLeaks();
 	TestTrue(TEXT("the event opened the prepared hole without a rebuild"), D.LeakEvents.Num() == 1 && D.Leaks.Num() == 1

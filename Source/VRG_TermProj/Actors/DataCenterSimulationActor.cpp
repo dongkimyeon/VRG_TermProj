@@ -353,6 +353,7 @@ void ADataCenterSimulationActor::EnterSimulationMode()
 	BuildCoupling();
 	bNeedsRebuild = HasUnroutedRacks();
 	bSimRunning = true;
+	RebuildLiveLeakSites();   // W1: room sites are built closed with the rows; the plant nodes exist once BuildCoupling built it
 	UE_LOG(LogTemp, Display, TEXT("[VrgSim] 시뮬레이션 모드: 랙 %d대 / 스파인 %d대 / CRAH %d대로 구성하고 t=0부터 시작."),
 		Racks.Num(), Spines.Num(), CrahPlacements.Num());
 }
@@ -2180,6 +2181,123 @@ bool ADataCenterSimulationActor::CaptureAutomaticPlantUnits(EPlantUnitKind Kind,
 	return true;
 }
 
+void ADataCenterSimulationActor::RebuildLiveLeakSites()
+{
+	LiveLeakSites.Reset();
+	if (Room == nullptr) FindTargetActors();   // before the first entry (e.g. vrg.Leak.Sites in layout mode)
+	if (Room != nullptr)
+	{
+		const TArray<ARackThermalActor*> Routed = Room->GetRoutedRacks();
+		for (int32 S = 0; S < Room->GetNumLeakSpecs(); ++S)
+		{
+			if (Room->GetLeakNetworkIndex(S) == INDEX_NONE) continue;   // not built yet (added after the last rebuild)
+			FLiveLeakSite& Site = LiveLeakSites.AddDefaulted_GetRef();
+			Site.RoomSpec = S;
+			Site.PositionM = Room->GetLeakSpecPositionM(S);
+			const int32 RackIndex = Routed.IndexOfByKey(Room->GetLeakSpecRack(S));
+			Site.Label = FString::Printf(TEXT("랙 %d %s"), RackIndex,
+				Room->IsLeakSpecHeader(S) ? TEXT("공급 헤더") : Room->IsLeakSpecReturnBranch(S) ? TEXT("회수 분기") : TEXT("공급 분기"));
+		}
+	}
+	if (bPlantActive && Plant.IsThermalActive())
+	{
+		// Only while the plant model runs (vrg.Plant.Enable 1): with it off the yard is drawn as structure only (F7b).
+		// Positions: the drawn yard (schematic, F7); the same nodes the plant display draws its leak markers on.
+		const FPlantDisplaySnapshot Yard = PlantDisplay::Build(Plant, MakePlantDisplayInput());
+		for (const EPlantLoopId Id : { EPlantLoopId::Fws, EPlantLoopId::Chw, EPlantLoopId::Cw })
+		{
+			const FFacilityWaterLoop* L = Plant.GetLoopFor(Id);
+			if (L == nullptr) continue;
+			const TArray<FVector>& Pos = Yard.NodePositionsM[uint8(Id)];
+			auto Add = [&](EPlantLeakSite PS, int32 Branch, const FString& Name)
+			{
+				const int32 Node = L->GetLeakSiteNode(PS, Branch);
+				if (!Pos.IsValidIndex(Node)) return;
+				FLiveLeakSite& Site = LiveLeakSites.AddDefaulted_GetRef();
+				Site.bPlant = true; Site.Loop = Id; Site.PlantSite = PS; Site.Branch = Branch; Site.PositionM = Pos[Node];
+				Site.Label = FString::Printf(TEXT("설비 %s %s"), FFacilityPlant::LoopName(Id), *Name);
+			};
+			Add(EPlantLeakSite::SupplyHeader, INDEX_NONE, TEXT("공급 헤더"));
+			Add(EPlantLeakSite::ReturnHeader, INDEX_NONE, TEXT("회수 헤더"));
+			for (int32 B = 0; B < L->GetNumBranches(); ++B)
+			{
+				Add(EPlantLeakSite::BranchSupply, B, FString::Printf(TEXT("분기 %d 공급"), B));
+				Add(EPlantLeakSite::BranchReturn, B, FString::Printf(TEXT("분기 %d 회수"), B));
+			}
+		}
+	}
+}
+
+int32 ADataCenterSimulationActor::FindLiveLeakSite(const FVector& PointM, double MaxDistanceM) const
+{
+	int32 Best = INDEX_NONE;
+	double BestD = MaxDistanceM;
+	for (int32 I = 0; I < LiveLeakSites.Num(); ++I)
+	{
+		const double D = FVector::Dist(LiveLeakSites[I].PositionM, PointM);
+		if (D <= BestD) { BestD = D; Best = I; }
+	}
+	return Best;
+}
+
+double ADataCenterSimulationActor::GetLiveLeakHoleDiameterM(int32 SiteIndex) const
+{
+	if (!LiveLeakSites.IsValidIndex(SiteIndex)) return 0.0;
+	const FLiveLeakSite& Site = LiveLeakSites[SiteIndex];
+	if (!Site.bPlant) return Room != nullptr ? Room->GetLeakSpecHoleDiameterM(Site.RoomSpec) : 0.0;
+	const FFacilityWaterLoop* L = Plant.GetLoopFor(Site.Loop);
+	const int32 K = L != nullptr ? L->FindLeak(Site.PlantSite, Site.Branch) : INDEX_NONE;
+	return K != INDEX_NONE ? L->GetNetwork().GetLeak(L->GetLeak(K).NetworkLeak).HoleDiameterM : 0.0;
+}
+
+double ADataCenterSimulationActor::GetLiveLeakRuptureDiameterM(int32 SiteIndex) const
+{
+	if (!LiveLeakSites.IsValidIndex(SiteIndex)) return 0.0;
+	const FLiveLeakSite& Site = LiveLeakSites[SiteIndex];
+	if (!Site.bPlant) return Room != nullptr ? Room->GetLeakSpecRuptureDiameterM(Site.RoomSpec) : 0.0;
+	// The plant networks carry resistances, not pipe sizes: 150 mm header / 80 mm branch are ESTIMATES for a rupture.
+	return Site.PlantSite == EPlantLeakSite::SupplyHeader || Site.PlantSite == EPlantLeakSite::ReturnHeader ? 0.15 : 0.08;
+}
+
+bool ADataCenterSimulationActor::SetLiveLeak(int32 SiteIndex, double HoleDiameterM, const TCHAR* Source)
+{
+	if (Mode != ESimMode::Simulation || !bSimRunning)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[Leak] 실시간 누수는 시뮬레이션 모드에서만 낸다(배치 모드는 vrg.Leak.Add)."));
+		return false;
+	}
+	if (!LiveLeakSites.IsValidIndex(SiteIndex) || !(HoleDiameterM >= 0.0)) return false;
+	const FLiveLeakSite& Site = LiveLeakSites[SiteIndex];
+	const double Before = GetLiveLeakHoleDiameterM(SiteIndex);
+	const double NowS = Clock.GetSimTimeS();
+	FVrgLeakRecord R;
+	R.TimeS = NowS; R.HoleDiameterM = HoleDiameterM; R.Site = Site.Label; R.PointM = Site.PositionM;
+	if (!Site.bPlant)
+	{
+		if (Room == nullptr || !Room->SetLeakHoleDiameterM(Site.RoomSpec, HoleDiameterM)) return false;
+		R.Rack = Room->GetRoutedRacks().IndexOfByKey(Room->GetLeakSpecRack(Site.RoomSpec));
+		R.bReturnBranch = Room->IsLeakSpecReturnBranch(Site.RoomSpec);
+		UE_LOG(LogTemp, Display, TEXT("[Leak] t=%.2f s 실시간 누수(%s) 지점 %d %s: %.2f -> %.2f mm, 위치 (%.2f, %.2f, %.2f) m"),
+			NowS, Source, SiteIndex, *Site.Label, Before * 1e3, HoleDiameterM * 1e3, Site.PositionM.X, Site.PositionM.Y, Site.PositionM.Z);
+	}
+	else
+	{
+		if (!bPlantActive || !Plant.IsThermalActive())
+		{
+			UE_LOG(LogTemp, Warning, TEXT("[Leak] 설비 지점은 설비 열 모델이 도는 시뮬레이션에서만(vrg.Plant.Enable 1 후 진입)."));
+			return false;
+		}
+		const int32 FaultsBefore = Plant.GetFaultLog().Num();
+		if (Plant.SetLeakAt(Site.Loop, Site.PlantSite, Site.Branch, HoleDiameterM, NowS) == INDEX_NONE && HoleDiameterM > 0.0) return false;
+		UE_LOG(LogTemp, Display, TEXT("[Leak] t=%.2f s 실시간 누수(%s) 지점 %d %s: %.2f -> %.2f mm, 위치 (%.2f, %.2f, %.2f) m, 설비 장애 기록 %d건"),
+			NowS, Source, SiteIndex, *Site.Label, Before * 1e3, HoleDiameterM * 1e3, Site.PositionM.X, Site.PositionM.Y, Site.PositionM.Z,
+			Plant.GetFaultLog().Num() - FaultsBefore);
+		UpdatePlantDisplay(true);
+	}
+	FaultMonitor.AddLeak(R);
+	return true;
+}
+
 void ADataCenterSimulationActor::UpdatePlantDisplay(bool bForce)
 {
 	// Shown whenever a plant is built (layout and simulation mode, vrg.Plant.Enable 0 or 1); flows and status only
@@ -2496,7 +2614,7 @@ FVrgDashboardLeaks ADataCenterSimulationActor::BuildDashboardLeaks() const
 		for (int32 Row = 0; Row < Room->GetNumRows(); ++Row) if (Room->GetRowPumpIndex(Row) == Tank.PumpIndex) R.Row = Row;
 		if (const ACoolingDistributionUnitActor* Cdu = Room->GetRowCdu(R.Row)) R.Cdu = Cdu->GetName();
 		R.PositionM = Room->GetNodePositionM(Tank.CduNodeIndex);
-		R.Leaks = Tank.LeakIndices.Num();
+		R.Leaks = Room->CountShownTankLeaks(Tank.LeakIndices);   // W1: closed live sites are not leaks
 		R.bMakeup = Tank.Params.bMakeupWater;
 		R.bDepleted = Tank.State.bDepleted;
 		R.DepletedAtS = Tank.State.bDepleted ? Tank.State.DepletedAtS : -1.0;
@@ -2514,7 +2632,7 @@ FVrgDashboardLeaks ADataCenterSimulationActor::BuildDashboardLeaks() const
 	for (int32 S = 0; S < Room->GetNumLeakSpecs(); ++S)
 	{
 		const int32 NL = Room->GetLeakNetworkIndex(S);
-		if (NL == INDEX_NONE || NL >= Net.GetNumLeaks()) continue;
+		if (NL == INDEX_NONE || NL >= Net.GetNumLeaks() || !Room->IsLeakSpecShown(S)) continue;   // W1: unopened live sites stay off the page
 		const FHydraulicLeak& Orifice = Net.GetLeak(NL);
 		FVrgDashboardLeak& L = D.Leaks.AddDefaulted_GetRef();
 		L.Spec = S; L.NetworkLeak = NL;
@@ -3102,6 +3220,14 @@ void ADataCenterSimulationActor::EvalBeforeStep()
 			// S8 F6b: facility leak / trip at this step's start (rule 4), before PlantBeforeStep hands the flows over.
 			ApplyPlantFault(E.Args);
 		}
+		else if (E.Kind == TEXT("leakat") && E.Args.Num() >= 3)
+		{
+			// W1: a live leak at the site nearest to a point [m], at this step's start (rule 4).
+			const FVector PointM(FCString::Atod(*E.Args[0]), FCString::Atod(*E.Args[1]), FCString::Atod(*E.Args[2]));
+			const int32 Site = FindLiveLeakSite(PointM);
+			if (Site == INDEX_NONE || !SetLiveLeak(Site, E.Value, TEXT("이벤트")))
+				UE_LOG(LogTemp, Warning, TEXT("[VrgEval] t=%.2f s leakat (%s) m: 2 m 안에 누수 지점이 없거나 적용 실패"), NowS, *PointM.ToString());
+		}
 		UE_LOG(LogTemp, Display, TEXT("[VrgEval] t=%.2f s 이벤트 %s %d %.3f"), NowS, *E.Kind, E.Index, E.Value);
 	}
 }
@@ -3404,6 +3530,9 @@ bool ADataCenterSimulationActor::WriteEvaluationReport(const FString& Name, FStr
 		Item->SetNumberField(TEXT("timeS"), E.TimeS); Item->SetStringField(TEXT("kind"), E.Kind);
 		Item->SetNumberField(TEXT("index"), E.Index); Item->SetNumberField(TEXT("value"), E.Value); Item->SetBoolField(TEXT("applied"), E.bApplied);
 		if (E.Kind == TEXT("leak")) Item->SetBoolField(TEXT("returnBranch"), E.bFlag);
+		if (E.Kind == TEXT("leakat") && E.Args.Num() >= 3)
+			Item->SetArrayField(TEXT("pointM"), { MakeShared<FJsonValueNumber>(FCString::Atod(*E.Args[0])), MakeShared<FJsonValueNumber>(FCString::Atod(*E.Args[1])),
+				MakeShared<FJsonValueNumber>(FCString::Atod(*E.Args[2])) });
 		EventItems.Add(MakeShared<FJsonValueObject>(Item));
 	}
 	Root->SetArrayField(TEXT("events"), EventItems);
@@ -3591,7 +3720,7 @@ static FAutoConsoleCommand GVrgEvalReportCommand(
 
 static FAutoConsoleCommand GVrgEvalEventCommand(
 	TEXT("vrg.Eval.Event"),
-	TEXT("시각 이벤트를 넣는다(시뮬레이션 진입마다 다시 적용). vrg.Eval.Event <t s> util <0~1> | <t s> rackutil <랙 번호> <0~1> | <t s> valve <랙 번호> close|open | <t s> leak <랙 번호> <supply|return> <mm> | <t s> ambient <외기 C> | <t s> plant <vrg.Plant.Fault 인자> | clear"),
+	TEXT("시각 이벤트를 넣는다(시뮬레이션 진입마다 다시 적용). vrg.Eval.Event <t s> util <0~1> | <t s> rackutil <랙 번호> <0~1> | <t s> valve <랙 번호> close|open | <t s> leak <랙 번호> <supply|return> <mm> | <t s> ambient <외기 C> | <t s> plant <vrg.Plant.Fault 인자> | <t s> leakat <x m> <y m> <z m> <mm>(실시간 누수, 가장 가까운 지점, 0 = 수리) | clear"),
 	FConsoleCommandWithArgsDelegate::CreateLambda([](const TArray<FString>& Args)
 	{
 		for (ADataCenterSimulationActor* Sim : EvalSimActors())
@@ -3607,10 +3736,57 @@ static FAutoConsoleCommand GVrgEvalEventCommand(
 			else if (E.Kind == TEXT("util")) { E.Value = FCString::Atod(*Args[2]); }
 			else if (E.Kind == TEXT("ambient")) { E.Value = FCString::Atod(*Args[2]) + 273.15; }   // S8 F2: outdoor dry bulb [C] -> K
 			else if (E.Kind == TEXT("plant")) { for (int32 I = 2; I < Args.Num(); ++I) E.Args.Add(Args[I]); }   // S8 F6b: vrg.Plant.Fault arguments
+			else if (E.Kind == TEXT("leakat") && Args.Num() >= 6) { E.Args = { Args[2], Args[3], Args[4] }; E.Value = FCString::Atod(*Args[5]) * 1e-3; }   // W1: x y z [m], hole [mm]
 			else { UE_LOG(LogTemp, Warning, TEXT("[VrgEval] 모르는 이벤트: %s"), *E.Kind); continue; }
 			Sim->EvalEvents.Add(E);
 			Sim->EvalEvents.StableSort([](const ADataCenterSimulationActor::FEvalEvent& L, const ADataCenterSimulationActor::FEvalEvent& R) { return L.TimeS < R.TimeS; });
 			UE_LOG(LogTemp, Display, TEXT("[VrgEval] 이벤트 추가 t=%.2f s %s %d %.3f (총 %d개)"), E.TimeS, *E.Kind, E.Index, E.Value, Sim->EvalEvents.Num());
+		}
+	}));
+
+static FAutoConsoleCommand GVrgLeakSitesCommand(
+	TEXT("vrg.Leak.Sites"),
+	TEXT("W1 실시간 누수 지점(방 랙마다 공급 분기·회수 분기·공급 헤더, 설비가 지어졌으면 설비 헤더·분기)을 로그에 쓴다."),
+	FConsoleCommandDelegate::CreateLambda([]()
+	{
+		for (ADataCenterSimulationActor* Sim : EvalSimActors())
+		{
+			Sim->RebuildLiveLeakSites();
+			const auto& Sites = Sim->GetLiveLeakSites();
+			int32 PlantN = 0;
+			for (const auto& S : Sites) PlantN += S.bPlant ? 1 : 0;
+			UE_LOG(LogTemp, Display, TEXT("[Leak] 실시간 누수 지점 %d개 (방 %d, 설비 %d)"), Sites.Num(), Sites.Num() - PlantN, PlantN);
+			for (int32 I = 0; I < Sites.Num(); ++I)
+				UE_LOG(LogTemp, Display, TEXT("[Leak]   지점 %d %s (%.2f, %.2f, %.2f) m, 구멍 %.2f mm"), I, *Sites[I].Label,
+					Sites[I].PositionM.X, Sites[I].PositionM.Y, Sites[I].PositionM.Z, Sim->GetLiveLeakHoleDiameterM(I) * 1e3);
+		}
+	}));
+
+static FAutoConsoleCommand GVrgLeakAtCommand(
+	TEXT("vrg.Leak.At"),
+	TEXT("W1: 시뮬레이션 중 실시간 누수. 점에서 2 m 안의 가장 가까운 지점의 구멍을 바꾼다(0 = 수리). vrg.Leak.At <x m> <y m> <z m> <mm>"),
+	FConsoleCommandWithArgsDelegate::CreateLambda([](const TArray<FString>& Args)
+	{
+		if (Args.Num() < 4) { UE_LOG(LogTemp, Warning, TEXT("[Leak] 사용법: vrg.Leak.At <x m> <y m> <z m> <mm>")); return; }
+		const FVector PointM(FCString::Atod(*Args[0]), FCString::Atod(*Args[1]), FCString::Atod(*Args[2]));
+		for (ADataCenterSimulationActor* Sim : EvalSimActors())
+		{
+			const int32 Site = Sim->FindLiveLeakSite(PointM);
+			if (Site == INDEX_NONE) { UE_LOG(LogTemp, Warning, TEXT("[Leak] (%s) m에서 2 m 안에 누수 지점이 없다(vrg.Leak.Sites)"), *PointM.ToString()); continue; }
+			Sim->SetLiveLeak(Site, FCString::Atod(*Args[3]) * 1e-3, TEXT("콘솔"));
+		}
+	}));
+
+static FAutoConsoleCommand GVrgLeakRepairCommand(
+	TEXT("vrg.Leak.Repair"),
+	TEXT("W1: 실시간 누수 수리(구멍 0). vrg.Leak.Repair <지점 번호|all>"),
+	FConsoleCommandWithArgsDelegate::CreateLambda([](const TArray<FString>& Args)
+	{
+		for (ADataCenterSimulationActor* Sim : EvalSimActors())
+		{
+			const bool bAll = Args.Num() == 0 || Args[0].ToLower() == TEXT("all");
+			for (int32 I = 0; I < Sim->GetLiveLeakSites().Num(); ++I)
+				if ((bAll && Sim->GetLiveLeakHoleDiameterM(I) > 0.0) || (!bAll && I == FCString::Atoi(*Args[0]))) Sim->SetLiveLeak(I, 0.0, TEXT("수리"));
 		}
 	}));
 
