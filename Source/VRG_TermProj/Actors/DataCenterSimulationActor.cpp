@@ -30,6 +30,7 @@
 
 #include "Components/SceneComponent.h"
 #include "Components/StaticMeshComponent.h"
+#include "DrawDebugHelpers.h"
 #include "Engine/Engine.h"
 #include "Engine/StaticMesh.h"
 #include "Engine/World.h"
@@ -354,6 +355,10 @@ void ADataCenterSimulationActor::EnterSimulationMode()
 	bNeedsRebuild = HasUnroutedRacks();
 	bSimRunning = true;
 	RebuildLiveLeakSites();   // W1: room sites are built closed with the rows; the plant nodes exist once BuildCoupling built it
+	// W2: no water anywhere at t = 0; the tanks start full (their leaked volume is the spray's starting point).
+	Spray.Reset(BuildSprayGeometry(), Spray.GetSettings(), Spray.GetFluid());
+	SprayTankLeakedM3.Reset();
+	LastSprayLogSecond = -1;
 	UE_LOG(LogTemp, Display, TEXT("[VrgSim] 시뮬레이션 모드: 랙 %d대 / 스파인 %d대 / CRAH %d대로 구성하고 t=0부터 시작."),
 		Racks.Num(), Spines.Num(), CrahPlacements.Num());
 }
@@ -2059,6 +2064,7 @@ void ADataCenterSimulationActor::Tick(float DeltaTime)
 				PlantBeforeStep();
 				Bridge.Step(Clock.GetFixedStepS(), bHydraulicsResolved && StepIndex == 0, bHydraulicsConverged);
 				PlantAfterStep(Clock.GetFixedStepS());
+				SprayAfterStep(Clock.GetFixedStepS());   // W2: the water that left the holes in this step
 			}
 			Clock.CompleteStep();
 			EvalAfterStep();
@@ -2090,6 +2096,7 @@ void ADataCenterSimulationActor::Tick(float DeltaTime)
 	{
 		DrawSummary();
 	}
+	DrawSpray();
 	UpdatePlantDisplay(false);
 	// After the steps so the published copy is the state at this frame's SimTime.
 	PublishDashboard();
@@ -2226,6 +2233,7 @@ void ADataCenterSimulationActor::RebuildLiveLeakSites()
 			}
 		}
 	}
+	for (FLiveLeakSite& Site : LiveLeakSites) Site.SprayDirectionM = DefaultSprayDirection(Site.PositionM, Spray.GetSettings().ConeHalfAngleRad);
 }
 
 int32 ADataCenterSimulationActor::FindLiveLeakSite(const FVector& PointM, double MaxDistanceM) const
@@ -2296,6 +2304,181 @@ bool ADataCenterSimulationActor::SetLiveLeak(int32 SiteIndex, double HoleDiamete
 	}
 	FaultMonitor.AddLeak(R);
 	return true;
+}
+
+bool ADataCenterSimulationActor::SetLiveLeakDirection(int32 SiteIndex, const FVector& DirectionM)
+{
+	if (!LiveLeakSites.IsValidIndex(SiteIndex)) return false;
+	FLiveLeakSite& Site = LiveLeakSites[SiteIndex];
+	Site.SprayDirectionM = DirectionM.IsNearlyZero() ? DefaultSprayDirection(Site.PositionM, Spray.GetSettings().ConeHalfAngleRad) : DirectionM.GetSafeNormal();
+	return true;
+}
+
+FVector ADataCenterSimulationActor::DefaultSprayDirection(const FVector& PositionM, double HalfAngleRad)
+{
+	// Seeded by the site position (mm), so a site points the same way in every run and in every site order.
+	const FIntVector Mm(FMath::RoundToInt32(PositionM.X * 1e3), FMath::RoundToInt32(PositionM.Y * 1e3), FMath::RoundToInt32(PositionM.Z * 1e3));
+	return FLeakSpray::ConeDirection(HashCombine(HashCombine(GetTypeHash(Mm.X), GetTypeHash(Mm.Y)), GetTypeHash(Mm.Z)), HalfAngleRad);
+}
+
+FSprayGeometry ADataCenterSimulationActor::BuildSprayGeometry() const
+{
+	// Boxes in metres, converted here at the actor boundary (rule 1). The same equipment boxes as the layout checks
+	// (bottom-centre origin); not the air solid cells (those leave a cell open front and rear for the air path).
+	FSprayGeometry G;
+	G.RoomM = AirField != nullptr ? AirField->GetDomainBoundsM() : Room != nullptr ? Room->GetRoomBoundsM() : FBox(ForceInit);
+	G.GroundZM = G.RoomM.IsValid ? G.RoomM.Min.Z : 0.0;
+	auto AddBox = [&G](const FVector& BaseM, const FQuat& Rotation, const FVector& SizeM, ESprayObstacleKind Kind, const FString& Name)
+	{
+		if (SizeM.ContainsNaN() || SizeM.GetMin() <= 0.0) return;
+		FSprayObstacle& O = G.Obstacles.AddDefaulted_GetRef();
+		O.CenterM = BaseM + Rotation.RotateVector(FVector(0, 0, .5 * SizeM.Z));
+		O.Rotation = Rotation; O.HalfM = .5 * SizeM; O.Kind = Kind; O.Name = Name;
+	};
+	auto AddActor = [&AddBox](const AActor* A, const FVector& SizeM, const FString& Name)
+	{
+		const FTransform T = A->GetActorTransform();
+		AddBox(SimUnits::UnrealToMeters(T.GetLocation()), T.GetRotation(), SizeM * T.GetScale3D().GetAbs(), ESprayObstacleKind::Equipment, Name);
+	};
+	for (int32 I = 0; I < Racks.Num(); ++I) if (Racks[I]) AddActor(Racks[I], Racks[I]->RackSizeM, FString::Printf(TEXT("랙 %d"), I));
+	for (int32 I = 0; I < Spines.Num(); ++I)
+		if (Spines[I]) AddActor(Spines[I], FVector(GjRackLayout::FrameDepthM, GjRackLayout::FrameWidthM, GjRackLayout::FrameHeightM), FString::Printf(TEXT("스파인 %d"), I));
+	for (int32 I = 0; I < CrahPlacements.Num(); ++I)
+	{
+		const FCrahPlacement& P = CrahPlacements[I];
+		AddBox(P.BaseM, P.ForwardM.Rotation().Quaternion(), P.SizeM, ESprayObstacleKind::Equipment, FString::Printf(TEXT("CRAH %d"), I));
+	}
+	if (UWorld* World = GetWorld())
+	{
+		int32 Cdu = 0;
+		for (TActorIterator<ACoolingDistributionUnitActor> It(World); It; ++It) AddActor(*It, It->SizeM, FString::Printf(TEXT("CDU %d"), Cdu++));
+		for (TActorIterator<ALayoutBarrierActor> It(World); It; ++It)
+		{
+			const FTransform T = It->GetActorTransform();
+			const FVector SizeM = It->GetSizeM();
+			// The barrier's unit cube is centred 50 cm above its origin (local), like MarkBarrierSolidCells.
+			AddBox(SimUnits::UnrealToMeters(T.TransformPosition(FVector(0, 0, 50.0))) - T.GetRotation().RotateVector(FVector(0, 0, .5 * SizeM.Z)),
+				T.GetRotation(), SizeM, ESprayObstacleKind::Barrier, TEXT("벽"));
+		}
+		for (int32 K = 0; K < NumPlantUnitKinds; ++K)
+			for (const APlantEquipmentActor* A : VrgPlantEquipment::Gather(World, static_cast<EPlantUnitKind>(K)))
+				AddActor(A, A->SizeM, TEXT("설비 장비"));
+	}
+	// Ceiling plates: one air cell thick (their calculated thickness); holes are not cut out (limitation of W2).
+	const double PlateM = AirField != nullptr ? AirField->GetMutableSolver().GetGrid().GetCellSizeM() : 0.25;
+	for (const FRoomCeilingPlate& P : RoomCeilingPlates)
+		AddBox(FVector(.5 * (P.MinXYM.X + P.MaxXYM.X), .5 * (P.MinXYM.Y + P.MaxXYM.Y), P.HeightM), FQuat::Identity,
+			FVector(P.MaxXYM.X - P.MinXYM.X, P.MaxXYM.Y - P.MinXYM.Y, PlateM), ESprayObstacleKind::Ceiling, TEXT("천장 판"));
+	return G;
+}
+
+void ADataCenterSimulationActor::SprayAfterStep(double DtS)
+{
+	if (!bLeakSpray) return;
+	TArray<FSpraySource> Sources;
+	if (Room != nullptr)
+	{
+		// The tank ledger booked this step's leaked volume (sum of the solve's leak flows x Dt, capped at depletion):
+		// that exact volume leaves the holes, split by their flows (rule 6, nothing recomputed).
+		const FHydraulicNetwork& Net = Room->GetNetwork();
+		const TArray<FCoolantInventory::FTank>& Tanks = Room->GetCoolantInventory().GetTanks();
+		if (SprayTankLeakedM3.Num() != Tanks.Num())
+		{
+			SprayTankLeakedM3.SetNumUninitialized(Tanks.Num());
+			for (int32 T = 0; T < Tanks.Num(); ++T) SprayTankLeakedM3[T] = Tanks[T].State.LeakedM3;
+		}
+		for (int32 T = 0; T < Tanks.Num(); ++T)
+		{
+			const double DeltaM3 = Tanks[T].State.LeakedM3 - SprayTankLeakedM3[T];
+			SprayTankLeakedM3[T] = Tanks[T].State.LeakedM3;
+			if (DeltaM3 <= 0.0) continue;
+			TArray<TPair<int32, double>> Holes;   // network leak, weight
+			double Sum = 0.0;
+			for (const int32 L : Tanks[T].LeakIndices)
+			{
+				const double Q = FMath::Max(Net.GetLeakFlowM3s(L), 0.0);
+				if (Q > 0.0) { Holes.Add({ L, Q }); Sum += Q; }
+			}
+			if (Sum <= 0.0)
+			{
+				// The step that emptied the tank closed its holes; split by the holes' areas as built.
+				for (int32 J = 0; J < Tanks[T].LeakIndices.Num(); ++J)
+				{
+					const double D = Tanks[T].LeakDiametersM.IsValidIndex(J) ? Tanks[T].LeakDiametersM[J] : 0.0;
+					if (D > 0.0) { Holes.Add({ Tanks[T].LeakIndices[J], D * D }); Sum += D * D; }
+				}
+			}
+			for (const TPair<int32, double>& H : Holes)
+			{
+				int32 SiteIndex = INDEX_NONE;
+				for (int32 S = 0; S < LiveLeakSites.Num() && SiteIndex == INDEX_NONE; ++S)
+					if (!LiveLeakSites[S].bPlant && Room->GetLeakNetworkIndex(LiveLeakSites[S].RoomSpec) == H.Key) SiteIndex = S;
+				if (SiteIndex == INDEX_NONE || Sum <= 0.0) continue;
+				const FHydraulicLeak& Leak = Net.GetLeak(H.Key);
+				FSpraySource& S = Sources.AddDefaulted_GetRef();
+				S.Id = SiteIndex; S.OriginM = LiveLeakSites[SiteIndex].PositionM; S.DirectionM = LiveLeakSites[SiteIndex].SprayDirectionM;
+				S.GaugePressurePa = Net.GetNodePressurePa(Leak.NodeIndex) - Leak.AmbientPressurePa;
+				S.VolumeM3 = DeltaM3 * H.Value / Sum;
+			}
+		}
+	}
+	if (bPlantActive && Plant.IsThermalActive())
+	{
+		// Plant leaks: the make-up keeps the loop full, so the leaked volume is the solve's leak flow x Dt.
+		for (int32 SiteIndex = 0; SiteIndex < LiveLeakSites.Num(); ++SiteIndex)
+		{
+			const FLiveLeakSite& Site = LiveLeakSites[SiteIndex];
+			const FFacilityWaterLoop* L = Site.bPlant ? Plant.GetLoopFor(Site.Loop) : nullptr;
+			const int32 K = L != nullptr ? L->FindLeak(Site.PlantSite, Site.Branch) : INDEX_NONE;
+			const double Q = K != INDEX_NONE ? L->GetLeakFlowM3s(K) : 0.0;
+			if (Q <= 0.0) continue;
+			const FHydraulicLeak& Leak = L->GetNetwork().GetLeak(L->GetLeak(K).NetworkLeak);
+			FSpraySource& S = Sources.AddDefaulted_GetRef();
+			S.Id = SiteIndex; S.OriginM = Site.PositionM; S.DirectionM = Site.SprayDirectionM;
+			S.GaugePressurePa = L->GetNetwork().GetNodePressurePa(Leak.NodeIndex) - Leak.AmbientPressurePa;
+			S.VolumeM3 = Q * DtS;
+		}
+	}
+	if (Sources.IsEmpty() && !Spray.HasWater()) return;
+	Spray.Step(Sources, DtS, Clock.GetSimTimeS());
+	const int32 Second = FMath::FloorToInt32((Clock.GetSimTimeS() + DtS) / 2.0);
+	if (Second != LastSprayLogSecond) { LastSprayLogSecond = Second; LogSprayStatus(); }
+}
+
+void ADataCenterSimulationActor::LogSprayStatus() const
+{
+	const FSprayTotals& T = Spray.GetTotals();
+	int32 Wet = 0;
+	for (const FSprayWetting& W : Spray.GetWetting()) Wet += W.FirstWetS >= 0.0 ? 1 : 0;
+	UE_LOG(LogTemp, Display, TEXT("[Water] t=%.2f s 누적 %.3f L = 공중 %.3f + 구멍 대기 %.3f + 물막 %.3f + 바닥 %.3f + 바깥 땅 %.3f L | 입자 %d (물줄기 %d), 분열 %d, 튐 %d, 젖은 장비 %d, 장비 안 누수 %.3f L | 잔차 %.2e"),
+		Clock.GetSimTimeS(), T.EmittedM3 * 1e3, T.AirborneM3 * 1e3, T.WaitingM3 * 1e3, T.FilmM3 * 1e3, T.FloorM3 * 1e3, T.GroundM3 * 1e3,
+		T.Parcels, T.JetParcels, T.Breakups, T.Splashes, Wet, T.ThroughEquipmentM3 * 1e3, T.Residual);
+}
+
+void ADataCenterSimulationActor::DrawSpray() const
+{
+	UWorld* World = GetWorld();
+	if (World == nullptr || !bShowSpray || !Spray.HasWater()) return;
+	// Debug drawing of the computed water (W2 check view; the real water surface is W6). Each point is one parcel.
+	const TArray<FVector>& P = Spray.GetParcelPositionsM();
+	const TArray<uint8>& J = Spray.GetParcelIsJet();
+	for (int32 I = 0; I < P.Num(); ++I)
+		DrawDebugPoint(World, SimUnits::MetersToUnreal(P[I]), J[I] ? 6.0f : 4.0f, J[I] ? FColor(40, 90, 255) : FColor(120, 200, 255), false, -1.0f, SDPG_World);
+	for (const FSprayFilm& F : Spray.GetFilms())
+		if (F.VolumeM3 > 0.0)
+			DrawDebugLine(World, SimUnits::MetersToUnreal(F.FootM), SimUnits::MetersToUnreal(F.FootM + FVector(0, 0, F.WetHeightM)), FColor(60, 140, 255), false, -1.0f, SDPG_World, 2.0f);
+	const double Bin = Spray.GetSettings().FloorBinM;
+	const double FloorZ = Spray.GetGeometry().RoomM.IsValid ? Spray.GetGeometry().RoomM.Min.Z : Spray.GetGeometry().GroundZM;
+	int32 Drawn = 0;
+	for (const auto& B : Spray.GetFloorBinsM3())
+	{
+		if (++Drawn > 2000) break;
+		// Depth if the bin's water stood evenly on it (W3 spreads it); shown as a flat square.
+		const double DepthM = B.Value / (Bin * Bin);
+		const FVector C((B.Key.X + .5) * Bin, (B.Key.Y + .5) * Bin, FloorZ + .5 * FMath::Min(DepthM, .05) + 1e-3);
+		DrawDebugSolidBox(World, SimUnits::MetersToUnreal(C), SimUnits::MetersToUnreal(FVector(.5 * Bin, .5 * Bin, .5 * FMath::Max(FMath::Min(DepthM, .05), 1e-3))),
+			FColor(30, 110, 255, 140), false, -1.0f, SDPG_World);
+	}
 }
 
 void ADataCenterSimulationActor::UpdatePlantDisplay(bool bForce)
@@ -3053,7 +3236,8 @@ void ADataCenterSimulationActor::DrainWarmupSteps()
 		PlantBeforeStep();
 		Bridge.Step(Clock.GetFixedStepS(), bHydraulicsResolved, (Room == nullptr) || Room->GetLastSolveResult().bConverged);
 		PlantAfterStep(Clock.GetFixedStepS());
-		WarmupCouplingMs += FPlatformTime::ToMilliseconds64(FPlatformTime::Cycles64() - StepStart);
+		SprayAfterStep(Clock.GetFixedStepS());   // W2: the same step path as Tick
+		WarmupCouplingMs +=FPlatformTime::ToMilliseconds64(FPlatformTime::Cycles64() - StepStart);
 		WarmupRackMs += Bridge.GetLastRackModelsMs();
 		Clock.CompleteStep();
 		EvalAfterStep();
@@ -3788,6 +3972,50 @@ static FAutoConsoleCommand GVrgLeakRepairCommand(
 			for (int32 I = 0; I < Sim->GetLiveLeakSites().Num(); ++I)
 				if ((bAll && Sim->GetLiveLeakHoleDiameterM(I) > 0.0) || (!bAll && I == FCString::Atoi(*Args[0]))) Sim->SetLiveLeak(I, 0.0, TEXT("수리"));
 		}
+	}));
+
+static FAutoConsoleCommand GVrgLeakDirectionCommand(
+	TEXT("vrg.Leak.Direction"),
+	TEXT("W2: 누수 지점의 물줄기 방향(단위 벡터로 맞춤, 0 0 0 = 기본 아래쪽 원뿔). vrg.Leak.Direction <지점 번호> <x> <y> <z>"),
+	FConsoleCommandWithArgsDelegate::CreateLambda([](const TArray<FString>& Args)
+	{
+		if (Args.Num() < 4) { UE_LOG(LogTemp, Warning, TEXT("[Leak] 사용법: vrg.Leak.Direction <지점 번호> <x> <y> <z>")); return; }
+		const FVector Dir(FCString::Atod(*Args[1]), FCString::Atod(*Args[2]), FCString::Atod(*Args[3]));
+		for (ADataCenterSimulationActor* Sim : EvalSimActors())
+		{
+			const int32 Site = FCString::Atoi(*Args[0]);
+			if (!Sim->SetLiveLeakDirection(Site, Dir)) { UE_LOG(LogTemp, Warning, TEXT("[Leak] 지점 %d 없음(vrg.Leak.Sites)"), Site); continue; }
+			const FVector D = Sim->GetLiveLeakSites()[Site].SprayDirectionM;
+			UE_LOG(LogTemp, Display, TEXT("[Leak] 지점 %d %s 물줄기 방향 (%.3f, %.3f, %.3f)"), Site, *Sim->GetLiveLeakSites()[Site].Label, D.X, D.Y, D.Z);
+		}
+	}));
+
+static FAutoConsoleCommand GVrgWaterStatusCommand(
+	TEXT("vrg.Water.Status"),
+	TEXT("W2: 새어 나온 물의 장부(공중·구멍 대기·물막·바닥·바깥 땅)와 입자 수, 젖은 장비를 로그에 쓴다."),
+	FConsoleCommandDelegate::CreateLambda([]()
+	{
+		for (ADataCenterSimulationActor* Sim : EvalSimActors())
+		{
+			Sim->LogSprayStatus();
+			const FLeakSpray& S = Sim->GetLeakSpray();
+			for (int32 I = 0; I < S.GetWetting().Num(); ++I)
+				if (S.GetWetting()[I].FirstWetS >= 0.0)
+					UE_LOG(LogTemp, Display, TEXT("[Water]   젖음 %s: 처음 t=%.2f s, 가장 높은 곳 %.2f m, 닿은 물 %.3f L"), *S.GetGeometry().Obstacles[I].Name,
+						S.GetWetting()[I].FirstWetS, S.GetWetting()[I].TopWetZM, S.GetWetting()[I].WaterM3 * 1e3);
+			for (const FSprayFilm& F : S.GetFilms())
+				UE_LOG(LogTemp, Display, TEXT("[Water]   물막 %s 면 %d: 폭 %.2f m, 젖은 높이 %.2f m, 두께 %.3f mm, 흘러내림 %.4f L/s"),
+					F.Obstacle >= 0 ? *S.GetGeometry().Obstacles[F.Obstacle].Name : F.Obstacle == INDEX_NONE ? TEXT("방 벽") : TEXT("방 외벽"),
+					F.Face, F.WidthM, F.WetHeightM, F.LastThicknessM * 1e3, F.LastOutflowM3s * 1e3);
+		}
+	}));
+
+static FAutoConsoleCommand GVrgWaterShowCommand(
+	TEXT("vrg.Water.Show"),
+	TEXT("W2: 계산한 물 입자·물막·바닥 물 디버그 표시. vrg.Water.Show <0|1>"),
+	FConsoleCommandWithArgsDelegate::CreateLambda([](const TArray<FString>& Args)
+	{
+		for (ADataCenterSimulationActor* Sim : EvalSimActors()) Sim->bShowSpray = Args.Num() == 0 || FCString::Atoi(*Args[0]) != 0;
 	}));
 
 static FAutoConsoleCommand GVrgEvalReportWhenDoneCommand(

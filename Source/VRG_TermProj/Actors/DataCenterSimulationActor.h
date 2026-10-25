@@ -10,6 +10,7 @@
 #include "Simulation/Sensors/InstrumentBank.h"
 #include "Simulation/Evaluation/VrgFaultMonitor.h"
 #include "Simulation/Plant/FacilityPlant.h"
+#include "Simulation/Water/LeakSpray.h"
 #include "Actors/PlantEquipmentActor.h"
 #include "Simulation/Evaluation/VrgDashboardSummary.h"
 #include "Interaction/VrgCrahLifecycle.h"
@@ -320,7 +321,23 @@ public:
 		int32 Branch = INDEX_NONE;
 		FVector PositionM = FVector::ZeroVector;
 		FString Label;
+		// W2: where the jet points (scenario input; default = fixed-seed random in the downward cone, ESTIMATE).
+		FVector SprayDirectionM = FVector(0, 0, -1);
 	};
+	// ---- W2 spray (Tools/누수_실시간_계획.md L2, 2026-10-26) ----
+	// The water that left the holes: jet, drops, impacts, films, floor (FLeakSpray). Fed each step with the leaked volume
+	// the hydraulics booked (tank ledger / plant loop flow), so it never computes its own leak (rule 6).
+	UPROPERTY(EditAnywhere, Category = "Leak")
+	bool bLeakSpray = true;
+	// Debug drawing of the computed parcels (vrg.Water.Show). Display only.
+	UPROPERTY(EditAnywhere, Category = "Leak")
+	bool bShowSpray = true;
+	const FLeakSpray& GetLeakSpray() const { return Spray; }
+	// Sets the jet direction of a site (normalised; a zero vector restores the default cone direction).
+	bool SetLiveLeakDirection(int32 Site, const FVector& DirectionM);
+	// The default jet direction of a site: in the downward cone, seeded by its position (same in every run).
+	static FVector DefaultSprayDirection(const FVector& PositionM, double HalfAngleRad);
+	void LogSprayStatus() const;
 	// Rebuilt at simulation entry and by vrg.Leak.Sites (plant sites only while the plant is built).
 	void RebuildLiveLeakSites();
 	const TArray<FLiveLeakSite>& GetLiveLeakSites() const { return LiveLeakSites; }
@@ -537,6 +554,12 @@ private:
 	TArray<FCduSummary> CduSummaries;
 	FFacilityPlant Plant;
 	TArray<FLiveLeakSite> LiveLeakSites;
+	FLeakSpray Spray;
+	TArray<double> SprayTankLeakedM3;   // each tank's cumulative leaked volume at the last spray step
+	int32 LastSprayLogSecond = -1;
+	FSprayGeometry BuildSprayGeometry() const;
+	void SprayAfterStep(double DtS);
+	void DrawSpray() const;
 	// S8 F8-2: the same plant with the automatic counts (no placed units), built at the same entry; layout conversion only.
 	TUniquePtr<FFacilityPlant> AutomaticPlant;
 	bool bPlantActive = false;
