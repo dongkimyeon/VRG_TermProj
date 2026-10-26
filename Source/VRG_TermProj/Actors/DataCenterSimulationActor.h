@@ -338,6 +338,9 @@ public:
 	// The default jet direction of a site: in the downward cone, seeded by its position (same in every run).
 	static FVector DefaultSprayDirection(const FVector& PositionM, double HalfAngleRad);
 	void LogSprayStatus() const;
+	// Screen check of the spray (vrg.Water.Demo): enters the simulation if needed, then at t >= 1 s opens the supply branch
+	// site nearest the room centre with its jet aimed across the aisle, and puts the view beside it.
+	void RequestWaterDemo(double HoleDiameterM) { WaterDemoHoleM = HoleDiameterM; }
 	// Rebuilt at simulation entry and by vrg.Leak.Sites (plant sites only while the plant is built).
 	void RebuildLiveLeakSites();
 	const TArray<FLiveLeakSite>& GetLiveLeakSites() const { return LiveLeakSites; }
@@ -560,6 +563,8 @@ private:
 	FSprayGeometry BuildSprayGeometry() const;
 	void SprayAfterStep(double DtS);
 	void DrawSpray() const;
+	double WaterDemoHoleM = -1.0;   // pending vrg.Water.Demo hole [m]; < 0 = none
+	void TickWaterDemo();
 	// S8 F8-2: the same plant with the automatic counts (no placed units), built at the same entry; layout conversion only.
 	TUniquePtr<FFacilityPlant> AutomaticPlant;
 	bool bPlantActive = false;

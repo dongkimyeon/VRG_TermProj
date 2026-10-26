@@ -1994,6 +1994,7 @@ void ADataCenterSimulationActor::Tick(float DeltaTime)
 {
 	Super::Tick(DeltaTime);
 	UpdateRoomShell();
+	TickWaterDemo();
 
 	if (Mode == ESimMode::Layout)
 	{
@@ -2453,6 +2454,49 @@ void ADataCenterSimulationActor::LogSprayStatus() const
 	UE_LOG(LogTemp, Display, TEXT("[Water] t=%.2f s 누적 %.3f L = 공중 %.3f + 구멍 대기 %.3f + 물막 %.3f + 바닥 %.3f + 바깥 땅 %.3f L | 입자 %d (물줄기 %d), 분열 %d, 튐 %d, 젖은 장비 %d, 장비 안 누수 %.3f L | 잔차 %.2e"),
 		Clock.GetSimTimeS(), T.EmittedM3 * 1e3, T.AirborneM3 * 1e3, T.WaitingM3 * 1e3, T.FilmM3 * 1e3, T.FloorM3 * 1e3, T.GroundM3 * 1e3,
 		T.Parcels, T.JetParcels, T.Breakups, T.Splashes, Wet, T.ThroughEquipmentM3 * 1e3, T.Residual);
+}
+
+void ADataCenterSimulationActor::TickWaterDemo()
+{
+	if (WaterDemoHoleM < 0.0 || GetWorld() == nullptr || !GetWorld()->HasBegunPlay()) return;
+	if (Mode == ESimMode::Layout)
+	{
+		// -ExecCmds runs on the first frame: wait for the layout tick's one preview build before entering.
+		if (bPlantPreviewTried) EnterSimulationMode();
+		return;
+	}
+	if (!bSimRunning || Room == nullptr || Clock.GetSimTimeS() < 1.0) return;
+	if (LiveLeakSites.IsEmpty()) RebuildLiveLeakSites();
+	const FBox DomainM = AirField != nullptr ? AirField->GetDomainBoundsM() : Room->GetRoomBoundsM();
+	const FVector CentreM = DomainM.IsValid ? DomainM.GetCenter() : FVector::ZeroVector;
+	int32 Best = INDEX_NONE;
+	double BestD = TNumericLimits<double>::Max();
+	for (int32 I = 0; I < LiveLeakSites.Num(); ++I)
+	{
+		const FLiveLeakSite& S = LiveLeakSites[I];
+		if (S.bPlant || Room->IsLeakSpecHeader(S.RoomSpec) || Room->IsLeakSpecReturnBranch(S.RoomSpec) || Room->GetLeakSpecRack(S.RoomSpec) == nullptr) continue;
+		const double D = FVector::DistXY(S.PositionM, CentreM);
+		if (D < BestD) { BestD = D; Best = I; }
+	}
+	if (Best == INDEX_NONE) return;   // rows not routed yet
+	const double HoleM = WaterDemoHoleM;
+	WaterDemoHoleM = -1.0;
+	const FLiveLeakSite& Site = LiveLeakSites[Best];
+	FVector Away = Site.PositionM - SimUnits::UnrealToMeters(Room->GetLeakSpecRack(Site.RoomSpec)->GetActorLocation());
+	Away.Z = 0.0;
+	Away = Away.IsNearlyZero() ? FVector(1, 0, 0) : Away.GetSafeNormal();
+	FVector Along = FVector::CrossProduct(FVector::UpVector, Away);
+	if (FVector::DotProduct(CentreM - Site.PositionM, Along) < 0.0) Along = -Along;
+	SetLiveLeakDirection(Best, Away + FVector(0, 0, .25));
+	if (!SetLiveLeak(Best, HoleM, TEXT("vrg.Water.Demo"))) return;
+	const double FloorZ = DomainM.IsValid ? DomainM.Min.Z : 0.0;
+	FVector EyeM = Site.PositionM + Along * 3.0 + Away * .3;
+	EyeM.Z = FloorZ + 1.6;
+	const FVector TargetM = Site.PositionM + Away * .6;
+	for (TActorIterator<ADataCenterDebugController> It(GetWorld()); It; ++It) It->SetViewpointM(EyeM, (TargetM - EyeM).Rotation());
+	const FVector D = Site.SprayDirectionM;
+	UE_LOG(LogTemp, Display, TEXT("[Water] 화면 확인: 지점 %d %s, 구멍 %.1f mm, 물줄기 방향 (%.2f, %.2f, %.2f), 시점 %s m. 수리 vrg.Leak.Repair %d"),
+		Best, *Site.Label, HoleM * 1e3, D.X, D.Y, D.Z, *EyeM.ToCompactString(), Best);
 }
 
 void ADataCenterSimulationActor::DrawSpray() const
@@ -4022,6 +4066,16 @@ static FAutoConsoleCommand GVrgWaterShowCommand(
 	FConsoleCommandWithArgsDelegate::CreateLambda([](const TArray<FString>& Args)
 	{
 		for (ADataCenterSimulationActor* Sim : EvalSimActors()) Sim->bShowSpray = Args.Num() == 0 || FCString::Atoi(*Args[0]) != 0;
+	}));
+
+static FAutoConsoleCommand GVrgWaterDemoCommand(
+	TEXT("vrg.Water.Demo"),
+	TEXT("W2 화면 확인: (배치 모드면 시뮬레이션 진입) t=1 s에 방 가운데 랙의 공급 분기를 열고 물줄기를 통로 건너편으로 향하게 한 뒤 시점을 옆에 둔다. vrg.Water.Demo [mm, 기본 3]"),
+	FConsoleCommandWithArgsDelegate::CreateLambda([](const TArray<FString>& Args)
+	{
+		const double Mm = Args.Num() > 0 ? FCString::Atod(*Args[0]) : 3.0;
+		if (!(Mm > 0.0)) { UE_LOG(LogTemp, Warning, TEXT("[Water] 사용법: vrg.Water.Demo [mm > 0]")); return; }
+		for (ADataCenterSimulationActor* Sim : EvalSimActors()) Sim->RequestWaterDemo(Mm * 1e-3);
 	}));
 
 static FAutoConsoleCommand GVrgEvalReportWhenDoneCommand(
