@@ -2458,12 +2458,18 @@ void ADataCenterSimulationActor::LogSprayStatus() const
 void ADataCenterSimulationActor::DrawSpray() const
 {
 	UWorld* World = GetWorld();
-	if (World == nullptr || !bShowSpray || !Spray.HasWater()) return;
+	if (World == nullptr || !bShowSpray || !Spray.HasWater() || Mode != ESimMode::Simulation) return;
 	// Debug drawing of the computed water (W2 check view; the real water surface is W6). Each point is one parcel.
 	const TArray<FVector>& P = Spray.GetParcelPositionsM();
 	const TArray<uint8>& J = Spray.GetParcelIsJet();
 	for (int32 I = 0; I < P.Num(); ++I)
 		DrawDebugPoint(World, SimUnits::MetersToUnreal(P[I]), J[I] ? 6.0f : 4.0f, J[I] ? FColor(40, 90, 255) : FColor(120, 200, 255), false, -1.0f, SDPG_World);
+	// The last step's paths: a fast jet lands within one step, so the stream is shown as its path segments.
+	const TArray<FVector>& From = Spray.GetLastStepTrailFromM();
+	const TArray<FVector>& To = Spray.GetLastStepTrailToM();
+	const TArray<uint8>& TJ = Spray.GetLastStepTrailIsJet();
+	for (int32 I = 0; I < From.Num(); ++I)
+		DrawDebugLine(World, SimUnits::MetersToUnreal(From[I]), SimUnits::MetersToUnreal(To[I]), TJ[I] ? FColor(40, 90, 255) : FColor(120, 200, 255), false, -1.0f, SDPG_World, TJ[I] ? 1.5f : 1.0f);
 	for (const FSprayFilm& F : Spray.GetFilms())
 		if (F.VolumeM3 > 0.0)
 			DrawDebugLine(World, SimUnits::MetersToUnreal(F.FootM), SimUnits::MetersToUnreal(F.FootM + FVector(0, 0, F.WetHeightM)), FColor(60, 140, 255), false, -1.0f, SDPG_World, 2.0f);
@@ -2473,11 +2479,11 @@ void ADataCenterSimulationActor::DrawSpray() const
 	for (const auto& B : Spray.GetFloorBinsM3())
 	{
 		if (++Drawn > 2000) break;
-		// Depth if the bin's water stood evenly on it (W3 spreads it); shown as a flat square.
-		const double DepthM = B.Value / (Bin * Bin);
-		const FVector C((B.Key.X + .5) * Bin, (B.Key.Y + .5) * Bin, FloorZ + .5 * FMath::Min(DepthM, .05) + 1e-3);
-		DrawDebugSolidBox(World, SimUnits::MetersToUnreal(C), SimUnits::MetersToUnreal(FVector(.5 * Bin, .5 * Bin, .5 * FMath::Max(FMath::Min(DepthM, .05), 1e-3))),
-			FColor(30, 110, 255, 140), false, -1.0f, SDPG_World);
+		// A flat square on the floor: one line as wide as the bin. (Debug solid boxes stayed on screen in layout mode,
+		// where nothing redraws them - found by the 2026-10-26 screen check; one-frame lines clear.)
+		const double Z = FloorZ + 2e-3;
+		DrawDebugLine(World, SimUnits::MetersToUnreal(FVector(B.Key.X * Bin, (B.Key.Y + .5) * Bin, Z)), SimUnits::MetersToUnreal(FVector((B.Key.X + 1) * Bin, (B.Key.Y + .5) * Bin, Z)),
+			FColor(30, 110, 255), false, -1.0f, SDPG_World, float(SimUnits::MetersToUnreal(FVector(Bin, 0, 0)).X));
 	}
 }
 

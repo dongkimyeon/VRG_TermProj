@@ -164,6 +164,11 @@ public:
 	const TArray<double>& GetParcelVolumesM3() const { return Vol; }
 	const TArray<double>& GetParcelDiametersM() const { return Dia; }
 	const TArray<uint8>& GetParcelIsJet() const { return Jet; }
+	// The path every parcel travelled in the last step (start -> end or impact), for drawing: a fast jet crosses the
+	// whole fall within one step, so its points alone would never be seen in the air.
+	const TArray<FVector>& GetLastStepTrailFromM() const { return TrailFrom; }
+	const TArray<FVector>& GetLastStepTrailToM() const { return TrailTo; }
+	const TArray<uint8>& GetLastStepTrailIsJet() const { return TrailJet; }
 	const TArray<FSprayFilm>& GetFilms() const { return Films; }
 	const TMap<FIntPoint, double>& GetFloorBinsM3() const { return FloorBins; }
 	const TArray<FSprayWetting>& GetWetting() const { return Wetting; }
@@ -198,6 +203,8 @@ private:
 	TArray<int32> NSrc;
 	TArray<uint32> NSeed;
 
+	TArray<FVector> TrailFrom, TrailTo;
+	TArray<uint8> TrailJet;
 	TArray<FSprayFilm> Films;
 	TMap<uint64, int32> FilmIndex;
 	TMap<FIntPoint, double> FloorBins, GroundBins;

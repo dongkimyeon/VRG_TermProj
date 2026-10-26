@@ -92,7 +92,8 @@ void FLeakSpray::Reset(const FSprayGeometry& InGeometry, const FSpraySettings& I
 	Geometry = InGeometry;
 	Settings = InSettings;
 	Fluid = InFluid;
-	for (TArray<FVector>* A : { &Pos, &Vel, &NPos, &NVel }) A->Reset();
+	for (TArray<FVector>* A : { &Pos, &Vel, &NPos, &NVel, &TrailFrom, &TrailTo }) A->Reset();
+	TrailJet.Reset();
 	for (TArray<double>* A : { &Vol, &Dia, &JetDia, &Path, &Breakup, &NVol, &NDia, &NJetDia, &NPath, &NBreakup }) A->Reset();
 	for (TArray<uint8>* A : { &Jet, &Splashed, &NJet, &NSplashed }) A->Reset();
 	Src.Reset(); NSrc.Reset(); Seed.Reset(); NSeed.Reset();
@@ -339,7 +340,8 @@ void FLeakSpray::Step(const TArray<FSpraySource>& Sources, double DtS, double No
 	}
 
 	// 2. Every parcel over the step, written into the second set.
-	for (TArray<FVector>* A : { &NPos, &NVel }) A->Reset();
+	for (TArray<FVector>* A : { &NPos, &NVel, &TrailFrom, &TrailTo }) A->Reset();
+	TrailJet.Reset();
 	for (TArray<double>* A : { &NVol, &NDia, &NJetDia, &NPath, &NBreakup }) A->Reset();
 	for (TArray<uint8>* A : { &NJet, &NSplashed }) A->Reset();
 	NSrc.Reset(); NSeed.Reset();
@@ -386,6 +388,7 @@ void FLeakSpray::Step(const TArray<FSpraySource>& Sources, double DtS, double No
 					0.0, 0.0, false, true, Src[I], Seed[I] * 31u + 7u);
 				++Totals.Splashes;
 			}
+			TrailFrom.Add(X0); TrailTo.Add(XH); TrailJet.Add(bJet ? 1 : 0);
 			Deposit(Hit, XH, Stay, Src[I], NowS + T);
 			continue;
 		}
@@ -408,6 +411,7 @@ void FLeakSpray::Step(const TArray<FSpraySource>& Sources, double DtS, double No
 				if (!FirstBreakups.Contains(Src[I])) FirstBreakups.Add(Src[I], { PathM, Chord, Breakup[I], D, JetDia[I], SpeedMs });
 			}
 		}
+		TrailFrom.Add(X0); TrailTo.Add(X1); TrailJet.Add(Jet[I]);
 		PushParcel(X1, V1, Vol[I], D, JetDia[I], PathM, Breakup[I], bJet, Splashed[I] != 0, Src[I], Seed[I]);
 	}
 	Swap(Pos, NPos); Swap(Vel, NVel); Swap(Vol, NVol); Swap(Dia, NDia); Swap(JetDia, NJetDia); Swap(Path, NPath); Swap(Breakup, NBreakup);
