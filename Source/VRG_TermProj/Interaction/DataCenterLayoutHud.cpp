@@ -4,6 +4,8 @@
 #include "Engine/Engine.h"
 #include "Engine/Font.h"
 #include "Actors/DataCenterSimulationActor.h"
+#include "Visualization/AirFlowView.h"
+#include "Visualization/AirFlowView.h"
 #include "Actors/RackThermalActor.h"
 #include "Actors/SpineCabinetActor.h"
 #include "Simulation/Core/SimUnits.h"
@@ -115,12 +117,55 @@ void ADataCenterLayoutHud::DrawTemperatureLabels()
 	}
 }
 
+// The air view's colour bar (bottom right): mode, average window, gradient with five values.
+void ADataCenterLayoutHud::DrawAirLegend()
+{
+	if (!Canvas || !GetWorld()) return;
+	ADataCenterSimulationActor* Sim = nullptr;
+	for (TActorIterator<ADataCenterSimulationActor> It(GetWorld()); It; ++It) { Sim = *It; break; }
+	if (!Sim) return;
+	TArray<FAirFlowLegend> Legends;
+	FString Note;
+	Sim->GetAirFlowLegends(Legends, Note);
+	UFont* Font = GEngine ? GEngine->GetSmallFont() : nullptr;
+	if (Legends.IsEmpty() || !Font) return;
+	const float BarW = 320.f, BarH = 14.f, Pad = 10.f, LineH = Font->GetMaxCharHeight() + 4.f;
+	// As wide as the longest text (the note can be longer than the bar).
+	float TextW = 0.f, TextH = 0.f;
+	Canvas->TextSize(Font, Note, TextW, TextH);
+	for (const FAirFlowLegend& L : Legends) { float W = 0.f; Canvas->TextSize(Font, FString::Printf(TEXT("%s [%s]"), *L.Title, *L.Unit), W, TextH); TextW = FMath::Max(TextW, W); }
+	const float BoxW = FMath::Max(BarW, TextW) + 2.f * Pad, BoxH = Pad + LineH + Legends.Num() * (LineH + BarH + LineH + 4.f) + Pad;
+	const float X0 = Canvas->ClipX - BoxW - 20.f, Y0 = Canvas->ClipY - BoxH - 20.f;
+	DrawRect(FLinearColor(0, 0, 0, .6f), X0, Y0, BoxW, BoxH);
+	float Y = Y0 + Pad;
+	DrawText(Note, FLinearColor(.85f, .9f, 1.f), X0 + Pad, Y, Font);
+	Y += LineH;
+	for (const FAirFlowLegend& L : Legends)
+	{
+		DrawText(FString::Printf(TEXT("%s [%s]"), *L.Title, *L.Unit), FLinearColor::White, X0 + Pad, Y, Font);
+		Y += LineH;
+		constexpr int32 Steps = 64;
+		for (int32 S = 0; S < Steps; ++S)
+			DrawRect(AirFlowView::Colormap((S + .5) / Steps), X0 + Pad + BarW * S / Steps, Y, BarW / Steps + 1.f, BarH);
+		Y += BarH + 2.f;
+		for (int32 K = 0; K <= 4; ++K)
+		{
+			const FString V = FString::Printf(TEXT("%g"), FMath::RoundToDouble((L.Min + (L.Max - L.Min) * K / 4.0) * 10.0) / 10.0);
+			float W = 0.f, Hh = 0.f;
+			Canvas->TextSize(Font, V, W, Hh);
+			DrawText(V, FLinearColor(.9f, .9f, .9f), FMath::Clamp(X0 + Pad + BarW * K / 4.f - .5f * W, X0 + Pad, X0 + Pad + BarW - W), Y, Font);
+		}
+		Y += LineH + 4.f;
+	}
+}
+
 void ADataCenterLayoutHud::DrawHUD()
 {
 	Super::DrawHUD();
 	const auto* Controller = Cast<ADataCenterDebugController>(GetOwningPlayerController());
 	if (!Canvas || !Controller) return;
 	DrawTemperatureLabels();   // under the key hint
+	DrawAirLegend();
 
 	// Key hint on the canvas: the engine's on-screen message list would also print its "DisableAllScreenMessages" hint.
 	TArray<FString> Lines;

@@ -12,4 +12,5 @@ public:
 	virtual void DrawHUD() override;
 private:
 	void DrawTemperatureLabels();
+	void DrawAirLegend();
 };

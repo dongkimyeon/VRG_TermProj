@@ -22,7 +22,7 @@ S2b 냉각수·누수·장애 1~6단계(높이·누수 오리피스·팽창탱�
    물이 닿은 장비의 트립·손상을 기존 열·수력 모델로 연결(D4). 설계서 5절의 나머지 결정은 착수 때 정한다.
 4. **웹 대시보드 연결 (진짜 맨 마지막, 2026-10-23 사용자 재확인)**: 냉각 설비·전력 탭(서버 `/api/cooling`만 있음), S8 설비 값, 방 공기·센서·검증 탭, 패키징
    (`Tools/웹대시보드_계획.md`). F7의 대시보드 부분도 여기로 옮긴다. 그 전까지 웹 쪽은 새 값 때문에 깨지지 않게만 유지한다.
-F0(근거 수집)·F1(FWS 수력망)·F2(드라이쿨러·설비수 열)·F3(냉수·응축수·칠러·CRAH 밸브)·F4(트림 칠러·수측 이코노마이저)·F5(외기까지 장부·냉각 PUE)·F6(설비 구성 세 가지·A/B)·F6b(설비 배관 누수·장애 재판정, D4)·F7(설비 마당 표시, 화면 확인 안 함)·F8-1(설비 장비 액터·대수 연결·이동/회전·저장)·F8-2(팔레트 추가·삭제·Undo, 자동 배치 전환)·F7b(설비 마당 항상 표시·패치식 직교 배관·부품 조합 장비 외형)·F8-3(복제·다중 편집, 2026-10-22) 완료(장비 외형 사진 사용자 확인·나머지 화면 절차 미확인, `vrg.Plant.Enable`, 기본 끔 = 표시만). S8 구현 끝, 2번 배치 모드 완전 검증 **완료**(2026-10-23): 전체 `VRG` 292건 완주, B1~B14 AI 화면 확인으로 모두 확인(2026-10-23, AI 화면 확인 = 사용자 확인 효력, 결함 3건 수정, B4 가이드 선·B10-18 대기 배관 색은 사용자 확인; 이미 확인한 C는 다시 보지 않기로 결정). 3번 실시간 누수 **W1 완료**(2026-10-23: 랙마다 닫힌 잠재 지점 3개·설비 루프 지점, 시뮬레이션 중 구멍 크기만 바꿔 위상 불변, `L` 도구·`vrg.Leak.Sites/At/Repair`·이벤트 `leakat`, `VRG.Hydraulics.LiveLeak` 4건·전체 `VRG` 296건, L_Test 로그·AI 화면 확인; 계획서 "W1 결과"). W2 분사(물줄기·액적·충돌·물막, `Simulation/Water/LeakSpray`) **완료**(2026-10-26, `VRG.Water.Spray` 6건·전체 `VRG` 302건, AI 화면 확인 1~5; 계획서 "W2 결과"). W3 바닥 물(얕은 물, `Simulation/Water/FloorWater`) **완료**(2026-10-27, CPU·GPU 경로, `VRG.Water.Floor` 6건·`VRG.Gpu.FloorWater` 2건(GPU-CPU ≤ 8.4e-16)·전체 `VRG` 310건·창 없는 L_Test·AI 화면 확인 1~5, 얇은 차단막 결함 수정; 계획서 "W3 결과"). 다음은 W4(침수 영향). 2026-10-22 사용자 보고 후속: 자동 설비 장비 눌러 옮기기, 배치 모드에서 놓은 설비에 즉시 배관, 대기 칠러·트림 칠러를 닫힌 배관으로 망에 포함, 자동 FWS 코일 = 대수, 이코노마이저를 CHW·CW 메인에 직렬 요소로 포함, 펌프·이코노마이저도 배치 종류(모델 변화 작음, `docs/기록/07`), 드래그 중 방 재구축 보류·놓은 뒤 한 번(`docs/기록/04`), 뷰포트 온도 라벨(`vrg.Hud.Temps`). 물리 점검 `docs/기록/09_물리점검.md`(찾은 세 문제 수정: 드라이쿨러 팬 정지, 설계 열에 CDU 펌프 열, L_Test 컨테인먼트 기본 지붕). 배관·설비 계측 지점과 센서 누수 감지(`docs/기록/08`·`06`). 실시간 누수·물 확산·침수 영향은 W1(실행 중 누수)·W2(분사)·W3(바닥 물)까지(`Tools/누수_실시간_계획.md`, 남은 순서 3번 = 웹 대시보드 앞). 결정: FWS 공급 32 °C(W32), 칠러는 카르노 비 외삽(추정), 설계 외기 35 °C, F8(설비 장비 배치 편집) 한다(2026-10-20 사용자).
+F0(근거 수집)·F1(FWS 수력망)·F2(드라이쿨러·설비수 열)·F3(냉수·응축수·칠러·CRAH 밸브)·F4(트림 칠러·수측 이코노마이저)·F5(외기까지 장부·냉각 PUE)·F6(설비 구성 세 가지·A/B)·F6b(설비 배관 누수·장애 재판정, D4)·F7(설비 마당 표시, 화면 확인 안 함)·F8-1(설비 장비 액터·대수 연결·이동/회전·저장)·F8-2(팔레트 추가·삭제·Undo, 자동 배치 전환)·F7b(설비 마당 항상 표시·패치식 직교 배관·부품 조합 장비 외형)·F8-3(복제·다중 편집, 2026-10-22) 완료(장비 외형 사진 사용자 확인·나머지 화면 절차 미확인, `vrg.Plant.Enable`, 기본 끔 = 표시만). S8 구현 끝, 2번 배치 모드 완전 검증 **완료**(2026-10-23): 전체 `VRG` 292건 완주, B1~B14 AI 화면 확인으로 모두 확인(2026-10-23, AI 화면 확인 = 사용자 확인 효력, 결함 3건 수정, B4 가이드 선·B10-18 대기 배관 색은 사용자 확인; 이미 확인한 C는 다시 보지 않기로 결정). 3번 실시간 누수 **W1 완료**(2026-10-23: 랙마다 닫힌 잠재 지점 3개·설비 루프 지점, 시뮬레이션 중 구멍 크기만 바꿔 위상 불변, `L` 도구·`vrg.Leak.Sites/At/Repair`·이벤트 `leakat`, `VRG.Hydraulics.LiveLeak` 4건·전체 `VRG` 296건, L_Test 로그·AI 화면 확인; 계획서 "W1 결과"). W2 분사(물줄기·액적·충돌·물막, `Simulation/Water/LeakSpray`) **완료**(2026-10-26, `VRG.Water.Spray` 6건·전체 `VRG` 302건, AI 화면 확인 1~5; 계획서 "W2 결과"). W3 바닥 물(얕은 물, `Simulation/Water/FloorWater`) **완료**(2026-10-27, CPU·GPU 경로, `VRG.Water.Floor` 6건·`VRG.Gpu.FloorWater` 2건(GPU-CPU ≤ 8.4e-16)·전체 `VRG` 310건·창 없는 L_Test·AI 화면 확인 1~5, 얇은 차단막 결함 수정; 계획서 "W3 결과"). 다음은 W4(침수 영향, 랙 안 누수 범위는 회의 후 결정). 공기 보기(유선·평면·화살표, `V`) 완료(2026-10-27, `VRG.Air.Streamlines` 4건·전체 `VRG` 314건·AI 화면 확인). 2026-10-22 사용자 보고 후속: 자동 설비 장비 눌러 옮기기, 배치 모드에서 놓은 설비에 즉시 배관, 대기 칠러·트림 칠러를 닫힌 배관으로 망에 포함, 자동 FWS 코일 = 대수, 이코노마이저를 CHW·CW 메인에 직렬 요소로 포함, 펌프·이코노마이저도 배치 종류(모델 변화 작음, `docs/기록/07`), 드래그 중 방 재구축 보류·놓은 뒤 한 번(`docs/기록/04`), 뷰포트 온도 라벨(`vrg.Hud.Temps`). 물리 점검 `docs/기록/09_물리점검.md`(찾은 세 문제 수정: 드라이쿨러 팬 정지, 설계 열에 CDU 펌프 열, L_Test 컨테인먼트 기본 지붕). 배관·설비 계측 지점과 센서 누수 감지(`docs/기록/08`·`06`). 실시간 누수·물 확산·침수 영향은 W1(실행 중 누수)·W2(분사)·W3(바닥 물)까지(`Tools/누수_실시간_계획.md`, 남은 순서 3번 = 웹 대시보드 앞). 결정: FWS 공급 32 °C(W32), 칠러는 카르노 비 외삽(추정), 설계 외기 35 °C, F8(설비 장비 배치 편집) 한다(2026-10-20 사용자).
 
 설비 외형 7종 제작·UE 적용, Editor 빌드·UE 크기/재질 검사·`VRG.Plant` 38개 성공/실패 0을 마쳤다(2026-10-21, HTTP 경고 동반 2개). 실제 언리얼 사진 사용자 확인 완료. F7b 나머지 화면/입력 절차·배관 겹침·FPS·패키징은 별도 후속이다. 파일/검증 범위: `Art/Plant/README.md`, `docs/기록/07_설비냉각.md`.
 
@@ -71,6 +71,7 @@ F0(근거 수집)·F1(FWS 수력망)·F2(드라이쿨러·설비수 열)·F3(냉
   계측 지점(`FInstrumentBank`): 모든 배관에 간격(`vrg.Sensors.PipeIntervalM`, 기본 3 m)마다 유량·수온·누수 감지 케이블, 설비 장비·CDU마다 핵심 값(D9 모의 계측값, 사양 추정).
   누수 감지는 풀린 누수 유량의 흘러나온 물량(0.5 L, 추정)으로, 경보 유지. 리포트에 경보 표(웹에는 아직 없음).
 - **표시:** 온도 볼륨 레이마칭 + 기류 무늬(드로우 1개), 배관 유량/온도, GJ 랙·배관·케이블 메시, 패치 평면도, CRAH·CDU 외형 모델.
+  공기 보기(`V`, 2026-10-27 교수님 streamtrace 그림): 최근 30 s 평균 흐름의 스트림튜브(속도 0~2 m/s 또는 온도 18~40 °C 색, CRAH 토출·랙 배기에서 출발), 유선+볼륨, 평면 보기(1.1 m 단면 온도 + 수평 유선, 방 위에 띄워 그림), 화살표, HUD 범례(`Simulation/Air/AirStreamlines`·`AirFlowAverager`, `docs/기록/03`).
 - **웹 대시보드:** 127.0.0.1 전용(`vrg.Web.Enable 1`, 포트 18080, `/dashboard`). 요약·시계열·평면도·랙·리포트 A/B·3D(장비·배관·기류·센서·누수/밸브).
 
 ### 모델에 없는 것 (알려진 한계)
@@ -103,10 +104,10 @@ RTX 4060 Laptop 노트북(Ryzen 7 8845HS, 15 GiB), 패키지 DX12 1280×720, L_T
   `R` 90° 회전(벽 하나 선택 시 크기 기즈모), `W/E/R/Space` 벽 기즈모, `F` 선택 보기, `Delete`, `Ctrl+D` 복제,
   `Ctrl+Z/Y`, `G/T` 시선 잡기·회전(보조), `C` 컨테인먼트 순환, `Esc` 취소. 팔레트 버튼으로 장비·방 설정·천장 편집.
 - **시뮬레이션 모드:** `1/2` CPU 발열, `3/4` GPU 발열, `5/6` 펌프 회전수비, `7/8` 라디에이터 UA(랙별 라디에이터 모드에서만),
-  `9/0` 부하율, `E` 바라보는 유닛 하나 뽑기/꽂기, `R` 현재 배치로 t=0 재시작, `L` 누수 도구(5 mm → 30 mm → 파단 → 수리 → 끔, 지점 클릭 적용, `Esc` 끔). 발열 손잡이는 각 부품 기본값에 배율로 적용한다.
+  `9/0` 부하율, `E` 바라보는 유닛 하나 뽑기/꽂기, `R` 현재 배치로 t=0 재시작, `L` 누수 도구(5 mm → 30 mm → 파단 → 수리 → 끔, 지점 클릭 적용, `Esc` 끔), `V` 공기 보기 순환(온도 볼륨 → 유선 속도 → 유선 온도 → 유선+볼륨 → 평면 → 화살표). 발열 손잡이는 각 부품 기본값에 배율로 적용한다.
 - **주요 콘솔:** `vrg.Air.RunSteps <N>`, `vrg.Air.CellSize <h> 0.25`, `vrg.Air.Gpu -1|0|1`, `vrg.Air.Turbulence`, `vrg.Sim.CrahLayout 0|1|2`,
   `vrg.Sim.Containment 0|1|2`, `vrg.Sim.CoolantRejection 0|1`, `vrg.Eval.Event/Report/ReportWhenDone/Compare`, `vrg.Layout.Save/Load`,
-  `vrg.Perf.Capture <초> [라벨] [quit]`, `vrg.Leak.Add/Size/Clear/Status/Sites/At/Repair/Direction`, `vrg.Water.Status/Show/CellM/Gpu`, `vrg.Valve`(이벤트 `valve`·`leak`·`leakat`), `vrg.Plant.Enable/Topology/Ambient/Fault/Show`(이벤트 `ambient`·`plant`), `vrg.Pipes.Temperature`, `vrg.Sensors.PipeIntervalM`, `vrg.Hud.Temps/TempsRange`, `vrg.Cam <x y z m> <피치> <요>`, `vrg.Room.Shell`, `vrg.Patch.Map`, `vrg.Web.Enable`, `vrg.Hud.Debug`.
+  `vrg.Perf.Capture <초> [라벨] [quit]`, `vrg.Leak.Add/Size/Clear/Status/Sites/At/Repair/Direction`, `vrg.Water.Status/Show/CellM/Gpu`, `vrg.Air.View/PlanHeight`, `vrg.Valve`(이벤트 `valve`·`leak`·`leakat`), `vrg.Plant.Enable/Topology/Ambient/Fault/Show`(이벤트 `ambient`·`plant`), `vrg.Pipes.Temperature`, `vrg.Sensors.PipeIntervalM`, `vrg.Hud.Temps/TempsRange`, `vrg.Cam <x y z m> <피치> <요>`, `vrg.Room.Shell`, `vrg.Patch.Map`, `vrg.Web.Enable`, `vrg.Hud.Debug`.
   `-ExecCmds`로 여러 명령을 줄 때는 **쉼표**로 나눈다.
 
 화면에는 단축키 안내와 시뮬레이션 모드 계측 라벨(캐비닛 최고 부품, 흡기 센서·냉각수, 배관 지점 유량·수온, 설비 장비 값, 누수 경보; `vrg.Hud.Temps 0|1`·`vrg.Hud.TempsRange <m>`, 2026-10-22 사용자 요청)만 둔다.
@@ -254,6 +255,7 @@ UE 5.8은 레지스트리에 등록되지 않을 수 있어 경로를 직접 지
 **엔진·렌더**
 - 게임 모듈의 StartupModule에서 셰이더 디렉터리를 매핑하면 늦다. 전역 셰이더는 PostConfigInit 모듈(`VrgRender`)에 둔다.
 - 픽셀 셰이더 시그니처는 `ScreenPassVS` 출력과 같아야 한다(컴파일은 통과하고 PSO에서 죽는다).
+- 후처리 패스 콜백은 할 일이 없어도 `Inputs.OverrideOutput`이 있으면 거기에 써야 한다(입력만 돌려주면 체인 마지막일 때 화면이 검다; 볼륨 끔 + 내려다보기, 2026-10-27). 바탕화면 캡처는 직전 화면을 보여 줄 수 있으니 렌더 확인은 `HighResShot`으로.
 - `ScreenToTranslatedWorld`에 DeviceZ ≈ 0을 넣어 먼 점을 만들지 않는다(reversed-Z에서 카메라 근처로 무너진다).
 - 볼륨 패스는 깊이를 `View.ScreenPositionScaleBias`로 내부 해상도 UV로 바꿔 읽는다(출력 UV로 읽으면 화면 일부만 맞다).
 - `FSimClock::CompleteStep`만 반복하면 시계가 멈춘다. 스텝을 앞당길 때도 같은 시간을 시계에 넣는다(규약 4).

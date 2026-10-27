@@ -481,6 +481,11 @@ private:
 	int32 LeakToolAimed = INDEX_NONE;
 	bool bLastCursorInputMode = false;
 	void OnCycleLeakTool();
+	// Air display modes (V). Plan view moves the camera above the room and the next mode puts it back.
+	void OnCycleAirView();
+	FVector PlanSavedEyeCm = FVector::ZeroVector;
+	FRotator PlanSavedLook = FRotator::ZeroRotator;
+	bool bPlanViewSaved = false;
 	void UpdateLeakTool();
 	bool ApplyLeakToolClick();
 	bool bInputModeInitialized = false;

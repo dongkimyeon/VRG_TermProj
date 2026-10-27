@@ -182,6 +182,14 @@ FScreenPassTexture FVrgVolumeSceneViewExtension::AddVolumePass_RenderThread(FRDG
 	if (!bRenderEnabled || !VolumeTexture.IsValid() || !SceneColor.IsValid())
 	{
 		LastPassCount.store(0, std::memory_order_relaxed);
+		// When this is the last pass of the chain the engine hands an output to write (the back buffer): returning the
+		// input untouched leaves it unwritten and the frame shows black. It happened with the volume off and the camera
+		// looking down (2026-10-27 air view check: stream / plan modes turn the volume off); copy the scene into it.
+		if (Inputs.OverrideOutput.IsValid() && SceneColor.IsValid())
+		{
+			AddDrawTexturePass(GraphBuilder, FScreenPassViewInfo(View), SceneColor, Inputs.OverrideOutput);
+			return Inputs.OverrideOutput;
+		}
 		return SceneColor;
 	}
 

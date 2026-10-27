@@ -12,6 +12,9 @@
 #include "Simulation/Plant/FacilityPlant.h"
 #include "Simulation/Water/LeakSpray.h"
 #include "Simulation/Water/FloorWater.h"
+#include "Simulation/Air/AirStreamlines.h"
+#include "Simulation/Air/AirFlowAverager.h"
+#include "Visualization/AirFlowView.h"
 #include "Actors/PlantEquipmentActor.h"
 #include "Simulation/Evaluation/VrgDashboardSummary.h"
 #include "Interaction/VrgCrahLifecycle.h"
@@ -333,6 +336,27 @@ public:
 	// Debug drawing of the computed parcels (vrg.Water.Show). Display only.
 	UPROPERTY(EditAnywhere, Category = "Leak")
 	bool bShowSpray = true;
+	// ---- Air view (2026-10-27, the professor's streamtrace figure; Visualization/AirFlowView.h) ----
+	// Display only: the solver is not touched. Streamlines follow the time-averaged flow (last 30 s, FAirFlowAverager),
+	// rebuilt once a second while a stream / plan / arrow mode is on. V cycles the modes (ADataCenterDebugController).
+	void SetAirView(EAirView View);
+	EAirView CycleAirView();
+	EAirView GetAirView() const { return AirView; }
+	// Colour bars for the HUD and one note line (average window or "instant").
+	void GetAirFlowLegends(TArray<FAirFlowLegend>& Out, FString& OutNote) const;
+	// Traces and uploads the view now (normally once a second). Tests call it.
+	void RebuildAirFlowView();
+	const TArray<FAirStreamline>& GetStreamlines() const { return Streamlines; }
+	const TArray<FAirStreamline>& GetPlanStreamlines() const { return PlanStreamlines; }
+	FVector GetStreamlineOriginM() const { return StreamlineOriginM; }
+	double GetAirFlowAverageS() const { return bFlowGridValid ? FlowAverager.GetCoveredS() : 0.0; }
+	int32 GetAirFlowInstanceCount() const;
+	FBox GetAirDomainBoundsM() const;
+	// Height of the plan slice [m] above the domain floor, and how far above the domain top the plan is drawn (a map
+	// over the room, so roofs and racks do not hide it from above).
+	double PlanHeightM = 1.1;
+	double PlanDrawOffsetM = 2.0;
+	double GetPlanDrawZM() const;
 	const FLeakSpray& GetLeakSpray() const { return Spray; }
 	// W3: the water on the room floor (shallow water), fed with exactly what the spray delivered to the floor each step.
 	const FFloorWater& GetFloorWater() const { return FloorWater; }
@@ -565,6 +589,18 @@ private:
 	TArray<FLiveLeakSite> LiveLeakSites;
 	FLeakSpray Spray;
 	FFloorWater FloorWater;
+	// Air view (2026-10-27): streamtubes / plan slice / arrows of the 30 s average flow (AirFlowView.h).
+	EAirView AirView = EAirView::Volume;
+	FAirFlowAverager FlowAverager;
+	FUniformAirGrid FlowGrid;          // the averaged field the view draws (valid once a block closed)
+	bool bFlowGridValid = false;
+	TArray<FAirStreamline> Streamlines;
+	TArray<FAirStreamline> PlanStreamlines;
+	FVector StreamlineOriginM = FVector::ZeroVector;
+	double LastFlowViewWallS = -1.0;
+	UPROPERTY(Transient) TObjectPtr<class AAirFlowDisplayActor> FlowDisplay;
+	void AirFlowAfterStep(double DtS);
+	void UpdateAirFlowView();
 	double FloorOffGridM3 = 0.0;   // floor deposits that missed the floor grid (kept here, reported)
 	TArray<double> SprayTankLeakedM3;   // each tank's cumulative leaked volume at the last spray step
 	int32 LastSprayLogSecond = -1;

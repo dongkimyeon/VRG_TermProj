@@ -292,6 +292,7 @@ void ADataCenterDebugController::SetupInputComponent()
 		{ TEXT("GizmoTranslate"), EKeys::W, &ADataCenterDebugController::OnGizmoTranslateKey },
 		{ TEXT("GizmoCycle"), EKeys::SpaceBar, &ADataCenterDebugController::OnGizmoCycleKey },
 		{ TEXT("LeakTool"), EKeys::L, &ADataCenterDebugController::OnCycleLeakTool },   // W1 live leak (simulation mode)
+		{ TEXT("AirView"), EKeys::V, &ADataCenterDebugController::OnCycleAirView },     // air display modes (simulation mode)
 	};
 
 	for (const FBinding& Binding : Bindings)
@@ -3610,6 +3611,7 @@ void ADataCenterDebugController::GetHelpLines(TArray<FString>& Out) const
 		TEXT("[조절] 1/2 CPU 발열 · 3/4 GPU 발열 · 5/6 펌프 회전수 · 7/8 라디에이터 UA · 9/0 부하율"),
 		TEXT("[장비] E 바라보는 유닛 뽑기/꽂기"),
 		TEXT("[누수] L 누수 도구(5 mm → 30 mm → 파단 → 수리 → 끔) · 지점 클릭 적용(회색 닫힘·빨강 열림·노랑 조준) · Esc 끄기"),
+		TEXT("[보기] V 공기 표시: 온도 볼륨 → 유선(속도) → 유선(온도) → 유선+볼륨 → 평면(위에서) → 화살표"),
 	};
 	if (bLayout) for (const TCHAR* Text : LayoutLines) Out.Add(Text);
 	else for (const TCHAR* Text : SimLines) Out.Add(Text);
@@ -3620,6 +3622,37 @@ namespace
 	const TCHAR* LeakToolName(int32 Mode)
 	{
 		return Mode == 1 ? TEXT("5 mm") : Mode == 2 ? TEXT("30 mm") : Mode == 3 ? TEXT("파단(관 안지름)") : Mode == 4 ? TEXT("수리") : TEXT("끔");
+	}
+}
+
+void ADataCenterDebugController::OnCycleAirView()
+{
+	ADataCenterSimulationActor* Sim = FindSimActor();
+	if (IsLayoutMode() || Sim == nullptr || Sim->GetSimMode() != ESimMode::Simulation) return;
+	const EAirView Old = Sim->GetAirView();
+	const EAirView New = Sim->CycleAirView();
+	APawn* ViewPawn = GetPawn();
+	if (ViewPawn == nullptr) return;
+	if (New == EAirView::Plan)
+	{
+		// From above, the whole room in view (FOV 90: half span / tan 45° = half span), X across the screen.
+		PlanSavedEyeCm = ViewPawn->GetActorLocation();
+		PlanSavedLook = GetControlRotation();
+		bPlanViewSaved = true;
+		const FBox Domain = Sim->GetAirDomainBoundsM();
+		if (Domain.IsValid)
+		{
+			const FVector C = Domain.GetCenter();
+			// Looking straight down with yaw 90: world X runs across the screen (horizontal FOV 90 -> half width = distance),
+			// world Y up the screen (16:9 -> half height = distance x 9/16). 10 % margin.
+			const double Distance = 1.1 * FMath::Max(.5 * (Domain.Max.X - Domain.Min.X), .5 * (Domain.Max.Y - Domain.Min.Y) * 16.0 / 9.0);
+			SetViewpointM(FVector(C.X, C.Y, Sim->GetPlanDrawZM() + Distance), FRotator(-89.9, 90.0, 0.0));
+		}
+	}
+	else if (Old == EAirView::Plan && bPlanViewSaved)
+	{
+		SetViewpointM(PlanSavedEyeCm / 100.0, PlanSavedLook);
+		bPlanViewSaved = false;
 	}
 }
 

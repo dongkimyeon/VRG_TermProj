@@ -32,6 +32,8 @@
 #include "Components/StaticMeshComponent.h"
 #include "DrawDebugHelpers.h"
 #include "VrgFloorWaterGpu.h"
+#include "Actors/AirFlowDisplayActor.h"
+#include "Visualization/PlantVisual.h"
 #include "Engine/Engine.h"
 #include "Engine/StaticMesh.h"
 #include "Engine/World.h"
@@ -304,6 +306,7 @@ void ADataCenterSimulationActor::EnterLayoutMode()
 	PendingWarmupSteps = 0;
 	VrgPerf::PendingWarmupSteps() = 0;
 	HoldModelsForLayout();
+	if (FlowDisplay != nullptr) FlowDisplay->Clear();   // the air view's tubes are components: they would stay in layout mode
 	UpdatePlantDisplay(true);   // the yard stays (structure colours) while the layout is edited
 	UE_LOG(LogTemp, Display, TEXT("[VrgSim] 배치 모드: 물리 정지. 배치를 바꾼 뒤 시뮬레이션 모드로 들어가면 새로 구성한다."));
 }
@@ -360,6 +363,8 @@ void ADataCenterSimulationActor::EnterSimulationMode()
 	Spray.Reset(BuildSprayGeometry(), Spray.GetSettings(), Spray.GetFluid());
 	FloorWater.ResetForRoom(Spray.GetGeometry(), FloorWaterSettings);   // W3: dry floor
 	FloorOffGridM3 = 0.0;
+	FlowAverager.Reset(); bFlowGridValid = false;   // the air view averages this run only
+	SetAirView(AirView);
 	SprayTankLeakedM3.Reset();
 	LastSprayLogSecond = -1;
 	UE_LOG(LogTemp, Display, TEXT("[VrgSim] 시뮬레이션 모드: 랙 %d대 / 스파인 %d대 / CRAH %d대로 구성하고 t=0부터 시작."),
@@ -2068,7 +2073,7 @@ void ADataCenterSimulationActor::Tick(float DeltaTime)
 				PlantBeforeStep();
 				Bridge.Step(Clock.GetFixedStepS(), bHydraulicsResolved && StepIndex == 0, bHydraulicsConverged);
 				PlantAfterStep(Clock.GetFixedStepS());
-				SprayAfterStep(Clock.GetFixedStepS());   // W2: the water that left the holes in this step
+				SprayAfterStep(Clock.GetFixedStepS()); AirFlowAfterStep(Clock.GetFixedStepS());   // W2: the water that left the holes in this step
 			}
 			Clock.CompleteStep();
 			EvalAfterStep();
@@ -2101,6 +2106,7 @@ void ADataCenterSimulationActor::Tick(float DeltaTime)
 		DrawSummary();
 	}
 	DrawSpray();
+	UpdateAirFlowView();
 	UpdatePlantDisplay(false);
 	// After the steps so the published copy is the state at this frame's SimTime.
 	PublishDashboard();
@@ -2510,6 +2516,196 @@ void ADataCenterSimulationActor::TickWaterDemo()
 	const FVector D = Site.SprayDirectionM;
 	UE_LOG(LogTemp, Display, TEXT("[Water] 화면 확인: 지점 %d %s, 구멍 %.1f mm, 물줄기 방향 (%.2f, %.2f, %.2f), 시점 %s m. 수리 vrg.Leak.Repair %d"),
 		Best, *Site.Label, HoleM * 1e3, D.X, D.Y, D.Z, *EyeM.ToCompactString(), Best);
+}
+
+void ADataCenterSimulationActor::SetAirView(EAirView View)
+{
+	const EAirView Old = AirView;
+	AirView = View;
+	// The average is gathered only while a flow mode is on (it costs a pass over the faces each step): start it fresh.
+	if (Old == EAirView::Volume && View != EAirView::Volume) { FlowAverager.Reset(); bFlowGridValid = false; }
+	LastFlowViewWallS = -1.0;
+	if (AirField != nullptr)
+	{
+		const bool bVolume = View == EAirView::Volume || View == EAirView::StreamSpeedVolume;
+		AirField->bDrawVolume = bVolume;
+		AirField->bDrawFlow = bVolume;
+	}
+	if ((View == EAirView::Volume || View == EAirView::Arrows) && FlowDisplay != nullptr) FlowDisplay->Clear();
+	if (View == EAirView::Volume) { Streamlines.Reset(); PlanStreamlines.Reset(); }
+	UE_LOG(LogTemp, Display, TEXT("[VrgAir] 공기 표시: %s"), AirFlowView::Name(View));
+}
+
+EAirView ADataCenterSimulationActor::CycleAirView()
+{
+	SetAirView(static_cast<EAirView>((uint8(AirView) + 1) % uint8(EAirView::Count)));
+	return AirView;
+}
+
+double ADataCenterSimulationActor::GetPlanDrawZM() const
+{
+	const FBox B = GetAirDomainBoundsM();
+	return B.IsValid ? B.Max.Z + PlanDrawOffsetM : PlanHeightM;
+}
+
+FBox ADataCenterSimulationActor::GetAirDomainBoundsM() const
+{
+	return AirField != nullptr ? AirField->GetDomainBoundsM() : FBox(ForceInit);
+}
+
+int32 ADataCenterSimulationActor::GetAirFlowInstanceCount() const
+{
+	return FlowDisplay != nullptr ? FlowDisplay->GetNumShown() : 0;
+}
+
+void ADataCenterSimulationActor::GetAirFlowLegends(TArray<FAirFlowLegend>& Out, FString& OutNote) const
+{
+	Out.Reset();
+	OutNote.Reset();
+	if (AirView == EAirView::Volume || Mode != ESimMode::Simulation) return;
+	const FAirFlowLegend Speed{ TEXT("공기 속도"), 0.0, AirFlowView::SpeedMaxMs, TEXT("m/s") };
+	const FAirFlowLegend Temp{ TEXT("공기 온도"), AirFlowView::TempMinC, AirFlowView::TempMaxC, TEXT("°C") };
+	switch (AirView)
+	{
+	case EAirView::StreamTemperature: Out.Add(Temp); break;
+	case EAirView::Plan: Out.Add({ FString::Printf(TEXT("공기 온도 (높이 %.2f m 단면, 방 위에 띄워 표시)"), PlanHeightM), Temp.Min, Temp.Max, Temp.Unit }); break;
+	default: Out.Add(Speed); break;
+	}
+	const FString Avg = bFlowGridValid ? FString::Printf(TEXT("시간 평균 %.0f s (목표 %.0f s)"), FlowAverager.GetCoveredS(), FlowAverager.WindowS)
+		: FString(TEXT("순간값 (평균 모으는 중)"));
+	OutNote = FString::Printf(TEXT("%s · %s%s"), AirFlowView::Name(AirView), *Avg,
+		AirView == EAirView::Plan ? TEXT(" · 흰 선 = 단면 안 흐름") : AirView == EAirView::StreamSpeedVolume ? TEXT(" · 볼륨 = 온도") : TEXT(""));
+}
+
+void ADataCenterSimulationActor::AirFlowAfterStep(double DtS)
+{
+	if (AirView == EAirView::Volume || AirField == nullptr) return;
+	FlowAverager.Add(AirField->GetMutableSolver().GetGrid(), DtS);
+}
+
+void ADataCenterSimulationActor::RebuildAirFlowView()
+{
+	if (AirField == nullptr || AirView == EAirView::Volume) return;
+	const FUniformAirGrid& Live = AirField->GetMutableSolver().GetGrid();
+	bFlowGridValid = FlowAverager.Build(Live, FlowGrid);
+	const FUniformAirGrid& G = bFlowGridValid ? FlowGrid : Live;
+	StreamlineOriginM = SimUnits::UnrealToMeters(AirField->GetActorLocation());
+	Streamlines.Reset();
+	PlanStreamlines.Reset();
+	TArray<FPlantInstance> List;
+	UStaticMesh* Tube = PlantInstances::Cylinder();
+	UStaticMesh* Box = PlantInstances::Cube();
+	auto TubeAt = [&](const FVector& AM, const FVector& BM, double DiameterM, const FLinearColor& Color)
+	{
+		FPlantInstance& I = List.AddDefaulted_GetRef();
+		I.Mesh = Tube; I.Color = Color;
+		I.Transform = PlantVisual::TubeTransformCm(SimUnits::MetersToUnreal(StreamlineOriginM + AM), SimUnits::MetersToUnreal(StreamlineOriginM + BM),
+			SimUnits::MetersToUnreal(FVector(DiameterM, 0, 0)).X);
+	};
+	const bool bStream = AirView == EAirView::StreamSpeed || AirView == EAirView::StreamTemperature || AirView == EAirView::StreamSpeedVolume;
+	if (bStream)
+	{
+		// Seeds: a 3 x 5 grid on each CRAH supply face, 10 cm in front of it, and three heights behind each rack (its
+		// exhaust). The rack body is solid in the air grid (its fans are ducts), so a line from a cooler ends at a rack
+		// front and the hot side needs its own seeds.
+		TArray<FVector> Seeds;
+		for (const FCrahPlacement& P : CrahPlacements)
+		{
+			const FVector Right(-P.ForwardM.Y, P.ForwardM.X, 0.0);
+			for (int32 A = 0; A < 3; ++A)
+				for (int32 B = 0; B < 5; ++B)
+					Seeds.Add(P.BaseM + P.ForwardM * (.5 * P.SizeM.X + .1) + Right * ((A - 1) * .3 * P.SizeM.Y) + FVector(0, 0, (.15 + .7 * B / 4.0) * P.SizeM.Z) - StreamlineOriginM);
+		}
+		for (const ARackThermalActor* Rack : Racks)
+		{
+			if (Rack == nullptr) continue;
+			const FVector Base = SimUnits::UnrealToMeters(Rack->GetActorLocation());
+			const FVector Fwd = Rack->GetActorForwardVector().GetSafeNormal2D();
+			for (const double Z : { .5, 1.1, 1.7 })
+				Seeds.Add(Base - Fwd * (.5 * Rack->RackSizeM.X + .1) + FVector(0, 0, Z) - StreamlineOriginM);
+		}
+		Streamlines = AirStreamlines::TraceAll(G, Seeds, FAirStreamlineSettings());
+		// Tubes 3 cm across, 10 cm segments (every second 5 cm step), colour banded for the instanced components.
+		const bool bTemp = AirView == EAirView::StreamTemperature;
+		for (const FAirStreamline& L : Streamlines)
+			for (int32 I = 2; I < L.PointsM.Num(); I += 2)
+			{
+				const double V = bTemp ? (SimUnits::KelvinToCelsius(L.TemperatureK[I]) - AirFlowView::TempMinC) / (AirFlowView::TempMaxC - AirFlowView::TempMinC)
+					: L.SpeedMs[I] / AirFlowView::SpeedMaxMs;
+				TubeAt(L.PointsM[I - 2], L.PointsM[I], .03, AirFlowView::Banded(V));
+			}
+	}
+	else if (AirView == EAirView::Plan)
+	{
+		// One cell layer at the plan height, coloured by temperature, and the in-plane streamlines over it (white).
+		// Drawn above the room (PlanDrawOffsetM over the domain top) like a map: at its own height it is hidden under the
+		// containment roof, rack tops and pipes when seen from above (found by the 2026-10-27 screen check). The data is
+		// the plan height's layer; only the drawing is lifted.
+		const double H = G.GetCellSizeM();
+		const int32 K = FMath::Clamp(FMath::FloorToInt32(PlanHeightM / H), 0, G.GetNumCellsZ() - 1);
+		const double Zc = (K + .5) * H;
+		const FVector Lift(0, 0, G.GetNumCellsZ() * H + PlanDrawOffsetM - Zc);
+		for (int32 Y = 0; Y < G.GetNumCellsY(); ++Y)
+			for (int32 X = 0; X < G.GetNumCellsX(); ++X)
+			{
+				if (!G.IsFluidCell(X, Y, K)) continue;
+				const double C = SimUnits::KelvinToCelsius(G.TemperatureK[G.CellIndex(X, Y, K)]);
+				FPlantInstance& I = List.AddDefaulted_GetRef();
+				I.Mesh = Box; I.Color = AirFlowView::Banded((C - AirFlowView::TempMinC) / (AirFlowView::TempMaxC - AirFlowView::TempMinC));
+				I.Transform = PlantVisual::BoxTransformCm(SimUnits::MetersToUnreal(StreamlineOriginM + FVector((X + .5) * H, (Y + .5) * H, Zc) + Lift),
+					SimUnits::MetersToUnreal(FVector(H, H, .01)));
+			}
+		TArray<FVector> Seeds;
+		for (int32 Y = 1; Y < G.GetNumCellsY(); Y += 3)
+			for (int32 X = 1; X < G.GetNumCellsX(); X += 3)
+				if (G.IsFluidCell(X, Y, K)) Seeds.Add(FVector((X + .5) * H, (Y + .5) * H, Zc));
+		FAirStreamlineSettings S;
+		S.bPlanar = true; S.MaxLengthM = 6.0;
+		PlanStreamlines = AirStreamlines::TraceAll(G, Seeds, S);
+		for (const FAirStreamline& L : PlanStreamlines)
+			for (int32 I = 2; I < L.PointsM.Num(); I += 2)
+				TubeAt(L.PointsM[I - 2] + Lift + FVector(0, 0, .03), L.PointsM[I] + Lift + FVector(0, 0, .03), .03, FLinearColor(.95f, .95f, .95f));
+	}
+	if (List.Num() > 0 && FlowDisplay == nullptr && GetWorld() != nullptr)
+	{
+		FActorSpawnParameters Params;
+		Params.ObjectFlags |= RF_Transient;
+		Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+		FlowDisplay = GetWorld()->SpawnActor<AAirFlowDisplayActor>(FVector::ZeroVector, FRotator::ZeroRotator, Params);
+	}
+	if (FlowDisplay != nullptr) FlowDisplay->Show(List);
+}
+
+void ADataCenterSimulationActor::UpdateAirFlowView()
+{
+	if (AirView == EAirView::Volume || AirField == nullptr) return;
+	// Wall time paces the redraw only; it never changes the simulation (the average follows the steps).
+	const double NowS = FPlatformTime::Seconds();
+	if (LastFlowViewWallS < 0.0 || NowS - LastFlowViewWallS > 1.0)
+	{
+		LastFlowViewWallS = NowS;
+		RebuildAirFlowView();
+	}
+	if (AirView != EAirView::Arrows || GetWorld() == nullptr) return;
+	// Arrows: the averaged velocity at cell centres on three heights, every second cell, length up to 0.4 m, speed colours.
+	const FUniformAirGrid& G = bFlowGridValid ? FlowGrid : AirField->GetMutableSolver().GetGrid();
+	const double H = G.GetCellSizeM();
+	for (const double Zm : { .375, 1.125, 1.875 })
+	{
+		const int32 K = FMath::Clamp(FMath::FloorToInt32(Zm / H), 0, G.GetNumCellsZ() - 1);
+		for (int32 Y = 0; Y < G.GetNumCellsY(); Y += 2)
+			for (int32 X = 0; X < G.GetNumCellsX(); X += 2)
+			{
+				if (!G.IsFluidCell(X, Y, K)) continue;
+				const FVector C((X + .5) * H, (Y + .5) * H, (K + .5) * H);
+				const FVector U = G.SampleVelocityMs(C);
+				const double Speed = U.Size();
+				if (Speed < .02) continue;
+				const FVector A = SimUnits::MetersToUnreal(StreamlineOriginM + C);
+				const FVector B = SimUnits::MetersToUnreal(StreamlineOriginM + C + U / Speed * (.4 * FMath::Min(Speed / AirFlowView::SpeedMaxMs, 1.0) + .05));
+				DrawDebugDirectionalArrow(GetWorld(), A, B, 8.0f, AirFlowView::Colormap(Speed / AirFlowView::SpeedMaxMs).ToFColor(true), false, -1.0f, SDPG_World, 1.5f);
+			}
+	}
 }
 
 void ADataCenterSimulationActor::DrawSpray() const
@@ -3305,7 +3501,7 @@ void ADataCenterSimulationActor::DrainWarmupSteps()
 		PlantBeforeStep();
 		Bridge.Step(Clock.GetFixedStepS(), bHydraulicsResolved, (Room == nullptr) || Room->GetLastSolveResult().bConverged);
 		PlantAfterStep(Clock.GetFixedStepS());
-		SprayAfterStep(Clock.GetFixedStepS());   // W2: the same step path as Tick
+		SprayAfterStep(Clock.GetFixedStepS()); AirFlowAfterStep(Clock.GetFixedStepS());   // W2: the same step path as Tick
 		WarmupCouplingMs +=FPlatformTime::ToMilliseconds64(FPlatformTime::Cycles64() - StepStart);
 		WarmupRackMs += Bridge.GetLastRackModelsMs();
 		Clock.CompleteStep();
@@ -4093,6 +4289,25 @@ static FAutoConsoleCommand GVrgWaterCellCommand(
 		if (!(Cell >= .005 && Cell <= .5)) { UE_LOG(LogTemp, Warning, TEXT("[Water] 칸 크기는 0.005~0.5 m")); return; }
 		for (ADataCenterSimulationActor* Sim : EvalSimActors()) Sim->FloorWaterSettings.CellM = Cell;
 		UE_LOG(LogTemp, Display, TEXT("[Water] 바닥 물 칸 %.3f m (다음 진입부터)"), Cell);
+	}));
+
+static FAutoConsoleCommand GVrgAirViewCommand(
+	TEXT("vrg.Air.View"),
+	TEXT("공기 표시(V로 순환): 0 온도 볼륨, 1 유선·속도, 2 유선·온도, 3 유선(속도)+볼륨, 4 평면 보기, 5 화살표. 유선·평면·화살표는 최근 30 s 평균 흐름. vrg.Air.View <0~5>"),
+	FConsoleCommandWithArgsDelegate::CreateLambda([](const TArray<FString>& Args)
+	{
+		if (Args.Num() < 1) return;
+		const int32 V = FMath::Clamp(FCString::Atoi(*Args[0]), 0, int32(EAirView::Count) - 1);
+		for (ADataCenterSimulationActor* Sim : EvalSimActors()) Sim->SetAirView(static_cast<EAirView>(V));
+	}));
+
+static FAutoConsoleCommand GVrgAirPlanHeightCommand(
+	TEXT("vrg.Air.PlanHeight"),
+	TEXT("평면 보기 단면 높이 [m] (바닥에서). vrg.Air.PlanHeight <m>"),
+	FConsoleCommandWithArgsDelegate::CreateLambda([](const TArray<FString>& Args)
+	{
+		if (Args.Num() < 1) return;
+		for (ADataCenterSimulationActor* Sim : EvalSimActors()) { Sim->PlanHeightM = FMath::Max(0.0, FCString::Atod(*Args[0])); Sim->RebuildAirFlowView(); }
 	}));
 
 static FAutoConsoleCommand GVrgWaterGpuCommand(
