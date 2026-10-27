@@ -203,6 +203,48 @@ bool FFloorWaterPuddleTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFloorWaterThinBarrierTest, "VRG.Water.Floor.ThinBarrierBlocks", VrgFloorFlags)
+bool FFloorWaterThinBarrierTest::RunTest(const FString& Parameters)
+{
+	// A 2 cm curtain (the layout's barrier) standing on a cell boundary of the 2.5 cm grid, straight and turned 30 deg:
+	// no cell centre falls inside 2 cm there, yet it must stop the water (found by the 2026-10-27 screen check).
+	bool bOk = true;
+	FString Line;
+	for (const double Yaw : { 0.0, 30.0 })
+	{
+		FSprayGeometry G;
+		G.RoomM = FBox(FVector::ZeroVector, FVector(2.0, 2.0, 3.0));
+		FSprayObstacle& O = G.Obstacles.AddDefaulted_GetRef();
+		O.CenterM = FVector(1.025, 1.0, 1.2); O.HalfM = FVector(.01, 1.2, 1.2); O.Kind = ESprayObstacleKind::Barrier;
+		O.Rotation = FQuat(FVector::UpVector, FMath::DegreesToRadians(Yaw));
+		FFloorWater W;
+		FFloorWaterSettings S;
+		W.ResetForRoom(G, S);
+		int32 SolidCells = 0;
+		for (const uint8 Sd : W.GetSolid()) SolidCells += Sd;
+		for (int32 Step = 0; Step < 1500; ++Step)
+		{
+			if (Step < 500) W.AddWater(FVector(.85, 1.0, 0.0), 1.0e-3 / 500.0);
+			W.Step(.02, Step * .02);
+		}
+		// Water on the far side of the curtain's line (signed distance > 2 cells).
+		const FVector2D N(FMath::Cos(FMath::DegreesToRadians(Yaw)), FMath::Sin(FMath::DegreesToRadians(Yaw)));
+		double Beyond = 0.0, Near = 0.0;
+		for (int32 J = 0; J < W.GetNy(); ++J)
+			for (int32 I = 0; I < W.GetNx(); ++I)
+			{
+				const FVector2D P((I + .5) * W.GetCellM() - 1.025, (J + .5) * W.GetCellM() - 1.0);
+				const double D = W.GetDepthM()[W.Index(I, J)] * W.GetCellM() * W.GetCellM();
+				(FVector2D::DotProduct(P, N) > 2.0 * W.GetCellM() ? Beyond : Near) += D;
+			}
+		Line += FString::Printf(TEXT(" | %.0f°: 막는 칸 %d, 벽 앞 %.4f L, 벽 너머 %.1e L, 잔차 %.1e"), Yaw, SolidCells, Near * 1e3, Beyond * 1e3, W.GetTotals().Residual);
+		bOk &= SolidCells > 0 && Beyond == 0.0 && Near > .99e-3 && W.GetTotals().Residual < 1e-12;
+	}
+	AddInfo(TEXT("2 cm 차단막(칸 경계 위)") + Line);
+	TestTrue(TEXT("a 2 cm barrier between cell centres stops the water, straight and turned"), bOk);
+	return true;
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFloorWaterCostTest, "VRG.Water.Floor.CostWholeRoomWet", VrgFloorFlags)
 bool FFloorWaterCostTest::RunTest(const FString& Parameters)
 {

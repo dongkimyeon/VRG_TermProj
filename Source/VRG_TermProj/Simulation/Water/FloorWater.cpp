@@ -139,10 +139,15 @@ bool FFloorWater::ResetForRoom(const FSprayGeometry& Geometry, const FFloorWater
 		double Down = 0.0;
 		for (int32 K = 0; K < 3; ++K) Down += FMath::Abs(O.Rotation.RotateVector(K == 0 ? FVector(1, 0, 0) : K == 1 ? FVector(0, 1, 0) : FVector(0, 0, 1)).Z) * O.HalfM[K];
 		if (O.CenterM.Z - Down > FloorZ + .05) continue;   // hangs above the floor
+		// A wall at least 0.51 cell thick on the floor grid, as the air grid does (MarkBarrierSolidCells): a cell-centre
+		// step moves at most one cell, so a slab that thick catches every face path (watertight). A 2 cm curtain on the
+		// 2.5 cm grid otherwise marked no cell at all where no cell centre fell inside it (found by the 2026-10-27 screen check).
+		FVector Half = O.HalfM;
+		if (O.Kind == ESprayObstacleKind::Barrier) { Half.X = FMath::Max(Half.X, .51 * Settings.CellM); Half.Y = FMath::Max(Half.Y, .51 * Settings.CellM); }
 		double Rx = 0.0, Ry = 0.0;
 		for (int32 K = 0; K < 3; ++K)
 		{
-			const FVector A = O.Rotation.RotateVector(K == 0 ? FVector(1, 0, 0) : K == 1 ? FVector(0, 1, 0) : FVector(0, 0, 1)) * O.HalfM[K];
+			const FVector A = O.Rotation.RotateVector(K == 0 ? FVector(1, 0, 0) : K == 1 ? FVector(0, 1, 0) : FVector(0, 0, 1)) * Half[K];
 			Rx += FMath::Abs(A.X); Ry += FMath::Abs(A.Y);
 		}
 		const int32 I0 = FMath::Max(0, FMath::FloorToInt32((O.CenterM.X - Rx - Origin.X) / Settings.CellM)), I1 = FMath::Min(Nx - 1, FMath::FloorToInt32((O.CenterM.X + Rx - Origin.X) / Settings.CellM));
@@ -153,7 +158,7 @@ bool FFloorWater::ResetForRoom(const FSprayGeometry& Geometry, const FFloorWater
 			{
 				const FVector C(Origin.X + (I + .5) * Settings.CellM, Origin.Y + (J + .5) * Settings.CellM, O.CenterM.Z);
 				const FVector L = O.Rotation.UnrotateVector(C - O.CenterM);
-				if (FMath::Abs(L.X) <= O.HalfM.X && FMath::Abs(L.Y) <= O.HalfM.Y) Cells.Add(Index(I, J));
+				if (FMath::Abs(L.X) <= Half.X && FMath::Abs(L.Y) <= Half.Y) Cells.Add(Index(I, J));
 			}
 		if (O.Kind == ESprayObstacleKind::Barrier) { for (const int32 C : Cells) Solid[C] = 1; }
 		else AddFlood(O.Name, Cells);
