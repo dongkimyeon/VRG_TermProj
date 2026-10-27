@@ -357,6 +357,8 @@ void ADataCenterSimulationActor::EnterSimulationMode()
 	RebuildLiveLeakSites();   // W1: room sites are built closed with the rows; the plant nodes exist once BuildCoupling built it
 	// W2: no water anywhere at t = 0; the tanks start full (their leaked volume is the spray's starting point).
 	Spray.Reset(BuildSprayGeometry(), Spray.GetSettings(), Spray.GetFluid());
+	FloorWater.ResetForRoom(Spray.GetGeometry(), FloorWaterSettings);   // W3: dry floor
+	FloorOffGridM3 = 0.0;
 	SprayTankLeakedM3.Reset();
 	LastSprayLogSecond = -1;
 	UE_LOG(LogTemp, Display, TEXT("[VrgSim] 시뮬레이션 모드: 랙 %d대 / 스파인 %d대 / CRAH %d대로 구성하고 t=0부터 시작."),
@@ -2442,6 +2444,10 @@ void ADataCenterSimulationActor::SprayAfterStep(double DtS)
 	}
 	if (Sources.IsEmpty() && !Spray.HasWater()) return;
 	Spray.Step(Sources, DtS, Clock.GetSimTimeS());
+	// W3: what reached the floor this step spreads as shallow water over the same interval.
+	for (const TPair<FVector, double>& D : Spray.GetLastStepFloorDepositsM3())
+		if (!FloorWater.AddWater(D.Key, D.Value)) FloorOffGridM3 += D.Value;
+	if (FloorWater.HasWater()) FloorWater.Step(DtS, Clock.GetSimTimeS());
 	const int32 Second = FMath::FloorToInt32((Clock.GetSimTimeS() + DtS) / 2.0);
 	if (Second != LastSprayLogSecond) { LastSprayLogSecond = Second; LogSprayStatus(); }
 }
@@ -2454,6 +2460,11 @@ void ADataCenterSimulationActor::LogSprayStatus() const
 	UE_LOG(LogTemp, Display, TEXT("[Water] t=%.2f s 누적 %.3f L = 공중 %.3f + 구멍 대기 %.3f + 물막 %.3f + 바닥 %.3f + 바깥 땅 %.3f L | 입자 %d (물줄기 %d), 분열 %d, 튐 %d, 젖은 장비 %d, 장비 안 누수 %.3f L | 잔차 %.2e"),
 		Clock.GetSimTimeS(), T.EmittedM3 * 1e3, T.AirborneM3 * 1e3, T.WaitingM3 * 1e3, T.FilmM3 * 1e3, T.FloorM3 * 1e3, T.GroundM3 * 1e3,
 		T.Parcels, T.JetParcels, T.Breakups, T.Splashes, Wet, T.ThroughEquipmentM3 * 1e3, T.Residual);
+	const FFloorWaterTotals& F = FloorWater.GetTotals();
+	int32 Flooded = 0;
+	for (const FFloorFlood& Fl : FloorWater.GetFloods()) Flooded += Fl.FirstWetS >= 0.0 ? 1 : 0;
+	UE_LOG(LogTemp, Display, TEXT("[Water] t=%.2f s 바닥 물 %.3f L (받음 %.3f L, 격자 밖 %.3f L), 젖은 칸 %d, 최대 수심 %.2f mm, 최대 속도 %.3f m/s, 이번 스텝 부분 스텝 %d, 물 밑 장비 %d | 잔차 %.2e, 음수 수심 보정 %.2e L"),
+		Clock.GetSimTimeS(), F.StoredM3 * 1e3, F.ReceivedM3 * 1e3, FloorOffGridM3 * 1e3, F.WetCells, F.MaxDepthM * 1e3, F.MaxSpeedMs, F.LastSubsteps, Flooded, F.Residual, F.ClippedM3 * 1e3);
 }
 
 void ADataCenterSimulationActor::TickWaterDemo()
@@ -2517,18 +2528,24 @@ void ADataCenterSimulationActor::DrawSpray() const
 	for (const FSprayFilm& F : Spray.GetFilms())
 		if (F.VolumeM3 > 0.0)
 			DrawDebugLine(World, SimUnits::MetersToUnreal(F.FootM), SimUnits::MetersToUnreal(F.FootM + FVector(0, 0, F.WetHeightM)), FColor(60, 140, 255), false, -1.0f, SDPG_World, 2.0f);
-	const double Bin = Spray.GetSettings().FloorBinM;
-	const double FloorZ = Spray.GetGeometry().RoomM.IsValid ? Spray.GetGeometry().RoomM.Min.Z : Spray.GetGeometry().GroundZM;
+	// W3: the floor water, one flat square per wet cell (a line as wide as the cell), darker where deeper (0 to 5 mm).
+	const FFloorWater& Fw = FloorWater;
+	const FIntRect Box = Fw.GetWetBox();
+	const double Cell = Fw.GetCellM();
+	const double Z = Fw.GetFloorZM() + 2e-3;
 	int32 Drawn = 0;
-	for (const auto& B : Spray.GetFloorBinsM3())
-	{
-		if (++Drawn > 2000) break;
-		// A flat square on the floor: one line as wide as the bin. (Debug solid boxes stayed on screen in layout mode,
-		// where nothing redraws them - found by the 2026-10-26 screen check; one-frame lines clear.)
-		const double Z = FloorZ + 2e-3;
-		DrawDebugLine(World, SimUnits::MetersToUnreal(FVector(B.Key.X * Bin, (B.Key.Y + .5) * Bin, Z)), SimUnits::MetersToUnreal(FVector((B.Key.X + 1) * Bin, (B.Key.Y + .5) * Bin, Z)),
-			FColor(30, 110, 255), false, -1.0f, SDPG_World, float(SimUnits::MetersToUnreal(FVector(Bin, 0, 0)).X));
-	}
+	for (int32 Jc = Box.Min.Y; Jc <= Box.Max.Y && Drawn < 30000; ++Jc)
+		for (int32 Ic = Box.Min.X; Ic <= Box.Max.X && Drawn < 30000; ++Ic)
+		{
+			const double D = Fw.GetDepthM()[Fw.Index(Ic, Jc)];
+			if (D < 1e-5) continue;
+			++Drawn;
+			const double A = FMath::Clamp(D / 5e-3, 0.0, 1.0);
+			const FColor C(uint8(140 - 120 * A), uint8(210 - 130 * A), 255);
+			const double Y = Fw.GetOriginM().Y + (Jc + .5) * Cell;
+			DrawDebugLine(World, SimUnits::MetersToUnreal(FVector(Fw.GetOriginM().X + Ic * Cell, Y, Z)), SimUnits::MetersToUnreal(FVector(Fw.GetOriginM().X + (Ic + 1) * Cell, Y, Z)),
+				C, false, -1.0f, SDPG_World, float(SimUnits::MetersToUnreal(FVector(Cell, 0, 0)).X));
+		}
 }
 
 void ADataCenterSimulationActor::UpdatePlantDisplay(bool bForce)
@@ -4057,7 +4074,23 @@ static FAutoConsoleCommand GVrgWaterStatusCommand(
 				UE_LOG(LogTemp, Display, TEXT("[Water]   물막 %s 면 %d: 폭 %.2f m, 젖은 높이 %.2f m, 두께 %.3f mm, 흘러내림 %.4f L/s"),
 					F.Obstacle >= 0 ? *S.GetGeometry().Obstacles[F.Obstacle].Name : F.Obstacle == INDEX_NONE ? TEXT("방 벽") : TEXT("방 외벽"),
 					F.Face, F.WidthM, F.WetHeightM, F.LastThicknessM * 1e3, F.LastOutflowM3s * 1e3);
+			for (const FFloorFlood& Fl : Sim->GetFloorWater().GetFloods())
+				if (Fl.FirstWetS >= 0.0)
+					UE_LOG(LogTemp, Display, TEXT("[Water]   물 밑 %s: 처음 t=%.2f s, 지금 평균 %.2f mm·최대 %.2f mm, 최고 %.2f mm (발판 칸 %d)"), *Fl.Name,
+						Fl.FirstWetS, Fl.MeanDepthM * 1e3, Fl.MaxDepthM * 1e3, Fl.PeakDepthM * 1e3, Fl.Cells.Num());
 		}
+	}));
+
+static FAutoConsoleCommand GVrgWaterCellCommand(
+	TEXT("vrg.Water.CellM"),
+	TEXT("W3: 바닥 물 격자 칸 크기 [m] (기본 0.025, 다음 시뮬레이션 진입부터). vrg.Water.CellM <m>"),
+	FConsoleCommandWithArgsDelegate::CreateLambda([](const TArray<FString>& Args)
+	{
+		if (Args.Num() < 1) return;
+		const double Cell = FCString::Atod(*Args[0]);
+		if (!(Cell >= .005 && Cell <= .5)) { UE_LOG(LogTemp, Warning, TEXT("[Water] 칸 크기는 0.005~0.5 m")); return; }
+		for (ADataCenterSimulationActor* Sim : EvalSimActors()) Sim->FloorWaterSettings.CellM = Cell;
+		UE_LOG(LogTemp, Display, TEXT("[Water] 바닥 물 칸 %.3f m (다음 진입부터)"), Cell);
 	}));
 
 static FAutoConsoleCommand GVrgWaterShowCommand(

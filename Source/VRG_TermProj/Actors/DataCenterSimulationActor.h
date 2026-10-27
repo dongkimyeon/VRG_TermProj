@@ -11,6 +11,7 @@
 #include "Simulation/Evaluation/VrgFaultMonitor.h"
 #include "Simulation/Plant/FacilityPlant.h"
 #include "Simulation/Water/LeakSpray.h"
+#include "Simulation/Water/FloorWater.h"
 #include "Actors/PlantEquipmentActor.h"
 #include "Simulation/Evaluation/VrgDashboardSummary.h"
 #include "Interaction/VrgCrahLifecycle.h"
@@ -333,6 +334,11 @@ public:
 	UPROPERTY(EditAnywhere, Category = "Leak")
 	bool bShowSpray = true;
 	const FLeakSpray& GetLeakSpray() const { return Spray; }
+	// W3: the water on the room floor (shallow water), fed with exactly what the spray delivered to the floor each step.
+	const FFloorWater& GetFloorWater() const { return FloorWater; }
+	// Floor water settings (cell size, Manning n, contact angle; the next simulation entry uses them).
+	FFloorWaterSettings FloorWaterSettings;
+	double GetFloorOffGridM3() const { return FloorOffGridM3; }
 	// Sets the jet direction of a site (normalised; a zero vector restores the default cone direction).
 	bool SetLiveLeakDirection(int32 Site, const FVector& DirectionM);
 	// The default jet direction of a site: in the downward cone, seeded by its position (same in every run).
@@ -558,6 +564,8 @@ private:
 	FFacilityPlant Plant;
 	TArray<FLiveLeakSite> LiveLeakSites;
 	FLeakSpray Spray;
+	FFloorWater FloorWater;
+	double FloorOffGridM3 = 0.0;   // floor deposits that missed the floor grid (kept here, reported)
 	TArray<double> SprayTankLeakedM3;   // each tank's cumulative leaked volume at the last spray step
 	int32 LastSprayLogSecond = -1;
 	FSprayGeometry BuildSprayGeometry() const;

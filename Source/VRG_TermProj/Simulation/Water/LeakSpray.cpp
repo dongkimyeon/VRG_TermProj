@@ -101,6 +101,7 @@ void FLeakSpray::Reset(const FSprayGeometry& InGeometry, const FSpraySettings& I
 	Wetting.Init(FSprayWetting(), Geometry.Obstacles.Num());
 	FirstImpacts.Reset(); FirstBreakups.Reset();
 	Totals = FSprayTotals();
+	StepFloorDeposits.Reset();
 }
 
 int32 FLeakSpray::FindObstacleContaining(const FVector& PointM) const
@@ -185,6 +186,7 @@ void FLeakSpray::AddFloor(const FVector& PointM, double Volume, bool bOutdoors)
 	if (Volume <= 0.0) return;
 	const FIntPoint Bin(FMath::FloorToInt32(PointM.X / Settings.FloorBinM), FMath::FloorToInt32(PointM.Y / Settings.FloorBinM));
 	(bOutdoors ? GroundBins : FloorBins).FindOrAdd(Bin) += Volume;
+	if (!bOutdoors) StepFloorDeposits.Add({ PointM, Volume });   // W3: the floor model takes these each step
 }
 
 void FLeakSpray::Touch(int32 Obstacle, const FVector& PointM, double Volume, double NowS)
@@ -294,6 +296,7 @@ void FLeakSpray::StepFilms(double DtS)
 void FLeakSpray::Step(const TArray<FSpraySource>& Sources, double DtS, double NowS)
 {
 	if (DtS <= 0.0) return;
+	StepFloorDeposits.Reset();
 	const FVector G(0, 0, -Fluid.GravityMs2);
 
 	// 1. What left the holes this step. A hole inside a box (pipe inside a cabinet) wets that box from the hole down

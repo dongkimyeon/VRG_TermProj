@@ -171,6 +171,9 @@ public:
 	const TArray<uint8>& GetLastStepTrailIsJet() const { return TrailJet; }
 	const TArray<FSprayFilm>& GetFilms() const { return Films; }
 	const TMap<FIntPoint, double>& GetFloorBinsM3() const { return FloorBins; }
+	// W3: the water that reached the room floor during the last step (point, volume), in order. The floor model takes
+	// exactly these (the bins above keep the cumulative record).
+	const TArray<TPair<FVector, double>>& GetLastStepFloorDepositsM3() const { return StepFloorDeposits; }
 	const TArray<FSprayWetting>& GetWetting() const { return Wetting; }
 	const FSprayGeometry& GetGeometry() const { return Geometry; }
 	const FSpraySettings& GetSettings() const { return Settings; }
@@ -208,6 +211,7 @@ private:
 	TArray<FSprayFilm> Films;
 	TMap<uint64, int32> FilmIndex;
 	TMap<FIntPoint, double> FloorBins, GroundBins;
+	TArray<TPair<FVector, double>> StepFloorDeposits;
 	TMap<int32, double> Waiting;
 	struct FEmitter { FSpraySource Source; double JetDiameterM = 0.0; };   // each hole's last jet
 	TMap<int32, FEmitter> Emitters;
