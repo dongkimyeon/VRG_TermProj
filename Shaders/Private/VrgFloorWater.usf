@@ -1,0 +1,251 @@
+// Fill out your copyright notice in the Description page of Project Settings.
+//
+// W3 (2026-10-27): the floor water (shallow water) step on the GPU, the twin of FFloorWater::Step (CPU, the reference).
+// Same formulas in the same order: first-order HLL with the hydrostatic reconstruction, pinned contact line, Manning
+// friction implicit in the velocity, CFL substeps that cover the step exactly. FP64 fields. HLSL has no double sqrt or
+// pow: a float estimate refined by two Newton steps in double (relative error ~1e-16, compared with tolerance).
+// Linear indices as the CPU: Cell = I + Nx * J, x face = Fi + (Nx + 1) * J, y face = I + Nx * Fj.
+// D6-style Jacobi structure: every pass reads one set and writes another; no thread reads what another writes.
+
+#include "/Engine/Public/Platform.ush"
+
+#define REDUCE_THREADS 256
+
+StructuredBuffer<double> Consts;     // 0 cell, 1 g, 2 dry depth, 3 pin depth (0 = off), 4 Manning n^2, 5 CFL, 6 max substeps
+StructuredBuffer<double> Bed;
+StructuredBuffer<int> Solid;
+StructuredBuffer<int> Cells;         // SetCellsCS: cells to overwrite
+StructuredBuffer<double> Values;     // SetCellsCS: their depths; StartCS: Values[0] = the step length
+RWStructuredBuffer<double> H;
+RWStructuredBuffer<double> HU;
+RWStructuredBuffer<double> HV;
+RWStructuredBuffer<double> NH;
+RWStructuredBuffer<double> NHU;
+RWStructuredBuffer<double> NHV;
+RWStructuredBuffer<double> FxH;
+RWStructuredBuffer<double> FxNL;
+RWStructuredBuffer<double> FxNH;
+RWStructuredBuffer<double> FxT;
+RWStructuredBuffer<double> FyH;
+RWStructuredBuffer<double> FyNL;
+RWStructuredBuffer<double> FyNH;
+RWStructuredBuffer<double> FyT;
+RWStructuredBuffer<double> Created;  // depth created by clipping negative depths in this step, per cell
+RWStructuredBuffer<double> Partials;
+RWStructuredBuffer<double> Scalars;  // 0 time left, 1 this substep's dt (0 = no substep), 2 substeps so far, 3 any depth clipped
+RWStructuredBuffer<double> U;        // velocities of this substep (Vel(H, HU), Vel(H, HV)), computed once per cell
+RWStructuredBuffer<double> V;
+uint Nx;
+uint Ny;
+uint Count;
+
+groupshared double Shared[REDUCE_THREADS];
+
+double SqrtD(double X)
+{
+	// Below 1e-70 the root (< 1e-35) is far below anything the step resolves: 0 (a float estimate of 0 would divide by 0).
+	if (X < 1e-70) return 0.0;
+	double Scale = 1.0;
+	if (X < 1e-30) { X *= 1e40; Scale = 1e-20; }
+	double S = (double)sqrt((float)X);
+	S = 0.5 * (S + X / S);
+	S = 0.5 * (S + X / S);
+	return S * Scale;
+}
+
+double CbrtD(double X)
+{
+	if (X < 1e-75) return 0.0;
+	double Scale = 1.0;
+	if (X < 1e-30) { X *= 1e45; Scale = 1e-15; }
+	double C = (double)pow((float)X, 1.0f / 3.0f);
+	C = C - (C * C * C - X) / (3.0 * C * C);
+	C = C - (C * C * C - X) / (3.0 * C * C);
+	return C * Scale;
+}
+
+double Vel(double Hc, double Q) { return Hc > Consts[2] ? Q / Hc : 0.0; }
+
+// One face (FaceFlux of FloorWater.cpp).
+void FaceFlux(double HL, double UL, double TL, double BL, bool bWallLow, double HR, double UR, double TR, double BR, bool bWallHigh,
+	out double OutH, out double OutNL, out double OutNH, out double OutT)
+{
+	OutH = 0.0; OutNL = 0.0; OutNH = 0.0; OutT = 0.0;
+	const double G = Consts[1];
+	if (bWallLow && bWallHigh) return;
+	bool bMirror = false, bLowWet = true;
+	if (bWallLow) { HL = HR; UL = -UR; TL = TR; BL = BR; bMirror = true; bLowWet = false; }
+	else if (bWallHigh) { HR = HL; UR = -UL; TR = TL; BR = BL; bMirror = true; }
+	const double Bs = max(BL, BR);
+	const double HLs = max(0.0, HL + BL - Bs), HRs = max(0.0, HR + BR - Bs);
+	double Fh = 0.0, Fn = 0.0, Ft = 0.0;
+	if (HLs > 0.0 || HRs > 0.0)
+	{
+		const double CL = SqrtD(G * HLs), CR = SqrtD(G * HRs);
+		double SL = min(UL - CL, UR - CR), SR = max(UL + CL, UR + CR);
+		if (HLs <= 0.0) SL = UR - 2.0 * CR;
+		if (HRs <= 0.0) SR = UL + 2.0 * CL;
+		const double FLh = HLs * UL, FLn = HLs * UL * UL + 0.5 * G * HLs * HLs, FLt = HLs * UL * TL;
+		const double FRh = HRs * UR, FRn = HRs * UR * UR + 0.5 * G * HRs * HRs, FRt = HRs * UR * TR;
+		if (SL >= 0.0) { Fh = FLh; Fn = FLn; Ft = FLt; }
+		else if (SR <= 0.0) { Fh = FRh; Fn = FRn; Ft = FRt; }
+		else
+		{
+			const double Inv = 1.0 / (SR - SL);
+			Fh = (SR * FLh - SL * FRh + SL * SR * (HRs - HLs)) * Inv;
+			Fn = (SR * FLn - SL * FRn + SL * SR * (HRs * UR - HLs * UL)) * Inv;
+			Ft = (SR * FLt - SL * FRt + SL * SR * (HRs * TR - HLs * TL)) * Inv;
+		}
+	}
+	const double NLv = Fn + 0.5 * G * (HL * HL - HLs * HLs);
+	const double NHv = Fn + 0.5 * G * (HR * HR - HRs * HRs);
+	if (bMirror)
+	{
+		if (bLowWet) OutNL = NLv; else OutNH = NHv;
+		return;
+	}
+	OutH = Fh; OutNL = NLv; OutNH = NHv; OutT = Ft;
+}
+
+void Walls(int CL, int CR, out bool bWL, out bool bWR)
+{
+	bWL = CL < 0 || Solid[CL] != 0;
+	bWR = CR < 0 || Solid[CR] != 0;
+	const double HPin = Consts[3], Dry = Consts[2];
+	if (bWL || bWR || HPin <= 0.0) return;
+	const bool bWetL = H[CL] > Dry, bWetR = H[CR] > Dry;
+	if (bWetL && !bWetR && H[CL] < HPin) bWR = true;
+	else if (bWetR && !bWetL && H[CR] < HPin) bWL = true;
+}
+
+// Deposits: the CPU already added them to its copy; the GPU takes those cells' new depths.
+[numthreads(64, 1, 1)]
+void SetCellsCS(uint3 Id : SV_DispatchThreadID)
+{
+	if (Id.x >= Count) return;
+	H[Cells[Id.x]] = Values[Id.x];
+}
+
+// Start of a step: time left = the step, no substep yet, nothing created.
+[numthreads(64, 1, 1)]
+void StartCS(uint3 Id : SV_DispatchThreadID)
+{
+	if (Id.x == 0) { Scalars[0] = Values[0]; Scalars[1] = 0.0; Scalars[2] = 0.0; Scalars[3] = 0.0; }
+	if (Id.x < Count) Created[Id.x] = 0.0;
+}
+
+// Wave speed |u| + c + |v| + c of the wet cells, group maxima.
+[numthreads(REDUCE_THREADS, 1, 1)]
+void SpeedPartialCS(uint3 Group : SV_GroupID, uint3 Local : SV_GroupThreadID)
+{
+	const uint I = Group.x * REDUCE_THREADS + Local.x;
+	double V = 0.0;
+	if (I < Count && Scalars[0] > 0.0 && H[I] > Consts[2])
+	{
+		const double Cw = SqrtD(Consts[1] * H[I]);
+		V = abs(HU[I] / H[I]) + Cw + abs(HV[I] / H[I]) + Cw;
+	}
+	Shared[Local.x] = V;
+	GroupMemoryBarrierWithGroupSync();
+	for (uint Stride = REDUCE_THREADS / 2; Stride > 0; Stride >>= 1)
+	{
+		if (Local.x < Stride) Shared[Local.x] = max(Shared[Local.x], Shared[Local.x + Stride]);
+		GroupMemoryBarrierWithGroupSync();
+	}
+	if (Local.x == 0) Partials[Group.x] = Shared[0];
+}
+
+// The substep length (Step() of FloorWater.cpp): CFL, the substep limit, no sliver at the end.
+[numthreads(REDUCE_THREADS, 1, 1)]
+void DtCS(uint3 Local : SV_GroupThreadID)
+{
+	double Acc = 0.0;
+	for (uint I = Local.x; I < Count; I += REDUCE_THREADS) Acc = max(Acc, Partials[I]);
+	Shared[Local.x] = Acc;
+	GroupMemoryBarrierWithGroupSync();
+	for (uint Stride = REDUCE_THREADS / 2; Stride > 0; Stride >>= 1)
+	{
+		if (Local.x < Stride) Shared[Local.x] = max(Shared[Local.x], Shared[Local.x + Stride]);
+		GroupMemoryBarrierWithGroupSync();
+	}
+	if (Local.x != 0) return;
+	const double Left = Scalars[0];
+	if (Left <= 0.0) { Scalars[1] = 0.0; return; }
+	const double S = Shared[0];
+	double Dt = S > 0.0 ? Consts[5] * Consts[0] / S : Left;
+	if (Scalars[2] + 1.0 >= Consts[6]) Dt = Left;
+	Dt = min(Dt, Left);
+	if (Left - Dt > 0.0 && Left - Dt < 0.1 * Dt) Dt = 0.5 * Left;
+	Scalars[1] = Dt;
+	Scalars[0] = Left - Dt;
+	Scalars[2] = Scalars[2] + 1.0;
+}
+
+// Velocities once per cell (the flux kernels would otherwise divide six times per face).
+[numthreads(64, 1, 1)]
+void VelocityCS(uint3 Id : SV_DispatchThreadID)
+{
+	if (Id.x >= Count || Scalars[1] <= 0.0) return;
+	U[Id.x] = Vel(H[Id.x], HU[Id.x]);
+	V[Id.x] = Vel(H[Id.x], HV[Id.x]);
+}
+
+[numthreads(64, 1, 1)]
+void FluxXCS(uint3 Id : SV_DispatchThreadID)
+{
+	if (Id.x >= (Nx + 1) * Ny || Scalars[1] <= 0.0) return;
+	const int J = int(Id.x / (Nx + 1)), Fi = int(Id.x % (Nx + 1));
+	const int CL = Fi - 1 >= 0 ? J * int(Nx) + Fi - 1 : -1, CR = Fi < int(Nx) ? J * int(Nx) + Fi : -1;
+	bool bWL, bWR;
+	Walls(CL, CR, bWL, bWR);
+	double Fh, Fnl, Fnh, Ft;
+	FaceFlux(CL >= 0 ? H[CL] : 0.0, CL >= 0 ? U[CL] : 0.0, CL >= 0 ? V[CL] : 0.0, CL >= 0 ? Bed[CL] : 0.0, bWL,
+		CR >= 0 ? H[CR] : 0.0, CR >= 0 ? U[CR] : 0.0, CR >= 0 ? V[CR] : 0.0, CR >= 0 ? Bed[CR] : 0.0, bWR, Fh, Fnl, Fnh, Ft);
+	FxH[Id.x] = Fh; FxNL[Id.x] = Fnl; FxNH[Id.x] = Fnh; FxT[Id.x] = Ft;
+}
+
+[numthreads(64, 1, 1)]
+void FluxYCS(uint3 Id : SV_DispatchThreadID)
+{
+	if (Id.x >= Nx * (Ny + 1) || Scalars[1] <= 0.0) return;
+	const int Fj = int(Id.x / Nx), I = int(Id.x % Nx);
+	const int CL = Fj - 1 >= 0 ? (Fj - 1) * int(Nx) + I : -1, CR = Fj < int(Ny) ? Fj * int(Nx) + I : -1;
+	bool bWL, bWR;
+	Walls(CL, CR, bWL, bWR);
+	double Fh, Fnl, Fnh, Ft;
+	FaceFlux(CL >= 0 ? H[CL] : 0.0, CL >= 0 ? V[CL] : 0.0, CL >= 0 ? U[CL] : 0.0, CL >= 0 ? Bed[CL] : 0.0, bWL,
+		CR >= 0 ? H[CR] : 0.0, CR >= 0 ? V[CR] : 0.0, CR >= 0 ? U[CR] : 0.0, CR >= 0 ? Bed[CR] : 0.0, bWR, Fh, Fnl, Fnh, Ft);
+	FyH[Id.x] = Fh; FyNL[Id.x] = Fnl; FyNH[Id.x] = Fnh; FyT[Id.x] = Ft;
+}
+
+// Conservative update into the second set, then implicit Manning friction.
+[numthreads(64, 1, 1)]
+void UpdateCS(uint3 Id : SV_DispatchThreadID)
+{
+	const double Dt = Scalars[1];
+	if (Id.x >= Count || Dt <= 0.0) return;
+	const int C = int(Id.x);
+	if (Solid[C] != 0) { NH[C] = 0.0; NHU[C] = 0.0; NHV[C] = 0.0; return; }
+	const int I = C % int(Nx), J = C / int(Nx);
+	const int XL = J * int(Nx + 1) + I, XR = XL + 1, YL = J * int(Nx) + I, YR = (J + 1) * int(Nx) + I;
+	const double R = Dt / Consts[0];
+	precise double Hn = H[C] - R * (FxH[XR] - FxH[XL]) - R * (FyH[YR] - FyH[YL]);
+	precise double Hu = HU[C] - R * (FxNL[XR] - FxNH[XL]) - R * (FyT[YR] - FyT[YL]);
+	precise double Hv = HV[C] - R * (FxT[XR] - FxT[XL]) - R * (FyNL[YR] - FyNH[YL]);
+	if (Hn < 0.0) { Created[C] = Created[C] - Hn; Hn = 0.0; Scalars[3] = 1.0; }   // same value from every writer: the flag is race-free
+	if (Hn > Consts[2])
+	{
+		const double Speed = SqrtD(Hu * Hu + Hv * Hv) / Hn;
+		const double Kf = Dt * Consts[1] * Consts[4] * Speed / (Hn * CbrtD(Hn));
+		Hu = Hu / (1.0 + Kf); Hv = Hv / (1.0 + Kf);
+	}
+	else { Hu = 0.0; Hv = 0.0; }
+	NH[C] = Hn; NHU[C] = Hu; NHV[C] = Hv;
+}
+
+[numthreads(64, 1, 1)]
+void CopyBackCS(uint3 Id : SV_DispatchThreadID)
+{
+	if (Id.x >= Count || Scalars[1] <= 0.0) return;
+	H[Id.x] = NH[Id.x]; HU[Id.x] = NHU[Id.x]; HV[Id.x] = NHV[Id.x];
+}

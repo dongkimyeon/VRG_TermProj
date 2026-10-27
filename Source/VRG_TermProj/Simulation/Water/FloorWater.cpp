@@ -2,6 +2,7 @@
 
 #include "Simulation/Water/FloorWater.h"
 #include "Async/ParallelFor.h"
+#include "VrgFloorWaterGpu.h"
 
 namespace
 {
@@ -52,6 +53,53 @@ namespace
 	}
 }
 
+FFloorWater::FFloorWater() = default;
+FFloorWater::~FFloorWater() = default;
+
+bool FFloorWater::WantsGpu() const
+{
+	if (Settings.GpuMode == 0 || !FVrgFloorWaterGpu::IsAvailable()) return false;
+	if (Settings.GpuMode == 1) return true;
+	const int64 Box = WetI0 <= WetI1 ? int64(WetI1 - WetI0 + 3) * (WetJ1 - WetJ0 + 3) : 0;
+	return Box >= Settings.GpuMinCells;
+}
+
+bool FFloorWater::StepGpu(double DtS)
+{
+	if (!Gpu.IsValid()) Gpu = MakeUnique<FVrgFloorWaterGpu>();
+	if (!bGpuConfigured)
+	{
+		FVrgFloorGpuConfig C;
+		C.Nx = Nx; C.Ny = Ny; C.CellM = Settings.CellM; C.GravityMs2 = Settings.GravityMs2; C.DryDepthM = Settings.DryDepthM;
+		C.PinDepthM = Settings.bContactLinePinning ? EquilibriumDepthM(Settings) : 0.0; C.ManningN = Settings.ManningN; C.Cfl = Settings.Cfl;
+		C.MaxSubsteps = Settings.MaxSubsteps; C.BedM = B;
+		C.Solid.SetNumUninitialized(Solid.Num());
+		for (int32 I = 0; I < Solid.Num(); ++I) C.Solid[I] = Solid[I];
+		if (!Gpu->Configure(C)) return false;
+		bGpuConfigured = true; bGpuStateCurrent = false;
+	}
+	if (!bGpuStateCurrent)
+	{
+		if (!Gpu->Upload(H, HU, HV)) return false;
+		GpuPendingCells.Reset();
+	}
+	// The deposits since the GPU last stepped: their cells take the CPU copy's depth (the same additions, same order).
+	TArray<double> Depths;
+	for (const int32 C : GpuPendingCells) Depths.Add(H[C]);
+	TArray<double> OutH, OutHu, OutHv;
+	double CreatedDepth = 0.0;
+	int32 Sub = 0;
+	if (!Gpu->Step(DtS, GpuPendingCells, Depths, OutH, OutHu, OutHv, CreatedDepth, Sub)) { bGpuStateCurrent = false; return false; }
+	H = MoveTemp(OutH); HU = MoveTemp(OutHu); HV = MoveTemp(OutHv);
+	GpuPendingCells.Reset();
+	bGpuStateCurrent = true;
+	Totals.ClippedM3 += CreatedDepth * Settings.CellM * Settings.CellM;
+	Totals.LastSubsteps = Sub;
+	++Totals.GpuSteps;
+	UpdateWetBox(0, Nx - 1, 0, Ny - 1);
+	return true;
+}
+
 double FFloorWater::EquilibriumDepthM(const FFloorWaterSettings& S)
 {
 	const double Lc = FMath::Sqrt(S.SurfaceTensionNm / (S.WaterDensityKgM3 * S.GravityMs2));
@@ -75,6 +123,8 @@ void FFloorWater::Reset(const FVector2D& OriginM, int32 InNx, int32 InNy, double
 	Floods.Reset();
 	Totals = FFloorWaterTotals();
 	WetI0 = 1; WetJ0 = 1; WetI1 = 0; WetJ1 = 0;
+	bGpuConfigured = false; bGpuStateCurrent = false;
+	GpuPendingCells.Reset();
 }
 
 bool FFloorWater::ResetForRoom(const FSprayGeometry& Geometry, const FFloorWaterSettings& InSettings)
@@ -117,11 +167,13 @@ void FFloorWater::SetSolid(int32 I, int32 J, bool bSolid)
 	const int32 C = Index(I, J);
 	Solid[C] = bSolid ? 1 : 0;
 	if (bSolid) { H[C] = HU[C] = HV[C] = 0.0; }
+	bGpuConfigured = false;
 }
 
 void FFloorWater::SetBed(int32 I, int32 J, double BedM)
 {
 	if (I >= 0 && J >= 0 && I < Nx && J < Ny) B[Index(I, J)] = BedM;
+	bGpuConfigured = false;
 }
 
 void FFloorWater::SetState(int32 I, int32 J, double DepthM, double Hu, double Hv)
@@ -129,6 +181,7 @@ void FFloorWater::SetState(int32 I, int32 J, double DepthM, double Hu, double Hv
 	if (I < 0 || J < 0 || I >= Nx || J >= Ny || Solid[Index(I, J)]) return;
 	const int32 C = Index(I, J);
 	H[C] = FMath::Max(DepthM, 0.0); HU[C] = Hu; HV[C] = Hv;
+	bGpuStateCurrent = false;
 	if (H[C] > 0.0)
 	{
 		if (WetI0 > WetI1) { WetI0 = WetI1 = I; WetJ0 = WetJ1 = J; }
@@ -163,6 +216,7 @@ bool FFloorWater::AddWater(const FVector& PointM, double VolumeM3)
 		if (!bFound) return false;
 	}
 	H[Index(I, J)] += VolumeM3 / (Settings.CellM * Settings.CellM);
+	if (bGpuStateCurrent) GpuPendingCells.AddUnique(Index(I, J));
 	Totals.ReceivedM3 += VolumeM3;
 	if (WetI0 > WetI1) { WetI0 = WetI1 = I; WetJ0 = WetJ1 = J; }
 	WetI0 = FMath::Min(WetI0, I); WetI1 = FMath::Max(WetI1, I); WetJ0 = FMath::Min(WetJ0, J); WetJ1 = FMath::Max(WetJ1, J);
@@ -279,7 +333,16 @@ void FFloorWater::UpdateWetBox(int32 I0, int32 I1, int32 J0, int32 J1)
 void FFloorWater::Step(double DtS, double NowS)
 {
 	Totals.LastSubsteps = 0;
+	Totals.bLastStepGpu = false;
 	if (DtS <= 0.0 || Nx * Ny <= 0) return;
+	if (WetI0 <= WetI1 && WantsGpu() && StepGpu(DtS))
+	{
+		Totals.bLastStepGpu = true;
+		Totals.Substeps += Totals.LastSubsteps;
+		UpdateTotals(NowS + DtS);
+		return;
+	}
+	bGpuStateCurrent = false;   // the CPU copy moves on; the GPU copy is stale
 	double Left = DtS;
 	while (Left > 0.0 && WetI0 <= WetI1)
 	{

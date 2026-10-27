@@ -31,6 +31,7 @@
 #include "Components/SceneComponent.h"
 #include "Components/StaticMeshComponent.h"
 #include "DrawDebugHelpers.h"
+#include "VrgFloorWaterGpu.h"
 #include "Engine/Engine.h"
 #include "Engine/StaticMesh.h"
 #include "Engine/World.h"
@@ -2463,8 +2464,9 @@ void ADataCenterSimulationActor::LogSprayStatus() const
 	const FFloorWaterTotals& F = FloorWater.GetTotals();
 	int32 Flooded = 0;
 	for (const FFloorFlood& Fl : FloorWater.GetFloods()) Flooded += Fl.FirstWetS >= 0.0 ? 1 : 0;
-	UE_LOG(LogTemp, Display, TEXT("[Water] t=%.2f s 바닥 물 %.3f L (받음 %.3f L, 격자 밖 %.3f L), 젖은 칸 %d, 최대 수심 %.2f mm, 최대 속도 %.3f m/s, 이번 스텝 부분 스텝 %d, 물 밑 장비 %d | 잔차 %.2e, 음수 수심 보정 %.2e L"),
-		Clock.GetSimTimeS(), F.StoredM3 * 1e3, F.ReceivedM3 * 1e3, FloorOffGridM3 * 1e3, F.WetCells, F.MaxDepthM * 1e3, F.MaxSpeedMs, F.LastSubsteps, Flooded, F.Residual, F.ClippedM3 * 1e3);
+	UE_LOG(LogTemp, Display, TEXT("[Water] t=%.2f s 바닥 물 %.3f L (받음 %.3f L, 격자 밖 %.3f L), 젖은 칸 %d, 최대 수심 %.2f mm, 최대 속도 %.3f m/s, 이번 스텝 부분 스텝 %d(%s, GPU 스텝 누적 %d), 물 밑 장비 %d | 잔차 %.2e, 음수 수심 보정 %.2e L"),
+		Clock.GetSimTimeS(), F.StoredM3 * 1e3, F.ReceivedM3 * 1e3, FloorOffGridM3 * 1e3, F.WetCells, F.MaxDepthM * 1e3, F.MaxSpeedMs, F.LastSubsteps,
+		F.bLastStepGpu ? TEXT("GPU") : TEXT("CPU"), F.GpuSteps, Flooded, F.Residual, F.ClippedM3 * 1e3);
 }
 
 void ADataCenterSimulationActor::TickWaterDemo()
@@ -4091,6 +4093,18 @@ static FAutoConsoleCommand GVrgWaterCellCommand(
 		if (!(Cell >= .005 && Cell <= .5)) { UE_LOG(LogTemp, Warning, TEXT("[Water] 칸 크기는 0.005~0.5 m")); return; }
 		for (ADataCenterSimulationActor* Sim : EvalSimActors()) Sim->FloorWaterSettings.CellM = Cell;
 		UE_LOG(LogTemp, Display, TEXT("[Water] 바닥 물 칸 %.3f m (다음 진입부터)"), Cell);
+	}));
+
+static FAutoConsoleCommand GVrgWaterGpuCommand(
+	TEXT("vrg.Water.Gpu"),
+	TEXT("W3: 바닥 물 계산 경로. 0 = CPU(기본), 1 = GPU(있으면), -1 = 자동(젖은 범위가 크면 GPU). 다음 시뮬레이션 진입부터. vrg.Water.Gpu <-1|0|1>"),
+	FConsoleCommandWithArgsDelegate::CreateLambda([](const TArray<FString>& Args)
+	{
+		if (Args.Num() < 1) return;
+		const int32 Mode = FMath::Clamp(FCString::Atoi(*Args[0]), -1, 1);
+		for (ADataCenterSimulationActor* Sim : EvalSimActors()) Sim->FloorWaterSettings.GpuMode = Mode;
+		UE_LOG(LogTemp, Display, TEXT("[Water] 바닥 물 경로 %s (다음 진입부터, GPU %s)"), Mode == 0 ? TEXT("CPU") : Mode == 1 ? TEXT("GPU") : TEXT("자동"),
+			FVrgFloorWaterGpu::IsAvailable() ? TEXT("있음") : TEXT("없음"));
 	}));
 
 static FAutoConsoleCommand GVrgWaterShowCommand(

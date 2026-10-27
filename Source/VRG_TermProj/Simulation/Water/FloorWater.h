@@ -4,6 +4,9 @@
 
 #include "CoreMinimal.h"
 #include "Simulation/Water/LeakSpray.h"
+#include "Templates/UniquePtr.h"
+
+class FVrgFloorWaterGpu;
 
 // W3 (Tools/누수_실시간_계획.md L3, 2026-10-27): the water on the room floor, as shallow water (Saint-Venant).
 //
@@ -41,6 +44,13 @@ struct VRG_TERMPROJ_API FFloorWaterSettings
 	double SurfaceTensionNm = 0.072;
 	FVector2D BedSlope = FVector2D::ZeroVector;              // dB/dx, dB/dy (level floor)
 	int32 MaxSubsteps = 4000;
+	// GPU path (VrgFloorWater.usf, the same scheme; the CPU path is the reference). 0 = CPU (default), 1 = GPU whenever
+	// available, -1 = automatic: the GPU when the wet box covers at least GpuMinCells cells (small puddles stay on the CPU,
+	// which only touches the wet box, while the GPU steps the whole floor and reads it back each step).
+	// CPU by default: measured 2026-10-27 on the RTX 4060 laptop, a whole wet room costs the same on both (about 9-10 ms
+	// a step; FP64 on this GPU and the per-step read-back), so the GPU buys nothing here yet. vrg.Water.Gpu switches it.
+	int32 GpuMode = 0;
+	int32 GpuMinCells = 20000;   // ESTIMATE (used only by the automatic mode)
 };
 
 // What the floor water did to a box standing on it (input of W4).
@@ -57,12 +67,20 @@ struct VRG_TERMPROJ_API FFloorWaterTotals
 	double ReceivedM3 = 0.0, StoredM3 = 0.0, ClippedM3 = 0.0;
 	double Residual = 0.0;        // |received - stored - clipped| / received
 	int32 WetCells = 0, Substeps = 0, LastSubsteps = 0;
+	int32 GpuSteps = 0;           // steps taken on the GPU
+	bool bLastStepGpu = false;
 	double MaxSpeedMs = 0.0, MaxDepthM = 0.0;
 };
 
 class VRG_TERMPROJ_API FFloorWater
 {
 public:
+	FFloorWater();
+	~FFloorWater();
+	FFloorWater(const FFloorWater&) = delete;
+	FFloorWater& operator=(const FFloorWater&) = delete;
+	// Whether a step would run on the GPU now (mode, availability, wet box size).
+	bool WantsGpu() const;
 	// A floor grid: origin (min corner, metres), cells, floor height. Everything dry and open, level bed.
 	void Reset(const FVector2D& OriginM, int32 Nx, int32 Ny, double FloorZM, const FFloorWaterSettings& InSettings);
 	// The room floor from the spray geometry: walls / barriers become solid cells, equipment footprints are recorded.
@@ -113,6 +131,11 @@ private:
 	TArray<FFloorFlood> Floods;
 	FFloorWaterTotals Totals;
 	int32 WetI0 = 1, WetJ0 = 1, WetI1 = 0, WetJ1 = 0;
+	// GPU twin: configured for this grid / holding this state? Cells changed by deposits since its last step.
+	TUniquePtr<FVrgFloorWaterGpu> Gpu;
+	bool bGpuConfigured = false, bGpuStateCurrent = false;
+	TArray<int32> GpuPendingCells;
+	bool StepGpu(double DtS);
 
 	void Substep(double DtS, int32 I0, int32 I1, int32 J0, int32 J1);
 	double MaxWaveSpeed(int32 I0, int32 I1, int32 J0, int32 J1) const;
