@@ -22,6 +22,8 @@ void FRackInteriorWater::AddWater(int32 Rack, int32 Slot, double VolumeM3, bool 
 	const int32 I = Start[Rack] + Slot;
 	ReceivedM3 += VolumeM3;
 	(bRear ? RearTransitM3[I] : TransitM3[I]) += VolumeM3;
+	PassedM3[I] += VolumeM3;
+	if (bRear) RearExposureM3[I] += VolumeM3;
 	if (FirstWetS[I] < 0.0) FirstWetS[I] = NowS;
 }
 
@@ -36,17 +38,20 @@ void FRackInteriorWater::Step(double Dt, double NowS)
 		{
 			const double Incoming = TransitM3[I] + RearTransitM3[I];
 			if (Incoming > 0.0 && FirstWetS[I] < 0.0) FirstWetS[I] = NowS;
-			PassedM3[I] += Incoming; RearExposureM3[I] += RearTransitM3[I];
 			const double Captured = RearTransitM3[I] * RearCaptureFraction;
 			const double Available = HeldM3[I] + TransitM3[I] + Captured;
 			const double Excess = FMath::Max(0.0, Available - CapacityM3);
 			const double Drained = Excess * Fraction;
 			const double RearDrained = RearTransitM3[I] - Captured;
-			NextHeldM3[I] = Available - Drained;
+			NextHeldM3[I] = FMath::Min(Available, CapacityM3);
+			NextTransitM3[I] += Excess - Drained;
 			if (Below[I] != INDEX_NONE)
 			{
 				NextTransitM3[Below[I]] += Drained;
 				NextRearTransitM3[Below[I]] += RearDrained;
+				PassedM3[Below[I]] += Drained + RearDrained;
+				RearExposureM3[Below[I]] += RearDrained;
+				if (Drained + RearDrained > 0.0 && FirstWetS[Below[I]] < 0.0) FirstWetS[Below[I]] = NowS;
 			}
 			else { LastFloorM3[R] += Drained; LastRearFloorM3[R] += RearDrained; }
 		}

@@ -26,6 +26,9 @@ bool FVrgInRackMeasurement::RunTest(const FString& Parameters)
 	for (const int32 Pipe : H.InletPipes) BaselineSum += Network.GetPipeFlowM3s(Pipe);
 	AddInfo(FString::Printf(TEXT("닫힌 유량 %.12g m3/s, 설계 %.12g, 차 %.12g, 노드 잔차 %.12g m3/s"),
 		BaselineSum, Spec.DesignFlowM3s, BaselineSum - Spec.DesignFlowM3s, H.MaxBalanceErrorM3s(Network)));
+	// 최초 측정 3.34e-14 m³/s에 여유를 둔 절대 기준. 설계 유량 0.0023 m³/s도 별도 대조한다.
+	TestTrue(TEXT("닫힌 질량 잔차 <= 1e-12 m3/s"), H.MaxBalanceErrorM3s(Network) <= 1e-12);
+	TestTrue(TEXT("기존 설계 유량 대조 <= 1e-12 m3/s"), FMath::Abs(BaselineSum - Spec.DesignFlowM3s) <= 1e-12);
 	const int32 Tray = 13;
 	const double Before = Network.GetPipeFlowM3s(H.InletPipes[Tray]);
 	const int32 NodesBefore = Network.GetNumNodes(), PipesBefore = Network.GetNumPipes();
@@ -39,6 +42,7 @@ bool FVrgInRackMeasurement::RunTest(const FString& Parameters)
 	TestEqual(TEXT("노드 수 불변"), Network.GetNumNodes(), NodesBefore);
 	TestEqual(TEXT("배관 수 불변"), Network.GetNumPipes(), PipesBefore);
 	TestTrue(TEXT("하류 유량 감소"), Outflow < Before);
+	TestTrue(TEXT("누수 질량 잔차 <= 1e-12 m3/s"), H.MaxBalanceErrorM3s(Network) <= 1e-12);
 	H.SetDocked(Network, Tray, false);
 	TestTrue(TEXT("탈착 수렴"), Network.Solve(FHydraulicSolveSettings()).bConverged);
 	TestEqual(TEXT("탈착 입구 차단"), Network.GetPipeFlowM3s(H.InletPipes[Tray]), 0.0);
@@ -59,12 +63,16 @@ bool FVrgRackInteriorWaterMeasurement::RunTest(const FString& Parameters)
 	TestTrue(TEXT("바닥 도착"), A.FloorM3[0] > 0.0);
 	TestTrue(TEXT("결정성 보유량"), A.HeldM3 == B.HeldM3);
 	TestTrue(TEXT("결정성 바닥"), A.FloorM3 == B.FloorM3);
+	for (double Held : A.HeldM3) TestTrue(TEXT("보유량은 슬롯 용량 이내"), Held <= A.CapacityM3);
+	TestEqual(TEXT("이동 대기 물을 누적 통과량에 중복 기록하지 않음"), A.PassedM3[3], 0.002);
 	AddInfo(FString::Printf(TEXT("슬롯 물: 주입 %.12g, 바닥 %.12g, 보존 잔차 %.12g m3"), A.ReceivedM3, A.FloorM3[0], A.BalanceErrorM3()));
 	A.AddWater(0, 3, 0.001, true, 20.0);
 	for (int32 S = 0; S < 1000; ++S) A.Step(0.02, 20.0 + (S + 1) * 0.02);
 	TestTrue(TEXT("뒤쪽 노출 기록"), A.RearExposureM3[0] > 0.0);
 	TestEqual(TEXT("뒤쪽 누수 위 슬롯 마름"), A.FirstWetS[4], -1.0);
 	AddInfo(FString::Printf(TEXT("뒤쪽 물: 주입 %.12g, 뒤 바닥 %.12g, 보존 잔차 %.12g m3"), A.ReceivedM3, A.RearFloorM3[0], A.BalanceErrorM3()));
+	// 최초 측정 최대 1.31e-18 m³, 주입 0.003 m³ 대비 4.34e-16. 절대 여유 기준.
+	TestTrue(TEXT("부피 잔차 <= 1e-15 m3"), FMath::Abs(A.BalanceErrorM3()) <= 1e-15);
 	return true;
 }
 #endif
