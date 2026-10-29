@@ -6,6 +6,7 @@
 void ADataCenterSimulationActor::InitializeRackInteriorWater()
 {
 	RackInterior = FRackInteriorCoupling(); bRackInteriorStepRejected = false;
+	RackWaterFrontM.Init(FVector::ZeroVector, Racks.Num()); RackWaterRearM = RackWaterFrontM;
 	TArray<int32> Counts;
 	TArray<double> Heights;
 	TArray<FRackWaterSite> Sites;
@@ -14,6 +15,10 @@ void ADataCenterSimulationActor::InitializeRackInteriorWater()
 		const ARackThermalActor* Rack = Racks[R];
 		Counts.Add(Rack ? Rack->Params.Slots.Num() : 0);
 		if (!Rack) continue;
+		// Existing +X intake/front and -X rear convention. Geometry only: face centres,
+		// no empirical offset. W3 projects these world points vertically onto its floor.
+		RackWaterFrontM[R] = SimUnits::UnrealToMeters(Rack->GetActorTransform().TransformPosition(SimUnits::MetersToUnreal(FVector(0.5 * Rack->RackSizeM.X, 0.0, 0.0))));
+		RackWaterRearM[R] = SimUnits::UnrealToMeters(Rack->GetActorTransform().TransformPosition(SimUnits::MetersToUnreal(FVector(-0.5 * Rack->RackSizeM.X, 0.0, 0.0))));
 		for (const auto& Slot : Rack->Params.Slots)
 		{
 			const FVector LocalM(0.0, 0.0, Slot.BottomZM + 0.5 * Slot.HeightM);
@@ -33,4 +38,6 @@ void ADataCenterSimulationActor::RackInteriorAfterStep(double DtS)
 	if (!bAccepted && !bRackInteriorStepRejected)
 		UE_LOG(LogTemp, Warning, TEXT("[RackWater] Rejected input interval; retained pending %.12g m3."), RackInterior.PendingInputM3(GetInternalLeakedM3()));
 	bRackInteriorStepRejected = !bAccepted;
+	// A failed floor deposit is retained by the coupling, independently of the W2 flag.
+	RackInterior.TransferToFloor(FloorWater, RackWaterFrontM, RackWaterRearM);
 }

@@ -2473,12 +2473,16 @@ void ADataCenterSimulationActor::SprayAfterStep(double DtS)
 		}
 	}
 	RackInteriorAfterStep(DtS); // Both Tick and RunSteps call this shared water path.
-	if (!bLeakSpray || (Sources.IsEmpty() && !Spray.HasWater())) return;
-	Spray.Step(Sources, DtS, Clock.GetSimTimeS());
-	// W3: what reached the floor this step spreads as shallow water over the same interval.
-	for (const TPair<FVector, double>& D : Spray.GetLastStepFloorDepositsM3())
-		if (!FloorWater.AddWater(D.Key, D.Value)) FloorOffGridM3 += D.Value;
+	const bool bStepSpray = bLeakSpray && (!Sources.IsEmpty() || Spray.HasWater());
+	if (bStepSpray)
+	{
+		Spray.Step(Sources, DtS, Clock.GetSimTimeS());
+		for (const TPair<FVector, double>& D : Spray.GetLastStepFloorDepositsM3())
+			if (!FloorWater.AddWater(D.Key, D.Value)) FloorOffGridM3 += D.Value;
+	}
+	// W3 advances ONCE over the shared interval, including residual water after repair.
 	if (FloorWater.HasWater()) FloorWater.Step(DtS, Clock.GetSimTimeS());
+	if (!bStepSpray && !FloorWater.HasWater() && RackInterior.GetWater().ReceivedM3 == 0.0) return;
 	const int32 Second = FMath::FloorToInt32((Clock.GetSimTimeS() + DtS) / 2.0);
 	if (Second != LastSprayLogSecond) { LastSprayLogSecond = Second; LogSprayStatus(); }
 }
@@ -2492,6 +2496,10 @@ void ADataCenterSimulationActor::LogSprayStatus() const
 		Clock.GetSimTimeS(), T.EmittedM3 * 1e3, T.AirborneM3 * 1e3, T.WaitingM3 * 1e3, T.FilmM3 * 1e3, T.FloorM3 * 1e3, T.GroundM3 * 1e3,
 		T.Parcels, T.JetParcels, T.Breakups, T.Splashes, Wet, T.ThroughEquipmentM3 * 1e3, T.Residual);
 	const FFloorWaterTotals& F = FloorWater.GetTotals();
+	const FRackInteriorWater& I = RackInterior.GetWater();
+	if (I.ReceivedM3 > 0.0 || RackInterior.PendingInputM3(GetInternalLeakedM3()) > 0.0)
+		UE_LOG(LogTemp, Display, TEXT("[RackWater] t=%.2f s input %.12g m3, residual %.3e m3, input pending %.12g m3, floor pending %.12g m3"),
+			Clock.GetSimTimeS() + Clock.GetFixedStepS(), I.ReceivedM3, I.BalanceErrorM3(), RackInterior.PendingInputM3(GetInternalLeakedM3()), RackInterior.PendingFloorM3());
 	int32 Flooded = 0;
 	for (const FFloorFlood& Fl : FloorWater.GetFloods()) Flooded += Fl.FirstWetS >= 0.0 ? 1 : 0;
 	UE_LOG(LogTemp, Display, TEXT("[Water] t=%.2f s 바닥 물 %.3f L (받음 %.3f L, 격자 밖 %.3f L), 젖은 칸 %d, 최대 수심 %.2f mm, 최대 속도 %.3f m/s, 이번 스텝 부분 스텝 %d(%s, GPU 스텝 누적 %d), 물 밑 장비 %d | 잔차 %.2e, 음수 수심 보정 %.2e L"),

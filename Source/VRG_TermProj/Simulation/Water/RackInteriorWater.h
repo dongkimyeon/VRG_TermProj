@@ -12,6 +12,7 @@ public:
 	void AddWater(int32 Rack, int32 Slot, double VolumeM3, bool bRear, double NowS);
 	void Step(double Dt, double NowS);
 	double BalanceErrorM3() const;
+	const TArray<double>& GetRearTransitM3() const { return RearTransitM3; }
 	TArray<int32> Start, Below;
 	TArray<double> HeldM3, TransitM3, PassedM3, FirstWetS, RearExposureM3;
 	TArray<double> FloorM3, LastFloorM3, RearFloorM3, LastRearFloorM3;

@@ -1,4 +1,5 @@
 #include "Simulation/Water/RackInteriorCoupling.h"
+#include "Simulation/Water/FloorWater.h"
 
 bool FRackInteriorCoupling::Initialize(const TArray<int32>& Counts, const TArray<double>& Heights, const TArray<FRackWaterSite>& InSites)
 {
@@ -15,6 +16,7 @@ bool FRackInteriorCoupling::Initialize(const TArray<int32>& Counts, const TArray
 	FRackInteriorCoupling Candidate;
 	Candidate.Water.Initialize(Counts, Heights); Candidate.Sites = InSites;
 	Candidate.ConsumedM3.Init(0.0, InSites.Num());
+	Candidate.DeliveredM3.Init(0.0, Counts.Num()); Candidate.RearDeliveredM3 = Candidate.DeliveredM3;
 	*this = MoveTemp(Candidate);
 	return true;
 }
@@ -48,4 +50,27 @@ double FRackInteriorCoupling::PendingInputM3(const TMap<int32, double>& Cumulati
 	double Total = 0.0;
 	for (const auto& E : Cumulative) if (FMath::IsFinite(E.Value) && E.Value > 0.0) Total += E.Value;
 	return FMath::Max(0.0, Total - Water.ReceivedM3);
+}
+
+void FRackInteriorCoupling::TransferToFloor(FFloorWater& Floor, const TArray<FVector>& Front, const TArray<FVector>& Rear)
+{
+	if (Front.Num() != Water.FloorM3.Num() || Rear.Num() != Water.FloorM3.Num()) return;
+	for (int32 R = 0; R < Water.FloorM3.Num(); ++R)
+		for (int32 Side = 0; Side < 2; ++Side)
+		{
+			const double Arrived = Side == 0 ? Water.FloorM3[R] : Water.RearFloorM3[R];
+			double& Delivered = Side == 0 ? DeliveredM3[R] : RearDeliveredM3[R];
+			const FVector& Point = Side == 0 ? Front[R] : Rear[R];
+			const double Pending = Arrived - Delivered;
+			if (Pending > 0.0 && FMath::IsFinite(Pending) && !Point.ContainsNaN() && Floor.AddWater(Point, Pending))
+				Delivered = Arrived;
+		}
+}
+
+double FRackInteriorCoupling::PendingFloorM3() const
+{
+	double Pending = 0.0;
+	for (int32 R = 0; R < Water.FloorM3.Num(); ++R)
+		Pending += Water.FloorM3[R] - DeliveredM3[R] + Water.RearFloorM3[R] - RearDeliveredM3[R];
+	return Pending;
 }

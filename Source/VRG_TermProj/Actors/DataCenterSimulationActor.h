@@ -359,10 +359,12 @@ public:
 	double PlanDrawOffsetM = 2.0;
 	double GetPlanDrawZM() const;
 	const FLeakSpray& GetLeakSpray() const { return Spray; }
-	// W3.5: exact inventory volume reserved for the future rack-interior/W3 handoff.
-	// Key is the stable room-network leak index. This is not injected into W2 or W3.
+	// W3.5: cumulative inventory input; interior coupling consumes deltas and only bottom
+	// arrivals go to W3. Key is the stable room-network leak index; never injected into W2.
 	const TMap<int32, double>& GetInternalLeakedM3() const { return InternalLeakedM3; }
 	const FRackInteriorCoupling& GetRackInteriorCoupling() const { return RackInterior; }
+	// Geometric front/rear bottom-face centres transformed at simulation entry (world m).
+	const TArray<FVector>& GetRackWaterFloorPointsM(bool bRear) const { return bRear ? RackWaterRearM : RackWaterFrontM; }
 	// W3: the water on the room floor (shallow water), fed with exactly what the spray delivered to the floor each step.
 	const FFloorWater& GetFloorWater() const { return FloorWater; }
 	// Floor water settings (cell size, Manning n, contact angle; the next simulation entry uses them).
@@ -610,6 +612,7 @@ private:
 	TArray<double> SprayTankLeakedM3;   // each tank's cumulative leaked volume at the last spray step
 	TMap<int32, double> InternalLeakedM3;
 	FRackInteriorCoupling RackInterior;
+	TArray<FVector> RackWaterFrontM, RackWaterRearM;
 	void InitializeRackInteriorWater();
 	void RackInteriorAfterStep(double DtS);
 	bool bRackInteriorStepRejected = false;
