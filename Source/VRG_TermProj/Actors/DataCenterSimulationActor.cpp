@@ -370,6 +370,7 @@ void ADataCenterSimulationActor::EnterSimulationMode()
 	// inside SprayAfterStep would discard water from a hole opened at t=0.
 	if (Room) for (const auto& Tank : Room->GetCoolantInventory().GetTanks()) SprayTankLeakedM3.Add(Tank.State.LeakedM3);
 	InternalLeakedM3.Reset();
+	InitializeRackInteriorWater();
 	LastSprayLogSecond = -1;
 	UE_LOG(LogTemp, Display, TEXT("[VrgSim] 시뮬레이션 모드: 랙 %d대 / 스파인 %d대 / CRAH %d대로 구성하고 t=0부터 시작."),
 		Racks.Num(), Spines.Num(), CrahPlacements.Num());
@@ -2401,7 +2402,6 @@ FSprayGeometry ADataCenterSimulationActor::BuildSprayGeometry() const
 
 void ADataCenterSimulationActor::SprayAfterStep(double DtS)
 {
-	if (!bLeakSpray) return;
 	TArray<FSpraySource> Sources;
 	if (Room != nullptr)
 	{
@@ -2442,6 +2442,7 @@ void ADataCenterSimulationActor::SprayAfterStep(double DtS)
 					InternalLeakedM3.FindOrAdd(H.Key) += DeltaM3 * H.Value / Sum;
 					continue; // Keep it in the denominator: never redistribute internal water to W2.
 				}
+				if (!bLeakSpray) continue;
 				int32 SiteIndex = INDEX_NONE;
 				for (int32 S = 0; S < LiveLeakSites.Num() && SiteIndex == INDEX_NONE; ++S)
 					if (!LiveLeakSites[S].bPlant && Room->GetLeakNetworkIndex(LiveLeakSites[S].RoomSpec) == H.Key) SiteIndex = S;
@@ -2454,7 +2455,7 @@ void ADataCenterSimulationActor::SprayAfterStep(double DtS)
 			}
 		}
 	}
-	if (bPlantActive && Plant.IsThermalActive())
+	if (bLeakSpray && bPlantActive && Plant.IsThermalActive())
 	{
 		// Plant leaks: the make-up keeps the loop full, so the leaked volume is the solve's leak flow x Dt.
 		for (int32 SiteIndex = 0; SiteIndex < LiveLeakSites.Num(); ++SiteIndex)
@@ -2471,7 +2472,8 @@ void ADataCenterSimulationActor::SprayAfterStep(double DtS)
 			S.VolumeM3 = Q * DtS;
 		}
 	}
-	if (Sources.IsEmpty() && !Spray.HasWater()) return;
+	RackInteriorAfterStep(DtS); // Both Tick and RunSteps call this shared water path.
+	if (!bLeakSpray || (Sources.IsEmpty() && !Spray.HasWater())) return;
 	Spray.Step(Sources, DtS, Clock.GetSimTimeS());
 	// W3: what reached the floor this step spreads as shallow water over the same interval.
 	for (const TPair<FVector, double>& D : Spray.GetLastStepFloorDepositsM3())

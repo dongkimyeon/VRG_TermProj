@@ -12,6 +12,7 @@
 #include "Simulation/Plant/FacilityPlant.h"
 #include "Simulation/Water/LeakSpray.h"
 #include "Simulation/Water/FloorWater.h"
+#include "Simulation/Water/RackInteriorCoupling.h"
 #include "Simulation/Air/AirStreamlines.h"
 #include "Simulation/Air/AirFlowAverager.h"
 #include "Visualization/AirFlowView.h"
@@ -361,6 +362,7 @@ public:
 	// W3.5: exact inventory volume reserved for the future rack-interior/W3 handoff.
 	// Key is the stable room-network leak index. This is not injected into W2 or W3.
 	const TMap<int32, double>& GetInternalLeakedM3() const { return InternalLeakedM3; }
+	const FRackInteriorCoupling& GetRackInteriorCoupling() const { return RackInterior; }
 	// W3: the water on the room floor (shallow water), fed with exactly what the spray delivered to the floor each step.
 	const FFloorWater& GetFloorWater() const { return FloorWater; }
 	// Floor water settings (cell size, Manning n, contact angle; the next simulation entry uses them).
@@ -607,6 +609,10 @@ private:
 	double FloorOffGridM3 = 0.0;   // floor deposits that missed the floor grid (kept here, reported)
 	TArray<double> SprayTankLeakedM3;   // each tank's cumulative leaked volume at the last spray step
 	TMap<int32, double> InternalLeakedM3;
+	FRackInteriorCoupling RackInterior;
+	void InitializeRackInteriorWater();
+	void RackInteriorAfterStep(double DtS);
+	bool bRackInteriorStepRejected = false;
 	int32 LastSprayLogSecond = -1;
 	FSprayGeometry BuildSprayGeometry() const;
 	void SprayAfterStep(double DtS);
