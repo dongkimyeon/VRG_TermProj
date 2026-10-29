@@ -358,6 +358,9 @@ public:
 	double PlanDrawOffsetM = 2.0;
 	double GetPlanDrawZM() const;
 	const FLeakSpray& GetLeakSpray() const { return Spray; }
+	// W3.5: exact inventory volume reserved for the future rack-interior/W3 handoff.
+	// Key is the stable room-network leak index. This is not injected into W2 or W3.
+	const TMap<int32, double>& GetInternalLeakedM3() const { return InternalLeakedM3; }
 	// W3: the water on the room floor (shallow water), fed with exactly what the spray delivered to the floor each step.
 	const FFloorWater& GetFloorWater() const { return FloorWater; }
 	// Floor water settings (cell size, Manning n, contact angle; the next simulation entry uses them).
@@ -603,6 +606,7 @@ private:
 	void UpdateAirFlowView();
 	double FloorOffGridM3 = 0.0;   // floor deposits that missed the floor grid (kept here, reported)
 	TArray<double> SprayTankLeakedM3;   // each tank's cumulative leaked volume at the last spray step
+	TMap<int32, double> InternalLeakedM3;
 	int32 LastSprayLogSecond = -1;
 	FSprayGeometry BuildSprayGeometry() const;
 	void SprayAfterStep(double DtS);

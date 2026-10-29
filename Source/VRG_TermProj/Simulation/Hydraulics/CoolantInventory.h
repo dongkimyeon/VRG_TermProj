@@ -104,6 +104,9 @@ public:
 	bool Step(FHydraulicNetwork& Network, const FHydraulicSolveSettings& Settings, double DtS, double NowS, FHydraulicSolveResult& OutResult);
 
 	bool IsActive(const FHydraulicNetwork& Network) const;
+	// Opening, resizing or repairing the last hole must invalidate the previous solve,
+	// including a closed loop without make-up (which otherwise becomes immediately idle).
+	void MarkHydraulicsDirty() { bDirty = true; }
 	const TArray<FTank>& GetTanks() const { return Tanks; }
 	double GetTankGaugePressurePa(int32 Tank) const;
 	int32 GetNumSolves() const { return NumSolves; }

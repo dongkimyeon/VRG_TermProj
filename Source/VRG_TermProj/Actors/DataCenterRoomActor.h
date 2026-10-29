@@ -253,8 +253,10 @@ public:
 	// Native comparison switch; radiator/virtual rows retain the legacy network regardless.
 	bool bUseInRackNetworks = true;
 	const FInRackHandles* GetInRackHandles(const ARackThermalActor* Rack) const;
+	int32 GetRackReturnPipeIndex(const ARackThermalActor* Rack) const;
 	bool SyncInRackDocking();
 	bool IsInternalLeak(int32 Leak) const { return InternalLeakIndices.Contains(Leak); }
+	bool SetInternalLeakHoleDiameterM(const ARackThermalActor* Rack, int32 Tray, int32 Site, double DiameterM);
 	const FHydraulicNetwork& GetNetwork() const { return Network; }
 	const FHydraulicSolveResult& GetLastSolveResult() const { return LastResult; }
 

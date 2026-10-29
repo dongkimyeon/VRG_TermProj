@@ -56,6 +56,8 @@ public:
 	bool StepWithTrayCoolant(const FRackThermalInput& Input, const FTrayCoolantInput& WaterInput,
 		double DeltaTimeS, int32 MaxSubsteps = 4096);
 	bool UsesTrayCoolant() const { return bTrayCoolant; }
+	// Common coupling substep: exchanger and every rack use the same old temperatures.
+	double LimitTrayStepS(const FRackThermalInput& Input, const FTrayCoolantInput& Boundary, double RequestedS) const;
 	const FTrayCoolantModel& GetTrayCoolant() const { return TrayCoolant; }
 	int32 GetLastTraySubsteps() const { return LastTraySubsteps; }
 	double GetLastTrayIntegratedTimeS() const { return LastTrayIntegratedTimeS; }

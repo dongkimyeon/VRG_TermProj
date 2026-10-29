@@ -173,7 +173,9 @@ bool ADataCenterRoomActor::SetLeakHoleDiameterM(int32 LeakSpec, double HoleDiame
 	LeakSpecs[LeakSpec].bEverOpened |= HoleDiameterM > 0.0;
 	// A live size change needs no rebuild; the next inventory step solves with it. Restart restores the built size,
 	// so record the new size as the as-built one only through a rebuild (an event-driven opening is step 5).
-	Network.SetLeakHoleDiameterM(LeakSpecs[LeakSpec].NetworkLeak, HoleDiameterM);
+	const int32 NetworkLeak = LeakSpecs[LeakSpec].NetworkLeak;
+	if (NetworkLeak != INDEX_NONE && Network.GetLeak(NetworkLeak).HoleDiameterM != HoleDiameterM) Inventory.MarkHydraulicsDirty();
+	Network.SetLeakHoleDiameterM(NetworkLeak, HoleDiameterM);
 	return true;
 }
 
@@ -561,6 +563,22 @@ void ADataCenterRoomActor::DiscoverRows()
 const FInRackHandles* ADataCenterRoomActor::GetInRackHandles(const ARackThermalActor* Rack) const
 {
 	return InRackHandles.Find(Rack);
+}
+
+int32 ADataCenterRoomActor::GetRackReturnPipeIndex(const ARackThermalActor* Rack) const
+{
+	const int32 R = GetRoutedRacks().IndexOfByPredicate([Rack](const ARackThermalActor* Other) { return Other == Rack; });
+	return RackReturnPipeIndices.IsValidIndex(R) ? RackReturnPipeIndices[R] : INDEX_NONE;
+}
+
+bool ADataCenterRoomActor::SetInternalLeakHoleDiameterM(const ARackThermalActor* Rack, int32 Tray, int32 Site, double DiameterM)
+{
+	const FInRackHandles* H = GetInRackHandles(Rack);
+	if (!H || Tray < 0 || Tray >= H->Slots.Num() || Site < 0 || Site >= 5 || !FMath::IsFinite(DiameterM) || DiameterM < 0.0) return false;
+	const int32 Leak = H->Leaks[5 * Tray + Site];
+	if (Network.GetLeak(Leak).HoleDiameterM != DiameterM) Inventory.MarkHydraulicsDirty();
+	Network.SetLeakHoleDiameterM(Leak, DiameterM);
+	return true;
 }
 
 bool ADataCenterRoomActor::SyncInRackDocking()

@@ -366,6 +366,10 @@ void ADataCenterSimulationActor::EnterSimulationMode()
 	FlowAverager.Reset(); bFlowGridValid = false;   // the air view averages this run only
 	SetAirView(AirView);
 	SprayTankLeakedM3.Reset();
+	// Capture the inventory baseline BEFORE the first integrated step. Initializing it
+	// inside SprayAfterStep would discard water from a hole opened at t=0.
+	if (Room) for (const auto& Tank : Room->GetCoolantInventory().GetTanks()) SprayTankLeakedM3.Add(Tank.State.LeakedM3);
+	InternalLeakedM3.Reset();
 	LastSprayLogSecond = -1;
 	UE_LOG(LogTemp, Display, TEXT("[VrgSim] 시뮬레이션 모드: 랙 %d대 / 스파인 %d대 / CRAH %d대로 구성하고 t=0부터 시작."),
 		Racks.Num(), Spines.Num(), CrahPlacements.Num());
@@ -1023,6 +1027,14 @@ void ADataCenterSimulationActor::BuildCoupling()
 		Link.BranchPipeIndex = Rack && BranchIndices.IsValidIndex(RackIndex) ? BranchIndices[RackIndex] : INDEX_NONE;
 		Link.FallbackCoolantMassFlowKgs = Target.Input->CoolantMassFlowKgs;
 		if (Rack != nullptr && Room != nullptr) Room->GetRackLeakIndices(Rack, Link.SupplyLeakIndices, Link.ReturnLeakIndices);
+		if (Rack && Room)
+			if (const FInRackHandles* Internal = Room->GetInRackHandles(Rack))
+			{
+				Link.Internal = *Internal;
+				// The original return edge starts at the rack, before the external leak split.
+				Link.ReturnPipeIndex = Internal->ReturnNode != INDEX_NONE
+					? Room->GetRackReturnPipeIndex(Rack) : INDEX_NONE;
+			}
 
 		if (bHasAir)
 		{
@@ -1256,7 +1268,12 @@ void ADataCenterSimulationActor::BuildCduGroups()
 			if (!Found) CduGroupRows.Add(RackRows[R]);
 			CduSummaries[G].NumRacks += 1;
 			CduSummaries[G].DesignDutyW += FRackThermalModel::DesignHeatToCoolantW(Rack->Params, Rack->Input);
-			HotWK[G] += Rack->Input.CoolantMassFlowKgs * Rack->Params.CoolantCpJKgK;
+			// Input is overwritten with solved flow while running. Reusing that value on
+			// re-entry would resize the HX from the previous run (including leak/valve effects).
+			// The room already solved the closed-leak design point; reuse that operating point.
+			const TArray<double>& DesignFlowM3s = Room->GetRackDesignFlowM3s();
+			const double DesignKgs = DesignFlowM3s.IsValidIndex(R) ? DesignFlowM3s[R] * CoolantDensityKgM3 : Rack->Input.CoolantMassFlowKgs;
+			HotWK[G] += DesignKgs * Rack->Params.CoolantCpJKgK;
 		}
 
 		// Size every exchanger at its row's design point (assumptions on the CDU actor, not a product rating):
@@ -2406,8 +2423,8 @@ void ADataCenterSimulationActor::SprayAfterStep(double DtS)
 			double Sum = 0.0;
 			for (const int32 L : Tanks[T].LeakIndices)
 			{
-				const double Q = FMath::Max(Net.GetLeakFlowM3s(L), 0.0);
-				if (Q > 0.0) { Holes.Add({ L, Q }); Sum += Q; }
+				const double FlowM3s = FMath::Max(Net.GetLeakFlowM3s(L), 0.0);
+				if (FlowM3s > 0.0) { Holes.Add({ L, FlowM3s }); Sum += FlowM3s; }
 			}
 			if (Sum <= 0.0)
 			{
@@ -2420,6 +2437,11 @@ void ADataCenterSimulationActor::SprayAfterStep(double DtS)
 			}
 			for (const TPair<int32, double>& H : Holes)
 			{
+				if (Room->IsInternalLeak(H.Key))
+				{
+					InternalLeakedM3.FindOrAdd(H.Key) += DeltaM3 * H.Value / Sum;
+					continue; // Keep it in the denominator: never redistribute internal water to W2.
+				}
 				int32 SiteIndex = INDEX_NONE;
 				for (int32 S = 0; S < LiveLeakSites.Num() && SiteIndex == INDEX_NONE; ++S)
 					if (!LiveLeakSites[S].bPlant && Room->GetLeakNetworkIndex(LiveLeakSites[S].RoomSpec) == H.Key) SiteIndex = S;

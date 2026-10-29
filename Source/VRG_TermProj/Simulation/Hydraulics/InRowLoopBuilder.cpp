@@ -97,6 +97,7 @@ FInRowLoopHandles InRowLoopBuilder::AddLoop(FHydraulicNetwork& Network, const FI
 		{
 			// Existing budget is TWO branch losses. Each external hose keeps 1% of that
 			// total, InRackNetwork consumes the remaining 98%; no dock-count scaling here.
+			// Existing assumed allocation, not measured hose losses: Tools/W3.5_근거와측정.md.
 			const bool bInternal = HasInternal(RackIndex);
 			const double BranchPaS2M6 = bInternal ? 0.02 * Spec.RackBranchResistancePaS2M6
 				: BranchResistancePaS2M6(Spec, DockedSledsAt(Spec, RackIndex));

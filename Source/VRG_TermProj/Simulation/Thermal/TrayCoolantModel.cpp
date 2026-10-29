@@ -1,5 +1,28 @@
 #include "Simulation/Thermal/TrayCoolantModel.h"
 
+bool FTrayNetworkTransport::IsValid(int32 Trays) const
+{
+	if (Reservoirs != Trays + 1 || NetWK.Num() != Reservoirs * (Reservoirs + 2)
+		|| BoundaryWK.Num() != Reservoirs + 2 || LeakWK.Num() != Reservoirs + 2
+		|| ClassLeakWK.Num() != 3 * (Reservoirs + 2) || ClassLeakKgs.Num() != 3
+		|| !FMath::IsFinite(LeakKgs) || LeakKgs < 0.0 || !FMath::IsFinite(MassResidualKgs)) return false;
+	for (const auto* Values : { &NetWK, &BoundaryWK, &LeakWK, &ClassLeakWK, &ClassLeakKgs })
+		for (double V : *Values) if (!FMath::IsFinite(V)) return false;
+	return true;
+}
+
+double FTrayNetworkTransport::Dot(const TArray<double>& Coefficients, int32 Row, const TArray<double>& TrayK,
+	double ReturnK, double SupplyK, double ReturnBoundaryK, double ReferenceK) const
+{
+	double W = 0.0;
+	for (int32 C = 0; C < Reservoirs + 2; ++C)
+	{
+		const double K = C < TrayK.Num() ? TrayK[C] : C == Reservoirs - 1 ? ReturnK : C == Reservoirs ? SupplyK : ReturnBoundaryK;
+		W += Coefficients[Row * (Reservoirs + 2) + C] * (K - ReferenceK);
+	}
+	return W;
+}
+
 bool FTrayCoolantModel::Initialize(const TArray<double>& Fractions, double TotalCapacityJK, double InitialTempK, double InCpJKgK)
 {
 	if (Fractions.IsEmpty() || !FMath::IsFinite(TotalCapacityJK) || !(TotalCapacityJK > 0.0)
@@ -21,6 +44,20 @@ bool FTrayCoolantModel::Initialize(const TArray<double>& Fractions, double Total
 double FTrayCoolantModel::GetStableStepLimitS(const FTrayCoolantInput& Input) const
 {
 	const int32 N = TrayTempK.Num();
+	if (Input.Network.Reservoirs > 0)
+	{
+		if (!Input.Network.IsValid(N) || Input.HeatFromPartsW.Num() != N || Input.PartsConductanceWK.Num() != N
+			|| !FMath::IsFinite(Input.SupplyTempK) || Input.SupplyTempK <= 0.0
+			|| !FMath::IsFinite(Input.ReturnBoundaryTempK) || Input.ReturnBoundaryTempK <= 0.0) return 0.0;
+		double Limit = TNumericLimits<double>::Max();
+		for (int32 R = 0; R <= N; ++R)
+		{
+			if (R < N && (!FMath::IsFinite(Input.HeatFromPartsW[R]) || !FMath::IsFinite(Input.PartsConductanceWK[R]) || Input.PartsConductanceWK[R] < 0.0)) return 0.0;
+			const double RateWK = -Input.Network.NetWK[R * (N + 3) + R] + (R < N ? Input.PartsConductanceWK[R] : 0.0);
+			if (RateWK > 0.0) Limit = FMath::Min(Limit, (R < N ? TrayCapacityJK[R] : ReturnCapacityJK) / RateWK);
+		}
+		return Limit;
+	}
 	if (N == 0 || Input.InletMassFlowKgs.Num() != N || Input.OutletMassFlowKgs.Num() != N
 		|| Input.LeakMassFlowKgs.Num() != N || Input.HeatFromPartsW.Num() != N
 		|| Input.PartsConductanceWK.Num() != N
@@ -53,6 +90,25 @@ bool FTrayCoolantModel::Step(const FTrayCoolantInput& Input, double DtS)
 	bStepStable = false;
 	if (!FMath::IsFinite(DtS) || !(DtS > 0.0) || DtS > GetStableStepLimitS(Input)) return false;
 	const int32 N = TrayTempK.Num();
+	if (Input.Network.Reservoirs > 0)
+	{
+		const FTrayNetworkTransport& T = Input.Network;
+		double PartsW = 0.0;
+		for (int32 R = 0; R < N; ++R)
+		{
+			NetHeatW[R] = T.Dot(T.NetWK, R, TrayTempK, ReturnTempK, Input.SupplyTempK, Input.ReturnBoundaryTempK, ReferenceTempK) + Input.HeatFromPartsW[R];
+			NextTempK[R] = TrayTempK[R] + DtS * NetHeatW[R] / TrayCapacityJK[R];
+			PartsW += Input.HeatFromPartsW[R];
+		}
+		const double ReturnNetW = T.Dot(T.NetWK, N, TrayTempK, ReturnTempK, Input.SupplyTempK, Input.ReturnBoundaryTempK, ReferenceTempK);
+		LastBoundaryHeatOutW = T.Dot(T.BoundaryWK, 0, TrayTempK, ReturnTempK, Input.SupplyTempK, Input.ReturnBoundaryTempK, ReferenceTempK);
+		LastLeakHeatW = T.Dot(T.LeakWK, 0, TrayTempK, ReturnTempK, Input.SupplyTempK, Input.ReturnBoundaryTempK, ReferenceTempK);
+		LastMassResidualKgs = T.MassResidualKgs;
+		Swap(TrayTempK, NextTempK); ReturnTempK += DtS * ReturnNetW / ReturnCapacityJK;
+		HeatInJ += DtS * PartsW; HeatOutJ += DtS * (LastBoundaryHeatOutW + LastLeakHeatW);
+		bStepStable = true;
+		return true;
+	}
 
 	bStepStable = true;
 	LastBoundaryHeatOutW = LastLeakHeatW = LastMassResidualKgs = 0.0;

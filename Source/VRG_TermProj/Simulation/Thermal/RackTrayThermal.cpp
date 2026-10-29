@@ -31,6 +31,23 @@ bool FRackThermalModel::EnableTrayCoolant(const TArray<int32>& Slots, const TArr
 	return true;
 }
 
+double FRackThermalModel::LimitTrayStepS(const FRackThermalInput& Input, const FTrayCoolantInput& Boundary, double RequestedS) const
+{
+	if (!bTrayCoolant || !FMath::IsFinite(RequestedS) || RequestedS <= 0.0) return 0.0;
+	FTrayCoolantInput Water = Boundary;
+	const int32 NumTrays = TrayCoolant.GetTrayTempK().Num();
+	Water.HeatFromPartsW.Init(0.0, NumTrays); Water.PartsConductanceWK.Init(0.0, NumTrays);
+	for (int32 S = 0; S < Params.NumSleds; ++S)
+		if (SlotToTray[S] != INDEX_NONE && IsDocked(Input.SledDocked, S, Params.NumSleds))
+			for (int32 N = SlotNodeStart[S]; N < SlotNodeStart[S + 1]; ++N)
+				Water.PartsConductanceWK[SlotToTray[S]] += NodeParams[N].ToCoolantUAWK;
+	const double WaterLimitS = TrayCoolant.GetStableStepLimitS(Water);
+	if (!(WaterLimitS > 0.0)) return 0.0;
+	double Dt = FMath::Min(RequestedS, 0.5 * WaterLimitS);
+	while (Dt > 0.0 && !IsStepStable(Input, Dt)) Dt *= 0.5;
+	return Dt;
+}
+
 bool FRackThermalModel::StepWithTrayCoolant(const FRackThermalInput& Input, const FTrayCoolantInput& Boundary,
 	double DeltaTimeS, int32 MaxSubsteps)
 {

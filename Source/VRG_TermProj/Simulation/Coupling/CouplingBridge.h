@@ -7,6 +7,7 @@
 #include "Simulation/Thermal/RackThermalTypes.h"
 #include "Simulation/Thermal/RadiatorModel.h"
 #include "Simulation/Thermal/CduHeatExchanger.h"
+#include "Simulation/Coupling/InRackTransport.h"
 #include "CouplingBridge.generated.h"
 
 class FHydraulicNetwork;
@@ -58,6 +59,8 @@ USTRUCT(BlueprintType)
 struct FRackCouplingLink
 {
 	GENERATED_BODY()
+	FInRackHandles Internal;
+	int32 ReturnPipeIndex = INDEX_NONE;
 
 	// 이 랙의 공급 분기 파이프 인덱스. INDEX_NONE이면 수력에 안 붙어 있다.
 	UPROPERTY(BlueprintReadOnly, Category = "Coupling")
@@ -347,6 +350,11 @@ public:
 	const TArray<double>& GetLastSupplyLeakKgs() const { return LastSupplyLeakKgs; }
 	const TArray<double>& GetLastReturnLeakKgs() const { return LastReturnLeakKgs; }
 	double GetLastLeakHeatW() const { return LastLeakHeatW; }
+	// W3.5: target-major supply/tray/return classification; no web/UI expansion.
+	const TArray<double>& GetLastInternalLeakKgs() const { return LastInternalLeakKgs; }
+	const TArray<double>& GetLastInternalLeakHeatW() const { return LastInternalLeakHeatW; }
+	const TArray<FTrayCoolantInput>& GetTrayInputs() const { return TrayInputs; }
+	int32 GetLastCoupledSubsteps() const { return LastCoupledSubsteps; }
 	// S8 F2: the facility water supply temperature a CDU exchanger sees this step (the plant's supply volume).
 	void SetCduFacilitySupplyTempK(int32 Group, double TempK) { if (CduGroups.IsValidIndex(Group)) CduGroups[Group].Hx.FacilitySupplyTempK = TempK; }
 	// S8 F5: CDU pump input [W] that becomes heat in group G's coolant this step (all of the electric input: the CDU sits in
@@ -369,6 +377,11 @@ public:
 	double GetLastRackModelsMs() const { return LastRackModelsMs; }
 
 private:
+	void StepOnce(double DeltaTimeS, bool bHydraulicsResolved, bool bHydraulicsConverged);
+	bool PrepareTrayTransport();
+	TArray<FTrayCoolantInput> TrayInputs;
+	TArray<double> LastInternalLeakKgs, LastInternalLeakHeatW, RackTankTempK;
+	int32 LastCoupledSubsteps = 0;
 	TArray<FRackCouplingTarget> Targets;
 	TArray<FRackCouplingLink> Links;
 

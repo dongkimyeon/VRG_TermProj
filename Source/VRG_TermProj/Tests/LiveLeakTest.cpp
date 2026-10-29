@@ -134,7 +134,9 @@ bool FLiveLeakClosedSitesTest::RunTest(const FString& Parameters)
 	const double ReturnK = MaxAbsDiff(With.CduReturnTempK, Without.CduReturnTempK);
 	AddInfo(FString::Printf(TEXT("닫힌 지점 %d개(망 누수 %d / 없을 때 %d, 노드 %d / %d), 재고 재풀이 %d회, 보이는 누수 %d | 3 s 뒤 상대 차: 랙 냉각수 유량 %.3e, CDU 부하 %.3e | 절대 차: 랙 흡기 %.3e K, CDU 회수 %.3e K"),
 		SitesWith, LeaksWith, LeaksWithout, NodesWith, NodesWithout, SolvesWith, ShownWith, FlowRel, DutyRel, InletK, ReturnK));
-	TestTrue(TEXT("three closed sites per rack, none shown, inventory idle"), SitesWith == 6 && LeaksWith == 6 && LeaksWithout == 0 && SolvesWith == 0 && ShownWith == 0);
+	// W3.5 internal sites exist in both worlds; W1 still adds only three public sites per rack.
+	TestTrue(TEXT("three external closed sites per rack, internal sites retained, none shown, inventory idle"),
+		SitesWith == 6 && LeaksWith - LeaksWithout == 6 && LeaksWithout == 2 * 27 * 5 && SolvesWith == 0 && ShownWith == 0);
 	TestTrue(TEXT("closed sites change neither flows nor duties (relative < 1e-12)"), FlowRel < 1e-12 && DutyRel < 1e-12);
 	TestTrue(TEXT("closed sites change no temperature (< 1e-9 K)"), InletK < 1e-9 && ReturnK < 1e-9);
 	return true;

@@ -17,6 +17,16 @@ void FCouplingBridge::Initialize(const TArray<FRackCouplingTarget>& InTargets,
 	const int32 NumRacks = FMath::Min(Targets.Num(), Links.Num());
 	Targets.SetNum(NumRacks);
 	Links.SetNum(NumRacks);
+	TrayInputs.Reset(); TrayInputs.SetNum(NumRacks);
+	LastInternalLeakKgs.Init(0.0, 3 * NumRacks); LastInternalLeakHeatW = LastInternalLeakKgs;
+	RackTankTempK.Init(0.0, NumRacks); LastCoupledSubsteps = 0;
+	for (int32 R = 0; R < NumRacks; ++R)
+		if (!Links[R].Internal.Slots.IsEmpty() && Targets[R].Model && !Targets[R].Model->UsesTrayCoolant())
+			ensureMsgf(Targets[R].Model->EnableTrayCoolant(Links[R].Internal.Slots, Links[R].Internal.DesignFraction),
+				TEXT("W3.5 tray storage must be initialized before the coupled energy baseline"));
+	// There is no previous supply at t=0. Start the existing tank/make-up
+	// temperature boundary at the initialized fluid temperature, not stale runtime Input.
+	for (int32 R = 0; R < NumRacks; ++R) if (Targets[R].Model) RackTankTempK[R] = Targets[R].Model->GetState().CoolantTempK;
 	CrahUnits.Reset();
 	CduGroups.Reset();
 	RackCduGroup.Init(INDEX_NONE, NumRacks);
@@ -237,7 +247,8 @@ void FCouplingBridge::PullCoolantFlow()
 		{
 			// 수력은 체적유량 [m^3/s]으로 푼다. 열모델은 질량유량 [kg/s]을 받는다.
 			// 바꾸는 곳을 여기 하나로 둬야 밀도가 두 군데로 갈라지지 않는다 (규약 3·6).
-			const double FlowM3s = FMath::Abs(HydraulicNetwork->GetPipeFlowM3s(PipeIndex));
+			const double SignedFlow = HydraulicNetwork->GetPipeFlowM3s(PipeIndex);
+			const double FlowM3s = Links[RackIndex].Internal.Slots.IsEmpty() ? FMath::Abs(SignedFlow) : SignedFlow;
 			MassFlowKgs = FlowM3s * CoolantDensityKgM3;
 		}
 
@@ -384,21 +395,31 @@ void FCouplingBridge::CloseCoolantLoop(double DeltaTimeS)
 	for (int32 G = 0; G < CduGroups.Num(); ++G)
 	{
 		const FCduCouplingGroup& Group = CduGroups[G];
-		double HotWK = 0.0, MixSum = 0.0, MassKgs = 0.0;
+		double HotWK = 0.0, MixSum = 0.0, MassKgs = 0.0, ReverseReturnWK = 0.0;
 		double TankK = 0.0;
 		bool bTankSet = false;
 		for (const int32 R : Group.RackIndices)
 		{
 			const FRackCouplingTarget& Target = Targets[R];
 			if (Target.Model == nullptr || Target.Input == nullptr) continue;
-			if (!bTankSet) { TankK = Target.Input->CoolantInletTempK; bTankSet = true; }
+			if (!bTankSet) { TankK = Links[R].Internal.Slots.IsEmpty() ? Target.Input->CoolantInletTempK : RackTankTempK[R]; bTankSet = true; }
 			const double CpJKgK = Target.Model->GetParams().CoolantCpJKgK;
-			const double C = FMath::Max(Target.Input->CoolantMassFlowKgs, 0.0) * CpJKgK;
+			const bool bInternal = !Links[R].Internal.Slots.IsEmpty();
+			const double RackKgs = bInternal ? Target.Input->CoolantMassFlowKgs : FMath::Max(Target.Input->CoolantMassFlowKgs, 0.0);
+			const double C = RackKgs * CpJKgK;
 			const double OutK = Target.Model->GetState().CoolantTempK;
 			const double Ls = LastSupplyLeakKgs[R], Lr = LastReturnLeakKgs[R];
-			MassKgs += FMath::Max(Target.Input->CoolantMassFlowKgs, 0.0);
+			RackTankTempK[R] = TankK;
+			MassKgs += RackKgs;
 			HotWK += C;
-			MixSum += C * OutK;
+			if (!Links[R].Internal.Slots.IsEmpty())
+			{
+				const double Returned = TrayInputs[R].ReturnMassFlowKgs;
+				MixSum += FMath::Max(Returned, 0.0) * CpJKgK * OutK
+					+ TrayInputs[R].Network.LeakKgs * CpJKgK * TankK;
+				ReverseReturnWK += FMath::Max(-Returned, 0.0) * CpJKgK;
+			}
+			else MixSum += C * OutK;
 			HotWK += Ls * CpJKgK;
 			MixSum += (Ls + Lr) * CpJKgK * TankK - Lr * CpJKgK * OutK;
 		}
@@ -413,7 +434,7 @@ void FCouplingBridge::CloseCoolantLoop(double DeltaTimeS)
 		const double GroupPumpW = CduPumpHeatW.IsValidIndex(G) ? CduPumpHeatW[G] : 0.0;
 		MixSum += GroupPumpW;
 		PumpW += GroupPumpW;
-		const double MixK = MixSum / HotWK;
+		const double MixK = MixSum / (HotWK + ReverseReturnWK);
 		const double DutyW = CduHeatExchanger::DutyW(Group.Hx, HotWK, MixK);
 		const double SupplyK = MixK - DutyW / HotWK;
 		for (const int32 R : Group.RackIndices)
@@ -423,6 +444,7 @@ void FCouplingBridge::CloseCoolantLoop(double DeltaTimeS)
 			LeakW += LastReturnLeakKgs[R] * CpJKgK * (Targets[R].Model->GetState().CoolantTempK - TankK)
 				+ LastSupplyLeakKgs[R] * CpJKgK * (SupplyK - TankK);
 			Targets[R].Input->CoolantInletTempK = SupplyK;
+			if (!Links[R].Internal.Slots.IsEmpty()) TrayInputs[R].ReturnBoundaryTempK = MixK;
 		}
 		const double FacilityWK = Group.Hx.FacilityMassFlowKgs * Group.Hx.FacilityCpJKgK;
 		LastCduDutyW[G] = DutyW;
@@ -449,6 +471,22 @@ void FCouplingBridge::CloseCoolantLoop(double DeltaTimeS)
 
 		// S2b step 3: same leak bookkeeping as a CDU group of one rack (the radiator sees the pump flow).
 		const double Ls = LastSupplyLeakKgs[RackIndex], Lr = LastReturnLeakKgs[RackIndex];
+		if (!Links[RackIndex].Internal.Slots.IsEmpty())
+		{
+			const double TankK = RackTankTempK[RackIndex];
+			RackTankTempK[RackIndex] = TankK;
+			const double HotKgs = MassFlowKgs + Ls, Returned = TrayInputs[RackIndex].ReturnMassFlowKgs;
+			if (HotKgs > 0.0)
+			{
+				const double MixK = ((FMath::Max(Returned, 0.0) - Lr) * OutletTempK
+					+ (Ls + Lr + TrayInputs[RackIndex].Network.LeakKgs) * TankK) / (HotKgs + FMath::Max(-Returned, 0.0));
+				Target.Input->CoolantInletTempK = RadiatorModel::OutletTempK(*Target.Radiator, MixK, HotKgs, CoolantCpJKgK);
+				RejectedW += RadiatorModel::HeatRejectedW(*Target.Radiator, MixK, HotKgs, CoolantCpJKgK);
+				TrayInputs[RackIndex].ReturnBoundaryTempK = MixK;
+				LeakW += Lr * CoolantCpJKgK * (OutletTempK - TankK) + Ls * CoolantCpJKgK * (Target.Input->CoolantInletTempK - TankK);
+			}
+			continue;
+		}
 		if (Ls + Lr > 0.0)
 		{
 			const double TankK = Target.Input->CoolantInletTempK;
@@ -571,7 +609,7 @@ void FCouplingBridge::PushHeatToAir()
 	}
 }
 
-void FCouplingBridge::Step(double DeltaTimeS, bool bHydraulicsResolved, bool bHydraulicsConverged)
+void FCouplingBridge::StepOnce(double DeltaTimeS, bool bHydraulicsResolved, bool bHydraulicsConverged)
 {
 	if (DeltaTimeS <= 0.0)
 	{
@@ -614,10 +652,30 @@ void FCouplingBridge::Step(double DeltaTimeS, bool bHydraulicsResolved, bool bHy
 			continue;
 		}
 
-		Target.Model->Step(*Target.Input, DeltaTimeS);
+		if (Target.Model->UsesTrayCoolant() && !Links[RackIndex].Internal.Slots.IsEmpty())
+		{
+			FTrayCoolantInput& Water = TrayInputs[RackIndex];
+			Water.SupplyTempK = Target.Input->CoolantInletTempK;
+			const FTrayCoolantModel& OldWater = Target.Model->GetTrayCoolant();
+			const double Cp = Target.Model->GetParams().CoolantCpJKgK;
+			for (int32 Kind = 0; Kind < 3; ++Kind)
+			{
+				LastInternalLeakKgs[3 * RackIndex + Kind] = Water.Network.ClassLeakKgs[Kind];
+				LastInternalLeakHeatW[3 * RackIndex + Kind] = Water.Network.Dot(Water.Network.ClassLeakWK, Kind,
+					OldWater.GetTrayTempK(), OldWater.GetReturnTempK(), Water.SupplyTempK, Water.ReturnBoundaryTempK, OldWater.GetReferenceTempK())
+					+ Water.Network.ClassLeakKgs[Kind] * Cp * (OldWater.GetReferenceTempK() - RackTankTempK[RackIndex]);
+			}
+			if (!ensureMsgf(Target.Model->StepWithTrayCoolant(*Target.Input, Water, DeltaTimeS, 1), TEXT("Invalid common tray coupling step"))) return;
+			// Initial-temperature enthalpy -> existing tank-reference net heat (rule 6).
+			const double LeakW = Target.Model->GetLastTrayLeakHeatW()
+				+ Water.Network.LeakKgs * Cp * (OldWater.GetReferenceTempK() - RackTankTempK[RackIndex]);
+			LastLeakHeatW += LeakW; LeakHeatJ += LeakW * DeltaTimeS;
+		}
+		else Target.Model->Step(*Target.Input, DeltaTimeS);
 		ItHeatW += Target.Model->GetLastTotalHeatW();
 		ConversionLossW += Target.Model->GetLastConversionLossW();
 		RackCoolantOutJ += Target.Model->GetLastHeatRemovedByCoolantW() * DeltaTimeS;
+		if (Target.Model->UsesTrayCoolant()) RackCoolantOutJ += Target.Model->GetLastTrayLeakHeatW() * DeltaTimeS;
 		RackAirOutJ += Target.Model->GetLastTotalHeatToRoomAirW() * DeltaTimeS;
 	}
 	LastItHeatW = ItHeatW;
@@ -673,6 +731,16 @@ void FCouplingBridge::Step(double DeltaTimeS, bool bHydraulicsResolved, bool bHy
 	// 랙에서 공기로 넘어간 열은 계 안에서의 이동이라 여기 넣지 않는다.
 	// S2b step 3: heat carried away by leaked coolant leaves the system once, next to the radiators / CDUs.
 	EnergyOutJ = RadiatorRejectedJ + LeakHeatJ + (AirSolver != nullptr ? AirSolver->GetEnergyOutJ() - BaselineAirOutJ : 0.0);
+	// RackTankTempK is the current interval's reference until every leak has been booked.
+	// Only then retain the new supply as the next interval's tank boundary (no storage added).
+	for (int32 G = 0; G < CduGroups.Num(); ++G)
+		if (LastCduHotWK[G] > UE_DOUBLE_SMALL_NUMBER)
+			for (int32 R : CduGroups[G].RackIndices) if (!Links[R].Internal.Slots.IsEmpty() && Targets[R].Input)
+				RackTankTempK[R] = Targets[R].Input->CoolantInletTempK;
+	for (int32 R = 0; R < Targets.Num(); ++R)
+		if (!Links[R].Internal.Slots.IsEmpty() && RackCduGroup[R] == INDEX_NONE && Targets[R].Input
+			&& Targets[R].Input->CoolantMassFlowKgs + LastSupplyLeakKgs[R] > 0.0)
+			RackTankTempK[R] = Targets[R].Input->CoolantInletTempK;
 }
 
 double FCouplingBridge::GetEnergyStoredJ() const
