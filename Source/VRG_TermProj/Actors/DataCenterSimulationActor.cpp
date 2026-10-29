@@ -325,6 +325,7 @@ void ADataCenterSimulationActor::EnterSimulationMode()
 	bEvalReady = false;  // the evaluation starts with the run (reset at the first step, when the inlets exist)
 	for (FEvalEvent& E : EvalEvents) E.bApplied = false;
 	FaultMonitor.Reset(FaultSettings);
+	Instruments.Reset(); // New run: no previous latch/contact baseline before the first rebuilt sample.
 	LastTankSampleSecond = -1;
 	Mode = ESimMode::Simulation;
 	FindTargetActors();

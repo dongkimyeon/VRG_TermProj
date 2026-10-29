@@ -476,6 +476,8 @@ public:
 	// 2026-10-22 instruments on the pipes (flow, water temperature, leak-detection cable every vrg.Sensors.PipeIntervalM)
 	// and on the plant units / CDUs (DataCenterSimulationInstruments.cpp). Simulated measurements (D9).
 	const FInstrumentBank& GetInstruments() const { return Instruments; }
+	// Native setup only (also used for controlled read-only sensor A/B tests); no new UI.
+	bool bRackLeakSensors = true;
 	// One line of an instrument point's latest readings for the viewport (empty before its first reading).
 	FString DescribeInstrument(int32 Point) const;
 	// Web dashboard stage 1: summary card values at the current SimTime (window values = the report's).

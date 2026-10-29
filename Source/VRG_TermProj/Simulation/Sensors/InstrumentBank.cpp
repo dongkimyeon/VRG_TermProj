@@ -2,6 +2,20 @@
 
 #include "Simulation/Sensors/InstrumentBank.h"
 
+const TCHAR* InstrumentSpecs::SiteCode(EInstrumentSite Site)
+{
+	switch (Site)
+	{
+	case EInstrumentSite::RoomPipe: return TEXT("room_pipe");
+	case EInstrumentSite::PlantPipe: return TEXT("plant_pipe");
+	case EInstrumentSite::PlantUnit: return TEXT("plant_unit");
+	case EInstrumentSite::Cdu: return TEXT("cdu");
+	case EInstrumentSite::RackDripTray: return TEXT("rack_drip_tray");
+	case EInstrumentSite::RackManifoldRope: return TEXT("rack_manifold_rope");
+	default: return TEXT("unknown");
+	}
+}
+
 FInstrumentChannelSpec InstrumentSpecs::Make(FName Name, EInstrumentQuantity Quantity, double Scale)
 {
 	// ESTIMATES for generic devices (no product datasheet); the alarm of FVirtualSensor is not used here.
@@ -42,7 +56,7 @@ int32 FInstrumentBank::AddPoint(const FInstrumentPoint& Point, const TArray<doub
 {
 	FState& S = Points.AddDefaulted_GetRef();
 	S.Def = Point;
-	S.NextPollS = FMath::Max(LeakSpec.SamplePeriodS, 1e-9);
+	S.NextPollS = FMath::Max(Point.bWaterContact ? Point.Contact.SamplePeriodS : LeakSpec.SamplePeriodS, 1e-9);
 	for (int32 C = 0; C < Point.Channels.Num(); ++C)
 	{
 		FVirtualSensor& V = S.Sensors.AddDefaulted_GetRef();
@@ -54,7 +68,8 @@ int32 FInstrumentBank::AddPoint(const FInstrumentPoint& Point, const TArray<doub
 	return Points.Num() - 1;
 }
 
-TArray<FLeakAlarm> FInstrumentBank::Advance(double SimTimeS, double DtS, const TArray<TArray<double>>& TrueValues, const TArray<FInstrumentLeak>& Leaks)
+TArray<FLeakAlarm> FInstrumentBank::Advance(double SimTimeS, double DtS, const TArray<TArray<double>>& TrueValues, const TArray<FInstrumentLeak>& Leaks,
+	const TArray<double>& ContactCumulativeM3)
 {
 	TArray<FLeakAlarm> Raised;
 	if (!(DtS > 0.0)) return Raised;
@@ -73,6 +88,26 @@ TArray<FLeakAlarm> FInstrumentBank::Advance(double SimTimeS, double DtS, const T
 					}
 					S.Sensors[C].Advance(SimTimeS, DtS, TrueValues[P][C]);
 				}
+		if (S.Def.bWaterContact)
+		{
+			const FWaterContactSpec& Spec = S.Def.Contact;
+			// Absent/invalid/regressing data cannot clear a latch or invent contact.
+			if (!ContactCumulativeM3.IsValidIndex(P) || !FMath::IsFinite(ContactCumulativeM3[P]) || ContactCumulativeM3[P] < S.WaterM3
+				|| !FMath::IsFinite(Spec.WettingVolumeM3) || Spec.WettingVolumeM3 < 0.0
+				|| !FMath::IsFinite(Spec.ResponseDelayS) || Spec.ResponseDelayS < 0.0 || !FMath::IsFinite(Spec.SamplePeriodS) || Spec.SamplePeriodS <= 0.0) continue;
+			S.WaterM3 = ContactCumulativeM3[P]; // cumulative model value, NOT integrated a second time
+			if (S.WaterM3 > 0.0 && S.FirstContactS < 0.0) S.FirstContactS = SimTimeS;
+			const bool bWet = S.WaterM3 > 0.0 && S.WaterM3 >= Spec.WettingVolumeM3;
+			if (bWet && S.ThresholdS < 0.0) S.ThresholdS = SimTimeS;
+			if (SimTimeS + 1e-9 < S.NextPollS) continue;
+			while (S.NextPollS <= SimTimeS + 1e-9) S.NextPollS += Spec.SamplePeriodS;
+			if (!S.bLeakAlarm && bWet && SimTimeS + 1e-9 >= S.ThresholdS + Spec.ResponseDelayS)
+			{
+				S.bLeakAlarm = true; S.LeakAlarmS = SimTimeS;
+				Raised.Add({P, SimTimeS, 0.0, S.WaterM3, S.FirstContactS, S.ThresholdS});
+			}
+			continue;
+		}
 		if (!S.Def.bLeakCable) continue;
 		// The water the covered leaks let out over the step collects at the cable (it does not dry by itself).
 		double Covered = 0.0;

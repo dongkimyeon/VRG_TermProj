@@ -10,6 +10,7 @@
 #include "Actors/CoolingDistributionUnitActor.h"
 #include "Actors/DataCenterRoomActor.h"
 #include "Actors/PlantEquipmentActor.h"
+#include "Actors/RackThermalActor.h"
 #include "Simulation/Core/SimUnits.h"
 #include "Visualization/PlantDisplay.h"
 #include "HAL/IConsoleManager.h"
@@ -224,6 +225,28 @@ void ADataCenterSimulationActor::RebuildInstruments()
 			Instruments.AddPoint(Pt, { NAN, NAN, NAN, NAN, NAN });
 		}
 	}
+	for (int32 R = 0; bRackLeakSensors && R < Racks.Num(); ++R)
+	{
+		const ARackThermalActor* Rack = Racks[R];
+		if (!Rack || !Room || !Room->GetInRackHandles(Rack) || Rack->Params.Slots.IsEmpty()) continue;
+		double Bottom = TNumericLimits<double>::Max(), Top = -Bottom;
+		for (const auto& Slot : Rack->Params.Slots) { Bottom = FMath::Min(Bottom, Slot.BottomZM); Top = FMath::Max(Top, Slot.BottomZM + Slot.HeightM); }
+		auto WorldM = [&](double X, double Z) { return SimUnits::UnrealToMeters(Rack->GetActorTransform().TransformPosition(SimUnits::MetersToUnreal(FVector(X, 0.0, Z)))); };
+		for (bool bRope : {false, true})
+		{
+			FInstrumentPoint Pt;
+			Pt.Site = bRope ? EInstrumentSite::RackManifoldRope : EInstrumentSite::RackDripTray;
+			Pt.Key = R; Pt.RackId = Rack->LayoutId.IsEmpty() ? Rack->GetFName().ToString() : Rack->LayoutId;
+			Pt.Id = Pt.RackId + (bRope ? TEXT(":manifold_rope") : TEXT(":drip_tray"));
+			Pt.Label = FString::Printf(TEXT("랙 %s %s"), *Pt.RackId, bRope ? TEXT("매니폴드 로프") : TEXT("드립 트레이"));
+			Pt.bWaterContact = true;
+			if (bRope) Pt.Contact.WettingVolumeM3 = 0.0; // any positive local rear exposure; ESTIMATE, not cable sensitivity
+			Pt.PositionM = bRope ? WorldM(-.5 * Rack->RackSizeM.X, .5 * (Bottom + Top)) : WorldM(0.0, 0.0);
+			Pt.CoverageStartM = bRope ? WorldM(-.5 * Rack->RackSizeM.X, Bottom) : Pt.PositionM;
+			Pt.CoverageEndM = bRope ? WorldM(-.5 * Rack->RackSizeM.X, Top) : Pt.PositionM;
+			Instruments.AddPoint(Pt, {});
+		}
+	}
 	UE_LOG(LogTemp, Display, TEXT("[Sensor] 계측 지점 %d개(누수 감지 케이블 %d개, 배관 간격 %.1f m) - 모의 계측값(D9), 계측기 사양은 추정값"),
 		Instruments.Num(), Instruments.GetNumLeakCables(), IntervalM);
 }
@@ -297,10 +320,32 @@ void ADataCenterSimulationActor::InstrumentsAfterStep()
 				}
 	if (RoomNet != nullptr)
 		for (int32 K = 0; K < RoomNet->GetNumLeaks(); ++K)
-			Leaks.Add({ Room->GetNodePositionM(RoomNet->GetLeak(K).NodeIndex), RoomNet->GetLeakFlowM3s(K) });
-	for (const FLeakAlarm& A : Instruments.Advance(Clock.GetSimTimeS(), Clock.GetFixedStepS(), Truth, Leaks))
+			if (!Room->IsInternalLeak(K)) Leaks.Add({ Room->GetNodePositionM(RoomNet->GetLeak(K).NodeIndex), RoomNet->GetLeakFlowM3s(K) });
+	TArray<double> Contact; Contact.Init(NAN, Instruments.Num());
+	const FRackInteriorWater& Water = RackInterior.GetWater();
+	for (int32 I = 0; I < Instruments.Num(); ++I)
+	{
+		const FInstrumentPoint& P = Instruments.GetPoint(I);
+		const int32 R = P.Key;
+		if (!P.bWaterContact || !Water.FloorM3.IsValidIndex(R)) continue;
+		if (P.Site == EInstrumentSite::RackDripTray) Contact[I] = Water.FloorM3[R] + Water.RearFloorM3[R];
+		else if (P.Site == EInstrumentSite::RackManifoldRope)
+		{
+			// One rope covers both rear manifold legs over the slot span (installation ESTIMATE).
+			// Max is the largest LOCAL cumulative contact, not a sum of the same water at successive slots.
+			Contact[I] = 0.0;
+			for (int32 S = Water.Start[R]; S < Water.Start[R + 1]; ++S) Contact[I] = FMath::Max(Contact[I], Water.RearExposureM3[S]);
+		}
+	}
+	for (const FLeakAlarm& A : Instruments.Advance(Clock.GetSimTimeS(), Clock.GetFixedStepS(), Truth, Leaks, Contact))
 	{
 		const FInstrumentPoint& P = Instruments.GetPoint(A.Point);
+		if (P.bWaterContact)
+		{
+			UE_LOG(LogTemp, Display, TEXT("[Sensor] %s t=%.2fs, rack=%s type=%s contact=%.12g m3 - 모의 계측값(D9), 문턱/지연 추정"),
+				*P.Id, A.TimeS, *P.RackId, InstrumentSpecs::SiteCode(P.Site), A.WaterM3);
+			continue;
+		}
 		UE_LOG(LogTemp, Warning, TEXT("[Sensor] 누수 감지 t=%.1f s: %s (%.2f, %.2f, %.2f m), 덮는 누수 유량 %.3f L/s - 모의 계측값(D9)"),
 			A.TimeS, *P.Label, P.PositionM.X, P.PositionM.Y, P.PositionM.Z, A.FlowM3s * 1e3);
 	}

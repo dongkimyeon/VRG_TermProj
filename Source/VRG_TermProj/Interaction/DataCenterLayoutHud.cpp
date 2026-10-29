@@ -87,6 +87,7 @@ void ADataCenterLayoutHud::DrawTemperatureLabels()
 	for (int32 I = 0; I < Instruments.Num(); ++I)
 	{
 		const FInstrumentPoint& P = Instruments.GetPoint(I);
+		if (P.bWaterContact) continue; // W3.5 sensor/report only; new rack sensor display is a later task.
 		const FVector WorldCm = SimUnits::MetersToUnreal(P.PositionM);
 		if (Instruments.IsLeakAlarm(I))
 		{

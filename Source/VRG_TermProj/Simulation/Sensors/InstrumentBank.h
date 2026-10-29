@@ -44,12 +44,32 @@ struct FLeakCableSpec
 	double SamplePeriodS = 1.0;      // detector polling (ESTIMATE)
 };
 
-enum class EInstrumentSite : uint8 { RoomPipe, PlantPipe, PlantUnit, Cdu };
+enum class EInstrumentSite : uint8 { RoomPipe, PlantPipe, PlantUnit, Cdu, RackDripTray, RackManifoldRope };
+
+struct FWaterContactSpec
+{
+	// ESTIMATES for this virtual installation, NOT a TT1000 product rating:
+	// 30 mL accumulated across the bottom plane; rope: any positive local rear contact.
+	// Conceptual distributed water-contact basis (no volume/time claim in this source):
+	// https://www.nvent.com/sites/default/files/acquiadam_assets/2021-05/RAYCHEMTraceTek-DS-H53870-TT1000-EN.pdf
+	double WettingVolumeM3 = 30.0e-6;
+	double SamplePeriodS = 1.0; // reuse the existing generic detector polling assumption
+	double ResponseDelayS = 1.0; // ESTIMATE: fixed wet-contact debounce, then first poll
+};
+
+namespace InstrumentSpecs
+{
+	VRG_TERMPROJ_API const TCHAR* SiteCode(EInstrumentSite Site);
+}
 
 struct FInstrumentPoint
 {
 	EInstrumentSite Site = EInstrumentSite::PlantPipe;
 	FString Label;                   // display name (e.g. "FWS 공급 메인", "냉수 칠러 2")
+	FString Id, RackId;              // stable rack identity + sensor suffix, no physical state
+	bool bWaterContact = false;      // reads cumulative model contact, never the Leaks/radius path
+	FWaterContactSpec Contact;
+	FVector CoverageStartM = FVector::ZeroVector, CoverageEndM = FVector::ZeroVector;
 	FVector PositionM = FVector::ZeroVector;
 	int32 Key = INDEX_NONE;          // the owner's index (pipe edge, unit, CDU group) to fetch its true values
 	int32 Loop = INDEX_NONE;         // owner's network (room = -1, plant loops 0..2)
@@ -61,7 +81,12 @@ struct FInstrumentPoint
 // A leak as the solve has it now: position and outflow.
 struct FInstrumentLeak { FVector PositionM = FVector::ZeroVector; double FlowM3s = 0.0; };
 
-struct FLeakAlarm { int32 Point = INDEX_NONE; double TimeS = 0.0; double FlowM3s = 0.0; };
+struct FLeakAlarm
+{
+	int32 Point = INDEX_NONE;
+	double TimeS = 0.0, FlowM3s = 0.0;
+	double WaterM3 = 0.0, FirstContactS = -1.0, ThresholdS = -1.0;
+};
 
 class VRG_TERMPROJ_API FInstrumentBank
 {
@@ -74,12 +99,14 @@ public:
 
 	// One coupled step ending at SimTimeS: TrueValues[point][channel] are the model's values over the step (NaN keeps a
 	// channel unread this step), Leaks the solved leaks. Returns the leak alarms raised in this step.
-	TArray<FLeakAlarm> Advance(double SimTimeS, double DtS, const TArray<TArray<double>>& TrueValues, const TArray<FInstrumentLeak>& Leaks);
+	TArray<FLeakAlarm> Advance(double SimTimeS, double DtS, const TArray<TArray<double>>& TrueValues, const TArray<FInstrumentLeak>& Leaks,
+		const TArray<double>& ContactCumulativeM3 = {});
 
 	bool HasReading(int32 PointIndex, int32 Channel) const;
 	double GetReading(int32 PointIndex, int32 Channel) const;
 	bool IsLeakAlarm(int32 PointIndex) const { return Points.IsValidIndex(PointIndex) && Points[PointIndex].bLeakAlarm; }
 	double GetLeakAlarmTimeS(int32 PointIndex) const { return Points.IsValidIndex(PointIndex) ? Points[PointIndex].LeakAlarmS : -1.0; }
+	double GetContactWaterM3(int32 PointIndex) const { return Points.IsValidIndex(PointIndex) ? Points[PointIndex].WaterM3 : 0.0; }
 	const TArray<FLeakAlarm>& GetAlarmLog() const { return AlarmLog; }
 	int32 GetNumLeakCables() const;
 
@@ -90,6 +117,7 @@ private:
 		TArray<FVirtualSensor> Sensors;
 		TArray<bool> Primed;   // a channel with no model value at the build starts from its first one
 		double WaterM3 = 0.0, NextPollS = 0.0, LeakAlarmS = -1.0;
+		double FirstContactS = -1.0, ThresholdS = -1.0;
 		bool bLeakAlarm = false;
 	};
 	FLeakCableSpec LeakSpec;
