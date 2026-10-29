@@ -4026,6 +4026,25 @@ bool ADataCenterSimulationActor::WriteEvaluationReport(const FString& Name, FStr
 	TSharedRef<FJsonObject> InstrumentsJson = MakeShared<FJsonObject>();
 	InstrumentsJson->SetNumberField(TEXT("points"), Instruments.Num());
 	InstrumentsJson->SetNumberField(TEXT("leakCables"), Instruments.GetNumLeakCables());
+	InstrumentsJson->SetBoolField(TEXT("simulatedMeasurement"), true);
+	TArray<TSharedPtr<FJsonValue>> RackWaterSensors;
+	auto ContactCoords = [](const FVector& V) -> TArray<TSharedPtr<FJsonValue>>
+	{ return {MakeShared<FJsonValueNumber>(V.X), MakeShared<FJsonValueNumber>(V.Y), MakeShared<FJsonValueNumber>(V.Z)}; };
+	for (int32 I = 0; I < Instruments.Num(); ++I)
+	{
+		const auto& Pt = Instruments.GetPoint(I);
+		if (!Pt.bWaterContact) continue;
+		auto Item = MakeShared<FJsonObject>();
+		Item->SetStringField(TEXT("sensorId"), Pt.Id); Item->SetStringField(TEXT("rackId"), Pt.RackId);
+		Item->SetStringField(TEXT("type"), InstrumentSpecs::SiteCode(Pt.Site)); Item->SetBoolField(TEXT("estimatedSpec"), true);
+		Item->SetArrayField(TEXT("positionM"), ContactCoords(Pt.PositionM));
+		Item->SetArrayField(TEXT("coverageStartM"), ContactCoords(Pt.CoverageStartM)); Item->SetArrayField(TEXT("coverageEndM"), ContactCoords(Pt.CoverageEndM));
+		Item->SetNumberField(TEXT("thresholdM3"), Pt.Contact.WettingVolumeM3); Item->SetNumberField(TEXT("samplePeriodS"), Pt.Contact.SamplePeriodS);
+		Item->SetNumberField(TEXT("responseDelayS"), Pt.Contact.ResponseDelayS); Item->SetNumberField(TEXT("contactWaterM3"), Instruments.GetContactWaterM3(I));
+		Item->SetBoolField(TEXT("alarm"), Instruments.IsLeakAlarm(I)); Item->SetNumberField(TEXT("alarmTimeS"), Instruments.GetLeakAlarmTimeS(I));
+		RackWaterSensors.Add(MakeShared<FJsonValueObject>(Item));
+	}
+	InstrumentsJson->SetArrayField(TEXT("rackWaterSensors"), RackWaterSensors);
 	TArray<TSharedPtr<FJsonValue>> LeakAlarmItems;
 	for (const FLeakAlarm& A : Instruments.GetAlarmLog())
 	{
@@ -4034,6 +4053,14 @@ bool ADataCenterSimulationActor::WriteEvaluationReport(const FString& Name, FStr
 		Item->SetNumberField(TEXT("timeS"), A.TimeS); Item->SetStringField(TEXT("label"), Pt.Label);
 		Item->SetNumberField(TEXT("x_m"), Pt.PositionM.X); Item->SetNumberField(TEXT("y_m"), Pt.PositionM.Y); Item->SetNumberField(TEXT("z_m"), Pt.PositionM.Z);
 		Item->SetNumberField(TEXT("coveredLeakLps"), A.FlowM3s * 1e3);
+		Item->SetStringField(TEXT("sensorId"), Pt.Id.IsEmpty() ? FString::Printf(TEXT("instrument:%d"), A.Point) : Pt.Id);
+		Item->SetStringField(TEXT("rackId"), Pt.RackId); Item->SetStringField(TEXT("type"), InstrumentSpecs::SiteCode(Pt.Site));
+		Item->SetBoolField(TEXT("flowBased"), !Pt.bWaterContact);
+		if (Pt.bWaterContact)
+		{
+			Item->SetNumberField(TEXT("contactWaterM3"), A.WaterM3); Item->SetNumberField(TEXT("firstContactS"), A.FirstContactS);
+			Item->SetNumberField(TEXT("thresholdReachedS"), A.ThresholdS);
+		}
 		LeakAlarmItems.Add(MakeShared<FJsonValueObject>(Item));
 	}
 	InstrumentsJson->SetArrayField(TEXT("leakAlarms"), LeakAlarmItems);
@@ -4062,11 +4089,16 @@ bool ADataCenterSimulationActor::WriteEvaluationReport(const FString& Name, FStr
 		Instruments.Num(), Instruments.GetNumLeakCables(), Instruments.GetAlarmLog().Num());
 	if (!Instruments.GetAlarmLog().IsEmpty())
 	{
-		Md += TEXT("| 시각 s | 지점 | 위치 (m) | 덮는 누수 L/s |\n|---|---|---|---|\n");
+		Md += TEXT("접촉 센서는 도착/노출 누적량과 추정 문턱·지연을 사용한다. 배관 센서의 덮는 반경은 별도 게임 추상화다.\n\n");
+		Md += TEXT("| 시각 s | 센서 ID | 랙 ID | 종류 | 지점 | 위치 (m) | 덮는 누수 L/s | 접촉량 m³ |\n|---|---|---|---|---|---|---|---|\n");
 		for (const FLeakAlarm& A : Instruments.GetAlarmLog())
 		{
 			const FInstrumentPoint& Pt = Instruments.GetPoint(A.Point);
-			Md += FString::Printf(TEXT("| %.1f | %s | (%.2f, %.2f, %.2f) | %.3f |\n"), A.TimeS, *Pt.Label, Pt.PositionM.X, Pt.PositionM.Y, Pt.PositionM.Z, A.FlowM3s * 1e3);
+			const FString Id = Pt.Id.IsEmpty() ? FString::Printf(TEXT("instrument:%d"), A.Point) : Pt.Id;
+			Md += FString::Printf(TEXT("| %.2f | %s | %s | %s | %s | (%.2f, %.2f, %.2f) | %s | %s |\n"), A.TimeS, *Id, *Pt.RackId,
+				InstrumentSpecs::SiteCode(Pt.Site), *Pt.Label, Pt.PositionM.X, Pt.PositionM.Y, Pt.PositionM.Z,
+				Pt.bWaterContact ? TEXT("-") : *FString::Printf(TEXT("%.3f"), A.FlowM3s * 1e3),
+				Pt.bWaterContact ? *FString::Printf(TEXT("%.12g"), A.WaterM3) : TEXT("-"));
 		}
 	}
 	Md += FString::Printf(TEXT("\n## 점검\n\n전역 정규화 열수지 잔차 %.3e. %s\n"), Snap.NormalizedEnergyResidual, *Bridge.DescribeEnergyLedger());
