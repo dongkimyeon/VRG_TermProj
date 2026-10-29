@@ -6,6 +6,7 @@ bool FTrayCoolantModel::Initialize(const TArray<double>& Fractions, double Total
 		|| !FMath::IsFinite(InitialTempK) || !(InitialTempK > 0.0) || !FMath::IsFinite(InCpJKgK) || !(InCpJKgK > 0.0)) return false;
 	double Sum = 0.0;
 	for (double F : Fractions) { if (!FMath::IsFinite(F) || !(F > 0.0)) return false; Sum += F; }
+	if (!FMath::IsFinite(Sum)) return false;
 	TrayTempK.Init(InitialTempK, Fractions.Num()); NextTempK = TrayTempK;
 	TrayCapacityJK.SetNum(Fractions.Num()); NetHeatW.Init(0.0, Fractions.Num());
 	double Allocated = 0.0;
@@ -17,22 +18,41 @@ bool FTrayCoolantModel::Initialize(const TArray<double>& Fractions, double Total
 	return true;
 }
 
-bool FTrayCoolantModel::Step(const FTrayCoolantInput& Input, double DtS)
+double FTrayCoolantModel::GetStableStepLimitS(const FTrayCoolantInput& Input) const
 {
 	const int32 N = TrayTempK.Num();
-	bStepStable = false;
 	if (N == 0 || Input.InletMassFlowKgs.Num() != N || Input.OutletMassFlowKgs.Num() != N
 		|| Input.LeakMassFlowKgs.Num() != N || Input.HeatFromPartsW.Num() != N
-		|| Input.PartsConductanceWK.Num() != N || !FMath::IsFinite(DtS) || !(DtS > 0.0)
+		|| Input.PartsConductanceWK.Num() != N
 		|| !FMath::IsFinite(Input.SupplyTempK) || !(Input.SupplyTempK > 0.0)
 		|| !FMath::IsFinite(Input.ReturnBoundaryTempK) || !(Input.ReturnBoundaryTempK > 0.0)
 		|| !FMath::IsFinite(Input.ReturnMassFlowKgs) || !FMath::IsFinite(Input.ReturnLeakMassFlowKgs)
-		|| Input.ReturnLeakMassFlowKgs < 0.0) return false;
+		|| Input.ReturnLeakMassFlowKgs < 0.0) return 0.0;
+	double LimitS = TNumericLimits<double>::Max();
+	double ReturnOutKgs = FMath::Max(Input.ReturnMassFlowKgs, 0.0) + Input.ReturnLeakMassFlowKgs;
 	for (int32 I = 0; I < N; ++I)
+	{
 		if (!FMath::IsFinite(Input.InletMassFlowKgs[I]) || !FMath::IsFinite(Input.OutletMassFlowKgs[I])
 			|| !FMath::IsFinite(Input.LeakMassFlowKgs[I]) || Input.LeakMassFlowKgs[I] < 0.0
 			|| !FMath::IsFinite(Input.HeatFromPartsW[I]) || !FMath::IsFinite(Input.PartsConductanceWK[I])
-			|| Input.PartsConductanceWK[I] < 0.0) return false;
+			|| Input.PartsConductanceWK[I] < 0.0) return 0.0;
+		const double OutKgs = FMath::Max(-Input.InletMassFlowKgs[I], 0.0)
+			+ FMath::Max(Input.OutletMassFlowKgs[I], 0.0) + Input.LeakMassFlowKgs[I];
+		const double Conductance = OutKgs * CpJKgK + Input.PartsConductanceWK[I];
+		if (!FMath::IsFinite(Conductance)) return 0.0;
+		if (Conductance > 0.0) LimitS = FMath::Min(LimitS, TrayCapacityJK[I] / Conductance);
+		ReturnOutKgs += FMath::Max(-Input.OutletMassFlowKgs[I], 0.0);
+	}
+	if (!FMath::IsFinite(ReturnOutKgs * CpJKgK)) return 0.0;
+	if (ReturnOutKgs > 0.0) LimitS = FMath::Min(LimitS, ReturnCapacityJK / (ReturnOutKgs * CpJKgK));
+	return LimitS;
+}
+
+bool FTrayCoolantModel::Step(const FTrayCoolantInput& Input, double DtS)
+{
+	bStepStable = false;
+	if (!FMath::IsFinite(DtS) || !(DtS > 0.0) || DtS > GetStableStepLimitS(Input)) return false;
+	const int32 N = TrayTempK.Num();
 
 	bStepStable = true;
 	LastBoundaryHeatOutW = LastLeakHeatW = LastMassResidualKgs = 0.0;

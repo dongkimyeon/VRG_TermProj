@@ -18,6 +18,8 @@ public:
 	// 체적 분배의 실측 자료 없음. 근거/한계: Tools/W3.5_근거와측정.md.
 	bool Initialize(const TArray<double>& DesignFractions, double TotalCapacityJK, double InitialTempK, double CpJKgK = 4182.0);
 	bool Step(const FTrayCoolantInput& Input, double DtS);
+	// Positive explicit-Euler step limit; zero means invalid input. No state/ledger mutation.
+	double GetStableStepLimitS(const FTrayCoolantInput& Input) const;
 	const TArray<double>& GetTrayTempK() const { return TrayTempK; }
 	const TArray<double>& GetTrayCapacityJK() const { return TrayCapacityJK; }
 	double GetReturnTempK() const { return ReturnTempK; }

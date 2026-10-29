@@ -4,6 +4,7 @@
 
 #include "CoreMinimal.h"
 #include "Simulation/Thermal/RackThermalTypes.h"
+#include "Simulation/Thermal/TrayCoolantModel.h"
 
 // S1(확장): 랙 1대 과도 열모델. 캐비닛 = 슬롯 N개, 슬롯마다 장비 한 대(FRackDeviceType), 장비 = 부품 여러 개.
 // 2026-09-27부터 장비는 공개 사양 기반 프리셋(GB200 NVL72, Quantum 스파인)만 쓴다.
@@ -45,6 +46,20 @@ public:
 
 	// 고정 스텝 한 번을 명시적 오일러로 적분한다.
 	void Step(const FRackThermalInput& Input, double DeltaTimeS);
+
+	// W3.5 opt-in before stepping. Slot order/fractions come from the existing InRackNetwork spec.
+	// Replaces (does not add to) the scalar coolant capacity. Initialize resets to the legacy path.
+	bool EnableTrayCoolant(const TArray<int32>& TraySlots, const TArray<double>& DesignFractions);
+	// Part heat/conductance are computed here, never imported from WaterInput. Flows/boundaries are
+	// constant over the interval. Atomic failure; the numerical work cap never silently drops time.
+	bool StepWithTrayCoolant(const FRackThermalInput& Input, const FTrayCoolantInput& WaterInput,
+		double DeltaTimeS, int32 MaxSubsteps = 4096);
+	bool UsesTrayCoolant() const { return bTrayCoolant; }
+	const FTrayCoolantModel& GetTrayCoolant() const { return TrayCoolant; }
+	int32 GetLastTraySubsteps() const { return LastTraySubsteps; }
+	double GetLastTrayIntegratedTimeS() const { return LastTrayIntegratedTimeS; }
+	// Interval mean, referenced to initial coolant temperature (not yet facility/tank enthalpy).
+	double GetLastTrayLeakHeatW() const { return LastTrayLeakHeatW; }
 
 	FRackThermalSnapshot MakeSnapshot(double SimTimeS) const;
 
@@ -184,6 +199,12 @@ public:
 	static double AirEffectiveness(double ToAirUAWK, double AirCapacityRateWK);
 
 private:
+	bool StepInternal(const FRackThermalInput& Input, double DeltaTimeS, FTrayCoolantInput* WaterInput);
+	bool bTrayCoolant = false;
+	FTrayCoolantModel TrayCoolant;
+	TArray<int32> SlotToTray;
+	int32 LastTraySubsteps = 0;
+	double LastTrayIntegratedTimeS = 0.0, LastTrayLeakHeatW = 0.0;
 	FRackThermalParams Params;
 	FRackThermalState State;
 	FRackThermalState InitialState;

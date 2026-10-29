@@ -78,6 +78,8 @@ int32 FRackThermalModel::RepairKindHeatSpread(const FRackThermalParams& InParams
 
 void FRackThermalModel::Initialize(const FRackThermalParams& InParams, const FRackThermalState& InInitialState)
 {
+	bTrayCoolant = false; TrayCoolant = FTrayCoolantModel(); SlotToTray.Reset();
+	LastTraySubsteps = 0; LastTrayIntegratedTimeS = LastTrayLeakHeatW = 0.0;
 	Params = InParams;
 	Params.NumSleds = NumSlotsOf(Params);
 	ResolveLayout(Params, NodeParams, SlotNodeStart);
@@ -218,16 +220,25 @@ bool FRackThermalModel::IsStepStable(const FRackThermalInput& Input, double Delt
 		}
 	}
 
-	const double CoolantCapacityRateWK = Input.CoolantMassFlowKgs * Params.CoolantCpJKgK;
-	MaxRatePerS = FMath::Max(MaxRatePerS,
-		(TotalCoolantUAWK + CoolantCapacityRateWK) / Params.CoolantHeatCapacityJK);
+	if (!bTrayCoolant)
+	{
+		const double CoolantCapacityRateWK = Input.CoolantMassFlowKgs * Params.CoolantCpJKgK;
+		MaxRatePerS = FMath::Max(MaxRatePerS,
+			(TotalCoolantUAWK + CoolantCapacityRateWK) / Params.CoolantHeatCapacityJK);
+	}
 
 	return DeltaTimeS * MaxRatePerS <= 1.0;
 }
 
 void FRackThermalModel::Step(const FRackThermalInput& Input, double DeltaTimeS)
 {
-	if (SlotNodeStart.Num() != Params.NumSleds + 1) return;  // not initialized yet
+	if (!ensureMsgf(!bTrayCoolant, TEXT("Tray coolant requires StepWithTrayCoolant and explicit boundary flows"))) return;
+	StepInternal(Input, DeltaTimeS, nullptr);
+}
+
+bool FRackThermalModel::StepInternal(const FRackThermalInput& Input, double DeltaTimeS, FTrayCoolantInput* WaterInput)
+{
+	if (SlotNodeStart.Num() != Params.NumSleds + 1) return false;
 	bLastStepStable = IsStepStable(Input, DeltaTimeS);
 
 	const int32 NumSleds = Params.NumSleds;
@@ -323,7 +334,10 @@ void FRackThermalModel::Step(const FRackThermalInput& Input, double DeltaTimeS)
 			// 뽑힌 유닛은 콜드플레이트와 강제 공랭이 모두 끊긴다. 케이스 자연대류만 남는다.
 			const double ToCoolantUAWK = bDocked ? Component.ToCoolantUAWK : 0.0;
 			const double ToAirUAWK = bDocked ? Component.ToAirUAWK : 0.0;
-			const double HeatToCoolantW = ToCoolantUAWK * (ComponentTempK - State.CoolantTempK);
+			const int32 Tray = WaterInput ? SlotToTray[SledIndex] : INDEX_NONE;
+			const double WaterTempK = Tray != INDEX_NONE ? TrayCoolant.GetTrayTempK()[Tray] : State.CoolantTempK;
+			const double HeatToCoolantW = ToCoolantUAWK * (ComponentTempK - WaterTempK);
+			if (Tray != INDEX_NONE) WaterInput->HeatFromPartsW[Tray] += HeatToCoolantW;
 
 			const double Effectiveness = AirEffectiveness(ToAirUAWK, PartRateWK);
 			const double HeatToAirW = PartRateWK * Effectiveness * (ComponentTempK - (bParallelStage ? StageInletK : AirTempK));
@@ -357,15 +371,25 @@ void FRackThermalModel::Step(const FRackThermalInput& Input, double DeltaTimeS)
 	}
 
 	// 냉각수가 이류로 랙 밖에 내보내는 열. 유량이 분자에 있으므로 유량 0이면 그대로 0이다.
-	const double CoolantCapacityRateWK = Input.CoolantMassFlowKgs * Params.CoolantCpJKgK;
-	const double HeatRemovedByCoolantW = CoolantCapacityRateWK * (State.CoolantTempK - Input.CoolantInletTempK);
-
-	// 부품이 내놓은 것과 같은 TotalHeatToCoolantW가 냉각수로 들어간다 (규약 6).
-	const double CoolantRateKs = (TotalHeatToCoolantW - HeatRemovedByCoolantW) / Params.CoolantHeatCapacityJK;
-	State.CoolantTempK += CoolantRateKs * DeltaTimeS;
+	double HeatRemovedByCoolantW, LeakHeatW = 0.0;
+	if (WaterInput)
+	{
+		if (!TrayCoolant.Step(*WaterInput, DeltaTimeS)) return false; // outer transaction owns rollback
+		// Compatibility view of return mixing, never another storage node.
+		State.CoolantTempK = TrayCoolant.GetReturnTempK();
+		HeatRemovedByCoolantW = TrayCoolant.GetLastBoundaryHeatOutW();
+		LeakHeatW = TrayCoolant.GetLastLeakHeatW();
+	}
+	else
+	{
+		const double CoolantCapacityRateWK = Input.CoolantMassFlowKgs * Params.CoolantCpJKgK;
+		HeatRemovedByCoolantW = CoolantCapacityRateWK * (State.CoolantTempK - Input.CoolantInletTempK);
+		const double CoolantRateKs = (TotalHeatToCoolantW - HeatRemovedByCoolantW) / Params.CoolantHeatCapacityJK;
+		State.CoolantTempK += CoolantRateKs * DeltaTimeS;
+	}
 
 	EnergyInJ += TotalHeatW * DeltaTimeS;
-	EnergyOutJ += (TotalHeatToAirW + TotalHeatToAmbientW + HeatRemovedByCoolantW) * DeltaTimeS;
+	EnergyOutJ += (TotalHeatToAirW + TotalHeatToAmbientW + HeatRemovedByCoolantW + LeakHeatW) * DeltaTimeS;
 
 	LastTotalHeatW = TotalHeatW;
 	LastHeatRemovedByCoolantW = HeatRemovedByCoolantW;
@@ -387,6 +411,7 @@ void FRackThermalModel::Step(const FRackThermalInput& Input, double DeltaTimeS)
 			Ratio += FMath::Clamp(Target - Ratio, -MaxChange, MaxChange);
 		}
 	}
+	return true;
 }
 
 bool FRackThermalModel::IsFanMode(const FRackThermalParams& InParams)
@@ -487,7 +512,8 @@ double FRackThermalModel::SlotControlTempK(int32 Slot) const
 
 double FRackThermalModel::GetEnergyStoredJ() const
 {
-	double StoredJ = Params.CoolantHeatCapacityJK * (State.CoolantTempK - InitialState.CoolantTempK);
+	double StoredJ = bTrayCoolant ? TrayCoolant.GetStoredJ()
+		: Params.CoolantHeatCapacityJK * (State.CoolantTempK - InitialState.CoolantTempK);
 
 	// Initialize 전에 불릴 수 있다 (에디터 틱은 BeginPlay 없이도 돌아간다).
 	// 그럴 때는 배열이 비어 있으므로 상태 배열 길이를 기준으로 돌고 비었으면 0을 돌려준다.
