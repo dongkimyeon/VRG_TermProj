@@ -9,7 +9,8 @@
 // S1(확장): 랙 1대 과도 열모델. 캐비닛 = 슬롯 N개, 슬롯마다 장비 한 대(FRackDeviceType), 장비 = 부품 여러 개.
 // 2026-09-27부터 장비는 공개 사양 기반 프리셋(GB200 NVL72, Quantum 스파인)만 쓴다.
 //
-// 노드는 모든 슬롯 장비의 부품 노드 + 냉각수 노드 1개다.
+// 기본 노드는 모든 슬롯 장비의 부품 노드 + 냉각수 노드 1개다.
+// W3.5 선택 경로는 그 물 노드를 트레이/회수 혼합 노드로 대체한다 (추가 열용량 아님).
 // 전부 열용량을 가진 과도 노드다 (D2).
 //   부품 i:   C_i * dT_i/dt = P_i - Heat_to_coolant_i - Heat_to_air_i - Heat_to_ambient_i
 //   냉각수:   C_c * dT_c/dt = sum(Heat_to_coolant_i) - Heat_removed_by_coolant
@@ -63,6 +64,7 @@ public:
 
 	FRackThermalSnapshot MakeSnapshot(double SimTimeS) const;
 
+	// Tray mode: scalar coolant is a return-temperature view. Full water state is GetTrayCoolant().
 	const FRackThermalState& GetState() const { return State; }
 	const FRackThermalParams& GetParams() const { return Params; }
 
