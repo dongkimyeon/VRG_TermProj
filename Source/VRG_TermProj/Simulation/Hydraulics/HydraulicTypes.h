@@ -61,6 +61,9 @@ struct FHydraulicPipe
 	// unknowns: their pressure is not modelled and is shown vented (piezometric 0 Pa(g)), so their leaks stop.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hydraulics")
 	bool bClosed = false;
+
+	// W3.5: solver edge only; excluded from room meshes, instruments and web routes.
+	bool bRackInternal = false;
 };
 
 // 능동 요소. 유량이 보조 미지수로 들어간다 (D3).

@@ -187,6 +187,7 @@ void ADataCenterRoomActor::GetRackLeakIndices(const ARackThermalActor* Rack, TAr
 
 void ADataCenterRoomActor::StepCoolantInventory(double DtS, double NowS)
 {
+	SyncInRackDocking();
 	FHydraulicSolveResult Result;
 	const uint64 StartCycles = FPlatformTime::Cycles64();
 	if (!Inventory.Step(Network, SolveSettings, DtS, NowS, Result)) return;
@@ -557,9 +558,42 @@ void ADataCenterRoomActor::DiscoverRows()
 	}
 }
 
+const FInRackHandles* ADataCenterRoomActor::GetInRackHandles(const ARackThermalActor* Rack) const
+{
+	return InRackHandles.Find(Rack);
+}
+
+bool ADataCenterRoomActor::SyncInRackDocking()
+{
+	bool bChanged = false;
+	for (const auto& Entry : InRackHandles)
+	{
+		const ARackThermalActor* Rack = Entry.Key.Get();
+		if (!Rack) continue;
+		const FInRackHandles& H = Entry.Value;
+		for (int32 T = 0; T < H.Slots.Num(); ++T)
+		{
+			const bool bDocked = Rack->IsSledDocked(H.Slots[T]);
+			if (Network.IsPipeClosed(H.InletPipes[T]) == bDocked || Network.IsPipeClosed(H.OutletPipes[T]) == bDocked)
+			{
+				H.SetDocked(Network, T, bDocked); bChanged = true;
+			}
+		}
+	}
+	if (bChanged)
+	{
+		const double StartS = FPlatformTime::Seconds();
+		LastResult = Network.Solve(SolveSettings); bPipeColorsDirty = true;
+		UE_LOG(LogTemp, Display, TEXT("[InRack] docking solve nodes=%d ms=%.3f residual=%.3e"),
+			Network.GetNumNodes(), 1000.0 * (FPlatformTime::Seconds() - StartS), LastResult.NormalizedResidual);
+	}
+	return bChanged;
+}
+
 void ADataCenterRoomActor::BuildNetwork()
 {
 	Network.Reset();
+	InRackHandles.Reset(); InternalLeakIndices.Reset();
 	Inventory.Reset();
 	LeakBranchPipes.Reset();
 	// W1: live sites of racks that are gone are dropped; the rows below add the missing ones.
@@ -617,7 +651,11 @@ void ADataCenterRoomActor::BuildNetwork()
 			Spec.DockedSledsPerRack.Add(Rack != nullptr ? Rack->GetNumDockedLiquidSlots() : Spec.SledsPerRack);
 		}
 
-		const FInRowLoopHandles Handles = InRowLoopBuilder::AddLoop(Network, Spec);
+		TArray<FInRackSpec> InternalSpecs;
+		if (bUseInRackNetworks && Row.Cdu)
+			for (const TObjectPtr<ARackThermalActor>& Rack : Row.Racks)
+				InternalSpecs.Add(Rack ? InRackNetwork::FromThermal(Rack->Params, Rack->GetMutableInput()) : FInRackSpec());
+		const FInRowLoopHandles Handles = InRowLoopBuilder::AddLoop(Network, Spec, &InternalSpecs);
 		Row.PumpIndex = Handles.PumpIndex;
 
 		NodePositionM.SetNum(Network.GetNumNodes());
@@ -665,6 +703,20 @@ void ADataCenterRoomActor::BuildNetwork()
 			RackReturnPipeIndices.Add(Handles.RackReturnPipeIndices[ColumnIndex]);
 			RackSupplyValvePipe.Add(Handles.RackBranchPipeIndices[ColumnIndex]);   // starts at the supply header
 			RackReturnValvePipe.Add(Handles.RackReturnPipeIndices[ColumnIndex]);   // ends at the return header
+			const FInRackHandles& Internal = Handles.InRacks[ColumnIndex];
+			if (!Internal.Slots.IsEmpty())
+			{
+				InRackHandles.Add(Rack, Internal);
+				NodePositionM[Internal.ReturnNode] = FVector(ReturnAnchorM.X, ReturnAnchorM.Y, RackManifoldZM);
+				for (int32 N = 0; N < Internal.Nodes.Num(); ++N)
+				{
+					const int32 Node = Internal.Nodes[N];
+					NodePositionM[Node] = SupplyAnchorM;
+					NodePositionM[Node].Z = SimUnits::UnrealToMeters(Rack->GetActorLocation()).Z
+						+ InternalSpecs[ColumnIndex].HeightM[N / 5] * Rack->GetActorScale3D().Z;
+				}
+				for (int32 L : Internal.Leaks) InternalLeakIndices.Add(L);
+			}
 			if (bUseGjConnections && Rack->bUseGjModels && Handles.RackNodeIndices[ColumnIndex] != INDEX_NONE)
 			{
 				// The single lumped rack node has two distinct visual manifold ports.
@@ -694,6 +746,7 @@ void ADataCenterRoomActor::BuildNetwork()
 		// the rack keeps reading the half that enters it (supply) or leaves it (return), so a supply leak lowers the
 		// rack's coolant flow. The original pipe keeps its start; its end override (GJ port) moves to the new half.
 		TArray<int32> RowLeaks;
+		for (const FInRackHandles& Internal : Handles.InRacks) RowLeaks.Append(Internal.Leaks);
 		if (bLiveLeakSites)
 		{
 			// W1: three closed sites per rack (supply branch, return branch, supply header tee), appended in a stable order.
@@ -793,8 +846,12 @@ void ADataCenterRoomActor::BuildNetwork()
 		}
 	}
 
+	const double SolveStartS = FPlatformTime::Seconds();
 	LastResult = Network.Solve(SolveSettings);
 	bPipeColorsDirty = true;
+	UE_LOG(LogTemp, Display, TEXT("[InRack] racks=%d nodes=%d pipes=%d internalLeaks=%d solveMs=%.3f residual=%.3e"),
+		InRackHandles.Num(), Network.GetNumNodes(), Network.GetNumPipes(), InternalLeakIndices.Num(),
+		1000.0 * (FPlatformTime::Seconds() - SolveStartS), LastResult.NormalizedResidual);
 
 	if (!LastResult.bConverged)
 	{
@@ -845,6 +902,7 @@ void ADataCenterRoomActor::BuildPipeMeshes()
 	for (int32 PipeIndex = 0; PipeIndex < Network.GetNumPipes(); ++PipeIndex)
 	{
 		// 분기관은 헤더보다 가늘어야 흐름이 읽힌다.
+		if (Network.IsRackInternalPipe(PipeIndex)) continue;
 		const bool bIsBranch = RackBranchPipeIndices.Contains(PipeIndex) || LeakBranchPipes.Contains(PipeIndex)
 			|| (PipeIndex > 0 && RackBranchPipeIndices.Contains(PipeIndex - 1));
 
@@ -854,6 +912,8 @@ void ADataCenterRoomActor::BuildPipeMeshes()
 			NodeWorldOffsetCm(Network.GetPipeToNodeIndex(PipeIndex)),
 			bIsBranch ? BranchDiameterCm : HeaderDiameterCm);
 		PipeMeshes.Add(Pipe);
+		PipeMeshFlowIndices.Add(PipeIndex);
+		PipeMeshSupply.Add(bPipeIsSupplySide.IsValidIndex(PipeIndex) && bPipeIsSupplySide[PipeIndex]);
 		PipeRoutesM.Add({PipeIndex, bPipeIsSupplySide.IsValidIndex(PipeIndex) && bPipeIsSupplySide[PipeIndex], bIsBranch,
 			{NodePositionM[Network.GetPipeFromNodeIndex(PipeIndex)], NodePositionM[Network.GetPipeToNodeIndex(PipeIndex)]}});
 	}
@@ -995,7 +1055,7 @@ void ADataCenterRoomActor::UpdatePipeColors() const
 		}
 		for (int32 MeshIndex = 0; MeshIndex < PipeMeshes.Num(); ++MeshIndex)
 		{
-			const int32 Edge = bUseGjConnections ? PipeMeshFlowIndices[MeshIndex] : MeshIndex;
+			const int32 Edge = PipeMeshFlowIndices[MeshIndex];
 			SimMeshBuilder::SetMeshColor(PipeMeshes[MeshIndex], Colors.IsValidIndex(Edge) ? Colors[Edge] : PipeTemperatureDisplay::UnknownColor());
 		}
 		return;
@@ -1016,13 +1076,13 @@ void ADataCenterRoomActor::UpdatePipeColors() const
 
 	for (int32 PipeIndex = 0; PipeIndex < PipeMeshes.Num(); ++PipeIndex)
 	{
-		const int32 FlowIndex = bUseGjConnections ? PipeMeshFlowIndices[PipeIndex] : PipeIndex;
+		const int32 FlowIndex = PipeMeshFlowIndices[PipeIndex];
 		const double Flow = FlowIndex >= 0 ? Network.GetPipeFlowM3s(FlowIndex) : Network.GetPumpFlowM3s(-1-FlowIndex);
 		const double Normalized = FMath::Abs(Flow) / NormalizationM3s;
 
 		// 제곱근을 씌워 낮은 유량 구간을 펼친다. 표시용 보정이며 계산과 무관하다.
 		const float Shaped = FMath::Sqrt(FMath::Clamp(static_cast<float>(Normalized), 0.0f, 1.0f));
-		const bool bSupply = bUseGjConnections ? PipeMeshSupply[PipeIndex] : (bPipeIsSupplySide.IsValidIndex(PipeIndex) && bPipeIsSupplySide[PipeIndex]);
+		const bool bSupply = PipeMeshSupply[PipeIndex];
 
 		SimMeshBuilder::SetMeshColor(PipeMeshes[PipeIndex],
 			FMath::Lerp(bSupply ? SupplyLowColor : ReturnLowColor,
@@ -1170,7 +1230,7 @@ uint32 ADataCenterRoomActor::GjLayoutHash() const
 		Hash=HashCombine(Hash,GetTypeHash(It->GetActorRotation().Euler()));
 		Hash=HashCombine(Hash,GetTypeHash(It->GetActorScale3D()));
 		Hash=HashCombine(Hash,GetTypeHash(It->RackSizeM));
-		Hash=HashCombine(Hash,GetTypeHash(It->GetNumDockedSleds()));
+		if (!GetInRackHandles(*It)) Hash=HashCombine(Hash,GetTypeHash(It->GetNumDockedSleds()));
 	}
 	for (TActorIterator<ASpineCabinetActor> It(GetWorld()); It; ++It)
 	{
@@ -1361,6 +1421,7 @@ void ADataCenterRoomActor::BuildGjPipeMeshes()
 	};
 	for (int32 I=0;I<Network.GetNumPipes();++I)
 	{
+		if (Network.IsRackInternalPipe(I)) continue;
 		FVector A=SimUnits::MetersToUnreal(NodePositionM[Network.GetPipeFromNodeIndex(I)]);
 		FVector B=SimUnits::MetersToUnreal(NodePositionM[Network.GetPipeToNodeIndex(I)]);
 		const FVector* Start=PipeStartOverrideCm.Find(I); const FVector* End=PipeEndOverrideCm.Find(I);

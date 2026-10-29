@@ -38,7 +38,7 @@ FInRackHandles InRackNetwork::Add(FHydraulicNetwork& Network, const FInRackSpec&
 	if (Count == 0) return H;
 	auto Pipe = [&](int32 A, int32 B, double Resistance)
 	{
-		FHydraulicPipe P; P.FromNodeIndex = A; P.ToNodeIndex = B; P.ResistancePaS2M6 = Resistance;
+		FHydraulicPipe P; P.FromNodeIndex = A; P.ToNodeIndex = B; P.ResistancePaS2M6 = Resistance; P.bRackInternal = true;
 		const int32 I = Network.AddPipe(P); H.Pipes.Add(I); return I;
 	};
 	// 추정: 세로 매니폴드 왕복 손실을 전체 랙 손실의 최대 1%로 제한한다.

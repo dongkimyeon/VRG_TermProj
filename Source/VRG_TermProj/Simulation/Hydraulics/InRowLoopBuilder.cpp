@@ -28,11 +28,13 @@ double InRowLoopBuilder::BranchResistancePaS2M6(const FInRowLoopSpec& Spec, int3
 	return Spec.RackBranchResistancePaS2M6 * ParallelScale * ParallelScale;
 }
 
-FInRowLoopHandles InRowLoopBuilder::AddLoop(FHydraulicNetwork& Network, const FInRowLoopSpec& Spec)
+FInRowLoopHandles InRowLoopBuilder::AddLoop(FHydraulicNetwork& Network, const FInRowLoopSpec& Spec, const TArray<FInRackSpec>* InRacks)
 {
 	FInRowLoopHandles Handles;
 
 	const int32 RackCount = FMath::Max(1, Spec.NumRacks);
+	Handles.InRacks.SetNum(RackCount);
+	auto HasInternal = [&](int32 R) { return InRacks && InRacks->IsValidIndex(R) && !(*InRacks)[R].Slots.IsEmpty(); };
 
 	FHydraulicNode CduNode;
 	CduNode.bFixedPressure = true;
@@ -52,7 +54,7 @@ FInRowLoopHandles InRowLoopBuilder::AddLoop(FHydraulicNetwork& Network, const FI
 		// 유닛이 한 대도 없는 랙은 연결될 곳이 없으므로 노드를 만들지 않는다.
 		// 만들어 두면 어떤 배관에도 닿지 않는 자유 노드가 생겨 압력이 결정되지 않고
 		// Jacobian이 특이해진다.
-		const bool bHasDockedSleds = DockedSledsAt(Spec, RackIndex) > 0;
+		const bool bHasDockedSleds = HasInternal(RackIndex) || DockedSledsAt(Spec, RackIndex) > 0;
 		Handles.RackNodeIndices.Add(bHasDockedSleds ? Network.AddNode(FHydraulicNode()) : INDEX_NONE);
 	}
 
@@ -93,11 +95,22 @@ FInRowLoopHandles InRowLoopBuilder::AddLoop(FHydraulicNetwork& Network, const FI
 		}
 		else
 		{
-			const double BranchPaS2M6 = BranchResistancePaS2M6(Spec, DockedSledsAt(Spec, RackIndex));
+			// Existing budget is TWO branch losses. Each external hose keeps 1% of that
+			// total, InRackNetwork consumes the remaining 98%; no dock-count scaling here.
+			const bool bInternal = HasInternal(RackIndex);
+			const double BranchPaS2M6 = bInternal ? 0.02 * Spec.RackBranchResistancePaS2M6
+				: BranchResistancePaS2M6(Spec, DockedSledsAt(Spec, RackIndex));
+			const int32 ReturnNode = bInternal ? Network.AddNode(FHydraulicNode()) : RackNodeIndex;
 			Handles.RackBranchPipeIndices.Add(
 				AddPipe(Handles.SupplyNodeIndices[RackIndex], RackNodeIndex, BranchPaS2M6));
 			Handles.RackReturnPipeIndices.Add(
-				AddPipe(RackNodeIndex, Handles.ReturnNodeIndices[RackIndex], BranchPaS2M6));
+				AddPipe(ReturnNode, Handles.ReturnNodeIndices[RackIndex], BranchPaS2M6));
+			if (bInternal)
+			{
+				FInRackSpec Internal = (*InRacks)[RackIndex];
+				Internal.EquivalentResistancePaS2M6 = 2.0 * Spec.RackBranchResistancePaS2M6;
+				Handles.InRacks[RackIndex] = InRackNetwork::Add(Network, Internal, RackNodeIndex, ReturnNode);
+			}
 		}
 
 		// 회수 헤더 구간. CDU 쪽으로 되돌아간다.

@@ -3142,7 +3142,8 @@ void ADataCenterDebugController::OnToggleSelectedSled()
 	// 방 액터는 랙 액터에서 도킹 상태를 직접 읽으므로 다시 풀라고만 알리면 된다.
 	if (Room != nullptr)
 	{
-		Room->RebuildRoom();
+		if (Room->GetInRackHandles(Rack)) Room->SyncInRackDocking();
+		else Room->RebuildRoom(); // radiator / legacy comparison path
 	}
 }
 

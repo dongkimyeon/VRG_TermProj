@@ -4,6 +4,7 @@
 
 #include "CoreMinimal.h"
 #include "Simulation/Hydraulics/HydraulicNetwork.h"
+#include "Simulation/Hydraulics/InRackNetwork.h"
 #include "InRowLoopBuilder.generated.h"
 
 // 인로우 냉각 루프 한 줄을 네트워크에 얹는다.
@@ -65,6 +66,7 @@ struct FInRowLoopSpec
 // 얹은 뒤 돌려주는 인덱스들. 부르는 쪽이 여기에 좌표를 붙이거나 유량을 읽는다.
 struct FInRowLoopHandles
 {
+	TArray<FInRackHandles> InRacks;
 	int32 CduNodeIndex = INDEX_NONE;
 	int32 PumpIndex = INDEX_NONE;
 
@@ -105,5 +107,6 @@ namespace InRowLoopBuilder
 	VRG_TERMPROJ_API int32 DockedSledsAt(const FInRowLoopSpec& Spec, int32 RackIndex);
 
 	// 네트워크에 루프 한 줄을 얹는다. 기존 내용은 지우지 않으므로 여러 줄을 얹을 수 있다.
-	VRG_TERMPROJ_API FInRowLoopHandles AddLoop(FHydraulicNetwork& Network, const FInRowLoopSpec& Spec);
+	VRG_TERMPROJ_API FInRowLoopHandles AddLoop(FHydraulicNetwork& Network, const FInRowLoopSpec& Spec,
+		const TArray<FInRackSpec>* InRacks = nullptr);
 }

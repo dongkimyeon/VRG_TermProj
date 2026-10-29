@@ -5,6 +5,7 @@
 #include "CoreMinimal.h"
 #include "GameFramework/Actor.h"
 #include "Simulation/Hydraulics/HydraulicNetwork.h"
+#include "Simulation/Hydraulics/InRackNetwork.h"
 #include "Simulation/Hydraulics/CoolantInventory.h"
 #include "Visualization/GjConnectionMesh.h"
 #include "Visualization/PatchManager.h"
@@ -249,6 +250,11 @@ public:
 
 	// 통합 액터가 빌려 가는 수력망. 수명은 이 액터가 쥔다.
 	FHydraulicNetwork& GetMutableNetwork() { return Network; }
+	// Native comparison switch; radiator/virtual rows retain the legacy network regardless.
+	bool bUseInRackNetworks = true;
+	const FInRackHandles* GetInRackHandles(const ARackThermalActor* Rack) const;
+	bool SyncInRackDocking();
+	bool IsInternalLeak(int32 Leak) const { return InternalLeakIndices.Contains(Leak); }
 	const FHydraulicNetwork& GetNetwork() const { return Network; }
 	const FHydraulicSolveResult& GetLastSolveResult() const { return LastResult; }
 
@@ -391,6 +397,8 @@ private:
 	};
 
 	FHydraulicNetwork Network;
+	TMap<TWeakObjectPtr<const ARackThermalActor>, FInRackHandles> InRackHandles;
+	TSet<int32> InternalLeakIndices;
 	FHydraulicSolveResult LastResult;
 
 	// 솔버가 모르는 기하. 노드 인덱스와 1:1로 대응한다.

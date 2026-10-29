@@ -40,6 +40,7 @@ public:
 	void SetPumpSpeedRatio(int32 PumpIndex, double SpeedRatio) { if (Pumps.IsValidIndex(PumpIndex)) Pumps[PumpIndex].SpeedRatio = SpeedRatio; }
 	// S8 F1: a control valve is a pipe whose resistance follows its opening (FacilityWaterLoop); changed between solves.
 	double GetPipeResistancePaS2M6(int32 PipeIndex) const { return Pipes.IsValidIndex(PipeIndex) ? Pipes[PipeIndex].ResistancePaS2M6 : 0.0; }
+	bool IsRackInternalPipe(int32 PipeIndex) const { return Pipes.IsValidIndex(PipeIndex) && Pipes[PipeIndex].bRackInternal; }
 	void SetPipeResistancePaS2M6(int32 PipeIndex, double ResistancePaS2M6) { if (Pipes.IsValidIndex(PipeIndex)) Pipes[PipeIndex].ResistancePaS2M6 = ResistancePaS2M6; }
 	// Puts a node into a pipe at Fraction (0..1) of its resistance from its From end: the pipe keeps its index and
 	// becomes From -> new node (R * Fraction), a new pipe new node -> To carries R * (1 - Fraction). Quadratic losses in
