@@ -59,6 +59,7 @@ class VRG_TERMPROJ_API ADataCenterDebugController : public APlayerController
 	GENERATED_BODY()
 
 public:
+	int32 GetAimedInternalLeakSite() const { return LeakToolMode != 0 && IsCameraInputAvailable() && !IsInputKeyDown(EKeys::RightMouseButton) ? LeakToolAimed : INDEX_NONE; }
 	ADataCenterDebugController();
 
 	virtual void Tick(float DeltaTime) override;

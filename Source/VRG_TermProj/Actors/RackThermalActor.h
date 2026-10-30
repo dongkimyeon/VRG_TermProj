@@ -133,6 +133,7 @@ public:
 
 	// 통합 액터가 빌려 가는 내부 모델과 입력. 수명은 이 액터가 쥔다.
 	FRackThermalModel& GetMutableModel() { return Model; }
+	const FRackThermalModel& GetModel() const { return Model; }
 
 	// Design-point air-side heat of this rack [W] (sizes the room's CRAH coil, 2-2).
 	double GetDesignHeatToAirW() const { return FRackThermalModel::DesignHeatToAirW(Params, Input); }

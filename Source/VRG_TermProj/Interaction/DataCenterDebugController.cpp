@@ -3717,6 +3717,7 @@ void ADataCenterDebugController::UpdateLeakTool()
 				Sites.IsValidIndex(LeakToolAimed) && Sites[LeakToolAimed].InternalSite != INDEX_NONE ?
 					*FString::Printf(TEXT("내부 %.3g mm"), Sim->GetLiveLeakToolHoleM(LeakToolAimed, LeakToolMode) * 1e3) : LeakToolName(LeakToolMode), *Aim));
 	}
+	Sim->DrawRackLeakStatus(LeakToolAimed);
 }
 
 bool ADataCenterDebugController::ApplyLeakToolClick()

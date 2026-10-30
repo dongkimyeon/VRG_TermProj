@@ -88,6 +88,26 @@ bool FRackLeakSensorRoom::RunTest(const FString& Parameters)
 		}
 		TArray<double> Flows;
 		for (int32 I = 0; I < Room->GetNetwork().GetNumPipes(); ++I) Flows.Add(Room->GetNetwork().GetPipeFlowM3s(I));
+		if (Path == 1)
+		{
+			const int32 Target = Sim->ResolveLiveLeakSite(TEXT("rack:0:tray:0:plate"));
+			ADataCenterSimulationActor::FRackLeakStatus View;
+			const auto HeldBeforeView = W.HeldM3, ExposureBeforeView = W.RearExposureM3;
+			const auto TempsBeforeView = Rack->GetModel().GetState().ComponentTempK;
+			const double TimeBeforeView = Sim->GetSnapshot().SimTimeS;
+			for (int32 I = 0; I < 50; ++I) TestTrue(TEXT("read-only aimed-rack status available"), Sim->GetRackLeakStatus(Target, View));
+			TestTrue(TEXT("repaired hole does not erase water or sensor history"), View.FlowM3s == 0.0 && View.BottomM3 > 0.0 && View.RackHeldM3 > 0.0
+				&& View.bDripAlarm && View.bRopeAlarm && View.DripTimeS > 0.0 && View.RopeTimeS > 0.0);
+			TestTrue(TEXT("arrived water split into delivered and pending, no duplication"), View.BottomM3 == View.DeliveredM3 + View.PendingM3);
+			TestTrue(TEXT("snapshot distinguishes exposure and water inventory"), View.SlotHeldM3 >= 0.0 && View.SlotRearExposureM3 >= 0.0 && View.RackTransitM3 >= 0.0);
+			TestTrue(TEXT("status uses existing tray temperature and signed solved inlet/outlet"), View.TrayTempK == Rack->GetModel().GetTrayCoolant().GetTrayTempK()[0]
+				&& View.TrayInM3s == Room->GetNetwork().GetPipeFlowM3s(Room->GetInRackHandles(Rack)->InletPipes[0])
+				&& View.TrayOutM3s == Room->GetNetwork().GetPipeFlowM3s(Room->GetInRackHandles(Rack)->OutletPipes[0]));
+			TestTrue(TEXT("reading display leaves water, heat and clock unchanged"), HeldBeforeView == W.HeldM3 && ExposureBeforeView == W.RearExposureM3
+				&& TempsBeforeView == Rack->GetModel().GetState().ComponentTempK && TimeBeforeView == Sim->GetSnapshot().SimTimeS);
+			AddInfo(FString::Printf(TEXT("status held %.12g transit %.12g bottom %.12g delivered %.12g pending %.12g m3; slot rear contact %.12g m3; coolant %.12g K in/out %.12g/%.12g m3/s; read x50 state delta0"),
+				View.RackHeldM3, View.RackTransitM3, View.BottomM3, View.DeliveredM3, View.PendingM3, View.SlotRearExposureM3, View.TrayTempK, View.TrayInM3s, View.TrayOutM3s));
+		}
 		const auto Snapshot = Sim->GetSnapshot();
 		MaxEnergy = FMath::Max(MaxEnergy, FMath::Abs(Snapshot.NormalizedEnergyResidual));
 		MaxWater = FMath::Max(MaxWater, FMath::Abs(W.BalanceErrorM3()));

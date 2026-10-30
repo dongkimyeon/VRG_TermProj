@@ -2,6 +2,7 @@
 #include "Actors/DataCenterRoomActor.h"
 #include "Actors/RackThermalActor.h"
 #include "Simulation/Core/SimUnits.h"
+#include "DrawDebugHelpers.h"
 
 namespace
 {
@@ -99,4 +100,56 @@ double ADataCenterSimulationActor::GetLiveLeakFlowM3s(int32 Index) const
 	if (!P.bPlant) return Room ? Room->GetNetwork().GetLeakFlowM3s(P.InternalSite != INDEX_NONE ? P.NetworkLeak : Room->GetLeakNetworkIndex(P.RoomSpec)) : 0.0;
 	const auto* L = Plant.GetLoopFor(P.Loop); const int32 K = L ? L->FindLeak(P.PlantSite, P.Branch) : INDEX_NONE;
 	return K == INDEX_NONE ? 0.0 : L->GetLeakFlowM3s(K);
+}
+
+bool ADataCenterSimulationActor::GetRackLeakStatus(int32 Index, FRackLeakStatus& Out) const
+{
+	if (Mode != ESimMode::Simulation || !Room || !LiveLeakSites.IsValidIndex(Index)) return false;
+	const auto& P = LiveLeakSites[Index]; const auto Routed = Room->GetRoutedRacks();
+	if (P.InternalSite == INDEX_NONE || !Routed.IsValidIndex(P.RackIndex)) return false;
+	const auto* Rack = Routed[P.RackIndex]; const auto* H = Room->GetInRackHandles(Rack);
+	const int32 R = Racks.IndexOfByKey(Rack); const auto& W = RackInterior.GetWater();
+	if (!H || !W.FloorM3.IsValidIndex(R) || !H->Slots.IsValidIndex(P.Tray)) return false;
+	FRackLeakStatus View;
+	View.RackId = Rack->LayoutId.IsEmpty() ? Rack->GetFName().ToString() : Rack->LayoutId;
+	View.FlowM3s = GetLiveLeakFlowM3s(Index);
+	const int32 S = W.Start[R] + P.Slot;
+	if (!W.HeldM3.IsValidIndex(S)) return false;
+	View.SlotHeldM3 = W.HeldM3[S]; View.SlotRearExposureM3 = W.RearExposureM3[S];
+	for (int32 I = W.Start[R]; I < W.Start[R + 1]; ++I) { View.RackHeldM3 += W.HeldM3[I]; View.RackTransitM3 += W.TransitM3[I] + W.GetRearTransitM3()[I]; }
+	View.BottomM3 = W.FloorM3[R] + W.RearFloorM3[R];
+	View.DeliveredM3 = RackInterior.GetFloorDeliveredM3(false)[R] + RackInterior.GetFloorDeliveredM3(true)[R];
+	View.PendingM3 = View.BottomM3 - View.DeliveredM3; // disjoint book entries, never added again to bottom arrivals
+	const auto& Temps = Rack->GetModel().GetTrayCoolant().GetTrayTempK();
+	if (!Temps.IsValidIndex(P.Tray)) return false; // No fabricated 0 K reading before the thermal route is initialized.
+	View.TrayTempK = Temps[P.Tray];
+	View.TrayInM3s = Room->GetNetwork().GetPipeFlowM3s(H->InletPipes[P.Tray]);
+	View.TrayOutM3s = Room->GetNetwork().GetPipeFlowM3s(H->OutletPipes[P.Tray]);
+	for (int32 I = 0; I < Instruments.Num(); ++I)
+	{
+		const auto& Point = Instruments.GetPoint(I); if (!Point.bWaterContact || Point.Key != R) continue;
+		if (Point.Site == EInstrumentSite::RackDripTray) { View.bDripReady = true; View.bDripAlarm = Instruments.IsLeakAlarm(I); View.DripTimeS = Instruments.GetLeakAlarmTimeS(I); }
+		if (Point.Site == EInstrumentSite::RackManifoldRope) { View.bRopeReady = true; View.bRopeAlarm = Instruments.IsLeakAlarm(I); View.RopeTimeS = Instruments.GetLeakAlarmTimeS(I); }
+	}
+	Out = MoveTemp(View); return true;
+}
+
+void ADataCenterSimulationActor::DrawRackLeakStatus(int32 Index) const
+{
+	FRackLeakStatus View; if (!GetRackLeakStatus(Index, View) || !bShowSpray) return;
+	const auto& P = LiveLeakSites[Index]; const auto* Rack = Room->GetRoutedRacks()[P.RackIndex];
+	const int32 R = Racks.IndexOfByKey(Rack); const auto& W = RackInterior.GetWater();
+	const FTransform T = Rack->GetActorTransform();
+	for (int32 I = 0; I < Rack->Params.Slots.Num(); ++I)
+	{
+		const int32 S = W.Start[R] + I;
+		// Cumulative rear exposure is a history, NOT a current 3D film thickness. Hole size is not a wetness input.
+		if (W.HeldM3[S] <= 0.0 && W.RearExposureM3[S] <= 0.0) continue;
+		const auto& Slot = Rack->Params.Slots[I];
+		FVector Corners[4];
+		for (int32 C = 0; C < 4; ++C)
+			Corners[C] = T.TransformPosition(SimUnits::MetersToUnreal(FVector(.5 * Rack->RackSizeM.X, (C == 0 || C == 3 ? -.5 : .5) * Rack->RackSizeM.Y,
+				Slot.BottomZM + (C >= 2 ? Slot.HeightM : 0.0))));
+		for (int32 C = 0; C < 4; ++C) DrawDebugLine(GetWorld(), Corners[C], Corners[(C + 1) % 4], W.HeldM3[S] > 0 ? FColor::Cyan : FColor(190, 120, 255), false, -1.f, SDPG_Foreground, 2.f);
+	}
 }

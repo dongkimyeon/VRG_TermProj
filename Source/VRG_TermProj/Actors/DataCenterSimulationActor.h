@@ -393,6 +393,18 @@ public:
 	double GetLiveLeakToolHoleM(int32 Site, int32 ToolMode) const;
 	double GetLiveLeakFlowM3s(int32 Site) const;
 	void AppendInternalLiveLeakSites();
+	// Read-only game-thread render snapshot. Volumes in m3, signed flows in m3/s, temperature K.
+	struct FRackLeakStatus
+	{
+		double FlowM3s = 0.0, SlotHeldM3 = 0.0, SlotRearExposureM3 = 0.0, RackHeldM3 = 0.0, RackTransitM3 = 0.0;
+		double BottomM3 = 0.0, DeliveredM3 = 0.0, PendingM3 = 0.0;
+		double TrayTempK = 0.0, TrayInM3s = 0.0, TrayOutM3s = 0.0;
+		bool bDripReady = false, bRopeReady = false, bDripAlarm = false, bRopeAlarm = false;
+		double DripTimeS = -1.0, RopeTimeS = -1.0;
+		FString RackId;
+	};
+	bool GetRackLeakStatus(int32 Site, FRackLeakStatus& Out) const;
+	void DrawRackLeakStatus(int32 Site) const; // schematic wet-slot front outlines, no collision/physical writes
 	// Current hole [m] of a site, and the pipe inner diameter a full rupture opens.
 	double GetLiveLeakHoleDiameterM(int32 Site) const;
 	double GetLiveLeakRuptureDiameterM(int32 Site) const;

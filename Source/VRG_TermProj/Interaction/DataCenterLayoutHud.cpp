@@ -87,13 +87,13 @@ void ADataCenterLayoutHud::DrawTemperatureLabels()
 	for (int32 I = 0; I < Instruments.Num(); ++I)
 	{
 		const FInstrumentPoint& P = Instruments.GetPoint(I);
-		if (P.bWaterContact) continue; // W3.5 sensor/report only; new rack sensor display is a later task.
 		const FVector WorldCm = SimUnits::MetersToUnreal(P.PositionM);
 		if (Instruments.IsLeakAlarm(I))
 		{
 			Label(WorldCm, FString::Printf(TEXT("누수 감지 %.0f s | %s"), Instruments.GetLeakAlarmTimeS(I), *P.Label), FLinearColor(1.f, .2f, .2f), 0);
 			continue;
 		}
+		if (P.bWaterContact) continue; // Non-alarm readiness/state is in the aimed-rack panel, not a fabricated temperature channel.
 		if (FVector::Dist(WorldCm, EyeCm) > SensorLabelRangeCm || FVector::DotProduct(WorldCm - EyeCm, ViewDir) <= 0.0) continue;
 		const bool bPipe = P.Site == EInstrumentSite::PlantPipe || P.Site == EInstrumentSite::RoomPipe;
 		if (bPipe)
@@ -166,6 +166,7 @@ void ADataCenterLayoutHud::DrawHUD()
 	const auto* Controller = Cast<ADataCenterDebugController>(GetOwningPlayerController());
 	if (!Canvas || !Controller) return;
 	DrawTemperatureLabels();   // under the key hint
+	DrawRackLeakTool();
 	DrawAirLegend();
 
 	// Key hint on the canvas: the engine's on-screen message list would also print its "DisableAllScreenMessages" hint.

@@ -13,4 +13,5 @@ public:
 private:
 	void DrawTemperatureLabels();
 	void DrawAirLegend();
+	void DrawRackLeakTool();
 };
