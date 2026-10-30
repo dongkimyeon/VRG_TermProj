@@ -23,6 +23,12 @@ bool FVrgInRackRoom::RunTest(const FString& Parameters)
 	World->SpawnActor<ACoolingDistributionUnitActor>(FVector(-300, 0, 0), FRotator::ZeroRotator);
 	Room->bUseInRackNetworks = false; Room->RebuildRoomNow();
 	const double OldFlow = Room->GetNetwork().GetPipeFlowM3s(Room->GetRackBranchPipeIndices()[0]);
+	// Completion condition 9: compare direction of the existing dock-count approximation
+	// with the explicit tray's two endpoint valves, without forcing equal magnitudes.
+	const int32 DetachedSlot = InRackNetwork::FromThermal(Rack->Params, Rack->GetMutableInput()).Slots[0];
+	Rack->SetSledDocked(DetachedSlot, false); Room->RebuildRoom(); Room->RebuildRoomNow();
+	const double OldDetachedFlow = Room->GetNetwork().GetPipeFlowM3s(Room->GetRackBranchPipeIndices()[0]);
+	Rack->SetSledDocked(DetachedSlot, true);
 	Room->bUseInRackNetworks = true; Room->RebuildRoom(); Room->RebuildRoomNow();
 	TestTrue(TEXT("room solve converged"), Room->GetLastSolveResult().bConverged);
 	const FInRackHandles* H = Room->GetInRackHandles(Rack);
@@ -47,6 +53,11 @@ bool FVrgInRackRoom::RunTest(const FString& Parameters)
 		TestEqual(TEXT("leaks stable"), Net.GetNumLeaks(), Leaks);
 		TestTrue(TEXT("both endpoint valves closed"), Net.IsPipeClosed(H->InletPipes[0]) && Net.IsPipeClosed(H->OutletPipes[0]));
 		TestEqual(TEXT("detached flow zero"), Net.GetPipeFlowM3s(H->InletPipes[0]), 0.0);
+		const double NewDetachedFlow = Net.GetPipeFlowM3s(Branch);
+		TestTrue(TEXT("legacy dock-count and explicit tray closing have same flow trend"), OldDetachedFlow > 0.0 && OldDetachedFlow < OldFlow
+			&& NewDetachedFlow > 0.0 && NewDetachedFlow < Flow);
+		AddInfo(FString::Printf(TEXT("dock trend slot%d: legacy %.12g -> %.12g, explicit %.12g -> %.12g m3/s; detached branch %.12g m3/s"),
+			DetachedSlot, OldFlow, OldDetachedFlow, Flow, NewDetachedFlow, Net.GetPipeFlowM3s(H->InletPipes[0])));
 		TestTrue(TEXT("remaining network converges"), Room->GetLastSolveResult().bConverged);
 		Net.SetLeakHoleDiameterM(H->Leaks[5 * 13 + 2], .003);
 		TestTrue(TEXT("internal leak solved"), Net.Solve(Room->SolveSettings).bConverged);
