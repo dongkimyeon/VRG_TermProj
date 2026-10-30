@@ -479,8 +479,10 @@ private:
 	// nearest to the cursor ray (drawn yellow); a click applies the mode to it (ADataCenterSimulationActor::SetLiveLeak).
 	int32 LeakToolMode = 0;
 	int32 LeakToolAimed = INDEX_NONE;
+	int32 LeakToolKindCycle = 0;
 	bool bLastCursorInputMode = false;
 	void OnCycleLeakTool();
+	void OnCycleLeakSiteKind();
 	// Air display modes (V). Plan view moves the camera above the room and the next mode puts it back.
 	void OnCycleAirView();
 	FVector PlanSavedEyeCm = FVector::ZeroVector;

@@ -292,6 +292,7 @@ void ADataCenterDebugController::SetupInputComponent()
 		{ TEXT("GizmoTranslate"), EKeys::W, &ADataCenterDebugController::OnGizmoTranslateKey },
 		{ TEXT("GizmoCycle"), EKeys::SpaceBar, &ADataCenterDebugController::OnGizmoCycleKey },
 		{ TEXT("LeakTool"), EKeys::L, &ADataCenterDebugController::OnCycleLeakTool },   // W1 live leak (simulation mode)
+		{ TEXT("LeakSiteKind"), EKeys::B, &ADataCenterDebugController::OnCycleLeakSiteKind }, // W3.5, only while L tool is active
 		{ TEXT("AirView"), EKeys::V, &ADataCenterDebugController::OnCycleAirView },     // air display modes (simulation mode)
 	};
 
@@ -3124,6 +3125,7 @@ void ADataCenterDebugController::DrawTargetHighlight() const
 void ADataCenterDebugController::OnToggleSelectedSled()
 {
 	if (bRoomSettingsOpen) return;
+	if (!IsLayoutMode() && (LeakToolMode != 0 || !IsCameraInputAvailable())) return; // E never detaches hardware while aiming a leak
 	if (IsLayoutMode())
 	{
 		// E flies up with RMB held; without it, E is the barrier gizmo's rotate mode (Unreal W/E/R).
@@ -3660,27 +3662,37 @@ void ADataCenterDebugController::OnCycleAirView()
 void ADataCenterDebugController::OnCycleLeakTool()
 {
 	ADataCenterSimulationActor* Sim = FindSimActor();
-	if (IsLayoutMode() || Sim == nullptr || Sim->GetSimMode() != ESimMode::Simulation) return;
+	if (IsLayoutMode() || !IsCameraInputAvailable() || Sim == nullptr || Sim->GetSimMode() != ESimMode::Simulation) return;
 	LeakToolMode = (LeakToolMode + 1) % 5;
 	LeakToolAimed = INDEX_NONE;
+	if (LeakToolMode == 1) LeakToolKindCycle = 0;
 	if (LeakToolMode == 1 && Sim->GetLiveLeakSites().Num() == 0) Sim->RebuildLiveLeakSites();
 	UE_LOG(LogTemp, Display, TEXT("[Leak] 누수 도구: %s (지점 %d개)"), LeakToolName(LeakToolMode), Sim->GetLiveLeakSites().Num());
+}
+
+void ADataCenterDebugController::OnCycleLeakSiteKind()
+{
+	if (IsLayoutMode() || LeakToolMode == 0 || !IsCameraInputAvailable() || IsInputKeyDown(EKeys::RightMouseButton)) return;
+	LeakToolKindCycle = (LeakToolKindCycle + 1) % 6; // LCM of front three / rear two kinds
 }
 
 void ADataCenterDebugController::UpdateLeakTool()
 {
 	ADataCenterSimulationActor* Sim = FindSimActor();
 	UWorld* World = GetWorld();
-	if (Sim == nullptr || World == nullptr) return;
+	if (Sim == nullptr || World == nullptr || !IsCameraInputAvailable()) { LeakToolAimed = INDEX_NONE; return; }
 	const auto& Sites = Sim->GetLiveLeakSites();
 	// Aim: the site nearest to the cursor ray (perpendicular distance up to 40 cm, in front of the eye).
 	LeakToolAimed = INDEX_NONE;
 	FVector Eye, Dir; FVector2D Screen;
 	if (MouseRay(Eye, Dir, Screen))
 	{
+		LeakToolAimed = Sim->FindInternalLeakOnRay(SimUnits::UnrealToMeters(Eye), Dir, LeakToolKindCycle);
+		const bool bExternalAim = LeakToolAimed == INDEX_NONE;
 		double Best = 40.0;
-		for (int32 I = 0; I < Sites.Num(); ++I)
+		for (int32 I = 0; bExternalAim && I < Sites.Num(); ++I)
 		{
+			if (Sites[I].InternalSite != INDEX_NONE) continue;
 			const FVector P = SimUnits::MetersToUnreal(Sites[I].PositionM);
 			const double Along = FVector::DotProduct(P - Eye, Dir);
 			if (Along <= 0.0) continue;
@@ -3691,6 +3703,7 @@ void ADataCenterDebugController::UpdateLeakTool()
 	for (int32 I = 0; I < Sites.Num(); ++I)
 	{
 		const bool bOpen = Sim->GetLiveLeakHoleDiameterM(I) > 0.0;
+		if (Sites[I].InternalSite != INDEX_NONE && !bOpen && I != LeakToolAimed) continue;
 		const FColor Color = I == LeakToolAimed ? FColor::Yellow : bOpen ? FColor::Red : FColor(150, 150, 150);
 		DrawDebugSphere(World, SimUnits::MetersToUnreal(Sites[I].PositionM), I == LeakToolAimed ? 12.f : 6.f, 8, Color, false, -1.f, SDPG_Foreground);
 	}
@@ -3700,17 +3713,19 @@ void ADataCenterDebugController::UpdateLeakTool()
 			? FString::Printf(TEXT("지점 %d %s (구멍 %.1f mm)"), LeakToolAimed, *Sites[LeakToolAimed].Label, Sim->GetLiveLeakHoleDiameterM(LeakToolAimed) * 1e3)
 			: FString(TEXT("조준한 지점 없음"));
 		GEngine->AddOnScreenDebugMessage(static_cast<uint64>(GetUniqueID()) + 41, 0.f, FColor::Yellow,
-			FString::Printf(TEXT("누수 도구: %s | %s | 클릭 적용 · L 다음 · Esc 끄기"), LeakToolName(LeakToolMode), *Aim));
+			FString::Printf(TEXT("누수 도구: %s | %s | 클릭 적용 · L 크기 · B 지점 종류 · Esc 끄기 (내부 1/3mm·호스 파단, 추정 시나리오)"),
+				Sites.IsValidIndex(LeakToolAimed) && Sites[LeakToolAimed].InternalSite != INDEX_NONE ?
+					*FString::Printf(TEXT("내부 %.3g mm"), Sim->GetLiveLeakToolHoleM(LeakToolAimed, LeakToolMode) * 1e3) : LeakToolName(LeakToolMode), *Aim));
 	}
 }
 
 bool ADataCenterDebugController::ApplyLeakToolClick()
 {
 	ADataCenterSimulationActor* Sim = FindSimActor();
-	if (Sim == nullptr || IsInputKeyDown(EKeys::RightMouseButton)) return false;
+	if (Sim == nullptr || !IsCameraInputAvailable() || IsInputKeyDown(EKeys::RightMouseButton)) return false;
 	UpdateLeakTool();
 	if (!Sim->GetLiveLeakSites().IsValidIndex(LeakToolAimed)) return false;
-	const double Hole = LeakToolMode == 1 ? 5.0e-3 : LeakToolMode == 2 ? 30.0e-3 : LeakToolMode == 3 ? Sim->GetLiveLeakRuptureDiameterM(LeakToolAimed) : 0.0;
+	const double Hole = Sim->GetLiveLeakToolHoleM(LeakToolAimed, LeakToolMode);
 	return Sim->SetLiveLeak(LeakToolAimed, Hole, TEXT("클릭"));
 }
 

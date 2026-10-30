@@ -108,6 +108,7 @@ bool FLiveLeakClosedSitesTest::RunTest(const FString& Parameters)
 {
 	FCouplingSnapshot Without, With;
 	int32 LeaksWithout = -1, LeaksWith = -1, SitesWith = -1, SolvesWith = -1, ShownWith = -1, NodesWithout = 0, NodesWith = 0;
+	int32 ExternalSites = 0, InternalSites = 0;
 	{
 		FLiveLeakRoom R(false);
 		R.Sim->EnterSimulationMode();
@@ -124,6 +125,7 @@ bool FLiveLeakClosedSitesTest::RunTest(const FString& Parameters)
 		LeaksWith = R.Room->GetNetwork().GetNumLeaks();
 		NodesWith = R.Room->GetNetwork().GetNumNodes();
 		SitesWith = R.Sim->GetLiveLeakSites().Num();
+		for (const auto& S : R.Sim->GetLiveLeakSites()) { if (S.InternalSite == INDEX_NONE) ++ExternalSites; else ++InternalSites; }
 		SolvesWith = R.Room->GetCoolantInventory().GetNumSolves();
 		ShownWith = 0;
 		for (int32 S = 0; S < R.Room->GetNumLeakSpecs(); ++S) ShownWith += R.Room->IsLeakSpecShown(S) ? 1 : 0;
@@ -134,9 +136,10 @@ bool FLiveLeakClosedSitesTest::RunTest(const FString& Parameters)
 	const double ReturnK = MaxAbsDiff(With.CduReturnTempK, Without.CduReturnTempK);
 	AddInfo(FString::Printf(TEXT("닫힌 지점 %d개(망 누수 %d / 없을 때 %d, 노드 %d / %d), 재고 재풀이 %d회, 보이는 누수 %d | 3 s 뒤 상대 차: 랙 냉각수 유량 %.3e, CDU 부하 %.3e | 절대 차: 랙 흡기 %.3e K, CDU 회수 %.3e K"),
 		SitesWith, LeaksWith, LeaksWithout, NodesWith, NodesWithout, SolvesWith, ShownWith, FlowRel, DutyRel, InletK, ReturnK));
-	// W3.5 internal sites exist in both worlds; W1 still adds only three public sites per rack.
+	// W3.5 internal sites exist in both networks and are now addressable; W1 still adds only three external sites per rack.
 	TestTrue(TEXT("three external closed sites per rack, internal sites retained, none shown, inventory idle"),
-		SitesWith == 6 && LeaksWith - LeaksWithout == 6 && LeaksWithout == 2 * 27 * 5 && SolvesWith == 0 && ShownWith == 0);
+		ExternalSites == 6 && InternalSites == LeaksWithout && SitesWith == ExternalSites + InternalSites
+		&& LeaksWith - LeaksWithout == 6 && LeaksWithout == 2 * 27 * 5 && SolvesWith == 0 && ShownWith == 0);
 	TestTrue(TEXT("closed sites change neither flows nor duties (relative < 1e-12)"), FlowRel < 1e-12 && DutyRel < 1e-12);
 	TestTrue(TEXT("closed sites change no temperature (< 1e-9 K)"), InletK < 1e-9 && ReturnK < 1e-9);
 	return true;

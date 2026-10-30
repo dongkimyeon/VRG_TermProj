@@ -326,6 +326,9 @@ public:
 		int32 Branch = INDEX_NONE;
 		FVector PositionM = FVector::ZeroVector;
 		FString Label;
+		// W3.5 setup indices only. Internal sites are appended after W1/plant sites to preserve their IDs.
+		int32 RackIndex = INDEX_NONE, Tray = INDEX_NONE, Slot = INDEX_NONE, InternalSite = INDEX_NONE, NetworkLeak = INDEX_NONE;
+		FString Key; // rack:<routed rack>:tray:<zero-based liquid tray>:<kind>, or exact Label
 		// W2: where the jet points (scenario input; default = fixed-seed random in the downward cone, ESTIMATE).
 		FVector SprayDirectionM = FVector(0, 0, -1);
 	};
@@ -383,6 +386,13 @@ public:
 	const TArray<FLiveLeakSite>& GetLiveLeakSites() const { return LiveLeakSites; }
 	// Nearest site to a point within MaxDistanceM, INDEX_NONE if none.
 	int32 FindLiveLeakSite(const FVector& PointM, double MaxDistanceM = 2.0) const;
+	int32 ResolveLiveLeakSite(const FString& NameOrIndex) const;
+	// Front (+local X): plate/supply connector/return connector; rear: supply/return manifold.
+	// Reject blank/air slots and side faces. World input in m; transform conversion is at this actor boundary.
+	int32 FindInternalLeakOnRay(const FVector& EyeM, const FVector& Direction, int32 KindCycle) const;
+	double GetLiveLeakToolHoleM(int32 Site, int32 ToolMode) const;
+	double GetLiveLeakFlowM3s(int32 Site) const;
+	void AppendInternalLiveLeakSites();
 	// Current hole [m] of a site, and the pipe inner diameter a full rupture opens.
 	double GetLiveLeakHoleDiameterM(int32 Site) const;
 	double GetLiveLeakRuptureDiameterM(int32 Site) const;
