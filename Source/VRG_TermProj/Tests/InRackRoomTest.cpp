@@ -215,6 +215,29 @@ bool FVrgInRackRoomCost::RunTest(const FString& Parameters)
 	AddInfo(FString::Printf(TEXT("32rack 4x8 hydraulic only: nodes old/new %d/%d pipes %d/%d leaks %d; cold solve old %.6fms/%dit new %.6fms/%dit; changed leak solve %.6fms/%dit; normalized residual %.12g; sparse %d"),
 		Old.GetNumNodes(), New.GetNumNodes(), Old.GetNumPipes(), New.GetNumPipes(), New.GetNumLeaks(), OldMs, OldResult.IterationsUsed, NewMs, NewResult.IterationsUsed,
 		LeakMs, LeakResult.IterationsUsed, LeakResult.NormalizedResidual, LeakResult.bUsedSparse));
-	return true;
+ // Same inputs, fresh analysis reference vs reused analysis. Synthetic pressure perturbations
+ // exercise repeated values, closed/open tray branches and copied-network ownership.
+ FHydraulicNetwork Reference=New; Reference.SetSparseAnalysisReuseForTesting(false);
+ const double BasePa=New.GetNodeSetPressurePa(Handles[0].CduNodeIndex);
+ double FreshMs=0, ReusedMs=0, MaxPressureDifferencePa=0, MaxFlowDifferenceM3s=0;
+ int32 AnalyzeCalls=0, ReuseHits=0;
+ for(int32 C=0;C<4;++C) {
+  for(auto* Net:{&New,&Reference}) {
+   Net->SetNodeSetPressurePa(Handles[0].CduNodeIndex,BasePa+10*(C+1));
+   Net->SetLeakHoleDiameterM(Handles[0].InRacks[0].Leaks[13*5+2],C%2 ? .003 : 0);
+   Net->SetPipeClosed(Handles[0].InRacks[1].InletPipes[0],C==2);
+   Net->SetPipeClosed(Handles[0].InRacks[1].OutletPipes[0],C==2);
+  }
+  const auto Ref=Reference.Solve(FHydraulicSolveSettings()); FreshMs+=Reference.GetLastCosts().TotalMs;
+  const auto Got=New.Solve(FHydraulicSolveSettings()); ReusedMs+=New.GetLastCosts().TotalMs;
+  AnalyzeCalls+=New.GetLastCosts().Sparse.AnalyzeCalls; ReuseHits+=New.GetLastCosts().Sparse.ReuseHits;
+  TestTrue(TEXT("same convergence and Newton iterations, no changed tolerances"),Ref.bConverged && Got.bConverged && Ref.IterationsUsed==Got.IterationsUsed && Ref.NormalizedResidual==Got.NormalizedResidual);
+  for(int32 I=0;I<New.GetNumNodes();++I) MaxPressureDifferencePa=FMath::Max(MaxPressureDifferencePa,FMath::Abs(New.GetNodePressurePa(I)-Reference.GetNodePressurePa(I)));
+  for(int32 I=0;I<New.GetNumPipes();++I) MaxFlowDifferenceM3s=FMath::Max(MaxFlowDifferenceM3s,FMath::Abs(New.GetPipeFlowM3s(I)-Reference.GetPipeFlowM3s(I)));
+  for(int32 I=0;I<New.GetNumPumps();++I) MaxFlowDifferenceM3s=FMath::Max(MaxFlowDifferenceM3s,FMath::Abs(New.GetPumpFlowM3s(I)-Reference.GetPumpFlowM3s(I)));
+ }
+ TestTrue(TEXT("same solved pressure/pipe/pump flows exactly, changed topology safely reanalyzed"),MaxPressureDifferencePa==0 && MaxFlowDifferenceM3s==0 && ReuseHits>0 && AnalyzeCalls>0);
+ AddInfo(FString::Printf(TEXT("32rack paired 4 solves fresh %.6f/reused %.6f ms; pressure difference %.12g Pa flow %.12g m3/s; analyses %d hits %d"),FreshMs,ReusedMs,MaxPressureDifferencePa,MaxFlowDifferenceM3s,AnalyzeCalls,ReuseHits));
+ return true;
 }
 #endif

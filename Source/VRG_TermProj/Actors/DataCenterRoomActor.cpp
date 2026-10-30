@@ -200,6 +200,7 @@ void ADataCenterRoomActor::StepCoolantInventory(double DtS, double NowS)
  const double Values[]={P.SetupMs,P.ResidualMs,P.JacobianMs,P.Sparse.AssemblyMs,P.Sparse.AnalyzeMs,P.Sparse.FactorMs,P.Sparse.BacksolveMs,P.DenseMs,InventorySolveMs-P.TotalMs};
  for(int32 I=0;I<9;++I) C.DetailMs[I]+=Values[I];
  C.HydNewtonIterations+=P.NewtonIterations; C.HydResidualCalls+=P.ResidualCalls;
+ C.SparseAnalyses+=P.Sparse.AnalyzeCalls; C.SparseReuseHits+=P.Sparse.ReuseHits;
 	++InventorySolveCount;
 	LastResult = Result;
 	bPipeColorsDirty = true;

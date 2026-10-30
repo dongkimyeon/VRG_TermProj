@@ -652,7 +652,7 @@ FHydraulicSolveResult FHydraulicNetwork::Solve(const FHydraulicSolveSettings& Se
 
         LastCosts.JacobianMs += FPlatformTime::ToMilliseconds64(FPlatformTime::Cycles64()-JacobianStart);
         bool bLinearOk;
-        if (Result.bUsedSparse) bLinearOk = SolveSparseLinearSystem(SparseJacobian, Delta, NumUnknowns, &LastCosts.Sparse);
+        if (Result.bUsedSparse) bLinearOk = SparseWorkspace.Solve(SparseJacobian, Delta, NumUnknowns, &LastCosts.Sparse, bReuseSparseAnalysis);
         else { FElapsedTimer Time(LastCosts.DenseMs); bLinearOk = SolveDenseLinearSystem(Jacobian, Delta, NumUnknowns); }
         if (!bLinearOk)
 		{

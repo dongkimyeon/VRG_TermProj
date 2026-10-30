@@ -219,7 +219,7 @@ void UVrgPerfSubsystem::FinishCapture()
 	// 첫 몇 프레임은 레벨 로드와 셰이더 컴파일이 섞여 대표값이 아니다.
 	const int32 WarmupFrames = FMath::Min(Samples.Num() / 4, 30);
 
-	FString Csv = TEXT("TimeS,FrameMs,GameMs,DrawMs,GpuMs,SolverMs,PressureMs,CouplingMs,DebugDrawMs,SolverSteps,PressureIterations,DrawnPrimitives,DashboardMs,LayoutEditMs,PlantDisplayMs,RoomTickMs,InventoryHydraulicsMs,RackModelsMs,WaterMs,SimTimeS,HydSetupMs,HydResidualMs,HydJacobianMs,SparseAssemblyMs,SparseAnalyzeMs,SparseFactorMs,SparseBacksolveMs,HydDenseMs,InventoryOtherMs,TransportMs,TrayLimitMs,PullInputsMs,CoolantHxMs,PushAirMs,AirStage0Ms,AirStage1Ms,AirStage2Ms,AirStage3Ms,AirStage4Ms,AirStage5Ms,AirStage6Ms,HydNewtonIterations,HydResidualCalls\n");
+	FString Csv = TEXT("TimeS,FrameMs,GameMs,DrawMs,GpuMs,SolverMs,PressureMs,CouplingMs,DebugDrawMs,SolverSteps,PressureIterations,DrawnPrimitives,DashboardMs,LayoutEditMs,PlantDisplayMs,RoomTickMs,InventoryHydraulicsMs,RackModelsMs,WaterMs,SimTimeS,HydSetupMs,HydResidualMs,HydJacobianMs,SparseAssemblyMs,SparseAnalyzeMs,SparseFactorMs,SparseBacksolveMs,HydDenseMs,InventoryOtherMs,TransportMs,TrayLimitMs,PullInputsMs,CoolantHxMs,PushAirMs,AirStage0Ms,AirStage1Ms,AirStage2Ms,AirStage3Ms,AirStage4Ms,AirStage5Ms,AirStage6Ms,HydNewtonIterations,HydResidualCalls,SparseAnalyses,SparseReuseHits\n");
 	TArray<double> FrameMs;
 	TArray<double> GameMs;
 	TArray<double> DrawMs;
@@ -244,7 +244,7 @@ void UVrgPerfSubsystem::FinishCapture()
 			S.Costs.LayoutEditMs, S.Costs.PlantDisplayMs, S.Costs.RoomTickMs,
 			S.Costs.InventoryHydraulicsMs, S.Costs.RackModelsMs, S.Costs.WaterMs, S.SimTimeS);
  for(double Ms:S.Costs.DetailMs) Csv+=FString::Printf(TEXT(",%.6f"),Ms);
- Csv+=FString::Printf(TEXT(",%.0f,%.0f\n"),S.Costs.HydNewtonIterations,S.Costs.HydResidualCalls);
+ Csv+=FString::Printf(TEXT(",%.0f,%.0f,%.0f,%.0f\n"),S.Costs.HydNewtonIterations,S.Costs.HydResidualCalls,S.Costs.SparseAnalyses,S.Costs.SparseReuseHits);
 		if (Index < WarmupFrames)
 		{
 			continue;

@@ -117,10 +117,14 @@ public:
 	// 파이프 유량을 압력차에서 계산한다. 잔차용이라 하한을 걸지 않는다.
 	static double PipeFlowM3s(double DeltaPPa, double ResistancePaS2M6);
 
-const FHydraulicSolveCosts& GetLastCosts() const { return LastCosts; }
+// Reference verification only: affects repeated symbolic work, never equations or tolerances.
+ void SetSparseAnalysisReuseForTesting(bool bEnable) { bReuseSparseAnalysis = bEnable; }
+ const FHydraulicSolveCosts& GetLastCosts() const { return LastCosts; }
 
 private:
  mutable FHydraulicSolveCosts LastCosts;
+ FSparseLinearWorkspace SparseWorkspace;
+ bool bReuseSparseAnalysis = true;
 	TArray<FHydraulicNode> Nodes;
 	TArray<FHydraulicPipe> Pipes;
 	TArray<FHydraulicPump> Pumps;
