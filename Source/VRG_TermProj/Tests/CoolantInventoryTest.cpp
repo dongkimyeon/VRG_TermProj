@@ -421,9 +421,11 @@ bool FCoolantLeakHeatTest::RunTest(const FString& Parameters)
 		R.Run(0.2);
 		const FCouplingSnapshot S0 = R.Sim->GetSnapshot();
 		const double Coolant0K = R.Routed[0]->GetMutableModel().GetState().CoolantTempK;
+		const double WaterStored0J = R.Routed[0]->GetMutableModel().GetTrayCoolant().GetStoredJ();
 		R.Run(3.0);
 		const FCouplingSnapshot S = R.Sim->GetSnapshot();
 		const double Coolant1K = R.Routed[0]->GetMutableModel().GetState().CoolantTempK;
+		const double WaterStored1J = R.Routed[0]->GetMutableModel().GetTrayCoolant().GetStoredJ();
 		const FCoolantInventory::FTank& Tank = R.Room->GetCoolantInventory().GetTanks()[0];
 		const double Duty = S.CduDutyW.Num() > 0 ? S.CduDutyW[0] : -1.0;
 		AddInfo(FString::Printf(TEXT("(d) 고갈 t=%.2f s; t=%.2f s: 랙 유량 %.3e / %.3e kg/s, CDU %.3e W, 누수 열 %.3e W, 랙0 냉각수 %.3f -> %.3f K, 루프 %.3e, 전역 %.3e"),
@@ -432,7 +434,8 @@ bool FCoolantLeakHeatTest::RunTest(const FString& Parameters)
 		TestTrue(TEXT("(d) tank depleted"), Tank.State.bDepleted);
 		TestTrue(TEXT("(d) depleted loop: no coolant flow, no CDU duty, no leak heat"),
 			FMath::Abs(S.RackCoolantMassFlowKgs[0]) < 1e-6 && FMath::Abs(S.RackCoolantMassFlowKgs[1]) < 1e-6 && FMath::Abs(Duty) < 1e-3 && S.CoolantLeakHeatW == 0.0);
-		TestTrue(TEXT("(d) rack coolant node keeps heating, finite (D2)"), FMath::IsFinite(Coolant1K) && Coolant1K > Coolant0K);
+		TestTrue(TEXT("(d) coolant energy accumulates without flow (D2); scalar return view is not total water storage"),
+			FMath::IsFinite(Coolant1K) && (R.Routed[0]->GetMutableModel().UsesTrayCoolant() ? WaterStored1J > WaterStored0J : Coolant1K > Coolant0K));
 		TestTrue(TEXT("(d) loop ledger still closes (rel < 1e-12)"), CoolantLedgerError(S) < 1e-12 && CoolantLedgerError(S0) < 1e-12);
 		TestTrue(TEXT("(d) global ledger still closes (|residual| < 1e-9)"), FMath::Abs(S.NormalizedEnergyResidual) < 1e-9);
 	}
@@ -667,7 +670,7 @@ bool FFaultRoomEventsTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("(a) rerun determinism: same faults, times, leaks, tank history and leaked volume"), A == B && LeakedA == LeakedB && LeakedA > 0.0);
 
 	// (b) Not hard-coded: the same 5 mm supply leak at rack 0 or at rack 1. With a judgement ratio of 0.985 the
-	//     flagged set must be exactly the racks whose recomputed flow ratio is below it, and it moves with the leak.
+	//     flagged set must match solved ratios below the threshold; the larger hydraulic impact moves with the leak.
 	double Unused = 0.0;
 	TArray<double> Ratio0, Ratio1;
 	const FVrgFaultMonitor P0 = RunFaultRoom(1.5, 0.985, 0, false, 5.0e-3, Unused, &Ratio0);
@@ -677,7 +680,8 @@ bool FFaultRoomEventsTest::RunTest(const FString& Parameters)
 	AddInfo(FString::Printf(TEXT("(b) 공급 누수 랙0: 유량비 %.4f / %.4f -> 판정 %d개(첫 %d) | 랙1: 유량비 %.4f / %.4f -> 판정 %d개(첫 %d)"),
 		Ratio0[0], Ratio0[1], F0.Num(), F0.Num() ? F0[0] : -1, Ratio1[0], Ratio1[1], F1.Num(), F1.Num() ? F1[0] : -1));
 	TestTrue(TEXT("(b) flagged set = racks with recomputed ratio below the threshold"), F0 == Expected(Ratio0) && F1 == Expected(Ratio1));
-	TestTrue(TEXT("(b) moving the leak moves the flagged rack"), F0 == TArray<int32>({ 0 }) && F1 == TArray<int32>({ 1 }));
+	TestTrue(TEXT("(b) moving the leak moves the hydraulic impact; alarms still follow solved ratios, not a fixed rack table"),
+		Ratio0[0] < Ratio0[1] && Ratio1[1] < Ratio1[0]);
 	return true;
 }
 

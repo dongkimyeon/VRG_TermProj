@@ -395,9 +395,13 @@ void FCouplingBridge::CloseCoolantLoop(double DeltaTimeS)
 	for (int32 G = 0; G < CduGroups.Num(); ++G)
 	{
 		const FCduCouplingGroup& Group = CduGroups[G];
-		double HotWK = 0.0, MixSum = 0.0, MassKgs = 0.0, ReverseReturnWK = 0.0;
+		double HotWK = 0.0, MixSum = 0.0, MixExcessW = 0.0, MassKgs = 0.0, ReverseReturnWK = 0.0;
+		bool bHasInternal = false;
 		double TankK = 0.0;
 		bool bTankSet = false;
+		double MixReferenceK = 0.0;
+		for (const int32 R : Group.RackIndices)
+			if (Targets[R].Model && !Links[R].Internal.Slots.IsEmpty()) { MixReferenceK = Targets[R].Model->GetTrayCoolant().GetReferenceTempK(); break; }
 		for (const int32 R : Group.RackIndices)
 		{
 			const FRackCouplingTarget& Target = Targets[R];
@@ -411,17 +415,24 @@ void FCouplingBridge::CloseCoolantLoop(double DeltaTimeS)
 			const double Ls = LastSupplyLeakKgs[R], Lr = LastReturnLeakKgs[R];
 			RackTankTempK[R] = TankK;
 			MassKgs += RackKgs;
-			HotWK += C;
 			if (!Links[R].Internal.Slots.IsEmpty())
 			{
-				const double Returned = TrayInputs[R].ReturnMassFlowKgs;
-				MixSum += FMath::Max(Returned, 0.0) * CpJKgK * OutK
-					+ TrayInputs[R].Network.LeakKgs * CpJKgK * TankK;
-				ReverseReturnWK += FMath::Max(-Returned, 0.0) * CpJKgK;
+				bHasInternal = true;
+				const auto& Transport = TrayInputs[R].Network;
+				const auto& Water = Target.Model->GetTrayCoolant();
+				// Close the HX against the exact boundary operator used by the tray update,
+				// including reverse branches. External supply-pipe flow differs from the sum
+				// of internal supply edges by the separately reported Newton mass residual.
+				HotWK -= Transport.BoundaryWK[Transport.Reservoirs];
+				ReverseReturnWK -= Transport.BoundaryWK[Transport.Reservoirs + 1];
+				MixExcessW += Transport.Dot(Transport.BoundaryWK, 0, Water.GetTrayTempK(), Water.GetReturnTempK(),
+					MixReferenceK, MixReferenceK, Water.GetReferenceTempK())
+					+ Transport.LeakKgs * CpJKgK * (TankK - Water.GetReferenceTempK());
 			}
-			else MixSum += C * OutK;
+			else { HotWK += C; MixSum += C * OutK; MixExcessW += C * (OutK - MixReferenceK); }
 			HotWK += Ls * CpJKgK;
 			MixSum += (Ls + Lr) * CpJKgK * TankK - Lr * CpJKgK * OutK;
+			MixExcessW += (Ls + Lr) * CpJKgK * (TankK - MixReferenceK) - Lr * CpJKgK * (OutK - MixReferenceK);
 		}
 		LastCduHotWK[G] = HotWK; LastCduCoolantKgs[G] = MassKgs;
 		// No flow: nothing is carried, so nothing is exchanged; the racks keep their inlet as it was (D2).
@@ -434,7 +445,12 @@ void FCouplingBridge::CloseCoolantLoop(double DeltaTimeS)
 		const double GroupPumpW = CduPumpHeatW.IsValidIndex(G) ? CduPumpHeatW[G] : 0.0;
 		MixSum += GroupPumpW;
 		PumpW += GroupPumpW;
-		const double MixK = MixSum / (HotWK + ReverseReturnWK);
+		// The internal transport uses reference-temperature enthalpy. Mix deviations from
+		// the same reference and the same boundary coefficients on both sides of the exchange.
+		// This is the original mixing equation at mass closure; hydraulic flows, residuals
+		// and solver tolerances are unchanged. No residual heat correction is booked.
+		const double MixK = bHasInternal ? MixReferenceK + (MixExcessW + GroupPumpW) / (HotWK + ReverseReturnWK)
+			: MixSum / (HotWK + ReverseReturnWK);
 		const double DutyW = CduHeatExchanger::DutyW(Group.Hx, HotWK, MixK);
 		const double SupplyK = MixK - DutyW / HotWK;
 		for (const int32 R : Group.RackIndices)
@@ -475,11 +491,16 @@ void FCouplingBridge::CloseCoolantLoop(double DeltaTimeS)
 		{
 			const double TankK = RackTankTempK[RackIndex];
 			RackTankTempK[RackIndex] = TankK;
-			const double HotKgs = MassFlowKgs + Ls, Returned = TrayInputs[RackIndex].ReturnMassFlowKgs;
+			const auto& Transport = TrayInputs[RackIndex].Network;
+			const auto& Water = Target.Model->GetTrayCoolant();
+			const double HotWK = -Transport.BoundaryWK[Transport.Reservoirs] + Ls * CoolantCpJKgK;
+			const double HotKgs = HotWK / CoolantCpJKgK;
 			if (HotKgs > 0.0)
 			{
-				const double MixK = ((FMath::Max(Returned, 0.0) - Lr) * OutletTempK
-					+ (Ls + Lr + TrayInputs[RackIndex].Network.LeakKgs) * TankK) / (HotKgs + FMath::Max(-Returned, 0.0));
+				const double RefK = Water.GetReferenceTempK();
+				const double MixExcessW = Transport.Dot(Transport.BoundaryWK, 0, Water.GetTrayTempK(), Water.GetReturnTempK(), RefK, RefK, RefK)
+					+ (Ls + Transport.LeakKgs) * CoolantCpJKgK * (TankK - RefK) - Lr * CoolantCpJKgK * (OutletTempK - TankK);
+				const double MixK = RefK + MixExcessW / (HotWK - Transport.BoundaryWK[Transport.Reservoirs + 1]);
 				Target.Input->CoolantInletTempK = RadiatorModel::OutletTempK(*Target.Radiator, MixK, HotKgs, CoolantCpJKgK);
 				RejectedW += RadiatorModel::HeatRejectedW(*Target.Radiator, MixK, HotKgs, CoolantCpJKgK);
 				TrayInputs[RackIndex].ReturnBoundaryTempK = MixK;

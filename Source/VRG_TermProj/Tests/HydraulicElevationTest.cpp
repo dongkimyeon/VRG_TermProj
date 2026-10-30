@@ -229,7 +229,11 @@ bool FHydraulicElevationRoomTest::RunTest(const FString& Parameters)
 		const FHydraulicSolveResult& Res = Room->GetLastSolveResult();
 		AddInfo(FString::Printf(TEXT("%s: 노드 %d개 중 경로 끝점이 닿는 노드 %d개, 높이 = 끝점 평균 오차 최대 %.3e m, 높이 범위 %.3f ~ %.3f m, 수력 %s (반복 %d)"),
 			Style, Net.GetNumNodes(), Covered, MaxErr, MinZ, MaxZ, Res.bConverged ? TEXT("수렴") : TEXT("실패"), Res.IterationsUsed));
-		TestEqual(FString::Printf(TEXT("%s: every node is reached by a drawn pipe end"), Style), Covered, Net.GetNumNodes());
+		TSet<int32> ExternalNodes;
+		for (int32 P = 0; P < Net.GetNumPipes(); ++P) if (!Net.IsRackInternalPipe(P))
+		{ ExternalNodes.Add(Net.GetPipeFromNodeIndex(P)); ExternalNodes.Add(Net.GetPipeToNodeIndex(P)); }
+		for (int32 P = 0; P < Net.GetNumPumps(); ++P) { ExternalNodes.Add(Net.GetPumpFromNodeIndex(P)); ExternalNodes.Add(Net.GetPumpToNodeIndex(P)); }
+		TestEqual(FString::Printf(TEXT("%s: every external node is reached; internal solver-only nodes have no drawn route"), Style), Covered, ExternalNodes.Num());
 		TestTrue(FString::Printf(TEXT("%s: node height = mean height of its drawn pipe ends (< 1e-9 m)"), Style), MaxErr < 1e-9);
 		TestTrue(FString::Printf(TEXT("%s: heights inside the room (0 ~ 3 m)"), Style), MinZ >= 0.0 && MaxZ <= 3.0 && MaxZ > MinZ);
 		TestTrue(FString::Printf(TEXT("%s: hydraulics converged"), Style), Res.bConverged);

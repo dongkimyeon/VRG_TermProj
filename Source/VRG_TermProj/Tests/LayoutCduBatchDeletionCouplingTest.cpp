@@ -34,7 +34,7 @@ bool FLayoutCduBatchDeletionCouplingTest::RunTest(const FString& Parameters)
  const FCduLayoutSettings Configs[]={Base->CaptureLayoutSettings(),Far->CaptureLayoutSettings(),RuntimeSettings};
  const FTransform Transforms[]={Base->GetActorTransform(),Far->GetActorTransform(),Runtime->GetActorTransform()};
  Room->RebuildRoomNow(); Sim->EnterSimulationMode(); Sim->Tick(.021f);
- const double BaselineIt=Sim->GetSnapshot().TotalItHeatW; Sim->EnterLayoutMode(); const int32 Pipes=Room->GetMutableNetwork().GetNumPipes();
+ const double BaselineIt=Sim->GetSnapshot().TotalItHeatW; Sim->EnterLayoutMode(); const int32 Pipes=Room->GetMutableNetwork().GetNumPipes(); const int32 InternalPipes=Room->GetInRackHandles(Rack)->Pipes.Num();
  const FString File=TEXT("automation_cdu_batch_delete_")+FGuid::NewGuid().ToString(), BeforeFile=File+TEXT("_before"), NoneFile=File+TEXT("_none"); FString Summary;
  const FVector Down(0,0,-1);
  auto Select=[&](AActor* A,bool Add=false) { C->SelectLayoutAlongRay(A->GetActorLocation()+FVector(0,0,500),Down,Add); };
@@ -44,7 +44,7 @@ bool FLayoutCduBatchDeletionCouplingTest::RunTest(const FString& Parameters)
  auto Physics=[&](ACoolingDistributionUnitActor* Expected,const TCHAR* Stage) {
   const bool HasCdu=Expected!=nullptr;
   TestTrue(TEXT("Reassigned/absent CDU and preserved rack branch"),Room->GetRowCdu(0)==Expected && Room->GetRoutedRacks().Num()==1
-   && Room->GetMutableNetwork().GetNumPipes()==Pipes && Room->GetMutableNetwork().GetNumPumps()==1);
+   && Room->GetMutableNetwork().GetNumPipes()==Pipes-(HasCdu?0:InternalPipes) && Room->GetMutableNetwork().GetNumPumps()==1 && (Room->GetInRackHandles(Rack)!=nullptr)==HasCdu);
   const auto& H=Room->GetLastSolveResult();
   TestTrue(TEXT("Real/fallback hydraulics converged"),H.bConverged && !H.bIllPosed && !H.bLinearSolveFailed
    && H.NormalizedResidual<Room->SolveSettings.NormalizedResidualTarget && H.ReferenceFlowM3s>0 && H.ReferencePressurePa>0);

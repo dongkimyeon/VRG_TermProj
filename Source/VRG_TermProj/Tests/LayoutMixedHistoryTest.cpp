@@ -324,7 +324,18 @@ bool FLayoutMixedHistoryTest::RunTest(const FString& Parameters)
 			TestTrue(TEXT("Every live rack receives positive coolant mass flow"), Rack->Input.CoolantMassFlowKgs > 0);
 			RackRemovedW += Rack->GetMutableModel().GetLastHeatRemovedByCoolantW();
 			if (!TestTrue(TEXT("Live row/CDU heat group exists"), HeatCapacityFlow.IsValidIndex(Row) && X.Room->GetRowCdu(Row))) continue;
-			HeatCapacityFlow[Row] += Rack->Input.CoolantMassFlowKgs * Rack->Params.CoolantCpJKgK;
+			double BoundaryFlowM3s = Rack->Input.CoolantMassFlowKgs / X.Room->GetNetwork().GetFluidDensityKgM3();
+			if (const auto* Internal = X.Room->GetInRackHandles(Rack)) {
+				// The thermal boundary is the sum of actual internal supply edges. The external
+				// pipe differs by Newton's separately tested mass residual, not an energy error.
+				BoundaryFlowM3s = 0;
+				const auto& Net = X.Room->GetNetwork();
+				for (int32 P : Internal->Pipes) {
+					if (Net.GetPipeFromNodeIndex(P) == Internal->SupplyNode) BoundaryFlowM3s += Net.GetPipeFlowM3s(P);
+					if (Net.GetPipeToNodeIndex(P) == Internal->SupplyNode) BoundaryFlowM3s -= Net.GetPipeFlowM3s(P);
+				}
+			}
+			HeatCapacityFlow[Row] += BoundaryFlowM3s * X.Room->GetNetwork().GetFluidDensityKgM3() * Rack->Params.CoolantCpJKgK;
 			// Reuse the existing GB200 15..35C transient inlet safety net, not a new hardware range.
 			for (double K : Rack->Input.SlotAirInletTempK) {
 				MinInletK = FMath::Min(MinInletK, K); MaxInletK = FMath::Max(MaxInletK, K);
