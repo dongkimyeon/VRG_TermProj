@@ -11,6 +11,8 @@
 #include "Misc/Paths.h"
 #include "UnrealClient.h"
 #include "RenderCore.h"
+#include "Actors/DataCenterSimulationActor.h"
+#include "EngineUtils.h"
 
 namespace
 {
@@ -121,6 +123,8 @@ void UVrgPerfSubsystem::BeginCapture(double DurationS, const FString& Label, boo
 	CaptureRemainingS = FMath::Max(0.1, DurationS);
 	CaptureLabel = Label;
 	Samples.Reset();
+	CaptureSim.Reset();
+	if (GetWorld()) for (TActorIterator<ADataCenterSimulationActor> It(GetWorld()); It; ++It) { CaptureSim = *It; break; }
 	UE_LOG(LogTemp, Display, TEXT("[VrgPerf] '%s' %.1f초 수집 시작"), *CaptureLabel, CaptureRemainingS);
 }
 
@@ -130,6 +134,7 @@ bool UVrgPerfSubsystem::Tick(float DeltaTime)
 
 	FVrgPerfSample Sample;
 	Sample.TimeS = ElapsedS;
+	if (const auto* Sim = CaptureSim.Get()) Sample.SimTimeS = Sim->GetEvaluation().GetSimTimeS();
 	Sample.FrameMs = DeltaTime * 1000.0;
 	// 게임 스레드는 우리가 직접 잰 값을 쓴다 (위 주석 참고).
 	Sample.GameMs = LastGameThreadMs;
@@ -214,7 +219,7 @@ void UVrgPerfSubsystem::FinishCapture()
 	// 첫 몇 프레임은 레벨 로드와 셰이더 컴파일이 섞여 대표값이 아니다.
 	const int32 WarmupFrames = FMath::Min(Samples.Num() / 4, 30);
 
-	FString Csv = TEXT("TimeS,FrameMs,GameMs,DrawMs,GpuMs,SolverMs,PressureMs,CouplingMs,DebugDrawMs,SolverSteps,PressureIterations,DrawnPrimitives,DashboardMs,LayoutEditMs,PlantDisplayMs,RoomTickMs\n");
+	FString Csv = TEXT("TimeS,FrameMs,GameMs,DrawMs,GpuMs,SolverMs,PressureMs,CouplingMs,DebugDrawMs,SolverSteps,PressureIterations,DrawnPrimitives,DashboardMs,LayoutEditMs,PlantDisplayMs,RoomTickMs,InventoryHydraulicsMs,RackModelsMs,WaterMs,SimTimeS\n");
 	TArray<double> FrameMs;
 	TArray<double> GameMs;
 	TArray<double> DrawMs;
@@ -232,11 +237,12 @@ void UVrgPerfSubsystem::FinishCapture()
 	for (int32 Index = 0; Index < Samples.Num(); ++Index)
 	{
 		const FVrgPerfSample& S = Samples[Index];
-		Csv += FString::Printf(TEXT("%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%d,%d,%d,%.4f,%.4f,%.4f,%.4f\n"),
+		Csv += FString::Printf(TEXT("%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%d,%d,%d,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.6f\n"),
 			S.TimeS, S.FrameMs, S.GameMs, S.DrawMs, S.GpuMs,
 			S.Costs.SolverMs, S.Costs.PressureMs, S.Costs.CouplingMs, S.Costs.DebugDrawMs,
 			S.Costs.SolverSteps, S.Costs.PressureIterations, S.Costs.DrawnPrimitives, S.Costs.DashboardMs,
-			S.Costs.LayoutEditMs, S.Costs.PlantDisplayMs, S.Costs.RoomTickMs);
+			S.Costs.LayoutEditMs, S.Costs.PlantDisplayMs, S.Costs.RoomTickMs,
+			S.Costs.InventoryHydraulicsMs, S.Costs.RackModelsMs, S.Costs.WaterMs, S.SimTimeS);
 		if (Index < WarmupFrames)
 		{
 			continue;
@@ -289,6 +295,14 @@ void UVrgPerfSubsystem::FinishCapture()
 
 	UE_LOG(LogTemp, Display, TEXT("%s"), *Summary);
 	UE_LOG(LogTemp, Display, TEXT("[VrgPerf] 기록: %s.csv / %s.txt"), *Stem, *Stem);
+	// Capture-end physics report (after timed samples). The warm-up report alone cannot
+	// establish conservation/convergence during a leak that starts at capture time.
+	if (auto* Sim = CaptureSim.Get(); Sim && Sim->GetSimMode() == ESimMode::Simulation)
+	{
+		FString PhysicsSummary;
+		const bool bOk = Sim->WriteEvaluationReport(CaptureLabel + TEXT("_End"), PhysicsSummary);
+		UE_LOG(LogTemp, Display, TEXT("[VrgPerf] capture-end physics report %s: %s"), bOk ? TEXT("OK") : TEXT("FAILED"), *PhysicsSummary);
+	}
 
 	// 같은 라벨로 화면도 한 장 남긴다. 1단계 완료 조건이 "박스 모드와 볼륨 모드가
 	// 같은 그림인가"라서, 숫자만으로는 확인할 수 없다.

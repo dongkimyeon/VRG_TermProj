@@ -103,6 +103,8 @@ public:
 
 	// 이 노드의 순 유출 - 외부 유입 [m^3/s]. 보존 검사용이며 0에 가까워야 한다.
 	double GetNodeImbalanceM3s(int32 NodeIndex) const;
+	// Same signed residuals, same per-node accumulation order; evaluate each solved edge only once.
+	void GetNodeImbalancesM3s(TArray<double>& Out) const;
 
 	// 파이프 유량을 압력차에서 계산한다. 잔차용이라 하한을 걸지 않는다.
 	static double PipeFlowM3s(double DeltaPPa, double ResistancePaS2M6);

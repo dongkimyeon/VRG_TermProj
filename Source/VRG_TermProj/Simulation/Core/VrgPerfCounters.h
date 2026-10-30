@@ -49,6 +49,10 @@ namespace VrgPerf
 		double LayoutEditMs = 0.0;   // layout-mode controller tick: hover, drag preview, overlap, row snap
 		double PlantDisplayMs = 0.0; // plant yard routing + upload (0.25 s real-time throttle)
 		double RoomTickMs = 0.0;     // room actor tick: settle-triggered pipe rebuild, mesh drain, pipe colours
+		// W3.5 measurement only; these are subsets of the actor's CouplingMs, not extra physics.
+		double InventoryHydraulicsMs = 0.0; // active inventory update + hydraulic re-solve (existing measured interval)
+		double RackModelsMs = 0.0; // existing Bridge rack/part/tray integration timer; excludes coolant-loop closure
+		double WaterMs = 0.0; // source ledger -> interior/spray/floor and water diagnostics, both step dispatch paths
 		int32 SolverSteps = 0;
 		int32 PressureIterations = 0;
 		int32 DrawnPrimitives = 0;

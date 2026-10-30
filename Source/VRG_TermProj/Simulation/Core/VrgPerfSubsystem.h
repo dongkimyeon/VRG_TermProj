@@ -9,10 +9,13 @@
 #include "Subsystems/GameInstanceSubsystem.h"
 #include "VrgPerfSubsystem.generated.h"
 
+class ADataCenterSimulationActor;
+
 // 한 프레임의 측정값. CSV 한 줄이기도 하다.
 struct FVrgPerfSample
 {
 	double TimeS = 0.0;
+	double SimTimeS = -1.0; // shared simulation clock, -1 if no simulation actor
 	double FrameMs = 0.0;
 	double GameMs = 0.0;
 	double DrawMs = 0.0;
@@ -76,4 +79,5 @@ private:
 	double ElapsedS = 0.0;
 	FString CaptureLabel;
 	TArray<FVrgPerfSample> Samples;
+	TWeakObjectPtr<ADataCenterSimulationActor> CaptureSim;
 };

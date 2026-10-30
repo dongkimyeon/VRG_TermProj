@@ -1,11 +1,12 @@
 #include "Simulation/Coupling/InRackTransport.h"
 
 bool InRackTransport::Build(const FHydraulicNetwork& Net, const FInRackHandles& H, int32 ReturnPipe,
-	double DensityKgM3, double CpJKgK, FTrayCoolantInput& Out)
+	double DensityKgM3, double CpJKgK, FTrayCoolantInput& Out, const TArray<double>* NodeImbalancesM3s)
 {
 	const int32 N = H.Slots.Num(), Columns = N + 3;
 	if (N == 0 || H.Nodes.Num() != 5 * N || H.Leaks.Num() != 5 * N || H.Pipes.Num() != 6 * N
-		|| ReturnPipe < 0 || ReturnPipe >= Net.GetNumPipes() || !(DensityKgM3 > 0.0) || !(CpJKgK > 0.0)) return false;
+		|| ReturnPipe < 0 || ReturnPipe >= Net.GetNumPipes() || !(DensityKgM3 > 0.0) || !(CpJKgK > 0.0)
+		|| (NodeImbalancesM3s && NodeImbalancesM3s->Num() != Net.GetNumNodes())) return false;
 	FTrayCoolantInput Candidate;
 	FTrayNetworkTransport& T = Candidate.Network;
 	T.Reservoirs = N + 1;
@@ -38,7 +39,8 @@ bool InRackTransport::Build(const FHydraulicNetwork& Net, const FInRackHandles& 
 	{
 		if (Reservoir[A] != INDEX_NONE) Coeff[A * Columns + Reservoir[A]] = 1.0;
 		if (Reservoir[A] != INDEX_NONE || Pending[A] == 0) Order.Add(A);
-		T.MassResidualKgs = FMath::Max(T.MassResidualKgs, FMath::Abs(Net.GetNodeImbalanceM3s(Nodes[A])) * DensityKgM3);
+		const double ResidualM3s = NodeImbalancesM3s ? (*NodeImbalancesM3s)[Nodes[A]] : Net.GetNodeImbalanceM3s(Nodes[A]);
+		T.MassResidualKgs = FMath::Max(T.MassResidualKgs, FMath::Abs(ResidualM3s) * DensityKgM3);
 	}
 	for (int32 Cursor = 0; Cursor < Order.Num(); ++Cursor)
 	{

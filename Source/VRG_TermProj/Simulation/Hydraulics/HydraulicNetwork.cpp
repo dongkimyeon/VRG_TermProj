@@ -230,6 +230,24 @@ double FHydraulicNetwork::GetNodeImbalanceM3s(int32 NodeIndex) const
 	return SignedOutflowM3s - Nodes[NodeIndex].ExternalInflowM3s;
 }
 
+void FHydraulicNetwork::GetNodeImbalancesM3s(TArray<double>& Out) const
+{
+	Out.Init(0.0, Nodes.Num());
+	for (int32 I = 0; I < Pipes.Num(); ++I)
+	{
+		const double FlowM3s = GetPipeFlowM3s(I);
+		Out[Pipes[I].FromNodeIndex] += FlowM3s;
+		Out[Pipes[I].ToNodeIndex] -= FlowM3s;
+	}
+	for (int32 I = 0; I < Pumps.Num(); ++I)
+	{
+		Out[Pumps[I].FromNodeIndex] += PumpFlowM3s[I];
+		Out[Pumps[I].ToNodeIndex] -= PumpFlowM3s[I];
+	}
+	for (int32 I = 0; I < Leaks.Num(); ++I) Out[Leaks[I].NodeIndex] += GetLeakFlowM3s(I);
+	for (int32 I = 0; I < Nodes.Num(); ++I) Out[I] -= Nodes[I].ExternalInflowM3s;
+}
+
 void FHydraulicNetwork::BuildUnknownMap(int32& OutNumFreeNodes)
 {
 	NodeToUnknown.SetNum(Nodes.Num());

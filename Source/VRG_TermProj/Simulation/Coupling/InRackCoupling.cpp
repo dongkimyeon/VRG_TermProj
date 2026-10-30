@@ -3,12 +3,20 @@
 
 bool FCouplingBridge::PrepareTrayTransport()
 {
+	bool bHasInternal = false;
+	for (const auto& Link : Links) bHasInternal |= !Link.Internal.Slots.IsEmpty();
+	if (!bHasInternal) return true;
+	if (!HydraulicNetwork) return false;
+	// W3.5 measured hotspot: per-node queries repeatedly scanned every pipe in the room.
+	// Recompute once for this solved state/step, never cache across a hydraulic change.
+	TArray<double> NodeImbalancesM3s;
+	HydraulicNetwork->GetNodeImbalancesM3s(NodeImbalancesM3s);
 	for (int32 R = 0; R < Targets.Num(); ++R)
 	{
 		if (Links[R].Internal.Slots.IsEmpty()) continue;
 		if (!HydraulicNetwork || !Targets[R].Model || !Targets[R].Input || !Targets[R].Model->UsesTrayCoolant()
 			|| !InRackTransport::Build(*HydraulicNetwork, Links[R].Internal, Links[R].ReturnPipeIndex,
-				CoolantDensityKgM3, Targets[R].Model->GetParams().CoolantCpJKgK, TrayInputs[R])) return false;
+				CoolantDensityKgM3, Targets[R].Model->GetParams().CoolantCpJKgK, TrayInputs[R], &NodeImbalancesM3s)) return false;
 	}
 	return true;
 }

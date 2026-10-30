@@ -2098,6 +2098,7 @@ void ADataCenterSimulationActor::Tick(float DeltaTime)
 			EvalAfterStep();
 			VrgPerf::Accumulator().SolverSteps += 1;
 			VrgPerf::Accumulator().SolverMs += Bridge.GetLastAirSolverMs();
+			VrgPerf::Accumulator().RackModelsMs += Bridge.GetLastRackModelsMs();
 			if (AirField != nullptr)
 			{
 				VrgPerf::Accumulator().PressureMs += AirField->GetMutableSolver().GetLastPressureSolveMs();
@@ -2414,6 +2415,7 @@ FSprayGeometry ADataCenterSimulationActor::BuildSprayGeometry() const
 
 void ADataCenterSimulationActor::SprayAfterStep(double DtS)
 {
+	VrgPerf::FScopeTimer WaterCost(&VrgPerf::FFrameCosts::WaterMs); // observer only, includes source routing/interior/W2/W3/logging
 	TArray<FSpraySource> Sources;
 	if (Room != nullptr)
 	{
@@ -3548,6 +3550,7 @@ void ADataCenterSimulationActor::DrainWarmupSteps()
 		SprayAfterStep(Clock.GetFixedStepS()); AirFlowAfterStep(Clock.GetFixedStepS());   // W2: the same step path as Tick
 		WarmupCouplingMs +=FPlatformTime::ToMilliseconds64(FPlatformTime::Cycles64() - StepStart);
 		WarmupRackMs += Bridge.GetLastRackModelsMs();
+		VrgPerf::Accumulator().RackModelsMs += Bridge.GetLastRackModelsMs();
 		Clock.CompleteStep();
 		EvalAfterStep();
 		--PendingWarmupSteps;

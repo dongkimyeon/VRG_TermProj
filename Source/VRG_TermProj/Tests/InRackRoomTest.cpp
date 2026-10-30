@@ -5,6 +5,7 @@
 #include "Actors/DataCenterSimulationActor.h"
 #include "Actors/AirFieldDebugActor.h"
 #include "Simulation/Hydraulics/InRowLoopBuilder.h"
+#include "Simulation/Coupling/InRackTransport.h"
 #include "Engine/Engine.h"
 #include "Engine/World.h"
 
@@ -159,10 +160,49 @@ bool FVrgInRackRoomCost::RunTest(const FString& Parameters)
 	const double StartNew = FPlatformTime::Seconds(); const auto NewResult = New.Solve(FHydraulicSolveSettings());
 	const double NewMs = (FPlatformTime::Seconds() - StartNew) * 1000.0;
 	TestTrue(TEXT("32-rack normal old/new converge"), OldResult.bConverged && NewResult.bConverged && NewResult.bUsedSparse);
+	auto CheckTransport = [&](const TCHAR* Case)
+	{
+		TArray<double> Scalar, Bulk;
+		for (int32 I = 0; I < New.GetNumNodes(); ++I) Scalar.Add(New.GetNodeImbalanceM3s(I));
+		New.GetNodeImbalancesM3s(Bulk);
+		auto EqualBits = [](const TArray<double>& A, const TArray<double>& B) {
+			return A.Num() == B.Num() && FMemory::Memcmp(A.GetData(), B.GetData(), A.Num() * sizeof(double)) == 0;
+		};
+		TestTrue(TEXT("bulk residuals bit-identical to independent scalar queries, every node"), EqualBits(Scalar, Bulk));
+		TArray<FTrayCoolantInput> Legacy;
+		const double StartLegacy = FPlatformTime::Seconds();
+		for (const auto& Row : Handles) for (int32 I = 0; I < Row.InRacks.Num(); ++I) {
+			FTrayCoolantInput T;
+			TestTrue(TEXT("scalar transport builds"), InRackTransport::Build(New, Row.InRacks[I], Row.RackReturnPipeIndices[I],
+				New.GetFluidDensityKgM3(), Params.CoolantCpJKgK, T));
+			Legacy.Add(MoveTemp(T));
+		}
+		const double LegacyMs = (FPlatformTime::Seconds() - StartLegacy) * 1000;
+		const double StartBulk = FPlatformTime::Seconds();
+		New.GetNodeImbalancesM3s(Bulk);
+		int32 R = 0;
+		for (const auto& Row : Handles) for (int32 I = 0; I < Row.InRacks.Num(); ++I) {
+			FTrayCoolantInput T;
+			TestTrue(TEXT("shared residual transport builds"), InRackTransport::Build(New, Row.InRacks[I], Row.RackReturnPipeIndices[I],
+				New.GetFluidDensityKgM3(), Params.CoolantCpJKgK, T, &Bulk));
+			const auto& Before = Legacy[R++];
+			TestTrue(TEXT("all transport coefficients, signed flows and mass diagnostics unchanged"),
+				EqualBits(T.Network.NetWK, Before.Network.NetWK) && EqualBits(T.Network.BoundaryWK, Before.Network.BoundaryWK)
+				&& EqualBits(T.Network.LeakWK, Before.Network.LeakWK) && EqualBits(T.Network.ClassLeakWK, Before.Network.ClassLeakWK)
+				&& EqualBits(T.Network.ClassLeakKgs, Before.Network.ClassLeakKgs)
+				&& EqualBits(T.InletMassFlowKgs, Before.InletMassFlowKgs) && EqualBits(T.OutletMassFlowKgs, Before.OutletMassFlowKgs)
+				&& EqualBits(T.LeakMassFlowKgs, Before.LeakMassFlowKgs) && T.ReturnMassFlowKgs == Before.ReturnMassFlowKgs
+				&& T.Network.LeakKgs == Before.Network.LeakKgs && T.Network.MassResidualKgs == Before.Network.MassResidualKgs);
+		}
+		AddInfo(FString::Printf(TEXT("32rack transport %s scalar %.6f ms/shared %.6f ms; every-node residual and all rack operators bit-identical; same solved state, no physics approximation"),
+			Case, LegacyMs, (FPlatformTime::Seconds() - StartBulk) * 1000));
+	};
+	CheckTransport(TEXT("normal"));
 	New.SetLeakHoleDiameterM(Handles[0].InRacks[0].Leaks[13 * 5 + 2], .003);
 	const double StartLeak = FPlatformTime::Seconds(); const auto LeakResult = New.Solve(FHydraulicSolveSettings());
 	const double LeakMs = (FPlatformTime::Seconds() - StartLeak) * 1000.0;
 	TestTrue(TEXT("32-rack changed operating point converges"), LeakResult.bConverged);
+	CheckTransport(TEXT("leak/reverse"));
 	AddInfo(FString::Printf(TEXT("32rack 4x8 hydraulic only: nodes old/new %d/%d pipes %d/%d leaks %d; cold solve old %.6fms/%dit new %.6fms/%dit; changed leak solve %.6fms/%dit; normalized residual %.12g; sparse %d"),
 		Old.GetNumNodes(), New.GetNumNodes(), Old.GetNumPipes(), New.GetNumPipes(), New.GetNumLeaks(), OldMs, OldResult.IterationsUsed, NewMs, NewResult.IterationsUsed,
 		LeakMs, LeakResult.IterationsUsed, LeakResult.NormalizedResidual, LeakResult.bUsedSparse));

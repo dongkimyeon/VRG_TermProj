@@ -193,7 +193,9 @@ void ADataCenterRoomActor::StepCoolantInventory(double DtS, double NowS)
 	FHydraulicSolveResult Result;
 	const uint64 StartCycles = FPlatformTime::Cycles64();
 	if (!Inventory.Step(Network, SolveSettings, DtS, NowS, Result)) return;
-	InventorySolveMsSum += FPlatformTime::ToMilliseconds64(FPlatformTime::Cycles64() - StartCycles);
+	const double InventorySolveMs = FPlatformTime::ToMilliseconds64(FPlatformTime::Cycles64() - StartCycles);
+	InventorySolveMsSum += InventorySolveMs;
+	VrgPerf::Accumulator().InventoryHydraulicsMs += InventorySolveMs;
 	++InventorySolveCount;
 	LastResult = Result;
 	bPipeColorsDirty = true;
