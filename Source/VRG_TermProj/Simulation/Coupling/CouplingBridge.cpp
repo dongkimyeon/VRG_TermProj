@@ -1,6 +1,7 @@
 // Fill out your copyright notice in the Description page of Project Settings.
 
 #include "Simulation/Coupling/CouplingBridge.h"
+#include "Simulation/Core/ElapsedTimer.h"
 
 #include "Simulation/Air/AirSolver.h"
 #include "Simulation/Core/VrgPerfCounters.h"
@@ -654,13 +655,13 @@ void FCouplingBridge::StepOnce(double DeltaTimeS, bool bHydraulicsResolved, bool
 	}
 
 	// 1) 수력 -> 열: 랙 분기 유량을 냉각수 질량유량으로 넘긴다.
-	PullCoolantFlow();
+	{ FElapsedTimer Time(CouplingStageMs[2]); PullCoolantFlow();
 
 	// 2) 공기 -> 열: 랙 앞 공기 온도를 흡기 온도로 넘긴다.
-	PullAirInletTemperature();
+	PullAirInletTemperature(); }
 
 	// 3) 냉각수 루프를 라디에이터로 닫는다. 버린 열을 한 번만 계산해 장부에 적는다.
-	CloseCoolantLoop(DeltaTimeS);
+	{ FElapsedTimer Time(CouplingStageMs[3]); CloseCoolantLoop(DeltaTimeS); }
 
 	// 4) 랙 열모델을 돌린다. 규약 4대로 모든 도메인이 같은 dt를 쓴다.
 	double ItHeatW = 0.0, ConversionLossW = 0.0;
@@ -705,8 +706,8 @@ void FCouplingBridge::StepOnce(double DeltaTimeS, bool bHydraulicsResolved, bool
 
 	// 5) 열 -> 공기: 랙이 공기로 내보낸 열을 체적 열원으로 민다 (D1: 합산해 하나로).
 	//    Fans: the slot flows the rack models just used become the duct face velocities (one exchange, rule 6).
-	UpdateDuctVelocities();
-	PushHeatToAir();
+	{ FElapsedTimer Time(CouplingStageMs[4]); UpdateDuctVelocities();
+	PushHeatToAir(); }
 
 	// 6) 공기 격자를 같은 dt로 돌린다.
 	if (AirSolver != nullptr)
@@ -720,7 +721,9 @@ void FCouplingBridge::StepOnce(double DeltaTimeS, bool bHydraulicsResolved, bool
 			// SCOPE_CYCLE_COUNTER만 스레드 안전하므로 누산기 갱신은 아래에서 한 번에 한다.
 			SCOPE_CYCLE_COUNTER(STAT_VrgAirSolverStep);
 			const uint64 StartCycles = FPlatformTime::Cycles64();
+			double BeforeMs[7]; for (int32 I=0; I<7; ++I) BeforeMs[I]=AirSolver->GetStageMs(I);
 			AirSolver->Step(AirInput, DeltaTimeS);
+ for (int32 I=0; I<7; ++I) AirStageMs[I] += AirSolver->GetStageMs(I)-BeforeMs[I];
 			for (int32 I = 0; I < AirInput.CellHeatW.Num(); ++I)
 				if (AirInput.CellHeatW[I] != 0.0 && AirSolver->GetGrid().bSolidCell.IsValidIndex(I) && AirSolver->GetGrid().bSolidCell[I])
 					DroppedAirHeatJ += AirInput.CellHeatW[I] * DeltaTimeS;

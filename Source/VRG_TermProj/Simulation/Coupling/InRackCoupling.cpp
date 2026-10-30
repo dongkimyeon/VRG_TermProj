@@ -1,8 +1,10 @@
 #include "Simulation/Coupling/CouplingBridge.h"
 #include "Simulation/Thermal/RackThermalModel.h"
+#include "Simulation/Core/ElapsedTimer.h"
 
 bool FCouplingBridge::PrepareTrayTransport()
 {
+	FElapsedTimer Time(CouplingStageMs[0]);
 	bool bHasInternal = false;
 	for (const auto& Link : Links) bHasInternal |= !Link.Internal.Slots.IsEmpty();
 	if (!bHasInternal) return true;
@@ -23,6 +25,7 @@ bool FCouplingBridge::PrepareTrayTransport()
 
 void FCouplingBridge::Step(double DtS, bool bResolved, bool bConverged)
 {
+	for (double& Ms : CouplingStageMs) Ms=0; for (double& Ms : AirStageMs) Ms=0;
 	LastCoupledSubsteps = 0;
 	if (!(DtS > 0.0) || !FMath::IsFinite(DtS)) return;
 	if (!ensureMsgf(PrepareTrayTransport(), TEXT("Invalid solved rack transport; coupled step rejected"))) return;
@@ -40,8 +43,10 @@ void FCouplingBridge::Step(double DtS, bool bResolved, bool bConverged)
 	while (Remaining > 0.0)
 	{
 		double StepS = Remaining;
+		{ FElapsedTimer Time(CouplingStageMs[1]);
 		for (int32 R = 0; R < Targets.Num(); ++R)
 			if (!Links[R].Internal.Slots.IsEmpty()) StepS = FMath::Min(StepS, Targets[R].Model->LimitTrayStepS(*Targets[R].Input, TrayInputs[R], Remaining));
+		}
 		if (!ensureMsgf(StepS > 0.0 && Remaining - StepS != Remaining, TEXT("No stable coupled interval"))) return;
 		StepOnce(StepS, bResolved && LastCoupledSubsteps == 0, bConverged);
 		ItJ += LastItHeatW * StepS; LossJ += LastConversionLossW * StepS; FanJ += LastFanPowerW * StepS;

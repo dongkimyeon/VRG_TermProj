@@ -53,6 +53,8 @@ namespace VrgPerf
 		double InventoryHydraulicsMs = 0.0; // active inventory update + hydraulic re-solve (existing measured interval)
 		double RackModelsMs = 0.0; // existing Bridge rack/part/tray integration timer; excludes coolant-loop closure
 		double WaterMs = 0.0; // source ledger -> interior/spray/floor and water diagnostics, both step dispatch paths
+		double DetailMs[21] = {}; // appended CSV stages; nested costs, never add to outer CouplingMs
+		double HydNewtonIterations=0, HydResidualCalls=0;
 		int32 SolverSteps = 0;
 		int32 PressureIterations = 0;
 		int32 DrawnPrimitives = 0;

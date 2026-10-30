@@ -368,6 +368,7 @@ public:
 	// transport, 5 heat + cooling, 6 turbulence (viscosity + momentum diffusion). Uniform path only.
 	void ResetStageTimes() { for (double& T : StageMs) T = 0.0; StageSteps = 0; }
 	FString DescribeStageTimes() const;
+ double GetStageMs(int32 I) const { return StageMs[I]; }
 
 	// Temperature-transport sub-steps used in the last step (1 unless the flow got fast for the cell size).
 	int32 GetLastTemperatureSubsteps() const { return LastTemperatureSubsteps; }

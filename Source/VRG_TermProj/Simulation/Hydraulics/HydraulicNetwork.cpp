@@ -2,6 +2,7 @@
 
 #include "Simulation/Hydraulics/HydraulicNetwork.h"
 #include "Simulation/Hydraulics/SparseLinearSystem.h"
+#include "Simulation/Core/ElapsedTimer.h"
 #include "Simulation/Hydraulics/DenseLinearSystem.h"
 
 int32 FHydraulicNetwork::AddNode(const FHydraulicNode& Node)
@@ -341,6 +342,7 @@ double FHydraulicNetwork::EvaluateResidual(const FHydraulicSolveSettings& Settin
 	int32 NumFreeNodes, double& OutReferenceFlowM3s, double& OutReferencePressurePa) const
 {
 	const int32 NumUnknowns = NumFreeNodes + Pumps.Num();
+	FElapsedTimer Time(LastCosts.ResidualMs); ++LastCosts.ResidualCalls;
 	OutResidual.SetNumZeroed(NumUnknowns, EAllowShrinking::No);
 	for (int32 Index = 0; Index < NumUnknowns; ++Index)
 	{
@@ -453,6 +455,9 @@ double FHydraulicNetwork::EvaluateResidual(const FHydraulicSolveSettings& Settin
 
 FHydraulicSolveResult FHydraulicNetwork::Solve(const FHydraulicSolveSettings& Settings)
 {
+	LastCosts = {};
+ FElapsedTimer TotalTime(LastCosts.TotalMs);
+ const uint64 SetupStart = FPlatformTime::Cycles64();
 	FHydraulicSolveResult Result;
 
 	// 구성 검증. 고정 압력 노드가 없으면 압력이 상수만큼 불정이다.
@@ -514,6 +519,7 @@ FHydraulicSolveResult FHydraulicNetwork::Solve(const FHydraulicSolveSettings& Se
 
 	const int32 NumUnknowns = NumFreeNodes + Pumps.Num();
 
+	LastCosts.SetupMs = FPlatformTime::ToMilliseconds64(FPlatformTime::Cycles64()-SetupStart);
 	TArray<double> Residual;
 	double CurrentResidual = EvaluateResidual(Settings, Residual, NumFreeNodes,
 		Result.ReferenceFlowM3s, Result.ReferencePressurePa);
@@ -535,6 +541,7 @@ FHydraulicSolveResult FHydraulicNetwork::Solve(const FHydraulicSolveSettings& Se
 	int32 Iteration = 0;
 	while (Iteration < Settings.MaxIterations && CurrentResidual > Settings.NormalizedResidualTarget)
 	{
+		const uint64 JacobianStart = FPlatformTime::Cycles64();
 		SparseJacobian.Reset();
 		if (!Result.bUsedSparse) Jacobian.Init(0.0, NumUnknowns * NumUnknowns);
 		auto AddJacobian = [&](int32 Row, int32 Col, double Value)
@@ -643,8 +650,11 @@ FHydraulicSolveResult FHydraulicNetwork::Solve(const FHydraulicSolveSettings& Se
 		for (FHydraulicMatrixEntry& Entry : SparseJacobian)
 			Entry.Value *= UnknownScale(Entry.Col) / EquationScale(Entry.Row);
 
-		if (!(Result.bUsedSparse ? SolveSparseLinearSystem(SparseJacobian, Delta, NumUnknowns)
-			: SolveDenseLinearSystem(Jacobian, Delta, NumUnknowns)))
+        LastCosts.JacobianMs += FPlatformTime::ToMilliseconds64(FPlatformTime::Cycles64()-JacobianStart);
+        bool bLinearOk;
+        if (Result.bUsedSparse) bLinearOk = SolveSparseLinearSystem(SparseJacobian, Delta, NumUnknowns, &LastCosts.Sparse);
+        else { FElapsedTimer Time(LastCosts.DenseMs); bLinearOk = SolveDenseLinearSystem(Jacobian, Delta, NumUnknowns); }
+        if (!bLinearOk)
 		{
 			Result.bLinearSolveFailed = true;
 			break;
@@ -705,6 +715,7 @@ FHydraulicSolveResult FHydraulicNetwork::Solve(const FHydraulicSolveSettings& Se
 		++Iteration;
 	}
 
+	LastCosts.NewtonIterations = Iteration;
 	Result.IterationsUsed = Iteration;
 	Result.NormalizedResidual = CurrentResidual;
 	Result.bConverged = !Result.bLinearSolveFailed && CurrentResidual <= Settings.NormalizedResidualTarget;

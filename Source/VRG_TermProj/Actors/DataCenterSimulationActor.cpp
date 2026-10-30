@@ -2099,6 +2099,8 @@ void ADataCenterSimulationActor::Tick(float DeltaTime)
 			VrgPerf::Accumulator().SolverSteps += 1;
 			VrgPerf::Accumulator().SolverMs += Bridge.GetLastAirSolverMs();
 			VrgPerf::Accumulator().RackModelsMs += Bridge.GetLastRackModelsMs();
+ for(int32 I=0;I<5;++I) VrgPerf::Accumulator().DetailMs[9+I]+=Bridge.GetLastCouplingStageMs(I);
+ for(int32 I=0;I<7;++I) VrgPerf::Accumulator().DetailMs[14+I]+=Bridge.GetLastAirStageMs(I);
 			if (AirField != nullptr)
 			{
 				VrgPerf::Accumulator().PressureMs += AirField->GetMutableSolver().GetLastPressureSolveMs();
@@ -3551,6 +3553,8 @@ void ADataCenterSimulationActor::DrainWarmupSteps()
 		WarmupCouplingMs +=FPlatformTime::ToMilliseconds64(FPlatformTime::Cycles64() - StepStart);
 		WarmupRackMs += Bridge.GetLastRackModelsMs();
 		VrgPerf::Accumulator().RackModelsMs += Bridge.GetLastRackModelsMs();
+ for(int32 I=0;I<5;++I) VrgPerf::Accumulator().DetailMs[9+I]+=Bridge.GetLastCouplingStageMs(I);
+ for(int32 I=0;I<7;++I) VrgPerf::Accumulator().DetailMs[14+I]+=Bridge.GetLastAirStageMs(I);
 		Clock.CompleteStep();
 		EvalAfterStep();
 		--PendingWarmupSteps;

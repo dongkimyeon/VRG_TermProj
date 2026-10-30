@@ -6,6 +6,7 @@
 #include "Actors/AirFieldDebugActor.h"
 #include "Simulation/Hydraulics/InRowLoopBuilder.h"
 #include "Simulation/Coupling/InRackTransport.h"
+#include "Simulation/Core/ElapsedTimer.h"
 #include "Engine/Engine.h"
 #include "Engine/World.h"
 
@@ -203,6 +204,14 @@ bool FVrgInRackRoomCost::RunTest(const FString& Parameters)
 	const double LeakMs = (FPlatformTime::Seconds() - StartLeak) * 1000.0;
 	TestTrue(TEXT("32-rack changed operating point converges"), LeakResult.bConverged);
 	CheckTransport(TEXT("leak/reverse"));
+ const auto& P=New.GetLastCosts();
+ AddInfo(FString::Printf(TEXT("hydraulic profile total %.6f setup %.6f residual %.6f jacobian %.6f CSC %.6f analyze %.6f factor %.6f backsolve %.6f ms; Newton %d residual calls %d"),
+ P.TotalMs,P.SetupMs,P.ResidualMs,P.JacobianMs,P.Sparse.AssemblyMs,P.Sparse.AnalyzeMs,P.Sparse.FactorMs,P.Sparse.BacksolveMs,P.NewtonIterations,P.ResidualCalls));
+ double TimerMs=0; const double TimerStart=FPlatformTime::Seconds();
+ for(int32 I=0;I<100000;++I) { FElapsedTimer Time(TimerMs); }
+ AddInfo(FString::Printf(TEXT("observer empty scope average %.3f ns (100000 scopes, includes loop/calls); measured inner sum %.6f ms"),
+ (FPlatformTime::Seconds()-TimerStart)*1e9/100000,TimerMs));
+
 	AddInfo(FString::Printf(TEXT("32rack 4x8 hydraulic only: nodes old/new %d/%d pipes %d/%d leaks %d; cold solve old %.6fms/%dit new %.6fms/%dit; changed leak solve %.6fms/%dit; normalized residual %.12g; sparse %d"),
 		Old.GetNumNodes(), New.GetNumNodes(), Old.GetNumPipes(), New.GetNumPipes(), New.GetNumLeaks(), OldMs, OldResult.IterationsUsed, NewMs, NewResult.IterationsUsed,
 		LeakMs, LeakResult.IterationsUsed, LeakResult.NormalizedResidual, LeakResult.bUsedSparse));

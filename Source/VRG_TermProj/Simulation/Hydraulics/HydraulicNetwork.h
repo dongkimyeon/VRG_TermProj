@@ -4,6 +4,14 @@
 
 #include "CoreMinimal.h"
 #include "Simulation/Hydraulics/HydraulicTypes.h"
+#include "Simulation/Hydraulics/SparseLinearSystem.h"
+
+struct FHydraulicSolveCosts
+{
+ double TotalMs=0, SetupMs=0, ResidualMs=0, JacobianMs=0, DenseMs=0;
+ FSparseSolveCosts Sparse;
+ int32 ResidualCalls=0, NewtonIterations=0;
+};
 
 // S2: 배관 수력 네트워크.
 //
@@ -109,7 +117,10 @@ public:
 	// 파이프 유량을 압력차에서 계산한다. 잔차용이라 하한을 걸지 않는다.
 	static double PipeFlowM3s(double DeltaPPa, double ResistancePaS2M6);
 
+const FHydraulicSolveCosts& GetLastCosts() const { return LastCosts; }
+
 private:
+ mutable FHydraulicSolveCosts LastCosts;
 	TArray<FHydraulicNode> Nodes;
 	TArray<FHydraulicPipe> Pipes;
 	TArray<FHydraulicPump> Pumps;
