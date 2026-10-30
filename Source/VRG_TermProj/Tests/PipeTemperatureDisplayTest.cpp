@@ -25,10 +25,8 @@ bool FPipeTemperatureDisplayTest::RunTest(const FString& Parameters)
 	const auto Before = Rack->GetCoolantDisplaySnapshot();
 	auto& Network = Room->GetMutableNetwork();
 	const int32 Supply = Room->GetRackBranchPipeIndices()[0];
-	const int32 RackNode = Network.GetPipeToNodeIndex(Supply);
-	int32 Return = INDEX_NONE;
-	for (int32 I=0; I<Network.GetNumPipes(); ++I)
-		if (Network.GetPipeFromNodeIndex(I)==RackNode) Return=I;
+	// The supply node now also feeds hidden in-rack branches. Use the external return mapping.
+	const int32 Return = Room->GetRackReturnPipeIndex(Rack);
 	double TempK=0;
 	TestTrue(TEXT("Supply has temperature"), Room->TryGetPipeTemperatureK(Supply, TempK));
 	TestEqual(TEXT("Supply reads inlet K"), TempK, Before.InletTempK);

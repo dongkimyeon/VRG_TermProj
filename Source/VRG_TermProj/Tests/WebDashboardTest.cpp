@@ -433,7 +433,7 @@ bool FWebDashboardPipesTest::RunTest(const FString& Parameters)
 		TestTrue(FString::Printf(TEXT("%s: layout with pipes round-trips"), Style), FVrgDashboardLayout::FromJson(Direct.ToJson(), Plan));
 		TestTrue(FString::Printf(TEXT("%s: hydraulics converged"), Style), Plan.bHydraulicsConverged);
 
-		// Every solved pipe is drawn exactly once; the pump links are the only extra paths.
+		// Every external solved pipe is drawn once; internal thermal/hydraulic edges stay hidden.
 		TArray<int32> Drawn; Drawn.Init(0, Net.GetNumPipes());
 		bool bFlowExact = Plan.Pipes.Num() == Direct.Pipes.Num(), bPointsExact = bFlowExact, bTempRule = true;
 		int32 PumpLinks = 0, WithTemp = 0;
@@ -450,9 +450,13 @@ bool FWebDashboardPipesTest::RunTest(const FString& Parameters)
 			bTempRule &= P.bTempValid == bModel && (!bModel || P.TempK == T);
 			WithTemp += P.bTempValid ? 1 : 0;
 		}
-		int32 Missing = 0, Twice = 0;
-		for (const int32 C : Drawn) { Missing += C == 0; Twice += C > 1; }
-		TestEqual(FString::Printf(TEXT("%s: every network pipe drawn"), Style), Missing, 0);
+		int32 Missing = 0, Twice = 0, InternalDrawn = 0;
+		for (int32 I = 0; I < Drawn.Num(); ++I) {
+			if (Net.IsRackInternalPipe(I)) InternalDrawn += Drawn[I];
+			else { Missing += Drawn[I] == 0; Twice += Drawn[I] > 1; }
+		}
+		TestEqual(FString::Printf(TEXT("%s: every external network pipe drawn"), Style), Missing, 0);
+		TestEqual(FString::Printf(TEXT("%s: internal pipes excluded from web list and display"), Style), InternalDrawn, 0);
 		TestEqual(FString::Printf(TEXT("%s: no pipe drawn twice"), Style), Twice, 0);
 		TestTrue(FString::Printf(TEXT("%s: flows = solved flows (exact)"), Style), bFlowExact);
 		TestTrue(FString::Printf(TEXT("%s: points survive JSON exactly"), Style), bPointsExact);
