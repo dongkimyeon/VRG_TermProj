@@ -1,8 +1,10 @@
 #include "Simulation/Coupling/InRackTransport.h"
 
 bool InRackTransport::Build(const FHydraulicNetwork& Net, const FInRackHandles& H, int32 ReturnPipe,
-	double DensityKgM3, double CpJKgK, FTrayCoolantInput& Out, const TArray<double>* NodeImbalancesM3s)
+	double DensityKgM3, double CpJKgK, FTrayCoolantInput& Out, const TArray<double>* NodeImbalancesM3s, bool bIndexedTraversal, FBuildCosts* Costs)
 {
+	double Mark = Costs ? FPlatformTime::Seconds() : 0.0;
+	if (Costs) *Costs = {};
 	const int32 N = H.Slots.Num(), Columns = N + 3;
 	if (N == 0 || H.Nodes.Num() != 5 * N || H.Leaks.Num() != 5 * N || H.Pipes.Num() != 6 * N
 		|| ReturnPipe < 0 || ReturnPipe >= Net.GetNumPipes() || !(DensityKgM3 > 0.0) || !(CpJKgK > 0.0)
@@ -21,18 +23,38 @@ bool InRackTransport::Build(const FHydraulicNetwork& Net, const FInRackHandles& 
 	TArray<FEdge> Edges;
 	for (int32 R = 0; R < N; ++R) Reservoir[R * 5 + 2] = R;
 	Reservoir[5 * N] = N + 1; Reservoir[5 * N + 1] = N;
+	// Rebuilt from this call's handles and signed flows: no cross-step cache/invalidation.
+	TArray<int32> LocalNode, FirstEdge, LastEdge, NextEdge;
+	if (Costs) { const double Now=FPlatformTime::Seconds(); Costs->SetupMs=(Now-Mark)*1000; Mark=Now; }
+	if (bIndexedTraversal)
+	{
+		LocalNode.Init(INDEX_NONE, Net.GetNumNodes());
+		FirstEdge.Init(INDEX_NONE, Nodes.Num()); LastEdge=FirstEdge;
+		for (int32 A=0; A<Nodes.Num(); ++A) {
+			if (!LocalNode.IsValidIndex(Nodes[A])) return false;
+			if (LocalNode[Nodes[A]]==INDEX_NONE) LocalNode[Nodes[A]]=A; // same first match as IndexOfByKey
+		}
+	}
 	for (int32 P : H.Pipes)
 	{
 		double Flow = Net.GetPipeFlowM3s(P) * DensityKgM3;
 		if (!FMath::IsFinite(Flow)) return false;
-		int32 A = Nodes.IndexOfByKey(Net.GetPipeFromNodeIndex(P)), B = Nodes.IndexOfByKey(Net.GetPipeToNodeIndex(P));
+		const int32 From=Net.GetPipeFromNodeIndex(P), To=Net.GetPipeToNodeIndex(P);
+		int32 A = bIndexedTraversal ? (LocalNode.IsValidIndex(From) ? LocalNode[From] : INDEX_NONE) : Nodes.IndexOfByKey(From);
+		int32 B = bIndexedTraversal ? (LocalNode.IsValidIndex(To) ? LocalNode[To] : INDEX_NONE) : Nodes.IndexOfByKey(To);
 		if (Flow < 0.0) { Swap(A, B); Flow = -Flow; }
 		if (A == INDEX_NONE || B == INDEX_NONE) return false;
 		if (Flow == 0.0) continue;
-		Edges.Add({A, B, Flow}); Outflow[A] += Flow;
+		const int32 E=Edges.Add({A, B, Flow}); Outflow[A] += Flow;
+		if (bIndexedTraversal) {
+			NextEdge.Add(INDEX_NONE);
+			if (FirstEdge[A]==INDEX_NONE) FirstEdge[A]=E; else NextEdge[LastEdge[A]]=E;
+			LastEdge[A]=E; // preserve original pipe/edge order exactly
+		}
 		if (Reservoir[B] == INDEX_NONE) ++Pending[B];
 	}
 	for (int32 L = 0; L < H.Leaks.Num(); ++L) Outflow[L] += Net.GetLeakFlowM3s(H.Leaks[L]) * DensityKgM3;
+	if (Costs) { const double Now=FPlatformTime::Seconds(); Costs->LookupMs=(Now-Mark)*1000; Mark=Now; }
 	// Thermal reservoirs are roots even when hydraulically downstream. The remaining passive
 	// junction graph is acyclic (strictly decreasing piezometric pressure along every nonzero edge).
 	for (int32 A = 0; A < Nodes.Num(); ++A)
@@ -45,8 +67,12 @@ bool InRackTransport::Build(const FHydraulicNetwork& Net, const FInRackHandles& 
 	for (int32 Cursor = 0; Cursor < Order.Num(); ++Cursor)
 	{
 		const int32 A = Order[Cursor];
-		for (const FEdge& E : Edges) if (E.A == A && Reservoir[E.B] == INDEX_NONE)
+		for (int32 EIndex=bIndexedTraversal ? FirstEdge[A] : 0;
+			EIndex!=INDEX_NONE && EIndex<Edges.Num(); EIndex=bIndexedTraversal ? NextEdge[EIndex] : EIndex+1)
 		{
+			if (Costs) ++Costs->EdgeVisits;
+			const FEdge& E=Edges[EIndex];
+			if (E.A!=A || Reservoir[E.B]!=INDEX_NONE) continue;
 			// Outgoing mass (including the local hole) enforces the junction enthalpy equation
 			// exactly. Its difference from incoming mass is the separately reported hydraulic residual.
 			if (!(Outflow[E.B] > 0.0)) return false;
@@ -55,6 +81,7 @@ bool InRackTransport::Build(const FHydraulicNetwork& Net, const FInRackHandles& 
 		}
 	}
 	if (Order.Num() != Nodes.Num()) return false;
+	if (Costs) { const double Now=FPlatformTime::Seconds(); Costs->MixingMs=(Now-Mark)*1000; Mark=Now; }
 	for (const FEdge& E : Edges)
 		for (int32 C = 0; C < Columns; ++C)
 		{
@@ -88,6 +115,7 @@ bool InRackTransport::Build(const FHydraulicNetwork& Net, const FInRackHandles& 
 			+ Net.GetLeakFlowM3s(H.Leaks[5 * R + 3])) * DensityKgM3);
 	}
 	if (!T.IsValid(N)) return false;
+	if (Costs) Costs->AssemblyMs=(FPlatformTime::Seconds()-Mark)*1000;
 	Out = MoveTemp(Candidate);
 	return true;
 }

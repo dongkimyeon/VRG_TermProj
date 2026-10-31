@@ -195,6 +195,10 @@ public:
 	// 명시적 오일러 단조 조건: dt * (노드 전도도 합 / 열용량) <= 1.
 	// 위반하면 진동하거나 발산한다.
 	bool IsStepStable(const FRackThermalInput& Input, double DeltaTimeS) const;
+#if WITH_DEV_AUTOMATION_TESTS
+	void SetGroupedStabilityForTesting(bool bEnable) { bGroupedStability=bEnable; }
+	double GetStabilityRateForTesting(const FRackThermalInput& Input) const { return StabilityRatePerS(Input); }
+#endif
 
 	// 공기 쪽 effectiveness. 유량 0에서 나눗셈을 하지 않는다.
 	//   UA <= 0            -> 0   (공기와 결합이 없는 부품은 공기를 데우지 않는다)
@@ -203,6 +207,8 @@ public:
 	static double AirEffectiveness(double ToAirUAWK, double AirCapacityRateWK);
 
 private:
+	bool bGroupedStability=false; // candidate until same-input measurements verify benefit
+	double StabilityRatePerS(const FRackThermalInput& Input) const;
 	bool StepInternal(const FRackThermalInput& Input, double DeltaTimeS, FTrayCoolantInput* WaterInput);
 	bool bTrayCoolant = false;
 	FTrayCoolantModel TrayCoolant;

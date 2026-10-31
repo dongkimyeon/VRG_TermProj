@@ -129,4 +129,36 @@ bool FInRackCoupledLeak::RunTest(const FString& Parameters)
 	TestTrue(TEXT("separate rack/tray/manifold conservation, existing hydraulic bound"), RackBalance < 1e-12 && TrayBalance < 1e-12 && ManifoldBalance < 1e-12);
 	return true;
 }
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FInRackTraversalCoupled,"VRG.Coupling.InRack.TraversalEquivalence",Flags)
+bool FInRackTraversalCoupled::RunTest(const FString& Parameters)
+{
+ FCase Old,New;Old.Rack.SetGroupedStabilityForTesting(false);Old.Bridge.SetIndexedTransportForTesting(false);
+ New.Rack.SetGroupedStabilityForTesting(true);New.Bridge.SetIndexedTransportForTesting(true);
+ double MaxK=0,MaxHeatW=0,MaxGlobal=0,MaxPressurePa=0,MaxFlowM3s=0;
+ for(int32 S=0;S<500;++S) {
+  for(FCase* C:{&Old,&New}) {
+   const auto& H=C->Loop.InRacks[0];bool Changed=false;
+   if(S==20) {C->Net.SetLeakHoleDiameterM(H.Leaks[13*5+2],.003);Changed=true;}
+   if(S==150 || S==250) {const bool Docked=S==250;H.SetDocked(C->Net,4,Docked);C->Input.SledDocked[H.Slots[4]]=Docked;Changed=true;}
+   if(S==350) {C->Net.SetLeakHoleDiameterM(H.Leaks[13*5+2],0);Changed=true;}
+   if(Changed) TestTrue(TEXT("updated hydraulic input converges"),C->Net.Solve(FHydraulicSolveSettings()).bConverged);
+   if(S==400) C->Input.FanSpeedOverride=.5;
+   C->Bridge.Step(.02,Changed,true);
+   MaxGlobal=FMath::Max(MaxGlobal,FMath::Abs(C->Bridge.GetNormalizedEnergyResidual()));
+  }
+  for(int32 N=0;N<Old.Rack.GetNumNodes();++N) MaxK=FMath::Max(MaxK,FMath::Abs(Old.Rack.GetState().ComponentTempK[N]-New.Rack.GetState().ComponentTempK[N]));
+  MaxK=FMath::Max(MaxK,FMath::Abs(Old.Rack.GetState().CoolantTempK-New.Rack.GetState().CoolantTempK));
+  MaxHeatW=FMath::Max(MaxHeatW,FMath::Abs(Old.Bridge.GetLastLeakHeatW()-New.Bridge.GetLastLeakHeatW()));
+  MaxHeatW=FMath::Max(MaxHeatW,FMath::Abs(Old.Rack.GetLastHeatRemovedByCoolantW()-New.Rack.GetLastHeatRemovedByCoolantW()));
+  for(int32 N=0;N<Old.Net.GetNumNodes();++N) MaxPressurePa=FMath::Max(MaxPressurePa,FMath::Abs(Old.Net.GetNodePressurePa(N)-New.Net.GetNodePressurePa(N)));
+  for(int32 P=0;P<Old.Net.GetNumPipes();++P) MaxFlowM3s=FMath::Max(MaxFlowM3s,FMath::Abs(Old.Net.GetPipeFlowM3s(P)-New.Net.GetPipeFlowM3s(P)));
+  TestEqual(TEXT("same substep policy"),Old.Bridge.GetLastCoupledSubsteps(),New.Bridge.GetLastCoupledSubsteps());
+ }
+ AddInfo(FString::Printf(TEXT("traversal 10s pressure diff %.12g Pa flow %.12g m3/s temperature %.12g K heat %.12g W global %.12g"),MaxPressurePa,MaxFlowM3s,MaxK,MaxHeatW,MaxGlobal));
+ TestTrue(TEXT("same input exact ordered physics"),MaxK==0 && MaxHeatW==0 && MaxPressurePa==0 && MaxFlowM3s==0);
+ TestTrue(TEXT("existing normalized global conservation"),MaxGlobal<1e-9);
+ TestTrue(TEXT("existing temperature plausibility"),New.ChipK()>273.15 && New.ChipK()<358.15);
+ return true;
+}
 #endif

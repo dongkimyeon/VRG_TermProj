@@ -11,6 +11,8 @@
 void FCouplingBridge::Initialize(const TArray<FRackCouplingTarget>& InTargets,
 	const TArray<FRackCouplingLink>& InLinks)
 {
+	bIndexedTransport=true; // W3.5 measured same-order traversal; standalone Build keeps reference default
+
 	Targets = InTargets;
 	Links = InLinks;
 

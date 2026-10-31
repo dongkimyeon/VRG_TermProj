@@ -378,9 +378,14 @@ public:
 	// Wall time of the rack models in the last step [ms] (measurement).
 	double GetLastRackModelsMs() const { return LastRackModelsMs; }
 
+#if WITH_DEV_AUTOMATION_TESTS
+	void SetIndexedTransportForTesting(bool bEnable) { bIndexedTransport=bEnable; }
+#endif
+
 private:
 	void StepOnce(double DeltaTimeS, bool bHydraulicsResolved, bool bHydraulicsConverged);
 	bool PrepareTrayTransport();
+	bool bIndexedTransport=false; // candidate until same-input verification
 	TArray<FTrayCoolantInput> TrayInputs;
 	TArray<double> LastInternalLeakKgs, LastInternalLeakHeatW, RackTankTempK;
 	int32 LastCoupledSubsteps = 0;

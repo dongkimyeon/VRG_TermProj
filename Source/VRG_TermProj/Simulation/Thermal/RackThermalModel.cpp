@@ -78,6 +78,8 @@ int32 FRackThermalModel::RepairKindHeatSpread(const FRackThermalParams& InParams
 
 void FRackThermalModel::Initialize(const FRackThermalParams& InParams, const FRackThermalState& InInitialState)
 {
+	bGroupedStability=true; // W3.5 same-input rate/thermal comparison verified; no persistent geometry cache
+
 	bTrayCoolant = false; TrayCoolant = FTrayCoolantModel(); SlotToTray.Reset();
 	LastTraySubsteps = 0; LastTrayIntegratedTimeS = LastTrayLeakHeatW = 0.0;
 	Params = InParams;
@@ -186,10 +188,10 @@ double FRackThermalModel::AirEffectiveness(double ToAirUAWK, double AirCapacityR
 	return 1.0 - FMath::Exp(-NTU);
 }
 
-bool FRackThermalModel::IsStepStable(const FRackThermalInput& Input, double DeltaTimeS) const
+double FRackThermalModel::StabilityRatePerS(const FRackThermalInput& Input) const
 {
 	const int32 NumSleds = Params.NumSleds;
-	if (SlotNodeStart.Num() != NumSleds + 1) return true;  // not initialized yet
+	if (SlotNodeStart.Num() != NumSleds + 1) return 0.0;  // not initialized yet
 	ComputeSlotAirFlows(Input, ScratchSlotFlowKgs);
 
 	double MaxRatePerS = 0.0;
@@ -200,16 +202,28 @@ bool FRackThermalModel::IsStepStable(const FRackThermalInput& Input, double Delt
 		const bool bDocked = IsDocked(Input.SledDocked, SledIndex, NumSleds);
 		const double AirCapacityRateWK = ScratchSlotFlowKgs[SledIndex] * Params.AirCpJKgK;
 
+		int32 GroupBegin=SlotNodeStart[SledIndex], GroupEnd=GroupBegin, GroupParts=1;
 		for (int32 Index = SlotNodeStart[SledIndex]; Index < SlotNodeStart[SledIndex + 1]; ++Index)
 		{
 			const FRackComponentParams& Component = NodeParams[Index];
 			const double ToCoolantUAWK = bDocked ? Component.ToCoolantUAWK : 0.0;
 			const double ToAirUAWK = bDocked ? Component.ToAirUAWK : 0.0;
 			// Parallel stage: this part only gets its share of the slot flow.
-			int32 Begin = SlotNodeStart[SledIndex];
-			for (int32 G = Begin; G <= Index; G = AirStageEnd(NodeParams, G, SlotNodeStart[SledIndex + 1])) Begin = G;
-			const int32 StageEnd = AirStageEnd(NodeParams, Begin, SlotNodeStart[SledIndex + 1]);
-			const int32 Parts = StageEnd - Begin > 1 ? FMath::Max(1, CountAirParts(NodeParams, Begin, StageEnd, bDocked)) : 1;
+			int32 Parts;
+			if (bGroupedStability) {
+				// Share this stage's bounds/count within the current call only. Docking and fan
+				// flow are read again next call, including every explicit substep.
+				if (Index==GroupEnd) {
+					GroupBegin=Index; GroupEnd=AirStageEnd(NodeParams, Index, SlotNodeStart[SledIndex+1]);
+					GroupParts=GroupEnd-GroupBegin>1 ? FMath::Max(1,CountAirParts(NodeParams,GroupBegin,GroupEnd,bDocked)) : 1;
+				}
+				Parts=GroupParts;
+			} else {
+				int32 Begin=SlotNodeStart[SledIndex];
+				for (int32 G=Begin; G<=Index; G=AirStageEnd(NodeParams,G,SlotNodeStart[SledIndex+1])) Begin=G;
+				const int32 StageEnd=AirStageEnd(NodeParams,Begin,SlotNodeStart[SledIndex+1]);
+				Parts=StageEnd-Begin>1 ? FMath::Max(1,CountAirParts(NodeParams,Begin,StageEnd,bDocked)) : 1;
+			}
 			const double PartRateWK = AirCapacityRateWK / Parts;
 			const double AirConductanceWK = PartRateWK * AirEffectiveness(ToAirUAWK, PartRateWK);
 
@@ -227,7 +241,13 @@ bool FRackThermalModel::IsStepStable(const FRackThermalInput& Input, double Delt
 			(TotalCoolantUAWK + CoolantCapacityRateWK) / Params.CoolantHeatCapacityJK);
 	}
 
-	return DeltaTimeS * MaxRatePerS <= 1.0;
+	return MaxRatePerS;
+}
+
+bool FRackThermalModel::IsStepStable(const FRackThermalInput& Input, double DeltaTimeS) const
+{
+	if (SlotNodeStart.Num()!=Params.NumSleds+1) return true;
+	return DeltaTimeS * StabilityRatePerS(Input) <= 1.0;
 }
 
 void FRackThermalModel::Step(const FRackThermalInput& Input, double DeltaTimeS)

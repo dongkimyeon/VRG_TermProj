@@ -18,7 +18,7 @@ bool FCouplingBridge::PrepareTrayTransport()
 		if (Links[R].Internal.Slots.IsEmpty()) continue;
 		if (!HydraulicNetwork || !Targets[R].Model || !Targets[R].Input || !Targets[R].Model->UsesTrayCoolant()
 			|| !InRackTransport::Build(*HydraulicNetwork, Links[R].Internal, Links[R].ReturnPipeIndex,
-				CoolantDensityKgM3, Targets[R].Model->GetParams().CoolantCpJKgK, TrayInputs[R], &NodeImbalancesM3s)) return false;
+				CoolantDensityKgM3, Targets[R].Model->GetParams().CoolantCpJKgK, TrayInputs[R], &NodeImbalancesM3s, bIndexedTransport)) return false;
 	}
 	return true;
 }
