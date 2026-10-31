@@ -10,7 +10,7 @@ struct FHydraulicSolveCosts
 {
  double TotalMs=0, SetupMs=0, ResidualMs=0, JacobianMs=0, DenseMs=0;
  FSparseSolveCosts Sparse;
- int32 ResidualCalls=0, NewtonIterations=0;
+ int32 ResidualCalls=0, NewtonIterations=0, WarmStarts=0, ColdRetries=0, WarmFailures=0;
 };
 
 // S2: 배관 수력 네트워크.
@@ -43,13 +43,17 @@ public:
 	// S2b step 2: the boundary pressure a fixed node holds (its PressurePa) and a pump's speed ratio, changed between
 	// solves by the coolant inventory (expansion tank pressure, depleted loop).
 	double GetNodeSetPressurePa(int32 NodeIndex) const { return Nodes.IsValidIndex(NodeIndex) ? Nodes[NodeIndex].PressurePa : 0.0; }
-	void SetNodeSetPressurePa(int32 NodeIndex, double PressurePa) { if (Nodes.IsValidIndex(NodeIndex)) Nodes[NodeIndex].PressurePa = PressurePa; }
+	void SetNodeSetPressurePa(int32 NodeIndex, double PressurePa) { if (Nodes.IsValidIndex(NodeIndex)) {
+   const double Old=Nodes[NodeIndex].PressurePa;
+   if (Old!=PressurePa && (Old<=0 || PressurePa<=0 || !FMath::IsFinite(PressurePa))) InvalidateInitialGuess();
+   Nodes[NodeIndex].PressurePa=PressurePa;
+  } }
 	double GetPumpSpeedRatio(int32 PumpIndex) const { return Pumps.IsValidIndex(PumpIndex) ? Pumps[PumpIndex].SpeedRatio : 0.0; }
-	void SetPumpSpeedRatio(int32 PumpIndex, double SpeedRatio) { if (Pumps.IsValidIndex(PumpIndex)) Pumps[PumpIndex].SpeedRatio = SpeedRatio; }
+	void SetPumpSpeedRatio(int32 PumpIndex, double SpeedRatio) { if (Pumps.IsValidIndex(PumpIndex) && Pumps[PumpIndex].SpeedRatio!=SpeedRatio) { InvalidateInitialGuess(); Pumps[PumpIndex].SpeedRatio = SpeedRatio; } }
 	// S8 F1: a control valve is a pipe whose resistance follows its opening (FacilityWaterLoop); changed between solves.
 	double GetPipeResistancePaS2M6(int32 PipeIndex) const { return Pipes.IsValidIndex(PipeIndex) ? Pipes[PipeIndex].ResistancePaS2M6 : 0.0; }
 	bool IsRackInternalPipe(int32 PipeIndex) const { return Pipes.IsValidIndex(PipeIndex) && Pipes[PipeIndex].bRackInternal; }
-	void SetPipeResistancePaS2M6(int32 PipeIndex, double ResistancePaS2M6) { if (Pipes.IsValidIndex(PipeIndex)) Pipes[PipeIndex].ResistancePaS2M6 = ResistancePaS2M6; }
+	void SetPipeResistancePaS2M6(int32 PipeIndex, double ResistancePaS2M6) { if (Pipes.IsValidIndex(PipeIndex) && Pipes[PipeIndex].ResistancePaS2M6!=ResistancePaS2M6) { InvalidateInitialGuess(); Pipes[PipeIndex].ResistancePaS2M6 = ResistancePaS2M6; } }
 	// Puts a node into a pipe at Fraction (0..1) of its resistance from its From end: the pipe keeps its index and
 	// becomes From -> new node (R * Fraction), a new pipe new node -> To carries R * (1 - Fraction). Quadratic losses in
 	// series add, so the network's flows are unchanged. Used to place a leak on a pipe. Returns the new node or
@@ -76,7 +80,7 @@ public:
 	// fallback; the integrated actor passes its CoolantDensityKgM3 (one source). Standard gravity 9.80665 m/s^2.
 	void SetNodeElevationM(int32 NodeIndex, double ElevationM);
 	double GetNodeElevationM(int32 NodeIndex) const { return Nodes.IsValidIndex(NodeIndex) ? Nodes[NodeIndex].ElevationM : 0.0; }
-	void SetFluidDensityKgM3(double InDensityKgM3) { FluidDensityKgM3 = InDensityKgM3; }
+	void SetFluidDensityKgM3(double InDensityKgM3) { if (FluidDensityKgM3!=InDensityKgM3) { InvalidateInitialGuess(); FluidDensityKgM3 = InDensityKgM3; } }
 	double GetFluidDensityKgM3() const { return FluidDensityKgM3; }
 	static constexpr double GravityMS2 = 9.80665;
 	// rho * g * z of a node [Pa].
@@ -119,12 +123,20 @@ public:
 
 // Reference verification only: affects repeated symbolic work, never equations or tolerances.
  void SetSparseAnalysisReuseForTesting(bool bEnable) { bReuseSparseAnalysis = bEnable; }
+ void SetInitialGuessReuseEnabled(bool bEnable) { bReuseInitialGuess=bEnable; }
+ void InvalidateInitialGuess() { bHasConvergedGuess=false; }
+#if WITH_DEV_AUTOMATION_TESTS
+ void SetInitialGuessForTesting(const TArray<double>& PressurePa, const TArray<double>& FlowM3s) {
+  NodePressurePa=PressurePa; PumpFlowM3s=FlowM3s; bHasConvergedGuess=true;
+ }
+#endif
  const FHydraulicSolveCosts& GetLastCosts() const { return LastCosts; }
 
 private:
  mutable FHydraulicSolveCosts LastCosts;
  FSparseLinearWorkspace SparseWorkspace;
  bool bReuseSparseAnalysis = true;
+ bool bReuseInitialGuess = false, bHasConvergedGuess = false; // opt-in until reference/physics verification
 	TArray<FHydraulicNode> Nodes;
 	TArray<FHydraulicPipe> Pipes;
 	TArray<FHydraulicPump> Pumps;
@@ -140,7 +152,7 @@ private:
 	// S2b step 4: nodes cut off from every fixed-pressure node by closed valves (filled by Solve).
 	TArray<bool> NodeIsolated;
 public:
-	void SetPipeClosed(int32 PipeIndex, bool bClosed) { if (Pipes.IsValidIndex(PipeIndex)) Pipes[PipeIndex].bClosed = bClosed; }
+	void SetPipeClosed(int32 PipeIndex, bool bClosed) { if (Pipes.IsValidIndex(PipeIndex) && Pipes[PipeIndex].bClosed!=bClosed) { InvalidateInitialGuess(); Pipes[PipeIndex].bClosed = bClosed; } }
 	bool IsPipeClosed(int32 PipeIndex) const { return Pipes.IsValidIndex(PipeIndex) && Pipes[PipeIndex].bClosed; }
 	// Isolated by closed valves at the last solve (isolation scope, D4: topology, not the hydraulic effect).
 	bool IsNodeIsolated(int32 NodeIndex) const { return NodeIsolated.IsValidIndex(NodeIndex) && NodeIsolated[NodeIndex]; }

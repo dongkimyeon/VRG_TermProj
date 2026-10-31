@@ -107,6 +107,7 @@ void FCoolantInventory::ApplyBoundary(FHydraulicNetwork& Network) const
 
 bool FCoolantInventory::Restart(FHydraulicNetwork& Network, const FHydraulicSolveSettings& Settings, FHydraulicSolveResult& OutResult)
 {
+	Network.InvalidateInitialGuess(); // new run: retain original per-loop hydrostatic seed
 	bool bChanged = false;
 	for (FTank& Tank : Tanks)
 	{

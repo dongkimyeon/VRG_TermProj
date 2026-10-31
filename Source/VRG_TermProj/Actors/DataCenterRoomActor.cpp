@@ -201,8 +201,10 @@ void ADataCenterRoomActor::StepCoolantInventory(double DtS, double NowS)
  for(int32 I=0;I<9;++I) C.DetailMs[I]+=Values[I];
  C.HydNewtonIterations+=P.NewtonIterations; C.HydResidualCalls+=P.ResidualCalls;
  C.SparseAnalyses+=P.Sparse.AnalyzeCalls; C.SparseReuseHits+=P.Sparse.ReuseHits;
+ C.HydWarmStarts+=P.WarmStarts; C.HydColdRetries+=P.ColdRetries; C.HydWarmFailures+=P.WarmFailures;
 	++InventorySolveCount;
 	LastResult = Result;
+ if(Result.bColdStartRetry) UE_LOG(LogTemp,Warning,TEXT("[HydWarm] t=%.2f s warm failed; cold retry %d+%d/%d Newton iterations, final converged %d"),NowS,Result.WarmIterations,Result.ColdIterations,SolveSettings.MaxIterations,Result.bConverged ? 1 : 0);
 	bPipeColorsDirty = true;
 	if (!LastResult.bConverged)
 	{
@@ -618,6 +620,7 @@ bool ADataCenterRoomActor::SyncInRackDocking()
 void ADataCenterRoomActor::BuildNetwork()
 {
 	Network.Reset();
+ Network.SetInitialGuessReuseEnabled(true); // W3.5: verified converged-state seed; restart/edits invalidate it
 	InRackHandles.Reset(); InternalLeakIndices.Reset();
 	Inventory.Reset();
 	LeakBranchPipes.Reset();

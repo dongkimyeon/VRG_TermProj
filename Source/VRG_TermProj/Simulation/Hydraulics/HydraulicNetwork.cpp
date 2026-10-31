@@ -7,6 +7,7 @@
 
 int32 FHydraulicNetwork::AddNode(const FHydraulicNode& Node)
 {
+ InvalidateInitialGuess();
 	const int32 NodeIndex = Nodes.Add(Node);
 	NodePressurePa.Add(Node.PressurePa);
 	return NodeIndex;
@@ -14,11 +15,13 @@ int32 FHydraulicNetwork::AddNode(const FHydraulicNode& Node)
 
 int32 FHydraulicNetwork::AddPipe(const FHydraulicPipe& Pipe)
 {
+ InvalidateInitialGuess();
 	return Pipes.Add(Pipe);
 }
 
 int32 FHydraulicNetwork::AddPump(const FHydraulicPump& Pump)
 {
+ InvalidateInitialGuess();
 	const int32 PumpIndex = Pumps.Add(Pump);
 	PumpFlowM3s.Add(0.0);
 	return PumpIndex;
@@ -26,6 +29,7 @@ int32 FHydraulicNetwork::AddPump(const FHydraulicPump& Pump)
 
 int32 FHydraulicNetwork::AddLeak(const FHydraulicLeak& Leak)
 {
+ InvalidateInitialGuess();
 	return Leaks.Add(Leak);
 }
 
@@ -33,7 +37,9 @@ void FHydraulicNetwork::SetLeakHoleDiameterM(int32 LeakIndex, double HoleDiamete
 {
 	if (Leaks.IsValidIndex(LeakIndex))
 	{
-		Leaks[LeakIndex].HoleDiameterM = FMath::Max(0.0, HoleDiameterM);
+		const double D=FMath::Max(0.0,HoleDiameterM);
+  if(Leaks[LeakIndex].HoleDiameterM!=D) InvalidateInitialGuess();
+  Leaks[LeakIndex].HoleDiameterM=D;
 	}
 }
 
@@ -86,6 +92,7 @@ double FHydraulicNetwork::GetTotalLeakFlowM3s() const
 
 void FHydraulicNetwork::Reset()
 {
+ InvalidateInitialGuess();
 	Nodes.Reset();
 	Pipes.Reset();
 	Pumps.Reset();
@@ -109,7 +116,8 @@ void FHydraulicNetwork::SetNodeElevationM(int32 NodeIndex, double ElevationM)
 {
 	if (Nodes.IsValidIndex(NodeIndex))
 	{
-		Nodes[NodeIndex].ElevationM = ElevationM;
+		if(Nodes[NodeIndex].ElevationM!=ElevationM) InvalidateInitialGuess();
+  Nodes[NodeIndex].ElevationM = ElevationM;
 	}
 }
 
@@ -455,6 +463,8 @@ double FHydraulicNetwork::EvaluateResidual(const FHydraulicSolveSettings& Settin
 
 FHydraulicSolveResult FHydraulicNetwork::Solve(const FHydraulicSolveSettings& Settings)
 {
+ const bool bPriorConverged=bHasConvergedGuess;
+ bHasConvergedGuess=false; // every unsuccessful/early return invalidates reuse
 	LastCosts = {};
  FElapsedTimer TotalTime(LastCosts.TotalMs);
  const uint64 SetupStart = FPlatformTime::Cycles64();
@@ -513,7 +523,11 @@ FHydraulicSolveResult FHydraulicNetwork::Solve(const FHydraulicSolveSettings& Se
 
 	int32 NumFreeNodes = 0;
 	BuildUnknownMap(NumFreeNodes);
-	SeedInitialGuess();
+ bool bWarm=bReuseInitialGuess && bPriorConverged && NodePressurePa.Num()==Nodes.Num() && PumpFlowM3s.Num()==Pumps.Num();
+ for(double P:NodePressurePa) bWarm &= FMath::IsFinite(P);
+ for(double F:PumpFlowM3s) bWarm &= FMath::IsFinite(F);
+ Result.bUsedWarmStart=bWarm; LastCosts.WarmStarts=bWarm ? 1 : 0;
+ if(!bWarm) SeedInitialGuess();
 	for (int32 N = 0; N < Nodes.Num(); ++N)
 		if (NodeIsolated[N]) NodePressurePa[N] = -NodeHydrostaticPa(N);  // vented: piezometric 0 Pa(g), no flow
 
@@ -527,6 +541,7 @@ FHydraulicSolveResult FHydraulicNetwork::Solve(const FHydraulicSolveSettings& Se
 	if (NumUnknowns == 0)
 	{
 		Result.bConverged = true;
+  bHasConvergedGuess=true;
 		Result.NormalizedResidual = CurrentResidual;
 		return Result;
 	}
@@ -539,8 +554,12 @@ FHydraulicSolveResult FHydraulicNetwork::Solve(const FHydraulicSolveSettings& Se
 	TArray<double> SavedPumpFlowM3s;
 
 	int32 Iteration = 0;
+ bool bWarmAttempt=bWarm;
+ for(;;)
+ {
 	while (Iteration < Settings.MaxIterations && CurrentResidual > Settings.NormalizedResidualTarget)
 	{
+		++Iteration; // failed linear/backtrack attempts also consume the single shared budget
 		const uint64 JacobianStart = FPlatformTime::Cycles64();
 		SparseJacobian.Reset();
 		if (!Result.bUsedSparse) Jacobian.Init(0.0, NumUnknowns * NumUnknowns);
@@ -707,17 +726,37 @@ FHydraulicSolveResult FHydraulicNetwork::Solve(const FHydraulicSolveSettings& Se
 			PumpFlowM3s = SavedPumpFlowM3s;
 			CurrentResidual = EvaluateResidual(Settings, Residual, NumFreeNodes,
 				Result.ReferenceFlowM3s, Result.ReferencePressurePa);
-			++Iteration;
 			break;
 		}
 
 		CurrentResidual = BestResidual;
-		++Iteration;
 	}
 
+ if(bWarmAttempt)
+ {
+  Result.WarmIterations=Iteration;
+  Result.bWarmStartFailed=Result.bLinearSolveFailed || !FMath::IsFinite(CurrentResidual) || CurrentResidual>Settings.NormalizedResidualTarget;
+  LastCosts.WarmFailures=Result.bWarmStartFailed ? 1 : 0;
+  if(Result.bWarmStartFailed && Iteration<Settings.MaxIterations)
+  {
+   Result.bColdStartRetry=true; ++LastCosts.ColdRetries;
+   { FElapsedTimer Time(LastCosts.SetupMs);
+     SeedInitialGuess();
+     for(int32 N=0;N<Nodes.Num();++N) if(NodeIsolated[N]) NodePressurePa[N]=-NodeHydrostaticPa(N);
+   }
+   CurrentResidual=EvaluateResidual(Settings,Residual,NumFreeNodes,Result.ReferenceFlowM3s,Result.ReferencePressurePa);
+   Result.bLinearSolveFailed=false; // recovered attempt stays observable in bWarmStartFailed/bColdStartRetry
+   bWarmAttempt=false;
+   continue;
+  }
+ }
+ break;
+ }
+ Result.ColdIterations=Iteration-Result.WarmIterations;
 	LastCosts.NewtonIterations = Iteration;
 	Result.IterationsUsed = Iteration;
 	Result.NormalizedResidual = CurrentResidual;
-	Result.bConverged = !Result.bLinearSolveFailed && CurrentResidual <= Settings.NormalizedResidualTarget;
+	Result.bConverged = !Result.bLinearSolveFailed && FMath::IsFinite(CurrentResidual) && CurrentResidual <= Settings.NormalizedResidualTarget;
+ bHasConvergedGuess=Result.bConverged;
 	return Result;
 }

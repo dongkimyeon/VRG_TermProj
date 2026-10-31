@@ -171,6 +171,18 @@ struct FHydraulicSolveResult
 {
 	GENERATED_BODY()
 
+ // Diagnostics only; retry shares MaxIterations with the warm attempt.
+ UPROPERTY(BlueprintReadOnly, Category = "Hydraulics")
+ bool bUsedWarmStart = false;
+ UPROPERTY(BlueprintReadOnly, Category = "Hydraulics")
+ bool bWarmStartFailed = false;
+ UPROPERTY(BlueprintReadOnly, Category = "Hydraulics")
+ bool bColdStartRetry = false;
+ UPROPERTY(BlueprintReadOnly, Category = "Hydraulics")
+ int32 WarmIterations = 0;
+ UPROPERTY(BlueprintReadOnly, Category = "Hydraulics")
+ int32 ColdIterations = 0;
+
 	// D3: same Newton equations, sparse LU for networks exceeding 200 nodes.
 	UPROPERTY(BlueprintReadOnly, Category = "Hydraulics")
 	bool bUsedSparse = false;

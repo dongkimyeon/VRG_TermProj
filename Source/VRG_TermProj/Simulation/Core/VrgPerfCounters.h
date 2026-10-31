@@ -55,7 +55,7 @@ namespace VrgPerf
 		double WaterMs = 0.0; // source ledger -> interior/spray/floor and water diagnostics, both step dispatch paths
 		// 0..8 hydraulic/inventory; 9..13 coupling; 14..20 existing air stages (CSV order).
 		double DetailMs[21] = {}; // appended CSV stages; nested costs, never add to outer CouplingMs
-		double HydNewtonIterations=0, HydResidualCalls=0, SparseAnalyses=0, SparseReuseHits=0;
+		double HydNewtonIterations=0, HydResidualCalls=0, SparseAnalyses=0, SparseReuseHits=0, HydWarmStarts=0, HydColdRetries=0, HydWarmFailures=0;
 		int32 SolverSteps = 0;
 		int32 PressureIterations = 0;
 		int32 DrawnPrimitives = 0;
