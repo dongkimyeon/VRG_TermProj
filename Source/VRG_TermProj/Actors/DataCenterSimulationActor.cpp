@@ -21,6 +21,9 @@
 #include "Actors/RackThermalActor.h"
 #include "Actors/SpineCabinetActor.h"
 #include "Interaction/DataCenterDebugController.h"
+#include "Interaction/VrgRackLifecycle.h"
+#include "Interaction/VrgSpineLifecycle.h"
+#include "Interaction/VrgCduLifecycle.h"
 #include "Visualization/GjRackLayout.h"
 #include "Visualization/CrahVisualModel.h"
 #include "Simulation/Air/AirSolver.h"
@@ -300,6 +303,7 @@ void ADataCenterSimulationActor::HoldModelsForLayout()
 
 void ADataCenterSimulationActor::EnterLayoutMode()
 {
+	ClearWaterObservation();
 	Mode = ESimMode::Layout;
 	bSimRunning = false;
 	if (Room != nullptr) Room->SetLeakTopologyLocked(false);
@@ -361,7 +365,7 @@ void ADataCenterSimulationActor::EnterSimulationMode()
 	bSimRunning = true;
 	RebuildLiveLeakSites();   // W1: room sites are built closed with the rows; the plant nodes exist once BuildCoupling built it
 	// W2: no water anywhere at t = 0; the tanks start full (their leaked volume is the spray's starting point).
-	Spray.Reset(BuildSprayGeometry(), Spray.GetSettings(), Spray.GetFluid());
+	Spray.Reset(BuildSprayGeometry(&WaterSourceTargets), Spray.GetSettings(), Spray.GetFluid());
 	FloorWater.ResetForRoom(Spray.GetGeometry(), FloorWaterSettings);   // W3: dry floor
 	FloorOffGridM3 = 0.0;
 	FlowAverager.Reset(); bFlowGridValid = false;   // the air view averages this run only
@@ -372,6 +376,7 @@ void ADataCenterSimulationActor::EnterSimulationMode()
 	if (Room) for (const auto& Tank : Room->GetCoolantInventory().GetTanks()) SprayTankLeakedM3.Add(Tank.State.LeakedM3);
 	InternalLeakedM3.Reset();
 	InitializeRackInteriorWater();
+	InitializeWaterObservation();
 	LastSprayLogSecond = -1;
 	UE_LOG(LogTemp, Display, TEXT("[VrgSim] 시뮬레이션 모드: 랙 %d대 / 스파인 %d대 / CRAH %d대로 구성하고 t=0부터 시작."),
 		Racks.Num(), Spines.Num(), CrahPlacements.Num());
@@ -945,6 +950,7 @@ void ADataCenterSimulationActor::BuildCoolingCoil()
 
 void ADataCenterSimulationActor::BuildCoupling()
 {
+	ClearWaterObservation(); // A rebuilt clock/registry cannot reuse old water references/baselines.
 	FindTargetActors();
 
 	LastSetupMessage.Reset();
@@ -1799,6 +1805,7 @@ void ADataCenterSimulationActor::PlanCrahUnits()
 			if (FMath::Abs(bAlongY ? F2.Y : F2.X) < .99)
 				UE_LOG(LogTemp, Warning, TEXT("%s: 격자 축에 맞춰 90도 단위로 돌려 놓으세요. 가까운 축으로 맞춥니다."), *It->GetName());
 			FCrahPlacement P;
+			P.SourceActor = *It;
 			P.BaseM = SimUnits::UnrealToMeters(It->GetActorLocation());
 			P.ForwardM = bAlongY ? FVector(0.0, FMath::Sign(F2.Y), 0.0) : FVector(FMath::Sign(F2.X), 0.0, 0.0);
 			P.SizeM = It->SizeM;
@@ -2366,37 +2373,44 @@ FVector ADataCenterSimulationActor::DefaultSprayDirection(const FVector& Positio
 	return FLeakSpray::ConeDirection(HashCombine(HashCombine(GetTypeHash(Mm.X), GetTypeHash(Mm.Y)), GetTypeHash(Mm.Z)), HalfAngleRad);
 }
 
-FSprayGeometry ADataCenterSimulationActor::BuildSprayGeometry() const
+FSprayGeometry ADataCenterSimulationActor::BuildSprayGeometry(TArray<FWaterSourceTarget>* Targets) const
 {
 	// Boxes in metres, converted here at the actor boundary (rule 1). The same equipment boxes as the layout checks
 	// (bottom-centre origin); not the air solid cells (those leave a cell open front and rear for the air path).
 	FSprayGeometry G;
+	if (Targets) Targets->Reset();
 	G.RoomM = AirField != nullptr ? AirField->GetDomainBoundsM() : Room != nullptr ? Room->GetRoomBoundsM() : FBox(ForceInit);
 	G.GroundZM = G.RoomM.IsValid ? G.RoomM.Min.Z : 0.0;
-	auto AddBox = [&G](const FVector& BaseM, const FQuat& Rotation, const FVector& SizeM, ESprayObstacleKind Kind, const FString& Name)
+	auto AddBox = [&G,Targets](const FVector& BaseM, const FQuat& Rotation, const FVector& SizeM, ESprayObstacleKind Kind, const FString& Name, const FString& Id=FString(), int32 Rack=INDEX_NONE, const AActor* Actor=nullptr)
 	{
 		if (SizeM.ContainsNaN() || SizeM.GetMin() <= 0.0) return;
 		FSprayObstacle& O = G.Obstacles.AddDefaulted_GetRef();
 		O.CenterM = BaseM + Rotation.RotateVector(FVector(0, 0, .5 * SizeM.Z));
 		O.Rotation = Rotation; O.HalfM = .5 * SizeM; O.Kind = Kind; O.Name = Name;
+		if (Targets && Kind==ESprayObstacleKind::Equipment)
+		{
+			auto& Target=Targets->AddDefaulted_GetRef();Target.Id=Id;Target.Obstacle=G.Obstacles.Num()-1;Target.Rack=Rack;
+			Target.Actor=const_cast<AActor*>(Actor);Target.bNative=Actor!=nullptr;Target.SizeM=SizeM;
+			if (Actor) Target.Transform=Actor->GetActorTransform();
+		}
 	};
-	auto AddActor = [&AddBox](const AActor* A, const FVector& SizeM, const FString& Name)
+	auto AddActor = [&AddBox](const AActor* A, const FVector& SizeM, const FString& Name, const FString& Id,int32 Rack=INDEX_NONE)
 	{
 		const FTransform T = A->GetActorTransform();
-		AddBox(SimUnits::UnrealToMeters(T.GetLocation()), T.GetRotation(), SizeM * T.GetScale3D().GetAbs(), ESprayObstacleKind::Equipment, Name);
+		AddBox(SimUnits::UnrealToMeters(T.GetLocation()), T.GetRotation(), SizeM * T.GetScale3D().GetAbs(), ESprayObstacleKind::Equipment, Name,Id,Rack,A);
 	};
-	for (int32 I = 0; I < Racks.Num(); ++I) if (Racks[I]) AddActor(Racks[I], Racks[I]->RackSizeM, FString::Printf(TEXT("랙 %d"), I));
+	for (int32 I = 0; I < Racks.Num(); ++I) if (Racks[I]) AddActor(Racks[I], Racks[I]->RackSizeM, FString::Printf(TEXT("랙 %d"), I),TEXT("rack/")+VrgRackLifecycle::Identity(Racks[I]),I);
 	for (int32 I = 0; I < Spines.Num(); ++I)
-		if (Spines[I]) AddActor(Spines[I], FVector(GjRackLayout::FrameDepthM, GjRackLayout::FrameWidthM, GjRackLayout::FrameHeightM), FString::Printf(TEXT("스파인 %d"), I));
+		if (Spines[I]) AddActor(Spines[I], FVector(GjRackLayout::FrameDepthM, GjRackLayout::FrameWidthM, GjRackLayout::FrameHeightM), FString::Printf(TEXT("스파인 %d"), I),TEXT("spine/")+VrgSpineLifecycle::Identity(Spines[I]));
 	for (int32 I = 0; I < CrahPlacements.Num(); ++I)
 	{
 		const FCrahPlacement& P = CrahPlacements[I];
-		AddBox(P.BaseM, P.ForwardM.Rotation().Quaternion(), P.SizeM, ESprayObstacleKind::Equipment, FString::Printf(TEXT("CRAH %d"), I));
+		AddBox(P.BaseM, P.ForwardM.Rotation().Quaternion(), P.SizeM, ESprayObstacleKind::Equipment, FString::Printf(TEXT("CRAH %d"), I), P.SourceActor.IsValid()?TEXT("crah/")+VrgCrahLifecycle::Identity(P.SourceActor.Get()):FString::Printf(TEXT("auto/crah/%d"),I),INDEX_NONE,P.SourceActor.Get());
 	}
 	if (UWorld* World = GetWorld())
 	{
 		int32 Cdu = 0;
-		for (TActorIterator<ACoolingDistributionUnitActor> It(World); It; ++It) AddActor(*It, It->SizeM, FString::Printf(TEXT("CDU %d"), Cdu++));
+		for (TActorIterator<ACoolingDistributionUnitActor> It(World); It; ++It) AddActor(*It, It->SizeM, FString::Printf(TEXT("CDU %d"), Cdu++),TEXT("cdu/")+VrgCduLifecycle::Identity(*It));
 		for (TActorIterator<ALayoutBarrierActor> It(World); It; ++It)
 		{
 			const FTransform T = It->GetActorTransform();
@@ -2407,7 +2421,7 @@ FSprayGeometry ADataCenterSimulationActor::BuildSprayGeometry() const
 		}
 		for (int32 K = 0; K < NumPlantUnitKinds; ++K)
 			for (const APlantEquipmentActor* A : VrgPlantEquipment::Gather(World, static_cast<EPlantUnitKind>(K)))
-				AddActor(A, A->SizeM, TEXT("설비 장비"));
+				AddActor(A, A->SizeM, TEXT("설비 장비"),TEXT("plant/")+VrgPlantEquipment::Identity(A));
 	}
 	// Ceiling plates: one air cell thick (their calculated thickness); holes are not cut out (limitation of W2).
 	const double PlateM = AirField != nullptr ? AirField->GetMutableSolver().GetGrid().GetCellSizeM() : 0.25;
@@ -2500,6 +2514,7 @@ void ADataCenterSimulationActor::SprayAfterStep(double DtS)
 	}
 	// W3 advances ONCE over the shared interval, including residual water after repair.
 	if (FloorWater.HasWater()) FloorWater.Step(DtS, Clock.GetSimTimeS());
+	ObserveWaterExposure(Clock.GetSimTimeS()+DtS); // Once, after all W2/W3/W3.5 water; also runs when dry.
 	if (!bStepSpray && !FloorWater.HasWater() && RackInterior.GetWater().ReceivedM3 == 0.0) return;
 	const int32 Second = FMath::FloorToInt32((Clock.GetSimTimeS() + DtS) / 2.0);
 	if (Second != LastSprayLogSecond) { LastSprayLogSecond = Second; LogSprayStatus(); }

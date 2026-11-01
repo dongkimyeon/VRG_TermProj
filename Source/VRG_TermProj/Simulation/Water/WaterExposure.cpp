@@ -28,12 +28,12 @@ bool WaterExposure::Collect(const TArray<FWaterExposureBinding>& Bindings,double
  TSet<int32> Unlocalized;
  auto Fail=[&](const TCHAR* Why){Error=Why;return false;};
  for(int32 I=0;I<N;++I) {
-  const auto& B=Bindings[I];Next.EquipmentId.Add(B.EquipmentId);Next.Slot.Add(B.Slot);
+  const auto& B=Bindings[I];const FString& SourceName=B.SourceName.IsEmpty()?B.EquipmentId:B.SourceName;Next.EquipmentId.Add(B.EquipmentId);Next.Slot.Add(B.Slot);
   if(B.SprayObstacle<INDEX_NONE || B.FloorFlood<INDEX_NONE || B.InteriorRack<INDEX_NONE) return Fail(TEXT("Invalid source index"));
   if(B.SprayObstacle!=INDEX_NONE) {
    if(!Geometry.Obstacles.IsValidIndex(B.SprayObstacle) || !Spray.IsValidIndex(B.SprayObstacle)) return Fail(TEXT("Missing spray obstacle/contact view"));
    const auto& O=Geometry.Obstacles[B.SprayObstacle];const auto& W=Spray[B.SprayObstacle];
-   if(O.Name!=B.EquipmentId || O.Kind!=ESprayObstacleKind::Equipment) return Fail(TEXT("Spray equipment identity mismatch"));
+   if(O.Name!=SourceName || O.Kind!=ESprayObstacleKind::Equipment) return Fail(TEXT("Spray equipment identity mismatch"));
    if(!FMath::IsFinite(W.WaterM3) || W.WaterM3<0) return Fail(TEXT("Invalid spray contact history"));
    if(B.Slot!=INDEX_NONE) {
     // A box maximum impact height is not per-slot arrival evidence. No volume split or broad wetting.
@@ -41,8 +41,9 @@ bool WaterExposure::Collect(const TArray<FWaterExposureBinding>& Bindings,double
    } else {Next.SprayTouchedM3[I]=W.WaterM3;Next.Available[I]|=uint8(EWaterEvidence::Spray);}
   }
   if(B.FloorFlood!=INDEX_NONE) {
-   if(!Flood.IsValidIndex(B.FloorFlood) || Flood[B.FloorFlood].Name!=B.EquipmentId) return Fail(TEXT("Flood equipment identity mismatch"));
+   if(!Flood.IsValidIndex(B.FloorFlood) || Flood[B.FloorFlood].Name!=SourceName) return Fail(TEXT("Flood equipment identity mismatch"));
    const auto& F=Flood[B.FloorFlood];
+   if(F.SourceObstacle!=INDEX_NONE && B.SprayObstacle!=INDEX_NONE && F.SourceObstacle!=B.SprayObstacle) return Fail(TEXT("Flood/spray source obstacle mismatch"));
    if(!FMath::IsFinite(B.FloorContactDepthM) || B.FloorContactDepthM<0 || !FMath::IsFinite(F.MeanDepthM) || F.MeanDepthM<0) return Fail(TEXT("Invalid explicit flood contact height/depth"));
    Next.FloodImmersionM[I]=FMath::Max(0.0,F.MeanDepthM-B.FloorContactDepthM);Next.Available[I]|=uint8(EWaterEvidence::Flood);
   }

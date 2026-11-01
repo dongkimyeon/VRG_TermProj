@@ -132,8 +132,9 @@ bool FFloorWater::ResetForRoom(const FSprayGeometry& Geometry, const FFloorWater
 	const FBox& R = Geometry.RoomM;
 	if (!R.IsValid || InSettings.CellM <= 0.0) { Reset(FVector2D::ZeroVector, 1, 1, 0.0, InSettings); return false; }
 	Reset(FVector2D(R.Min.X, R.Min.Y), FMath::CeilToInt32((R.Max.X - R.Min.X) / InSettings.CellM), FMath::CeilToInt32((R.Max.Y - R.Min.Y) / InSettings.CellM), R.Min.Z, InSettings);
-	for (const FSprayObstacle& O : Geometry.Obstacles)
+	for (int32 Obstacle = 0; Obstacle < Geometry.Obstacles.Num(); ++Obstacle)
 	{
+		const FSprayObstacle& O = Geometry.Obstacles[Obstacle];
 		if (O.Kind == ESprayObstacleKind::Ceiling) continue;
 		// Footprint cells: cell centre inside the box seen from above, box reaching down to the floor.
 		double Down = 0.0;
@@ -161,7 +162,7 @@ bool FFloorWater::ResetForRoom(const FSprayGeometry& Geometry, const FFloorWater
 				if (FMath::Abs(L.X) <= Half.X && FMath::Abs(L.Y) <= Half.Y) Cells.Add(Index(I, J));
 			}
 		if (O.Kind == ESprayObstacleKind::Barrier) { for (const int32 C : Cells) Solid[C] = 1; }
-		else AddFlood(O.Name, Cells);
+		else { AddFlood(O.Name, Cells); Floods.Last().SourceObstacle = Obstacle; }
 	}
 	return true;
 }

@@ -9,6 +9,8 @@ enum class EWaterEvidence : uint8 { Spray=1, Flood=2, Interior=4, Rear=8 };
 struct FWaterExposureBinding
 {
  FString EquipmentId;
+ // Optional existing W2/W3 display label; stable equipment identity stays separate.
+ FString SourceName;
  int32 Slot=INDEX_NONE; // equipment as a whole, or an exact native slot index
  int32 SprayObstacle=INDEX_NONE, FloorFlood=INDEX_NONE, InteriorRack=INDEX_NONE;
  // Explicit height above the floor-water bed [m], including slot height/clearance.

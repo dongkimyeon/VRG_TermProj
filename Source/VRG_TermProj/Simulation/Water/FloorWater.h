@@ -60,6 +60,7 @@ struct VRG_TERMPROJ_API FFloorFlood
 	TArray<int32> Cells;          // floor cells under its footprint
 	double FirstWetS = -1.0;
 	double MeanDepthM = 0.0, MaxDepthM = 0.0, PeakDepthM = 0.0;   // now, now, highest so far
+	int32 SourceObstacle = INDEX_NONE; // observation metadata only; duplicate display names are not identities
 };
 
 struct VRG_TERMPROJ_API FFloorWaterTotals

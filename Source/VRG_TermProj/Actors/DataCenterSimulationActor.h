@@ -13,6 +13,8 @@
 #include "Simulation/Water/LeakSpray.h"
 #include "Simulation/Water/FloorWater.h"
 #include "Simulation/Water/RackInteriorCoupling.h"
+#include "Simulation/Water/WaterExposure.h"
+#include "Simulation/Water/WaterImpactModel.h"
 #include "Simulation/Air/AirStreamlines.h"
 #include "Simulation/Air/AirFlowAverager.h"
 #include "Visualization/AirFlowView.h"
@@ -362,6 +364,20 @@ public:
 	double PlanDrawOffsetM = 2.0;
 	double GetPlanDrawZM() const;
 	const FLeakSpray& GetLeakSpray() const { return Spray; }
+	// W4 observation only. Current=false means the last snapshot must not be treated as fresh.
+	bool bWaterExposureObservation=true; // C++ diagnostic A/B switch, no UI or physical effect
+	const FWaterExposureSnapshot& GetWaterExposure() const { return WaterExposureSnapshot; }
+	const TArray<FWaterExposureBinding>& GetWaterExposureBindings() const { return WaterExposureBindings; }
+	bool IsWaterExposureCurrent() const { return bWaterExposureCurrent; }
+	uint64 GetWaterObservationCount() const { return WaterObservationCount; }
+	const FString& GetWaterObservationDiagnostic() const { return WaterObservationDiagnostic; }
+	// Explicit C++ policy AND power observations; no invented runtime operating/electrical defaults.
+	bool ConfigureWaterImpactObservation(const FWaterImpactPolicy& Policy,const TArray<bool>& Powered,FString& Reason);
+	bool SetWaterImpactPowerObservation(const TArray<bool>& Powered,FString& Reason);
+	bool HasWaterImpactPolicy() const { return bWaterImpactConfigured; }
+	const FWaterImpactModel& GetWaterImpactObservation() const { return WaterImpactObservation; }
+
+
 	// W3.5: cumulative inventory input; interior coupling consumes deltas and only bottom
 	// arrivals go to W3. Key is the stable room-network leak index; never injected into W2.
 	const TMap<int32, double>& GetInternalLeakedM3() const { return InternalLeakedM3; }
@@ -641,7 +657,31 @@ private:
 	void RackInteriorAfterStep(double DtS);
 	bool bRackInteriorStepRejected = false;
 	int32 LastSprayLogSecond = -1;
-	FSprayGeometry BuildSprayGeometry() const;
+	struct FWaterSourceTarget
+	{
+		FString Id;
+		int32 Obstacle=INDEX_NONE, Rack=INDEX_NONE;
+		TWeakObjectPtr<AActor> Actor;
+		bool bNative=false;
+		FTransform Transform;
+		FVector SizeM=FVector::ZeroVector;
+		TArray<double> SlotBottomM,SlotHeightM;
+	};
+	TArray<FWaterSourceTarget> WaterSourceTargets;
+	TArray<FWaterExposureBinding> WaterExposureBindings;
+	TArray<FString> WaterRackIds;
+	TArray<FWaterExposureDiagnostic> WaterMappingDiagnostics;
+	FWaterExposureSnapshot WaterExposureSnapshot;
+	FString WaterObservationDiagnostic;
+	bool bWaterExposureCurrent=false,bWaterRegistryReady=false;
+	uint64 WaterObservationCount=0;
+	FWaterImpactModel WaterImpactObservation;
+	TArray<bool> WaterImpactPowered;
+	bool bWaterImpactConfigured=false;
+	void ClearWaterObservation();
+	void InitializeWaterObservation();
+	bool ObserveWaterExposure(double EndTimeS,bool bBaseline=false);
+	FSprayGeometry BuildSprayGeometry(TArray<FWaterSourceTarget>* Targets=nullptr) const;
 	void SprayAfterStep(double DtS);
 	void DrawSpray() const;
 	double WaterDemoHoleM = -1.0;   // pending vrg.Water.Demo hole [m]; < 0 = none
@@ -718,6 +758,7 @@ private:
 		bool bTopIntake;    // perimeter: intake through the top face; in-row: through the rear face
 		double FlowM3s = 0.0;  // set airflow (placed actor); 0 = share of the design airflow
 		bool bPlaced = false;  // from an ACrahUnitActor (it draws itself)
+		TWeakObjectPtr<ACrahUnitActor> SourceActor; // observation identity, no solver ownership
 	};
 	bool bUsingPlacedCrahs = false;
 	// The automatic layout only (ignores placed actors).
