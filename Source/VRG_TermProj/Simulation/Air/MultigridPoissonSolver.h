@@ -6,6 +6,15 @@
 class FUniformAirGrid;
 struct FVrgMgHierarchy;
 
+// CPU uniform-pressure observation only. Nested under air/projection/pressure timers.
+struct FPoissonCpuCosts
+{
+ // cache check/build, pack/scatter, setup, ApplyA, Jacobi, restrict, prolong,
+ // gauge/dot reductions, residual norm, Krylov update (fusion includes its norm).
+ double Ms[10]={};
+ int32 Builds=0, Solves=0;
+};
+
 // Geometric (aggregation) multigrid for the pressure Poisson equation.
 //
 //   (1/V_i) * sum_j T_ij * (X_j - X_i) = B_i        (all-Neumann, T_ij = face area / centre distance)
@@ -49,7 +58,12 @@ public:
 		TArray<double> Trans;
 	};
 
+	FMultigridPoisson();
 	void Build(FLevelInput&& Fine);
+	const FPoissonCpuCosts& GetLastCosts() const { return Costs; }
+#if WITH_DEV_AUTOMATION_TESTS
+	void SetFusedScansForTesting(bool bEnable, bool bUpdate=false) { bFusedScans=bEnable; bFusedUpdates=bUpdate; }
+#endif
 	bool IsBuilt() const { return Levels.Num() > 0; }
 	int32 GetNumLevels() const { return Levels.Num(); }
 	int32 GetNumCells(int32 Level = 0) const { return Levels.IsValidIndex(Level) ? Levels[Level].Volume.Num() : 0; }
@@ -80,11 +94,15 @@ private:
 		TArray<double> X, F, R, Tmp;
 	};
 	TArray<FLevel> Levels;
+	mutable FPoissonCpuCosts Costs;
+	bool bFusedUpdates=false; // rejected in initial33210 comparison; test-only opt-in
+	bool bFusedScans; // constructor selects verified default; test reference overrides it
+	double RemoveMeanAndDot(TArray<double>& X, const TArray<double>& R);
 
 	void ApplyA(const FLevel& L, const TArray<double>& X, TArray<double>& Out) const;
 	void Smooth(FLevel& L, int32 Sweeps, double Omega);
 	void VCycle(int32 LevelIndex, double Omega);
-	static void RemoveMean(TArray<double>& X);
+	void RemoveMean(TArray<double>& X);
 };
 
 namespace MultigridPoissonSolver
@@ -94,6 +112,7 @@ namespace MultigridPoissonSolver
 	struct VRG_TERMPROJ_API FUniformCache
 	{
 		FMultigridPoisson Solver;
+		FPoissonCpuCosts LastCosts;
 		TArray<int32> CompactOf;   // grid cell -> compact fluid index or INDEX_NONE
 		TArray<int32> GridOf;      // compact -> grid cell
 		TArray<double> B, X;

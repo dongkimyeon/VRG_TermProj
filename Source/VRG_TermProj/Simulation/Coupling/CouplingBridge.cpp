@@ -725,6 +725,9 @@ void FCouplingBridge::StepOnce(double DeltaTimeS, bool bHydraulicsResolved, bool
 			const uint64 StartCycles = FPlatformTime::Cycles64();
 			double BeforeMs[7]; for (int32 I=0; I<7; ++I) BeforeMs[I]=AirSolver->GetStageMs(I);
 			AirSolver->Step(AirInput, DeltaTimeS);
+			const auto& PC=AirSolver->GetLastCpuPressureCosts();
+			for(int32 I=0;I<10;++I) CpuPressureCosts.Ms[I]+=PC.Ms[I];
+			CpuPressureCosts.Builds+=PC.Builds;CpuPressureCosts.Solves+=PC.Solves;
  for (int32 I=0; I<7; ++I) AirStageMs[I] += AirSolver->GetStageMs(I)-BeforeMs[I];
 			for (int32 I = 0; I < AirInput.CellHeatW.Num(); ++I)
 				if (AirInput.CellHeatW[I] != 0.0 && AirSolver->GetGrid().bSolidCell.IsValidIndex(I) && AirSolver->GetGrid().bSolidCell[I])

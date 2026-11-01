@@ -26,7 +26,7 @@ bool FCouplingBridge::PrepareTrayTransport()
 void FCouplingBridge::Step(double DtS, bool bResolved, bool bConverged)
 {
 	for (double& Ms : CouplingStageMs) Ms=0; for (double& Ms : AirStageMs) Ms=0;
-	LastCoupledSubsteps = 0;
+	LastCoupledSubsteps = 0; CpuPressureCosts={};
 	if (!(DtS > 0.0) || !FMath::IsFinite(DtS)) return;
 	if (!ensureMsgf(PrepareTrayTransport(), TEXT("Invalid solved rack transport; coupled step rejected"))) return;
 	bool bHasInternal = false;

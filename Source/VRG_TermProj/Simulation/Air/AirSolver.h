@@ -290,6 +290,10 @@ public:
 	// 돌 수 있어야 하므로 게임 스레드 전용 전역을 건드리면 안 된다.
 	// 게임 스레드 쪽(액터)이 이 값을 읽어 프레임 누산기에 더한다.
 	double GetLastPressureSolveMs() const { return LastPressureSolveMs; }
+	const FPoissonCpuCosts& GetLastCpuPressureCosts() const { return LastCpuPressureCosts; }
+#if WITH_DEV_AUTOMATION_TESTS
+	void SetFusedPressureScansForTesting(bool bEnable) { MultigridCache.Solver.SetFusedScansForTesting(bEnable); }
+#endif
 
 	// S7-4: 압력 스윕을 컴퓨트 셰이더로 돌린다.
 	//
@@ -389,6 +393,7 @@ private:
 	FPoissonSolveSettings PressureSettings;
 	FPoissonSolveResult LastPressureResult;
 	double LastPressureSolveMs = 0.0;
+	FPoissonCpuCosts LastCpuPressureCosts;
 	bool bUseGpuPressure = false;
 	bool bUseMultigridPressure = true;
 	bool bUseGpuMultigrid = false;

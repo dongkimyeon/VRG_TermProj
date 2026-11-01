@@ -2,6 +2,7 @@
 #include "Simulation/Air/UniformAirGrid.h"
 #include "Simulation/Core/VrgParallel.h"
 #include "VrgAirGpu.h"
+#include "Simulation/Core/ElapsedTimer.h"
 
 namespace
 {
@@ -22,8 +23,11 @@ namespace
 	}
 }
 
+FMultigridPoisson::FMultigridPoisson() : bFusedScans(true) {} // verified gauge/dot only; update fusion stays off
+
 void FMultigridPoisson::RemoveMean(TArray<double>& X)
 {
+	FElapsedTimer Timer(Costs.Ms[7]);
 	// The constant vector is the null space of every level's operator (all-Neumann).
 	if (X.IsEmpty()) return;
 	double* PX = X.GetData();
@@ -118,6 +122,7 @@ void FMultigridPoisson::Build(FLevelInput&& Fine)
 
 void FMultigridPoisson::ApplyA(const FLevel& L, const TArray<double>& X, TArray<double>& Out) const
 {
+	FElapsedTimer Timer(Costs.Ms[3]);
 	// A = D - offdiag (positive semidefinite). A X = -V * (L X).
 	const int32 N = L.Volume.Num();
 	const int32* RS = L.RowStart.GetData(); const int32* C = L.Col.GetData();
@@ -145,6 +150,7 @@ void FMultigridPoisson::ApplyLaplacian(const TArray<double>& X, TArray<double>& 
 
 void FMultigridPoisson::Smooth(FLevel& L, int32 Sweeps, double Omega)
 {
+	FElapsedTimer Timer(Costs.Ms[4]);
 	// D6: damped Jacobi. Reads X, writes Tmp, then swaps (rule 7 ping-pong; order independent).
 	const int32 N = L.Volume.Num();
 	const int32* RS = L.RowStart.GetData(); const int32* C = L.Col.GetData();
@@ -178,11 +184,14 @@ void FMultigridPoisson::VCycle(int32 Li, double Omega)
 	Smooth(L, PreSweeps, Omega);
 	ApplyA(L, L.X, L.R);
 	FLevel& C = Levels[Li + 1];
+	{ FElapsedTimer Timer(Costs.Ms[5]);
 	for (double& V : C.F) V = 0.0;
 	for (double& V : C.X) V = 0.0;
 	for (int32 I = 0; I < L.Volume.Num(); ++I) C.F[L.Parent[I]] += L.F[I] - L.R[I];  // restrict residual (sum)
+	}
 	VCycle(Li + 1, Omega);
 	{
+		FElapsedTimer Timer(Costs.Ms[6]);
 		// Constant prolongation: each fine cell reads its parent (a gather, parallel safe). The restriction above
 		// scatters into shared parents and stays serial.
 		double* LX = L.X.GetData(); const double* CX = C.X.GetData(); const int32* Parent = L.Parent.GetData();
@@ -191,9 +200,24 @@ void FMultigridPoisson::VCycle(int32 Li, double Omega)
 	Smooth(L, PostSweeps, Omega);
 }
 
+double FMultigridPoisson::RemoveMeanAndDot(TArray<double>& X, const TArray<double>& R)
+{
+ FElapsedTimer Timer(Costs.Ms[7]);
+ double* PX=X.GetData(); const double* PR=R.GetData();
+ // Same fixed blocks, summation and gauge subtraction as RemoveMean then Dot.
+ const double Mean=VrgParallel::Sum(X.Num(),ParBlock,[&](int32 Begin,int32 End) {
+  double Sum=0; for(int32 I=Begin;I<End;++I) Sum+=PX[I]; return Sum;
+ })/X.Num();
+ return VrgParallel::Sum(X.Num(),ParBlock,[&](int32 Begin,int32 End) {
+  double Sum=0;for(int32 I=Begin;I<End;++I) {PX[I]-=Mean;Sum+=PR[I]*PX[I];} return Sum;
+ });
+}
+
 FPoissonSolveResult FMultigridPoisson::Solve(const TArray<double>& B, TArray<double>& X,
 	const FPoissonSolveSettings& Settings, EMode Mode)
 {
+	Costs={};Costs.Solves=1;
+	const uint64 SetupStart=FPlatformTime::Cycles64();
 	FPoissonSolveResult Result;
 	if (Levels.IsEmpty()) return Result;
 	FLevel& L0 = Levels[0];
@@ -226,6 +250,7 @@ FPoissonSolveResult FMultigridPoisson::Solve(const TArray<double>& B, TArray<dou
 	TArray<double> R, Z, P, AppliedDirection; R.SetNumUninitialized(N);
 	auto Residual = [&]()  // normalized like JacobiPoissonSolver: max |L X - B| / max |B|
 	{
+		FElapsedTimer Timer(Costs.Ms[8]);
 		const double* PR = R.GetData(); const double* V = L0.Volume.GetData();
 		return VrgParallel::Max(N, ParBlock, [&](int32 Begin, int32 End)
 		{
@@ -238,9 +263,14 @@ FPoissonSolveResult FMultigridPoisson::Solve(const TArray<double>& B, TArray<dou
 	{
 		L0.F = In; for (double& V : L0.X) V = 0.0;
 		VCycle(0, Omega);
-		Out = L0.X; RemoveMean(Out);
+		Out = L0.X;
+		if(bFusedScans && Mode==EMode::ConjugateGradient) return RemoveMeanAndDot(Out,In);
+		RemoveMean(Out);
+		FElapsedTimer Timer(Costs.Ms[7]);
+		return Mode==EMode::ConjugateGradient ? Dot(In,Out) : 0.0;
 	};
 
+	Costs.Ms[2]=FPlatformTime::ToMilliseconds64(FPlatformTime::Cycles64()-SetupStart);
 	ApplyA(L0, X, R);
 	for (int32 I = 0; I < N; ++I) R[I] = F[I] - R[I];
 	Result.NormalizedResidual = Residual();
@@ -264,30 +294,39 @@ FPoissonSolveResult FMultigridPoisson::Solve(const TArray<double>& B, TArray<dou
 
 	// Conjugate gradient preconditioned by one symmetric V-cycle (same pre/post Jacobi sweeps).
 	AppliedDirection.SetNumUninitialized(N);
-	Precondition(R, Z);
+	double RZ = Precondition(R, Z);
 	P = Z;
-	double RZ = Dot(R, Z);
 	for (int32 It = 1; It <= MaxIt; ++It)
 	{
 		ApplyA(L0, P, AppliedDirection);
-		const double PQ = Dot(P, AppliedDirection);
+		double PQ;{FElapsedTimer Timer(Costs.Ms[7]);PQ=Dot(P,AppliedDirection);}
 		if (PQ <= 0.0) break;  // breakdown (only at round-off): report the current residual
 		const double Alpha = RZ / PQ;
 		{
+			FElapsedTimer Timer(Costs.Ms[9]);
 			double* PX = X.GetData(); double* PR = R.GetData(); const double* PP = P.GetData(); const double* PQv = AppliedDirection.GetData();
-			VrgParallel::ForRange(N, ParBlock, [&](int32 Begin, int32 End)
-			{
-				for (int32 I = Begin; I < End; ++I) { PX[I] += Alpha * PP[I]; PR[I] -= Alpha * PQv[I]; }
-			});
+			if(bFusedUpdates) {
+				const double* V=L0.Volume.GetData();
+				Result.NormalizedResidual=VrgParallel::Max(N,ParBlock,[&](int32 Begin,int32 End) {
+					double M=0;for(int32 I=Begin;I<End;++I) {
+						PX[I]+=Alpha*PP[I];PR[I]-=Alpha*PQv[I];
+						M=FMath::Max(M,FMath::Abs(PR[I]/V[I]));
+					}return M;
+				})/Ref;
+			} else {
+				VrgParallel::ForRange(N,ParBlock,[&](int32 Begin,int32 End) {
+					for(int32 I=Begin;I<End;++I) {PX[I]+=Alpha*PP[I];PR[I]-=Alpha*PQv[I];}
+				});
+			}
 		}
 		Result.IterationsUsed = It;
-		Result.NormalizedResidual = Residual();
+		if(!bFusedUpdates) Result.NormalizedResidual = Residual();
 		if (Result.NormalizedResidual <= Settings.NormalizedResidualTarget) { Result.bConverged = true; break; }
-		Precondition(R, Z);
-		const double RZNew = Dot(R, Z);
+		const double RZNew = Precondition(R, Z);
 		const double Beta = RZNew / RZ;
 		RZ = RZNew;
 		{
+			FElapsedTimer Timer(Costs.Ms[9]);
 			double* PP = P.GetData(); const double* PZ = Z.GetData();
 			VrgParallel::ForRange(N, ParBlock, [&](int32 Begin, int32 End) { for (int32 I = Begin; I < End; ++I) PP[I] = PZ[I] + Beta * PP[I]; });
 		}
@@ -368,14 +407,23 @@ void MultigridPoissonSolver::ExportHierarchy(const FUniformAirGrid& Grid, const 
 FPoissonSolveResult MultigridPoissonSolver::Solve(const FUniformAirGrid& Grid, const TArray<double>& RightHandSide,
 	TArray<double>& OutField, FUniformCache& Cache, const FPoissonSolveSettings& Settings, FMultigridPoisson::EMode Mode)
 {
+	Cache.LastCosts={};
 	const int32 NumCells = Grid.GetNumCells();
 	if (NumCells == 0 || RightHandSide.Num() != NumCells) return FPoissonSolveResult();
 	if (OutField.Num() != NumCells) OutField.Init(0.0, NumCells);
-	UpdateCache(Grid, Cache);
+	const uint64 CacheStart=FPlatformTime::Cycles64();
+	const bool Rebuilt=UpdateCache(Grid, Cache);
+	const double CacheMs=FPlatformTime::ToMilliseconds64(FPlatformTime::Cycles64()-CacheStart);
+	const uint64 PackStart=FPlatformTime::Cycles64();
 	const int32 N = Cache.GridOf.Num();
 	Cache.B.SetNumUninitialized(N); Cache.X.SetNumUninitialized(N);
 	for (int32 C = 0; C < N; ++C) { Cache.B[C] = RightHandSide[Cache.GridOf[C]]; Cache.X[C] = OutField[Cache.GridOf[C]]; }
+	double PackMs=FPlatformTime::ToMilliseconds64(FPlatformTime::Cycles64()-PackStart);
 	const FPoissonSolveResult Result = Cache.Solver.Solve(Cache.B, Cache.X, Settings, Mode);
+	const uint64 ScatterStart=FPlatformTime::Cycles64();
 	for (int32 C = 0; C < N; ++C) OutField[Cache.GridOf[C]] = Cache.X[C];
+	Cache.LastCosts=Cache.Solver.GetLastCosts();
+	Cache.LastCosts.Ms[0]=CacheMs;Cache.LastCosts.Ms[1]=PackMs+FPlatformTime::ToMilliseconds64(FPlatformTime::Cycles64()-ScatterStart);
+	Cache.LastCosts.Builds=Rebuilt ? 1:0;
 	return Result;
 }

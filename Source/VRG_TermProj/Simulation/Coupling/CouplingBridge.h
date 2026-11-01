@@ -345,6 +345,7 @@ public:
 	const TArray<double>& GetLastCduFacilityReturnK() const { return LastCduFacilityReturnK; }
 	double GetLastCouplingStageMs(int32 I) const { return CouplingStageMs[I]; }
  double GetLastAirStageMs(int32 I) const { return AirStageMs[I]; }
+ const FPoissonCpuCosts& GetLastCpuPressureCosts() const {return CpuPressureCosts;}
  const TArray<double>& GetLastCduHotWK() const { return LastCduHotWK; }
 	const TArray<double>& GetLastCduCoolantKgs() const { return LastCduCoolantKgs; }
 	// S2b step 6 (web leak layer): per rack (target order) leaked mass flow on the supply / return branch [kg/s] and the
@@ -425,6 +426,7 @@ private:
 	TArray<FCduCouplingGroup> CduGroups;
 	TArray<int32> RackCduGroup;  // per target: CDU group index or INDEX_NONE (own radiator)
 	double CouplingStageMs[5] = {}, AirStageMs[7] = {};
+	FPoissonCpuCosts CpuPressureCosts;
  TArray<double> LastCduDutyW, LastCduReturnK, LastCduSupplyK, LastCduFacilityReturnK, LastCduHotWK, LastCduCoolantKgs;
 	int32 CrahDuctBase = 0;  // duct id of CrahUnits[0]
 	TArray<double> ScratchLayerFlowKgs, ScratchLayerIntakeK;

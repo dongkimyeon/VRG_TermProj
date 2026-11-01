@@ -563,6 +563,8 @@ void FAirSolver::InjectHeat(const FAirSolverInput& Input, double DeltaTimeS)
 
 void FAirSolver::Step(const FAirSolverInput& Input, double DeltaTimeS)
 {
+	LastCpuPressureCosts={};
+
 	if (DeltaTimeS <= 0.0)
 	{
 		return;
@@ -1323,6 +1325,7 @@ bool FAirSolver::AdaptToBoxes(const TArray<FBox>& BoxesM, double DtS, FString& E
 
 void FAirSolver::SolvePressure()
 {
+	LastCpuPressureCosts={};
 	bLastPressureRanOnGpu = false;
 	if (bUseMultigridPressure)
 	{
@@ -1367,6 +1370,7 @@ void FAirSolver::SolvePressure()
 		}
 		LastPressureResult = MultigridPoissonSolver::Solve(Grid, DivergencePerS, Grid.PressurePa, MultigridCache,
 			PressureSettings);
+		LastCpuPressureCosts=MultigridCache.LastCosts;
 		return;
 	}
 	if (bUseGpuPressure && SolvePressureOnGpu())
