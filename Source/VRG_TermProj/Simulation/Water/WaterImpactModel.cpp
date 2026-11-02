@@ -86,3 +86,11 @@ bool FWaterImpactModel::Step(const FWaterExposureSnapshot& Now,const TArray<bool
  }
  State=MoveTemp(Next);Events=MoveTemp(NewEvents);Previous=Now;Error.Reset();return true;
 }
+
+
+bool FWaterImpactModel::SetPowerAtCurrentTime(double Time,const TArray<bool>& Powered,FString& Error)
+{
+ if(!bInitialized || !FMath::IsFinite(Time) || Time!=Previous.SimTimeS || Powered.Num()!=State.LastPowered.Num()) {Error=TEXT("Power update requires the current observed endpoint and target layout");return false;}
+ TArray<uint8> Next;Next.Reserve(Powered.Num());for(bool Value:Powered) Next.Add(Value?1:0);
+ State.LastPowered=MoveTemp(Next);Error.Reset();return true;
+}

@@ -2093,6 +2093,7 @@ void ADataCenterSimulationActor::Tick(float DeltaTime)
 				// S7-0 계측. 통합 스텝 안에 랙·수력·공기가 모두 들어 있다.
 				VRG_SCOPE_COST(STAT_VrgCouplingStep, CouplingMs);
 				EvalBeforeStep();
+				RackWaterPowerBeforeStep();
 				// S2b step 2: tank pressure -> hydraulic re-solve (only while a leak is open) before the coupling reads flows.
 				if (Room != nullptr) Room->StepCoolantInventory(Clock.GetFixedStepS(), Clock.GetSimTimeS());
 				const bool bHydraulicsConverged = (Room == nullptr) || Room->GetLastSolveResult().bConverged;
@@ -3562,6 +3563,7 @@ void ADataCenterSimulationActor::DrainWarmupSteps()
 		Clock.BeginFrame(Clock.GetFixedStepS());
 		const uint64 StepStart = FPlatformTime::Cycles64();
 		EvalBeforeStep();
+		RackWaterPowerBeforeStep();
 		if (Room != nullptr) Room->StepCoolantInventory(Clock.GetFixedStepS(), Clock.GetSimTimeS());
 		PlantBeforeStep();
 		Bridge.Step(Clock.GetFixedStepS(), bHydraulicsResolved, (Room == nullptr) || Room->GetLastSolveResult().bConverged);

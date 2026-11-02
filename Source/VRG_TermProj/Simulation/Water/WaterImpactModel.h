@@ -39,6 +39,8 @@ public:
  // Reset does not drain/repair any physical source; current held/flooded water may warn again.
  bool Reset(const FWaterExposureSnapshot& Baseline,const TArray<bool>& Powered,const FWaterImpactPolicy& Policy,FString& Error);
  bool Step(const FWaterExposureSnapshot& Now,const TArray<bool>& Powered,FString& Error);
+ // Known electrical change at the already observed endpoint; no retroactive interval or water replay.
+ bool SetPowerAtCurrentTime(double SimTimeS,const TArray<bool>& Powered,FString& Error);
  const FWaterImpactState& GetState() const {return State;}
  const TArray<FWaterImpactEvent>& GetEvents() const {return Events;}
  double GetSimTimeS() const {return Previous.SimTimeS;}

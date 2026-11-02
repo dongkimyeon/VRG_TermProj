@@ -365,7 +365,7 @@ public:
 	double GetPlanDrawZM() const;
 	const FLeakSpray& GetLeakSpray() const { return Spray; }
 	// W4 observation only. Current=false means the last snapshot must not be treated as fresh.
-	bool bWaterExposureObservation=true; // C++ diagnostic A/B switch, no UI or physical effect
+	bool bWaterExposureObservation=true; // C++ diagnostics: gates observation/response, never resets physical water.
 	const FWaterExposureSnapshot& GetWaterExposure() const { return WaterExposureSnapshot; }
 	const TArray<FWaterExposureBinding>& GetWaterExposureBindings() const { return WaterExposureBindings; }
 	bool IsWaterExposureCurrent() const { return bWaterExposureCurrent; }
@@ -375,6 +375,12 @@ public:
 	bool ConfigureWaterImpactObservation(const FWaterImpactPolicy& Policy,const TArray<bool>& Powered,FString& Reason);
 	bool SetWaterImpactPowerObservation(const TArray<bool>& Powered,FString& Reason);
 	bool HasWaterImpactPolicy() const { return bWaterImpactConfigured; }
+	// Explicit actuator opt-in, separate from the existing read-only observation API.
+	bool ConfigureRackWaterTripResponse(const FWaterImpactPolicy& Policy,const TArray<bool>& OtherPowered,FString& Reason);
+	struct FWaterRackPowerCut { FString EquipmentId;int32 Slot=INDEX_NONE;double TripTimeS=0,ObservedTimeS=0,AppliedTimeS=0; };
+	const TArray<FWaterRackPowerCut>& GetWaterRackPowerCuts() const { return WaterRackPowerCuts; }
+	bool IsRackWaterTripResponseEnabled() const { return bRackWaterTripResponse; }
+
 	const FWaterImpactModel& GetWaterImpactObservation() const { return WaterImpactObservation; }
 
 
@@ -678,6 +684,12 @@ private:
 	FWaterImpactModel WaterImpactObservation;
 	TArray<bool> WaterImpactPowered;
 	bool bWaterImpactConfigured=false;
+	bool bRackWaterTripResponse=false;
+	TArray<FWaterRackPowerCut> WaterRackPowerCuts;
+	bool ValidateWaterObservationTargets(FString& Reason) const;
+	bool ActualRackWaterPower(const TArray<bool>& OtherPowered,TArray<bool>& Actual,FString& Reason) const;
+	void RackWaterPowerBeforeStep();
+
 	void ClearWaterObservation();
 	void InitializeWaterObservation();
 	bool ObserveWaterExposure(double EndTimeS,bool bBaseline=false);
