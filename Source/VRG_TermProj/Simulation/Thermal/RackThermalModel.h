@@ -161,6 +161,11 @@ public:
 
 	// Utilization of a slot from the input (per-slot array when its length matches, else the scalar), 0..1.
 	static double SlotUtilizationOf(const FRackThermalInput& Input, int32 Slot, int32 NumSlots);
+	static bool IsSlotPowerInputValid(const FRackThermalInput& Input,int32 NumSlots)
+	{ return Input.SlotPowered.IsEmpty() || Input.SlotPowered.Num()==NumSlots; }
+	static bool SlotPoweredOf(const FRackThermalInput& Input,int32 Slot,int32 NumSlots)
+	{ return Slot>=0 && Slot<NumSlots && (Input.SlotPowered.IsEmpty() || (Input.SlotPowered.Num()==NumSlots && Input.SlotPowered[Slot])); }
+
 
 	// Racks saved in a level keep an old copy of the device definitions. Replace every device type whose Name
 	// matches a code preset (GB200 NVL72 devices, management / spine switch) with the current code definition so

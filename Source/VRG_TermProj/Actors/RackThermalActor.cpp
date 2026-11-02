@@ -106,6 +106,7 @@ void ARackThermalActor::ResetSim()
 {
 	bSimRunning = false;
 	ConformInputArrays();
+	Input.SlotPowered.Init(true, Params.NumSleds); // New execution clears runtime power cuts, not mechanical docking.
 	Clock.Reset(FixedStepS);
 	Model.Initialize(Params, InitialState);
 	bMeshesDirty = true;

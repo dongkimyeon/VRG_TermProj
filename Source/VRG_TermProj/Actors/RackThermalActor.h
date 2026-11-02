@@ -138,6 +138,7 @@ public:
 	// Design-point air-side heat of this rack [W] (sizes the room's CRAH coil, 2-2).
 	double GetDesignHeatToAirW() const { return FRackThermalModel::DesignHeatToAirW(Params, Input); }
 	FRackThermalInput& GetMutableInput() { return Input; }
+	const FRackThermalInput& GetInput() const { return Input; }
 	const FRadiatorParams& GetRadiatorParams() const { return Radiator; }
 
 	// Rack-local height range [m] of a slot (scaled with RackSizeM). Coupling uses it for per-slot air cells.

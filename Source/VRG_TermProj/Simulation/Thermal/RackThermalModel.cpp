@@ -258,7 +258,7 @@ void FRackThermalModel::Step(const FRackThermalInput& Input, double DeltaTimeS)
 
 bool FRackThermalModel::StepInternal(const FRackThermalInput& Input, double DeltaTimeS, FTrayCoolantInput* WaterInput)
 {
-	if (SlotNodeStart.Num() != Params.NumSleds + 1) return false;
+	if (SlotNodeStart.Num() != Params.NumSleds + 1 || !IsSlotPowerInputValid(Input,Params.NumSleds)) return false;
 	bLastStepStable = IsStepStable(Input, DeltaTimeS);
 
 	const int32 NumSleds = Params.NumSleds;
@@ -274,16 +274,17 @@ bool FRackThermalModel::StepInternal(const FRackThermalInput& Input, double Delt
 	//   - fan mode: the slot's fan electric input (affinity law, D8) becomes heat of its fan parts
 	//     (or of its air-cooled parts when the device lists no separate fan part, e.g. PSU fans)
 	//   - conversion-loss part (power shelf): fraction of the rack's DC load, added after the DC sum
-	ScratchNodeHeatW.SetNumZeroed(NodeParams.Num());
+	// SetNumZeroed only clears newly grown elements: powered-off slots must not retain last-step watts.
+	ScratchNodeHeatW.Init(0.0,NodeParams.Num());
 	double DcLoadW = 0.0;
 	for (int32 SledIndex = 0; SledIndex < NumSleds; ++SledIndex)
 	{
 		const bool bDocked = IsDocked(Input.SledDocked, SledIndex, NumSleds);
-		LastSlotFanPowerW[SledIndex] = SlotFanPowerW(SledIndex, bDocked, Input);
+		LastSlotFanPowerW[SledIndex] = SlotFanPowerW(SledIndex, bDocked && SlotPoweredOf(Input,SledIndex,NumSleds), Input);
 		const FRackFanSpec* Fans = FansOf(Params, SledIndex);
 		LastSlotPressureRisePa[SledIndex] = bFanMode && Fans && bDocked
 			? DockedResistanceOf(Params, SledIndex) * FMath::Square(LastSlotAirMassFlowKgs[SledIndex]) : 0.0;
-		if (!bDocked) continue;
+		if (!bDocked || !SlotPoweredOf(Input,SledIndex,NumSleds)) continue;
 		const double Utilization = SlotUtilizationOf(Input, SledIndex, NumSleds);
 		const double FanShareW = SlotFanHeatNodes[SledIndex] > 0 ? LastSlotFanPowerW[SledIndex] / SlotFanHeatNodes[SledIndex] : 0.0;
 		for (int32 Index = SlotNodeStart[SledIndex]; Index < SlotNodeStart[SledIndex + 1]; ++Index)
@@ -300,7 +301,7 @@ bool FRackThermalModel::StepInternal(const FRackThermalInput& Input, double Delt
 	LastConversionLossW = 0.0;
 	for (int32 SledIndex = 0; SledIndex < NumSleds; ++SledIndex)
 	{
-		if (!IsDocked(Input.SledDocked, SledIndex, NumSleds)) continue;
+		if (!IsDocked(Input.SledDocked, SledIndex, NumSleds) || !SlotPoweredOf(Input,SledIndex,NumSleds)) continue;
 		const double FanShareW = SlotFanHeatNodes[SledIndex] > 0 ? LastSlotFanPowerW[SledIndex] / SlotFanHeatNodes[SledIndex] : 0.0;
 		for (int32 Index = SlotNodeStart[SledIndex]; Index < SlotNodeStart[SledIndex + 1]; ++Index)
 			if (NodeParams[Index].LossFractionOfRackLoad > 0.0)
@@ -347,7 +348,7 @@ bool FRackThermalModel::StepInternal(const FRackThermalInput& Input, double Delt
 			const FRackComponentParams& Component = NodeParams[Index];
 			const double ComponentTempK = State.ComponentTempK[Index];
 
-			// 뽑힌 유닛은 전원이 끊긴다 (위에서 0으로 남겨 둔다).
+			// An undocked OR electrically off unit has zero electrical heat; cooling below depends on docking only.
 			const double HeatW = ScratchNodeHeatW[Index];
 
 			// 열유속 3개를 여기서 한 번만 계산한다 (규약 6).
@@ -424,6 +425,7 @@ bool FRackThermalModel::StepInternal(const FRackThermalInput& Input, double Delt
 			const FRackFanSpec* Fans = FansOf(Params, SledIndex);
 			if (!Fans) continue;
 			double& Ratio = State.SlotFanSpeedRatio[SledIndex];
+			if (!SlotPoweredOf(Input,SledIndex,NumSleds)) { Ratio=0.0;continue; }
 			if (Input.FanSpeedOverride >= 0.0) { Ratio = FMath::Clamp(Input.FanSpeedOverride, 0.0, 1.0); continue; }
 			if (!IsDocked(Input.SledDocked, SledIndex, NumSleds)) continue;
 			const double Target = FanTargetSpeedRatio(*Fans, SlotControlTempK(SledIndex));
@@ -502,7 +504,7 @@ void FRackThermalModel::ComputeSlotAirFlows(const FRackThermalInput& Input, TArr
 	for (int32 Slot = 0; Slot < NumSleds; ++Slot)
 	{
 		const FRackFanSpec* Fans = FansOf(Params, Slot);
-		if (!Fans || !IsDocked(Input.SledDocked, Slot, NumSleds)) { OutSlotFlowKgs[Slot] = 0.0; continue; }
+		if (!Fans || !IsDocked(Input.SledDocked, Slot, NumSleds) || !SlotPoweredOf(Input,Slot,NumSleds)) { OutSlotFlowKgs[Slot] = 0.0; continue; }
 		const double Ratio = Input.FanSpeedOverride >= 0.0 ? FMath::Clamp(Input.FanSpeedOverride, 0.0, 1.0)
 			: State.SlotFanSpeedRatio.IsValidIndex(Slot) ? State.SlotFanSpeedRatio[Slot] : 1.0;
 		OutSlotFlowKgs[Slot] = FanOperatingMassFlowKgs(*Fans, DockedResistanceOf(Params, Slot), Params.AirDensityKgM3, Ratio);
@@ -884,13 +886,13 @@ double FRackThermalModel::DesignHeatShareW(const FRackThermalParams& InParams, c
 	const int32 NumSlots = Starts.Num() - 1;
 	double DcLoadW = 0.0;
 	for (int32 Slot = 0; Slot < NumSlots; ++Slot)
-		if (IsDocked(Input.SledDocked, Slot, NumSlots))
+		if (IsDocked(Input.SledDocked, Slot, NumSlots) && SlotPoweredOf(Input,Slot,NumSlots))
 			for (int32 I = Starts[Slot]; I < Starts[Slot + 1]; ++I)
 				if (Nodes[I].LossFractionOfRackLoad <= 0.0) DcLoadW += HeatAt(Input.ComponentHeatW, I);
 	double HeatW = 0.0;
 	for (int32 Slot = 0; Slot < NumSlots; ++Slot)
 	{
-		if (!IsDocked(Input.SledDocked, Slot, NumSlots)) continue;
+		if (!IsDocked(Input.SledDocked, Slot, NumSlots) || !SlotPoweredOf(Input,Slot,NumSlots)) continue;
 		for (int32 I = Starts[Slot]; I < Starts[Slot + 1]; ++I)
 		{
 			const FRackComponentParams& P = Nodes[I];

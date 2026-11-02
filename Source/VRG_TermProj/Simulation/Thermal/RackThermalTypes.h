@@ -219,6 +219,12 @@ struct FRackThermalInput
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Rack")
 	TArray<bool> SledDocked;
 
+	// W4 runtime electrical command, independent of mechanical docking/coolant valves.
+	// Empty preserves legacy all-on behaviour; otherwise exactly one flag per slot is required.
+	// Not a fault threshold or a circuit model. Not serialized into layout/UI assets.
+	TArray<bool> SlotPowered;
+
+
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Rack")
 	double CoolantInletTempK = 300.15;
 
