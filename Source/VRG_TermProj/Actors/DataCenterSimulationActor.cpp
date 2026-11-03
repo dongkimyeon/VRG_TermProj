@@ -360,6 +360,7 @@ void ADataCenterSimulationActor::EnterSimulationMode()
 	{
 		if (Rack != nullptr) Rack->ResetSim();
 	}
+	for (ASpineCabinetActor* Spine : Spines) if (Spine) Spine->SetPowered(true);
 	for(TActorIterator<ACrahUnitActor> It(GetWorld());It;++It) It->SetPowered(true);
 	BuildCoupling();
 	bNeedsRebuild = HasUnroutedRacks();

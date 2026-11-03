@@ -53,6 +53,9 @@ public:
 	FVector GetPortOutwardWorld() const { return -GetActorForwardVector(); }
 	double GetSwitchZM(int32 Switch) const;
 	void EnsureThermalModel();
+	// Runtime electrical command, not layout settings or a water-failure event.
+	bool IsPowered() const { return bPowered; }
+	void SetPowered(bool bInPowered);
 	FSpineLayoutSettings CaptureLayoutSettings() const;
 	void ApplyLayoutSettings(const FSpineLayoutSettings& Settings);
 	UPROPERTY(Transient) FString LayoutId;
@@ -63,6 +66,7 @@ public:
 	double GetDesignHeatToAirW() const { return FRackThermalModel::DesignHeatToAirW(Model.GetParams(), Input); }
 
 private:
+	bool bPowered = true;
 	FRackThermalModel Model;
 	FRackThermalInput Input;
 	int32 ThermalSwitchCount = INDEX_NONE, ThermalFirstSlot = INDEX_NONE;

@@ -28,11 +28,20 @@ void ASpineCabinetActor::EnsureThermalModel()
 	Input = FRackThermalInput();
 	Input.ComponentHeatW = FRackThermalModel::MakeDefaultHeatW(Params);
 	Input.SledDocked.Init(true, Heights.Num());
+	Input.SlotPowered.Init(bPowered, Heights.Num());
 	Input.CoolantMassFlowKgs = 0.0;
 	// Air flow comes from the switch's own fans (QuantumSpineSwitch, sources in RackThermalModel.cpp).
 	Model.Initialize(Params, FRackThermalState());
 	ThermalSwitchCount = NumSwitches;
 	ThermalFirstSlot = FirstSwitchSlot;
+}
+
+void ASpineCabinetActor::SetPowered(bool bInPowered)
+{
+	EnsureThermalModel();
+	bPowered = bInPowered;
+	// Reuse the existing thermal/fan gate. Never reinitialize stored heat on an electrical change.
+	Input.SlotPowered.Init(bPowered, Model.GetNumSleds());
 }
 
 FSpineLayoutSettings ASpineCabinetActor::CaptureLayoutSettings() const
