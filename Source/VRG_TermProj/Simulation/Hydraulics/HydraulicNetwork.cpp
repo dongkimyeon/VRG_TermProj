@@ -181,7 +181,8 @@ double FHydraulicNetwork::GetPumpHydraulicPowerW(int32 PumpIndex) const
 
 double FHydraulicNetwork::GetPumpElectricalInputPowerW(int32 PumpIndex) const
 {
-	if (!Pumps.IsValidIndex(PumpIndex))
+	// Passive through-flow may dissipate power while off; it is not electrical generation.
+	if (!Pumps.IsValidIndex(PumpIndex) || !Pumps[PumpIndex].bPowered)
 	{
 		return 0.0;
 	}
@@ -334,10 +335,19 @@ void FHydraulicNetwork::SeedInitialGuess()
 	for (int32 PumpIndex = 0; PumpIndex < Pumps.Num(); ++PumpIndex)
 	{
 		const FHydraulicPump& Pump = Pumps[PumpIndex];
-		const double ScaledShutoffHeadPa = Pump.ShutoffHeadPa * Pump.SpeedRatio * Pump.SpeedRatio;
+		const double ScaledShutoffHeadPa = Pump.bPowered ? Pump.ShutoffHeadPa * Pump.SpeedRatio * Pump.SpeedRatio : 0.0;
 		if (Pump.CurveCoeffPaS2M6 > UE_DOUBLE_SMALL_NUMBER && ScaledShutoffHeadPa > 0.0)
 		{
 			PumpFlowM3s[PumpIndex] = 0.5 * FMath::Sqrt(ScaledShutoffHeadPa / Pump.CurveCoeffPaS2M6);
+		}
+		else if (!Pump.bPowered && Pump.CurveCoeffPaS2M6 > UE_DOUBLE_SMALL_NUMBER)
+		{
+			// A stopped pump can have external piezometric drive. Starting at zero made
+			// the quadratic derivative floor produce a rejected Newton step. Seed from
+			// the SAME passive curve and current pressure seed, including reverse flow;
+			// this is an initial guess, not a prescribed solved flow or changed tolerance.
+			const double DrivePa = GetNodePiezometricPa(Pump.FromNodeIndex) - GetNodePiezometricPa(Pump.ToNodeIndex);
+			PumpFlowM3s[PumpIndex] = FMath::Sign(DrivePa) * FMath::Sqrt(FMath::Abs(DrivePa) / Pump.CurveCoeffPaS2M6);
 		}
 		else
 		{
@@ -427,7 +437,7 @@ double FHydraulicNetwork::EvaluateResidual(const FHydraulicSolveSettings& Settin
 		const FHydraulicPump& Pump = Pumps[PumpIndex];
 		const double FlowM3s = PumpFlowM3s[PumpIndex];
 		// 상사식: 계수는 그대로 두고 체절양정만 회전수비의 제곱으로 스케일한다.
-		const double ScaledShutoffHeadPa = Pump.ShutoffHeadPa * Pump.SpeedRatio * Pump.SpeedRatio;
+		const double ScaledShutoffHeadPa = Pump.bPowered ? Pump.ShutoffHeadPa * Pump.SpeedRatio * Pump.SpeedRatio : 0.0;
 		const double CurveDeltaPPa = ScaledShutoffHeadPa - Pump.CurveCoeffPaS2M6 * FlowM3s * FMath::Abs(FlowM3s);
 		const double ActualDeltaPPa = GetNodePiezometricPa(Pump.ToNodeIndex) - GetNodePiezometricPa(Pump.FromNodeIndex);
 		OutResidual[NumFreeNodes + PumpIndex] = ActualDeltaPPa - CurveDeltaPPa;

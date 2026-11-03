@@ -104,6 +104,11 @@ struct FHydraulicPump
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hydraulics", meta = (ClampMin = "0.0", ClampMax = "1.5"))
 	double SpeedRatio = 1.0;
 
+	// Runtime electrical command, independent of speed/valves/topology. Not serialized.
+	// Off removes active head only: retain the existing quadratic passive curve (unvalidated
+	// stationary-pump approximation, not a check valve or a new resistance coefficient).
+	bool bPowered = true;
+
 	// D8: 유체 동력 -> 전기 입력 환산용 종합 효율 (펌프 + 모터).
 	// 이 모델에는 P_rated가 아예 없다. 전력은 항상 운전점에서 계산한다:
 	//   유체 동력 = Δp * FlowM3s,  전기 입력 = 유체 동력 / Efficiency.

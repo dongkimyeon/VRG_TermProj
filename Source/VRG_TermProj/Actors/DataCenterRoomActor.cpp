@@ -187,9 +187,20 @@ void ADataCenterRoomActor::GetRackLeakIndices(const ARackThermalActor* Rack, TAr
 		if (Spec.Rack.Get() == Rack && Spec.NetworkLeak != INDEX_NONE) (Spec.bReturnBranch ? OutReturn : OutSupply).Add(Spec.NetworkLeak);
 }
 
+bool ADataCenterRoomActor::SyncCduPumpPower()
+{
+ bool bChanged=false;
+ for(const FRackRow& Row:Rows) if(Row.Cdu && Network.IsPumpPowered(Row.PumpIndex)!=Row.Cdu->IsPumpPowered()) {
+  Network.SetPumpPowered(Row.PumpIndex,Row.Cdu->IsPumpPowered());bChanged=true;
+ }
+ if(bChanged) Inventory.MarkHydraulicsDirty();
+ return bChanged;
+}
+
 void ADataCenterRoomActor::StepCoolantInventory(double DtS, double NowS)
 {
 	SyncInRackDocking();
+	SyncCduPumpPower();
 	FHydraulicSolveResult Result;
 	const uint64 StartCycles = FPlatformTime::Cycles64();
 	if (!Inventory.Step(Network, SolveSettings, DtS, NowS, Result)) return;
@@ -346,9 +357,13 @@ void ADataCenterRoomActor::OpenAllValves()
 void ADataCenterRoomActor::RestartCoolantInventory()
 {
 	OpenAllValves();
+	for(TActorIterator<ACoolingDistributionUnitActor> It(GetWorld());It;++It) It->SetPumpPowered(true);
+	const bool bPowerChanged=SyncCduPumpPower();
 	for (FRoomLeakSpec& Spec : LeakSpecs) Spec.bEverOpened = Spec.HoleDiameterM > 0.0;
 	FHydraulicSolveResult Result;
-	if (Inventory.Restart(Network, SolveSettings, Result))
+	const bool bInventorySolved=Inventory.Restart(Network, SolveSettings, Result);
+	if(!bInventorySolved && bPowerChanged) Result=Network.Solve(SolveSettings);
+	if (bInventorySolved || bPowerChanged)
 	{
 		LastResult = Result;
 		bPipeColorsDirty = true;
@@ -685,6 +700,7 @@ void ADataCenterRoomActor::BuildNetwork()
 				InternalSpecs.Add(Rack ? InRackNetwork::FromThermal(Rack->Params, Rack->GetMutableInput()) : FInRackSpec());
 		const FInRowLoopHandles Handles = InRowLoopBuilder::AddLoop(Network, Spec, &InternalSpecs);
 		Row.PumpIndex = Handles.PumpIndex;
+		if(Row.Cdu) Network.SetPumpPowered(Row.PumpIndex,Row.Cdu->IsPumpPowered());
 
 		NodePositionM.SetNum(Network.GetNumNodes());
 

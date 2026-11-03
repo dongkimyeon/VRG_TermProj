@@ -255,6 +255,8 @@ public:
 	const FInRackHandles* GetInRackHandles(const ARackThermalActor* Rack) const;
 	int32 GetRackReturnPipeIndex(const ARackThermalActor* Rack) const;
 	bool SyncInRackDocking();
+	// Copies electrical commands without rebuilding topology; dirty inventory solves next step.
+	bool SyncCduPumpPower();
 	bool IsInternalLeak(int32 Leak) const { return InternalLeakIndices.Contains(Leak); }
 	bool SetInternalLeakHoleDiameterM(const ARackThermalActor* Rack, int32 Tray, int32 Site, double DiameterM);
 	const FHydraulicNetwork& GetNetwork() const { return Network; }

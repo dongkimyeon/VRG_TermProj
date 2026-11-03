@@ -50,6 +50,8 @@ public:
   } }
 	double GetPumpSpeedRatio(int32 PumpIndex) const { return Pumps.IsValidIndex(PumpIndex) ? Pumps[PumpIndex].SpeedRatio : 0.0; }
 	void SetPumpSpeedRatio(int32 PumpIndex, double SpeedRatio) { if (Pumps.IsValidIndex(PumpIndex) && Pumps[PumpIndex].SpeedRatio!=SpeedRatio) { InvalidateInitialGuess(); Pumps[PumpIndex].SpeedRatio = SpeedRatio; } }
+	bool IsPumpPowered(int32 Index) const { return Pumps.IsValidIndex(Index) && Pumps[Index].bPowered; }
+	void SetPumpPowered(int32 Index, bool bPowered) { if (Pumps.IsValidIndex(Index) && Pumps[Index].bPowered!=bPowered) { InvalidateInitialGuess(); Pumps[Index].bPowered=bPowered; } }
 	// S8 F1: a control valve is a pipe whose resistance follows its opening (FacilityWaterLoop); changed between solves.
 	double GetPipeResistancePaS2M6(int32 PipeIndex) const { return Pipes.IsValidIndex(PipeIndex) ? Pipes[PipeIndex].ResistancePaS2M6 : 0.0; }
 	bool IsRackInternalPipe(int32 PipeIndex) const { return Pipes.IsValidIndex(PipeIndex) && Pipes[PipeIndex].bRackInternal; }

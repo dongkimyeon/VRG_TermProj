@@ -134,6 +134,13 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Hydraulics")
 	void SetPumpSpeedRatio(double InSpeedRatio);
 
+	// Runtime command only; not layout/save settings. A new simulation resets it.
+	bool IsPumpPowered() const { return bPumpPowered; }
+	void SetPumpPowered(bool bPowered) { bPumpPowered=bPowered; }
+private:
+	bool bPumpPowered=true;
+public:
+
 protected:
 #if WITH_EDITOR
 	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
