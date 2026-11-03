@@ -26,6 +26,7 @@
 #include "DataCenterSimulationActor.generated.h"
 
 class AAirFieldDebugActor;
+class ACrahUnitActor;
 class ADataCenterRoomActor;
 class ACoolingDistributionUnitActor;
 class ARackThermalActor;
@@ -380,6 +381,10 @@ public:
 	bool ConfigureRackWaterTripResponse(const FWaterImpactPolicy& Policy,const TArray<bool>& OtherPowered,FString& Reason);
 	// Explicit CDU opt-in; optionally enable rack response under the same policy/baseline.
 	bool ConfigureCduWaterTripResponse(const FWaterImpactPolicy& Policy,const TArray<bool>& OtherPowered,FString& Reason,bool bIncludeRackResponse=false);
+ bool ConfigureCrahWaterTripResponse(const FWaterImpactPolicy& Policy,const TArray<bool>& OtherPowered,FString& Reason,bool bIncludeRackResponse=false,bool bIncludeCduResponse=false);
+ struct FWaterCrahPowerCut { FString EquipmentId;double TripTimeS=0,ObservedTimeS=0,AppliedTimeS=0; };
+ const TArray<FWaterCrahPowerCut>& GetWaterCrahPowerCuts() const { return WaterCrahPowerCuts; }
+ bool IsCrahWaterTripResponseEnabled() const { return bCrahWaterTripResponse; }
 	struct FWaterCduPowerCut { FString EquipmentId;double TripTimeS=0,ObservedTimeS=0,AppliedTimeS=0; };
 	const TArray<FWaterCduPowerCut>& GetWaterCduPowerCuts() const { return WaterCduPowerCuts; }
 	bool IsCduWaterTripResponseEnabled() const { return bCduWaterTripResponse; }
@@ -441,6 +446,7 @@ public:
 	bool SetLiveLeak(int32 Site, double HoleDiameterM, const TCHAR* Source);
 	const FFacilityWaterLoop& GetFacilityLoop() const { return Plant.GetLoop(); }
 	const FCouplingBridge& GetCouplingBridge() const { return Bridge; }
+ ACrahUnitActor* GetCrahUnitActor(int32 Unit) const { return CrahUnitActors.IsValidIndex(Unit)?CrahUnitActors[Unit].Get():nullptr; }
 	const FFacilityLoopResult& GetFacilityLoopResult() const { return Plant.GetLoopResult(); }
 	// S8 F5: the room ledger and the plant ledger together, out to the outdoor air. The CDU duties and the CRAH coil heat
 	// are the room's outflow and the plant's inflow (the same values, rule 6), so they cancel; what is left: inputs =
@@ -690,12 +696,15 @@ private:
 	FWaterImpactModel WaterImpactObservation;
 	TArray<bool> WaterImpactPowered;
 	bool bWaterImpactConfigured=false;
-	bool bRackWaterTripResponse=false,bCduWaterTripResponse=false;
+	bool bRackWaterTripResponse=false,bCduWaterTripResponse=false,bCrahWaterTripResponse=false;
 	TArray<FWaterRackPowerCut> WaterRackPowerCuts;
 	TArray<FWaterCduPowerCut> WaterCduPowerCuts;
+ TArray<FWaterCrahPowerCut> WaterCrahPowerCuts;
+ ACrahUnitActor* WaterBindingCrah(int32 Index) const;
+ bool ValidateCrahPowerTargets(FString& Reason) const;
 	ACoolingDistributionUnitActor* WaterBindingCdu(int32 Index) const;
 	bool ValidateWaterObservationTargets(FString& Reason) const;
-	bool ActualWaterPower(const TArray<bool>& OtherPowered,TArray<bool>& Actual,FString& Reason,bool bRack,bool bCdu) const;
+	bool ActualWaterPower(const TArray<bool>& OtherPowered,TArray<bool>& Actual,FString& Reason,bool bRack,bool bCdu,bool bCrah=false) const;
 	void WaterPowerBeforeStep();
 
 	void ClearWaterObservation();
@@ -785,6 +794,8 @@ private:
 	void PlanAutoCrahUnits();
 	TArray<FCrahPlacement> CrahPlacements;
 	TArray<FCrahCouplingUnit> CrahUnits;
+ TArray<TWeakObjectPtr<ACrahUnitActor>> CrahUnitActors; // Same order as accepted units, not unfiltered placements.
+ bool SyncCrahPower();
 	// Per CrahUnits entry: where it stands and what it is, for the dashboard (placements can be re-planned later).
 	struct FCrahUnitLabel { FVector2D XYM; bool bTopIntake = false; bool bPlaced = false; };
 	TArray<FCrahUnitLabel> CrahUnitLabels;

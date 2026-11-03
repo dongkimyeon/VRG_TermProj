@@ -2,6 +2,7 @@
 #include "Actors/RackThermalActor.h"
 #include "Actors/SpineCabinetActor.h"
 #include "Actors/CoolingDistributionUnitActor.h"
+#include "Actors/CrahUnitActor.h"
 #include "Interaction/VrgRackLifecycle.h"
 #include "Interaction/VrgSpineLifecycle.h"
 #include "Interaction/VrgCduLifecycle.h"
@@ -51,7 +52,7 @@ namespace
 void ADataCenterSimulationActor::ClearWaterObservation()
 {
  WaterImpactObservation=FWaterImpactModel();WaterImpactPowered.Reset();bWaterImpactConfigured=false;
- bRackWaterTripResponse=bCduWaterTripResponse=false;WaterRackPowerCuts.Reset();WaterCduPowerCuts.Reset();
+ bRackWaterTripResponse=bCduWaterTripResponse=bCrahWaterTripResponse=false;WaterRackPowerCuts.Reset();WaterCduPowerCuts.Reset();WaterCrahPowerCuts.Reset();
  WaterSourceTargets.Reset();WaterExposureBindings.Reset();WaterRackIds.Reset();WaterMappingDiagnostics.Reset();
  WaterExposureSnapshot=FWaterExposureSnapshot();WaterObservationCount=0;bWaterExposureCurrent=false;bWaterRegistryReady=false;
  WaterObservationDiagnostic=TEXT("Water observation requires simulation-entry source initialization");
@@ -61,7 +62,7 @@ void ADataCenterSimulationActor::InitializeWaterObservation()
 {
  if(!bWaterExposureObservation) {ClearWaterObservation();WaterObservationDiagnostic=TEXT("Water observation disabled");return;}
  WaterImpactObservation=FWaterImpactModel();WaterImpactPowered.Reset();bWaterImpactConfigured=false;
- bRackWaterTripResponse=bCduWaterTripResponse=false;WaterRackPowerCuts.Reset();WaterCduPowerCuts.Reset();
+ bRackWaterTripResponse=bCduWaterTripResponse=bCrahWaterTripResponse=false;WaterRackPowerCuts.Reset();WaterCduPowerCuts.Reset();WaterCrahPowerCuts.Reset();
  WaterExposureBindings.Reset();WaterMappingDiagnostics.Reset();WaterExposureSnapshot=FWaterExposureSnapshot();
  WaterObservationCount=0;bWaterExposureCurrent=false;WaterRackIds.SetNum(Racks.Num());
  for(int32 R=0;R<Racks.Num();++R) WaterRackIds[R]=IsValid(Racks[R])?WaterActorIdentity(Racks[R]):FString();
@@ -122,10 +123,10 @@ bool ADataCenterSimulationActor::ObserveWaterExposure(double EndTimeS,bool bBase
  // Publish exposure and impact together. A rejected state sample cannot advance either ledger.
  FWaterImpactModel NextImpact=WaterImpactObservation;
  TArray<bool> ActualPower=WaterImpactPowered;
- if((bRackWaterTripResponse || bCduWaterTripResponse) && !ActualWaterPower(WaterImpactPowered,ActualPower,Error,bRackWaterTripResponse,bCduWaterTripResponse)) return Fail(Error);
+ if((bRackWaterTripResponse || bCduWaterTripResponse || bCrahWaterTripResponse) && !ActualWaterPower(WaterImpactPowered,ActualPower,Error,bRackWaterTripResponse,bCduWaterTripResponse,bCrahWaterTripResponse)) return Fail(Error);
  if(bWaterImpactConfigured && !NextImpact.Step(Next,ActualPower,Error)) return Fail(Error);
  WaterExposureSnapshot=MoveTemp(Next);if(bWaterImpactConfigured) WaterImpactObservation=MoveTemp(NextImpact);bWaterExposureCurrent=true;if(!bBaseline) ++WaterObservationCount;
- WaterObservationDiagnostic=bWaterImpactConfigured?((bRackWaterTripResponse || bCduWaterTripResponse)?TEXT("Water exposure/state current; explicit equipment trip response enabled"):TEXT("Water exposure/state current; observational policy (no new shutdown commands)")):TEXT("Water exposure current; impact policy unset (state not evaluated)");return true;
+ WaterObservationDiagnostic=bWaterImpactConfigured?((bRackWaterTripResponse || bCduWaterTripResponse || bCrahWaterTripResponse)?TEXT("Water exposure/state current; explicit equipment trip response enabled"):TEXT("Water exposure/state current; observational policy (no new shutdown commands)")):TEXT("Water exposure current; impact policy unset (state not evaluated)");return true;
 }
 
 
@@ -136,7 +137,7 @@ bool ADataCenterSimulationActor::ConfigureWaterImpactObservation(const FWaterImp
  if(Policy.MaxObservationGapS<Clock.GetFixedStepS()) {Reason=TEXT("Policy observation gap is shorter than the shared fixed step");return false;}
  FWaterImpactModel Next;
  if(!Next.Reset(WaterExposureSnapshot,Powered,Policy,Reason)) return false;
- WaterImpactObservation=MoveTemp(Next);WaterImpactPowered=Powered;bWaterImpactConfigured=true;bRackWaterTripResponse=bCduWaterTripResponse=false;
+ WaterImpactObservation=MoveTemp(Next);WaterImpactPowered=Powered;bWaterImpactConfigured=true;bRackWaterTripResponse=bCduWaterTripResponse=bCrahWaterTripResponse=false;
  WaterObservationDiagnostic=TEXT("Explicit water-impact policy initialized; observational state only");return true;
 }
 
@@ -155,14 +156,15 @@ ACoolingDistributionUnitActor* ADataCenterSimulationActor::WaterBindingCdu(int32
  return nullptr;
 }
 
-bool ADataCenterSimulationActor::ActualWaterPower(const TArray<bool>& OtherPowered,TArray<bool>& Actual,FString& Reason,bool bRack,bool bCdu) const
+bool ADataCenterSimulationActor::ActualWaterPower(const TArray<bool>& OtherPowered,TArray<bool>& Actual,FString& Reason,bool bRack,bool bCdu,bool bCrah) const
 {
  if(OtherPowered.Num()!=WaterExposureBindings.Num()) {Reason=TEXT("Explicit non-rack power observations must match the full target layout");return false;}
- if(!ValidateWaterObservationTargets(Reason)) return false;
+ if(!ValidateWaterObservationTargets(Reason) || (bCrah && !ValidateCrahPowerTargets(Reason))) return false;
  TArray<bool> Next=OtherPowered;
  for(int32 I=0;I<WaterExposureBindings.Num();++I) {
   const auto& B=WaterExposureBindings[I];
   if(bCdu) if(const auto* Cdu=WaterBindingCdu(I)) Next[I]=Cdu->IsPumpPowered();
+  if(bCrah) if(const auto* Crah=WaterBindingCrah(I)) Next[I]=Crah->IsPowered();
   if(!bRack || B.InteriorRack==INDEX_NONE || B.Slot==INDEX_NONE) continue;
   if(!Racks.IsValidIndex(B.InteriorRack) || !IsValid(Racks[B.InteriorRack])) {Reason=TEXT("Stale rack power mapping");return false;}
   const auto* Rack=Racks[B.InteriorRack].Get();const int32 Count=FRackThermalModel::NumSlotsOf(Rack->Params);
@@ -187,17 +189,47 @@ bool ADataCenterSimulationActor::ConfigureCduWaterTripResponse(const FWaterImpac
  WaterObservationDiagnostic=TEXT("Explicit CDU pump trip response enabled; no valve/topology commands");return true;
 }
 
+ACrahUnitActor* ADataCenterSimulationActor::WaterBindingCrah(int32 Index) const
+{
+ if(!WaterExposureBindings.IsValidIndex(Index) || WaterExposureBindings[Index].Slot!=INDEX_NONE) return nullptr;
+ for(const auto& T:WaterSourceTargets) if(T.bNative && T.Id==WaterExposureBindings[Index].EquipmentId) return Cast<ACrahUnitActor>(T.Actor.Get());
+ return nullptr;
+}
+
+bool ADataCenterSimulationActor::ValidateCrahPowerTargets(FString& Reason) const
+{
+ if(CrahUnitActors.Num()!=Bridge.GetNumCrahUnits()) {Reason=TEXT("CRAH duct mapping changed; re-enter simulation");return false;}
+ int32 Native=0;
+ for(const auto& Target:WaterSourceTargets) if(const auto* Actor=Cast<ACrahUnitActor>(Target.Actor.Get())) {
+  const int32 Unit=CrahUnitActors.IndexOfByPredicate([&](const auto& A){return A.Get()==Actor;});
+  const auto* Placement=CrahPlacements.FindByPredicate([&](const FCrahPlacement& P){return P.SourceActor.Get()==Actor;});
+  if(Unit==INDEX_NONE || !Placement || Placement->FlowM3s!=Actor->VolumeFlowM3s || Placement->bTopIntake!=(Actor->Kind==ECrahUnitKind::Perimeter)) {Reason=TEXT("Native CRAH has no current duct/placement mapping; ceiling/filtered units unsupported, re-enter simulation after setting changes");return false;}
+  ++Native;
+ }
+ if(Native==0) {Reason=TEXT("Native coupled CRAH required; virtual automatic CRAH remains observation-only");return false;}
+ Reason.Reset();return true;
+}
+
+bool ADataCenterSimulationActor::ConfigureCrahWaterTripResponse(const FWaterImpactPolicy& Policy,const TArray<bool>& OtherPowered,FString& Reason,bool bIncludeRackResponse,bool bIncludeCduResponse)
+{
+ TArray<bool> Actual;if(!ActualWaterPower(OtherPowered,Actual,Reason,bIncludeRackResponse,bIncludeCduResponse,true)) return false;
+ if(!ConfigureWaterImpactObservation(Policy,Actual,Reason)) return false;
+ bRackWaterTripResponse=bIncludeRackResponse;bCduWaterTripResponse=bIncludeCduResponse;bCrahWaterTripResponse=true;
+ WaterObservationDiagnostic=TEXT("Explicit native CRAH water-trip response enabled; no resize or valve isolation");return true;
+}
+
 void ADataCenterSimulationActor::WaterPowerBeforeStep()
 {
- if((!bRackWaterTripResponse && !bCduWaterTripResponse) || !bWaterImpactConfigured) return;
+ if((!bRackWaterTripResponse && !bCduWaterTripResponse && !bCrahWaterTripResponse) || !bWaterImpactConfigured) return;
  auto Reject=[&](const FString& Reason) {bWaterExposureCurrent=false;WaterObservationDiagnostic=Reason;};
  if(!bWaterExposureObservation || !bWaterExposureCurrent || !bWaterRegistryReady || WaterExposureSnapshot.SimTimeS!=Clock.GetSimTimeS()) {Reject(TEXT("No fresh water state for power application"));return;}
- TArray<bool> Actual;FString Error;if(!ActualWaterPower(WaterImpactPowered,Actual,Error,bRackWaterTripResponse,bCduWaterTripResponse)) {Reject(Error);return;}
- const auto& State=WaterImpactObservation.GetState();TArray<int32> PendingRack,PendingCdu;
+ TArray<bool> Actual;FString Error;if(!ActualWaterPower(WaterImpactPowered,Actual,Error,bRackWaterTripResponse,bCduWaterTripResponse,bCrahWaterTripResponse)) {Reject(Error);return;}
+ const auto& State=WaterImpactObservation.GetState();TArray<int32> PendingRack,PendingCdu,PendingCrah;
  for(int32 I=0;I<WaterExposureBindings.Num();++I) {
   if(State.Phase[I]!=EWaterImpactPhase::Tripped && State.Phase[I]!=EWaterImpactPhase::Damaged) continue;
   const auto& B=WaterExposureBindings[I];
   if(bCduWaterTripResponse) if(const auto* Cdu=WaterBindingCdu(I)) if(Cdu->IsPumpPowered()) {PendingCdu.Add(I);Actual[I]=false;}
+  if(bCrahWaterTripResponse) if(const auto* Crah=WaterBindingCrah(I)) if(Crah->IsPowered()) {PendingCrah.Add(I);Actual[I]=false;}
   if(!bRackWaterTripResponse || B.InteriorRack==INDEX_NONE || B.Slot==INDEX_NONE) continue;
   const auto* Rack=Racks[B.InteriorRack].Get();
   if(FRackThermalModel::SlotPoweredOf(Rack->GetInput(),B.Slot,FRackThermalModel::NumSlotsOf(Rack->Params))) {PendingRack.Add(I);Actual[I]=false;}
@@ -214,6 +246,10 @@ void ADataCenterSimulationActor::WaterPowerBeforeStep()
  for(int32 I:PendingCdu) {
   WaterBindingCdu(I)->SetPumpPowered(false);
   WaterCduPowerCuts.Add({WaterExposureBindings[I].EquipmentId,State.TripS[I]>=0?State.TripS[I]:State.DamageS[I],WaterExposureSnapshot.SimTimeS,Clock.GetSimTimeS()});
+ }
+ for(int32 I:PendingCrah) {
+  WaterBindingCrah(I)->SetPowered(false);
+  WaterCrahPowerCuts.Add({WaterExposureBindings[I].EquipmentId,State.TripS[I]>=0?State.TripS[I]:State.DamageS[I],WaterExposureSnapshot.SimTimeS,Clock.GetSimTimeS()});
  }
  WaterImpactObservation=MoveTemp(Next);WaterImpactPowered=MoveTemp(Actual);
 }

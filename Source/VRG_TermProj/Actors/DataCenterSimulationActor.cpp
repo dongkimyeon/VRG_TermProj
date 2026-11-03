@@ -360,6 +360,7 @@ void ADataCenterSimulationActor::EnterSimulationMode()
 	{
 		if (Rack != nullptr) Rack->ResetSim();
 	}
+	for(TActorIterator<ACrahUnitActor> It(GetWorld());It;++It) It->SetPowered(true);
 	BuildCoupling();
 	bNeedsRebuild = HasUnroutedRacks();
 	bSimRunning = true;
@@ -1455,8 +1456,17 @@ void ADataCenterSimulationActor::BuildFacilityLoop(TArray<FCduCouplingGroup>& Gr
 	}
 }
 
+bool ADataCenterSimulationActor::SyncCrahPower()
+{
+ if(CrahUnitActors.Num()!=Bridge.GetNumCrahUnits()) {WaterObservationDiagnostic=TEXT("CRAH duct mapping changed; re-enter simulation");return false;}
+ for(const auto& Actor:CrahUnitActors) if(Actor.IsStale()) {WaterObservationDiagnostic=TEXT("Stale native CRAH power mapping; re-enter simulation");return false;}
+ for(int32 U=0;U<CrahUnitActors.Num();++U) if(CrahUnitActors[U].IsValid()) Bridge.SetCrahPowered(U,CrahUnitActors[U]->IsPowered());
+ return true;
+}
+
 void ADataCenterSimulationActor::PlantBeforeStep()
 {
+ if(!SyncCrahPower()) return; // Also runs with fixed chilled-water boundary (plant disabled).
 	if (!bPlantActive || !Plant.IsThermalActive()) return;
 	for (int32 G = 0; G < Bridge.GetNumCduGroups(); ++G)
 	{
@@ -1477,7 +1487,10 @@ void ADataCenterSimulationActor::PlantBeforeStep()
 	{
 		// CRAH valves from the units' mixed intake of the last step (CPU uniform path records it; others hold).
 		TArray<double> RemovedW, MixK, SupplyK;
-		if (Bridge.GetLastCrahUnitReadings(RemovedW, MixK, SupplyK)) Plant.ControlCrahValves(Clock.GetFixedStepS(), MixK);
+		if (Bridge.GetLastCrahUnitReadings(RemovedW, MixK, SupplyK)) {
+   TArray<bool> Enabled;for(const auto& U:Bridge.GetCrahUnits()) Enabled.Add(U.bPowered);
+   Plant.ControlCrahValves(Clock.GetFixedStepS(), MixK, Enabled);
+  }
 		else Plant.MarkCrahReadingsMissing();
 		for (int32 U = 0; U < Bridge.GetCrahUnits().Num(); ++U) Bridge.SetCrahCoil(U, Plant.GetCrahEquivalentUAWK(U), Plant.GetChwSupplyTempK());
 	}
@@ -1847,7 +1860,7 @@ void ADataCenterSimulationActor::FilterCrahPlacementsToGrid(AAirFieldDebugActor*
 
 void ADataCenterSimulationActor::BuildCrahUnits()
 {
-	CrahUnits.Reset();
+	CrahUnits.Reset();CrahUnitActors.Reset();
 	CrahUnitLabels.Reset();
 	CrahUnitFlowM3s = CrahUnitUAWK = CrahUnitFanW = 0.0;
 	bCrahFellBackToCoil = false;
@@ -1913,7 +1926,8 @@ void ADataCenterSimulationActor::BuildCrahUnits()
 		Unit.VolumeFlowM3s = P.FlowM3s;  // 0 = share of the design airflow (sized below)
 		if (Unit.HasBothSides())
 		{
-			CrahUnits.Add(MoveTemp(Unit));
+			Unit.bPowered=P.SourceActor.IsValid()?P.SourceActor->IsPowered():true;
+			CrahUnits.Add(MoveTemp(Unit));CrahUnitActors.Add(P.SourceActor);
 			CrahUnitLabels.Add({ FVector2D(P.BaseM.X, P.BaseM.Y), P.bTopIntake, P.bPlaced });
 		}
 		else ++CrahUnitsDropped;
