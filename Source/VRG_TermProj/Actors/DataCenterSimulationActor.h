@@ -27,6 +27,7 @@
 
 class AAirFieldDebugActor;
 class ADataCenterRoomActor;
+class ACoolingDistributionUnitActor;
 class ARackThermalActor;
 class ASpineCabinetActor;
 class UStaticMesh;
@@ -377,6 +378,11 @@ public:
 	bool HasWaterImpactPolicy() const { return bWaterImpactConfigured; }
 	// Explicit actuator opt-in, separate from the existing read-only observation API.
 	bool ConfigureRackWaterTripResponse(const FWaterImpactPolicy& Policy,const TArray<bool>& OtherPowered,FString& Reason);
+	// Explicit CDU opt-in; optionally enable rack response under the same policy/baseline.
+	bool ConfigureCduWaterTripResponse(const FWaterImpactPolicy& Policy,const TArray<bool>& OtherPowered,FString& Reason,bool bIncludeRackResponse=false);
+	struct FWaterCduPowerCut { FString EquipmentId;double TripTimeS=0,ObservedTimeS=0,AppliedTimeS=0; };
+	const TArray<FWaterCduPowerCut>& GetWaterCduPowerCuts() const { return WaterCduPowerCuts; }
+	bool IsCduWaterTripResponseEnabled() const { return bCduWaterTripResponse; }
 	struct FWaterRackPowerCut { FString EquipmentId;int32 Slot=INDEX_NONE;double TripTimeS=0,ObservedTimeS=0,AppliedTimeS=0; };
 	const TArray<FWaterRackPowerCut>& GetWaterRackPowerCuts() const { return WaterRackPowerCuts; }
 	bool IsRackWaterTripResponseEnabled() const { return bRackWaterTripResponse; }
@@ -684,11 +690,13 @@ private:
 	FWaterImpactModel WaterImpactObservation;
 	TArray<bool> WaterImpactPowered;
 	bool bWaterImpactConfigured=false;
-	bool bRackWaterTripResponse=false;
+	bool bRackWaterTripResponse=false,bCduWaterTripResponse=false;
 	TArray<FWaterRackPowerCut> WaterRackPowerCuts;
+	TArray<FWaterCduPowerCut> WaterCduPowerCuts;
+	ACoolingDistributionUnitActor* WaterBindingCdu(int32 Index) const;
 	bool ValidateWaterObservationTargets(FString& Reason) const;
-	bool ActualRackWaterPower(const TArray<bool>& OtherPowered,TArray<bool>& Actual,FString& Reason) const;
-	void RackWaterPowerBeforeStep();
+	bool ActualWaterPower(const TArray<bool>& OtherPowered,TArray<bool>& Actual,FString& Reason,bool bRack,bool bCdu) const;
+	void WaterPowerBeforeStep();
 
 	void ClearWaterObservation();
 	void InitializeWaterObservation();

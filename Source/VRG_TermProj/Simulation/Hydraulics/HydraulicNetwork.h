@@ -91,7 +91,9 @@ public:
 	double PiezometricDropPa(int32 FromNode, int32 ToNode) const;
 	double GetNodePiezometricPa(int32 NodeIndex) const
 	{
-		return NodePressurePa.IsValidIndex(NodeIndex) ? NodePressurePa[NodeIndex] + NodeHydrostaticPa(NodeIndex) : 0.0;
+		if(!NodePressurePa.IsValidIndex(NodeIndex)) return 0.0;
+  return RelativePressureNode.IsValidIndex(NodeIndex) && RelativePressureNode[NodeIndex]
+   ? PressureReferencePa[NodeIndex]+NodePressurePa[NodeIndex] : NodePressurePa[NodeIndex]+NodeHydrostaticPa(NodeIndex);
 	}
 
 	// 위상 조회. 시각화처럼 그래프를 되짚어야 하는 쪽에서 쓴다.
@@ -129,7 +131,7 @@ public:
  void InvalidateInitialGuess() { bHasConvergedGuess=false; }
 #if WITH_DEV_AUTOMATION_TESTS
  void SetInitialGuessForTesting(const TArray<double>& PressurePa, const TArray<double>& FlowM3s) {
-  NodePressurePa=PressurePa; PumpFlowM3s=FlowM3s; bHasConvergedGuess=true;
+  NodePressurePa=PressurePa; PressureReferencePa.Reset(); RelativePressureNode.Reset(); PumpFlowM3s=FlowM3s; bHasConvergedGuess=true;
  }
 #endif
  const FHydraulicSolveCosts& GetLastCosts() const { return LastCosts; }
@@ -139,6 +141,12 @@ private:
  FSparseLinearWorkspace SparseWorkspace;
  bool bReuseSparseAnalysis = true;
  bool bReuseInitialGuess = false, bHasConvergedGuess = false; // opt-in until reference/physics verification
+ // Off-pump components store piezometric pressure relative to their fixed-node datum.
+ // Same double precision/unknown count/equations; avoids cancellation of sub-mPa drops
+ // on a large fill-pressure pedestal. Other components retain the legacy static coordinates.
+ TArray<double> PressureReferencePa;
+ TArray<uint8> RelativePressureNode;
+ void RebaseStoppedPressureCoordinates();
 	TArray<FHydraulicNode> Nodes;
 	TArray<FHydraulicPipe> Pipes;
 	TArray<FHydraulicPump> Pumps;

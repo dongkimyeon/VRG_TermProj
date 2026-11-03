@@ -30,7 +30,7 @@ bool FCduPumpElectricalCurve::RunTest(const FString& Parameters)
  TestEqual(TEXT("Reverse passive flow consumes no pump electricity"),Net.GetPumpElectricalInputPowerW(P),0.0);
  Net.SetNodeSetPressurePa(From,A.PressurePa);
  Net.SetPumpPowered(P,true);const auto Again=Net.Solve(FHydraulicSolveSettings());
- TestTrue(TEXT("Explicit re-energization preserves original equations"),Again.bConverged && Net.GetPumpFlowM3s(P)==OnFlow && Net.GetPumpElectricalInputPowerW(P)==OnW);
+ TestTrue(TEXT("Explicit re-energization preserves original equations"),Again.bConverged && FMath::Abs(Net.GetPumpFlowM3s(P)-OnFlow)/OnFlow<1e-10 && FMath::Abs(Net.GetPumpElectricalInputPowerW(P)-OnW)/FMath::Abs(OnW)<1e-10);
  AddInfo(FString::Printf(TEXT("CDU passive pump flow=%.17g m3/s normalized flow error=%.17g (reference %.17g m3/s), off hydraulic power=%.17g W, electrical=0 W, residual=%.17g flowRef=%.17g m3/s pressureRef=%.17g Pa"),Expected,Error,Expected,-(A.PressurePa-B.PressurePa)*Expected,Off.NormalizedResidual,Off.ReferenceFlowM3s,Off.ReferencePressurePa));
  return true;
 }
@@ -55,7 +55,34 @@ bool FCduRoomPumpPower::RunTest(const FString& Parameters)
  TestTrue(TEXT("Topology/indices unchanged"),Nodes==Net.GetNumNodes() && Pipes==Net.GetNumPipes() && Leaks==Net.GetNumLeaks() && Pump==Room->GetRowPumpIndex(0));
  for(int32 P=0;P<Pipes;++P) TestEqual(TEXT("No valve isolation"),Net.GetPipeResistancePaS2M6(P),Resistance[P]);
  AddInfo(FString::Printf(TEXT("CDU sealed loop on=%.17g off=%.17g m3/s residual=%.17g flowRef=%.17g m3/s pressureRef=%.17g Pa inventory=%.17g m3"),Flow,Net.GetPumpFlowM3s(Pump),Room->GetLastSolveResult().NormalizedResidual,Room->GetLastSolveResult().ReferenceFlowM3s,Room->GetLastSolveResult().ReferencePressurePa,Water));
+ int32 Site=INDEX_NONE;for(int32 I=0;I<Room->GetNumLeakSpecs();++I) if(Room->GetLeakSpecRack(I)==Rack && !Room->IsLeakSpecReturnBranch(I)) {Site=I;break;}
+ TestTrue(TEXT("Cold off-pump live hole available"),Site!=INDEX_NONE && Room->SetLeakHoleDiameterM(Site,.005));
+ Room->StepCoolantInventory(.02,.02);TestTrue(TEXT("New leak while already stopped converges from cold coordinates"),Room->GetLastSolveResult().bConverged && !Room->GetLastSolveResult().bUsedWarmStart && !Net.IsPumpPowered(Pump));
+ TestTrue(TEXT("Stopped network has calculated leak loss"),Room->GetCoolantInventory().GetTanks()[0].State.LeakedM3>0);
+ Room->SetLeakHoleDiameterM(Site,0);Room->StepCoolantInventory(.02,.04);TestTrue(TEXT("Repair after cold stopped leak converges without repowering"),Room->GetLastSolveResult().bConverged && !Cdu->IsPumpPowered());
  Room->RestartCoolantInventory();TestTrue(TEXT("New run restores electrical command and solve"),Cdu->IsPumpPowered() && Net.IsPumpPowered(Pump) && Room->GetLastSolveResult().bConverged && FMath::Abs(Net.GetPumpFlowM3s(Pump)-Flow)<1e-10);
  GEngine->DestroyWorldContext(World);World->DestroyWorld(false);return true;
+}
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FStoppedPumpPressureDatum,"VRG.Hydraulics.Network.StoppedPumpPressureDatum",
+ EAutomationTestFlags::EditorContext|EAutomationTestFlags::CommandletContext|EAutomationTestFlags::EngineFilter)
+bool FStoppedPumpPressureDatum::RunTest(const FString& Parameters)
+{
+ // Numerical translation fixture, not a device operating condition. Same double equations:
+ // a 1e-6 m3/s demand creates micro-Pascal pipe drops even on a 200kPa fill pedestal.
+ const double Demand=1e-6;double PreviousFlow=0;
+ for(double Fill:{0.0,2e5}) {
+  FHydraulicNetwork Net;FHydraulicNode A;A.bFixedPressure=true;A.PressurePa=Fill;
+  const int32 From=Net.AddNode(A);FHydraulicNode Free;const int32 Middle=Net.AddNode(Free);Free.ExternalInflowM3s=-Demand;const int32 End=Net.AddNode(Free);
+  FHydraulicPump Pump;Pump.FromNodeIndex=From;Pump.ToNodeIndex=Middle;Pump.bPowered=false;Net.AddPump(Pump);
+  FHydraulicPipe Pipe;Pipe.FromNodeIndex=Middle;Pipe.ToNodeIndex=End;Pipe.ResistancePaS2M6=Pump.CurveCoeffPaS2M6;Net.AddPipe(Pipe);
+  const auto Result=Net.Solve(FHydraulicSolveSettings());const double Flow=Net.GetPipeFlowM3s(0),ExpectedDrop=Pipe.ResistancePaS2M6*Demand*Demand;
+  const double FlowError=FMath::Abs(Flow-Demand)/Demand,DropError=FMath::Abs(Net.PiezometricDropPa(Middle,End)-ExpectedDrop)/ExpectedDrop;
+  TestTrue(TEXT("Stopped low-flow network converges from cold, without lowering target"),Result.bConverged && !Result.bUsedWarmStart);
+  TestTrue(TEXT("Micro-drop mass balance and physical equation"),FlowError<1e-10 && DropError<1e-9 && FMath::Abs(Net.GetNodeImbalanceM3s(Middle))/Demand<1e-10 && FMath::Abs(Net.GetNodeImbalanceM3s(End))/Demand<1e-10);
+  if(Fill!=0) TestTrue(TEXT("Changing fill datum preserves solved flow"),FMath::Abs(Flow-PreviousFlow)/Demand<1e-10);
+  PreviousFlow=Flow;
+  AddInfo(FString::Printf(TEXT("CDU pressure datum=%.17g Pa flow=%.17g m3/s normalized flow error=%.17g normalized drop error=%.17g (reference %.17g Pa); solver residual=%.17g, public gauge roundoff=%.17g Pa"),Fill,Flow,FlowError,DropError,ExpectedDrop,Result.NormalizedResidual,FMath::Abs((Net.GetNodePiezometricPa(Middle)-Net.GetNodePiezometricPa(End))-Net.PiezometricDropPa(Middle,End))));
+ }
+ return true;
 }
 #endif

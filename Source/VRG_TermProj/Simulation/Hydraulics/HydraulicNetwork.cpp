@@ -10,6 +10,7 @@ int32 FHydraulicNetwork::AddNode(const FHydraulicNode& Node)
  InvalidateInitialGuess();
 	const int32 NodeIndex = Nodes.Add(Node);
 	NodePressurePa.Add(Node.PressurePa);
+ PressureReferencePa.Add(0.0); RelativePressureNode.Add(0);
 	return NodeIndex;
 }
 
@@ -79,7 +80,7 @@ double FHydraulicNetwork::GetLeakFlowM3s(int32 LeakIndex) const
 	const FHydraulicLeak& Leak = Leaks[LeakIndex];
 	if (IsNodeIsolated(Leak.NodeIndex)) return 0.0;  // S2b step 4: valved off, nothing feeds the hole
 	const double R = LeakResistancePaS2M6(Leak, FluidDensityKgM3);
-	const double DeltaPPa = NodePressurePa[Leak.NodeIndex] - Leak.AmbientPressurePa;
+	const double DeltaPPa = GetNodePressurePa(Leak.NodeIndex) - Leak.AmbientPressurePa;
 	return R > 0.0 && DeltaPPa > 0.0 ? PipeFlowM3s(DeltaPPa, R) : 0.0;   // no inflow from the ambient
 }
 
@@ -98,6 +99,7 @@ void FHydraulicNetwork::Reset()
 	Pumps.Reset();
 	Leaks.Reset();
 	NodePressurePa.Reset();
+ PressureReferencePa.Reset(); RelativePressureNode.Reset();
 	PumpFlowM3s.Reset();
 	NodeToUnknown.Reset();
 }
@@ -123,7 +125,9 @@ void FHydraulicNetwork::SetNodeElevationM(int32 NodeIndex, double ElevationM)
 
 double FHydraulicNetwork::GetNodePressurePa(int32 NodeIndex) const
 {
-	return NodePressurePa.IsValidIndex(NodeIndex) ? NodePressurePa[NodeIndex] : 0.0;
+	if(!NodePressurePa.IsValidIndex(NodeIndex)) return 0.0;
+ return RelativePressureNode.IsValidIndex(NodeIndex) && RelativePressureNode[NodeIndex]
+  ? (PressureReferencePa[NodeIndex]+NodePressurePa[NodeIndex])-NodeHydrostaticPa(NodeIndex) : NodePressurePa[NodeIndex];
 }
 
 int32 FHydraulicNetwork::GetPipeFromNodeIndex(int32 PipeIndex) const
@@ -141,6 +145,12 @@ int32 FHydraulicNetwork::GetPipeToNodeIndex(int32 PipeIndex) const
 // the normalized residual target. Above that level the value is the plain difference (bit-identical results).
 double FHydraulicNetwork::PiezometricDropPa(int32 FromNode, int32 ToNode) const
 {
+ // Subtract the small coordinates before adding the common reference pressure.
+ if(RelativePressureNode.IsValidIndex(FromNode) && RelativePressureNode.IsValidIndex(ToNode)
+  && RelativePressureNode[FromNode] && RelativePressureNode[ToNode] && PressureReferencePa[FromNode]==PressureReferencePa[ToNode]) {
+  const double A=NodePressurePa[FromNode],B=NodePressurePa[ToNode],Drop=A-B;
+  return FMath::Abs(Drop)<=8.0*DBL_EPSILON*FMath::Max(FMath::Abs(A),FMath::Abs(B)) ? 0.0 : Drop;
+ }
 	const double A = GetNodePiezometricPa(FromNode), B = GetNodePiezometricPa(ToNode);
 	const double Drop = A - B;
 	return FMath::Abs(Drop) <= 8.0 * DBL_EPSILON * FMath::Max(FMath::Abs(A), FMath::Abs(B)) ? 0.0 : Drop;
@@ -171,6 +181,8 @@ double FHydraulicNetwork::GetPumpDeltaPPa(int32 PumpIndex) const
 	// 실제로 실현된 압력 상승을 쓴다. 수렴하면 펌프 곡선값과 일치하고,
 	// 수렴하지 않았다면 어긋난 상태가 그대로 드러난다.
 	const FHydraulicPump& Pump = Pumps[PumpIndex];
+ if(RelativePressureNode.IsValidIndex(Pump.FromNodeIndex) && RelativePressureNode[Pump.FromNodeIndex])
+  return -PiezometricDropPa(Pump.FromNodeIndex,Pump.ToNodeIndex);
 	return GetNodePiezometricPa(Pump.ToNodeIndex) - GetNodePiezometricPa(Pump.FromNodeIndex);
 }
 
@@ -258,6 +270,30 @@ void FHydraulicNetwork::GetNodeImbalancesM3s(TArray<double>& Out) const
 	for (int32 I = 0; I < Nodes.Num(); ++I) Out[I] -= Nodes[I].ExternalInflowM3s;
 }
 
+void FHydraulicNetwork::RebaseStoppedPressureCoordinates()
+{
+ PressureReferencePa.SetNumZeroed(Nodes.Num(),EAllowShrinking::No);
+ RelativePressureNode.SetNumZeroed(Nodes.Num(),EAllowShrinking::No);
+ const bool HasOff=Pumps.ContainsByPredicate([](const FHydraulicPump& P){return !P.bPowered;});
+ if(!HasOff && !RelativePressureNode.Contains(uint8(1))) return;
+ TArray<int32> Parent,Count;Parent.SetNum(Nodes.Num());Count.Init(0,Nodes.Num());
+ for(int32 N=0;N<Nodes.Num();++N) Parent[N]=N;
+ auto Find=[&](int32 N) {while(Parent[N]!=N) {Parent[N]=Parent[Parent[N]];N=Parent[N];}return N;};
+ for(const auto& P:Pipes) if(!P.bClosed) Parent[Find(P.FromNodeIndex)]=Find(P.ToNodeIndex);
+ for(const auto& P:Pumps) Parent[Find(P.FromNodeIndex)]=Find(P.ToNodeIndex);
+ TArray<double> Reference;Reference.Init(0.0,Nodes.Num());TArray<uint8> Off;Off.Init(0,Nodes.Num());
+ for(int32 N=0;N<Nodes.Num();++N) if(Nodes[N].bFixedPressure) {const int32 Root=Find(N);Reference[Root]+=Nodes[N].PressurePa+NodeHydrostaticPa(N);++Count[Root];}
+ for(const auto& P:Pumps) if(!P.bPowered) Off[Find(P.FromNodeIndex)]=1;
+ for(int32 N=0;N<Nodes.Num();++N) {
+  const int32 Root=Find(N);const bool WasRelative=RelativePressureNode.IsValidIndex(N) && RelativePressureNode[N];
+  const double Previous=WasRelative?PressureReferencePa[N]:0.0;
+  const bool IsRelative=Off[Root]!=0;const double Next=Count[Root]>0?Reference[Root]/Count[Root]:0.0;
+  if(IsRelative) NodePressurePa[N]=WasRelative?NodePressurePa[N]+(Previous-Next):(NodePressurePa[N]+NodeHydrostaticPa(N))-Next;
+  else if(WasRelative) NodePressurePa[N]=(Previous+NodePressurePa[N])-NodeHydrostaticPa(N);
+  PressureReferencePa[N]=IsRelative?Next:0.0;RelativePressureNode[N]=IsRelative?1:0;
+ }
+}
+
 void FHydraulicNetwork::BuildUnknownMap(int32& OutNumFreeNodes)
 {
 	NodeToUnknown.SetNum(Nodes.Num());
@@ -267,7 +303,7 @@ void FHydraulicNetwork::BuildUnknownMap(int32& OutNumFreeNodes)
 		if (Nodes[NodeIndex].bFixedPressure)
 		{
 			NodeToUnknown[NodeIndex] = INDEX_NONE;
-			NodePressurePa[NodeIndex] = Nodes[NodeIndex].PressurePa;
+			NodePressurePa[NodeIndex] = RelativePressureNode[NodeIndex] ? (Nodes[NodeIndex].PressurePa+NodeHydrostaticPa(NodeIndex))-PressureReferencePa[NodeIndex] : Nodes[NodeIndex].PressurePa;
 		}
 		else if (NodeIsolated.IsValidIndex(NodeIndex) && NodeIsolated[NodeIndex])
 		{
@@ -327,7 +363,7 @@ void FHydraulicNetwork::SeedInitialGuess()
 		{
 			const int32 Root = Find(NodeIndex);
 			const double LoopSeedPa = LoopCount[Root] > 0 ? LoopSumPa[Root] / LoopCount[Root] : SeedPressurePa;
-			NodePressurePa[NodeIndex] = LoopSeedPa - NodeHydrostaticPa(NodeIndex);
+			NodePressurePa[NodeIndex] = RelativePressureNode[NodeIndex] ? LoopSeedPa-PressureReferencePa[NodeIndex] : LoopSeedPa-NodeHydrostaticPa(NodeIndex);
 		}
 	}
 
@@ -346,7 +382,7 @@ void FHydraulicNetwork::SeedInitialGuess()
 			// the quadratic derivative floor produce a rejected Newton step. Seed from
 			// the SAME passive curve and current pressure seed, including reverse flow;
 			// this is an initial guess, not a prescribed solved flow or changed tolerance.
-			const double DrivePa = GetNodePiezometricPa(Pump.FromNodeIndex) - GetNodePiezometricPa(Pump.ToNodeIndex);
+			const double DrivePa = PiezometricDropPa(Pump.FromNodeIndex,Pump.ToNodeIndex);
 			PumpFlowM3s[PumpIndex] = FMath::Sign(DrivePa) * FMath::Sqrt(FMath::Abs(DrivePa) / Pump.CurveCoeffPaS2M6);
 		}
 		else
@@ -439,7 +475,7 @@ double FHydraulicNetwork::EvaluateResidual(const FHydraulicSolveSettings& Settin
 		// 상사식: 계수는 그대로 두고 체절양정만 회전수비의 제곱으로 스케일한다.
 		const double ScaledShutoffHeadPa = Pump.bPowered ? Pump.ShutoffHeadPa * Pump.SpeedRatio * Pump.SpeedRatio : 0.0;
 		const double CurveDeltaPPa = ScaledShutoffHeadPa - Pump.CurveCoeffPaS2M6 * FlowM3s * FMath::Abs(FlowM3s);
-		const double ActualDeltaPPa = GetNodePiezometricPa(Pump.ToNodeIndex) - GetNodePiezometricPa(Pump.FromNodeIndex);
+		const double ActualDeltaPPa = GetPumpDeltaPPa(PumpIndex);
 		OutResidual[NumFreeNodes + PumpIndex] = ActualDeltaPPa - CurveDeltaPPa;
 
 		MaxShutoffHeadPa = FMath::Max(MaxShutoffHeadPa, FMath::Abs(ScaledShutoffHeadPa));
@@ -448,8 +484,9 @@ double FHydraulicNetwork::EvaluateResidual(const FHydraulicSolveSettings& Settin
 	// 정규화 기준. 질량 블록은 유량 스케일로, 펌프 블록은 압력 스케일로 나눈다.
 	double MinPressurePa = TNumericLimits<double>::Max();
 	double MaxPressurePa = TNumericLimits<double>::Lowest();
-	for (const double PressurePa : NodePressurePa)
+	for (int32 N=0;N<NodePressurePa.Num();++N)
 	{
+  const double PressurePa=GetNodePressurePa(N);
 		MinPressurePa = FMath::Min(MinPressurePa, PressurePa);
 		MaxPressurePa = FMath::Max(MaxPressurePa, PressurePa);
 	}
@@ -531,7 +568,9 @@ FHydraulicSolveResult FHydraulicNetwork::Solve(const FHydraulicSolveSettings& Se
 		}
 	}
 
+ const bool bHasStoppedPump=Pumps.ContainsByPredicate([](const FHydraulicPump& P){return !P.bPowered;});
 	int32 NumFreeNodes = 0;
+ RebaseStoppedPressureCoordinates();
 	BuildUnknownMap(NumFreeNodes);
  bool bWarm=bReuseInitialGuess && bPriorConverged && NodePressurePa.Num()==Nodes.Num() && PumpFlowM3s.Num()==Pumps.Num();
  for(double P:NodePressurePa) bWarm &= FMath::IsFinite(P);
@@ -539,7 +578,7 @@ FHydraulicSolveResult FHydraulicNetwork::Solve(const FHydraulicSolveSettings& Se
  Result.bUsedWarmStart=bWarm; LastCosts.WarmStarts=bWarm ? 1 : 0;
  if(!bWarm) SeedInitialGuess();
 	for (int32 N = 0; N < Nodes.Num(); ++N)
-		if (NodeIsolated[N]) NodePressurePa[N] = -NodeHydrostaticPa(N);  // vented: piezometric 0 Pa(g), no flow
+		if (NodeIsolated[N]) NodePressurePa[N] = RelativePressureNode[N] ? -PressureReferencePa[N] : -NodeHydrostaticPa(N);  // vented: piezometric 0 Pa(g), no flow
 
 	const int32 NumUnknowns = NumFreeNodes + Pumps.Num();
 
@@ -583,8 +622,14 @@ FHydraulicSolveResult FHydraulicNetwork::Solve(const FHydraulicSolveSettings& Se
 		for (const FHydraulicPipe& Pipe : Pipes)
 		{
 			if (Pipe.bClosed) continue;
-			const double DeltaPPa = GetNodePiezometricPa(Pipe.FromNodeIndex) - GetNodePiezometricPa(Pipe.ToNodeIndex);
-			const double ClampedDeltaPPa = FMath::Max(FMath::Abs(DeltaPPa), Settings.JacobianDeltaPFloorPa);
+			const double DeltaPPa = bHasStoppedPump ? PiezometricDropPa(Pipe.FromNodeIndex,Pipe.ToNodeIndex)
+    : GetNodePiezometricPa(Pipe.FromNodeIndex) - GetNodePiezometricPa(Pipe.ToNodeIndex);
+   // Off-pump circulation exposes tiny, resolvable tray drops. Clamping their
+   // derivative at 1e-3 Pa stalled the unchanged mass residual. Use the exact
+   // existing square-root derivative there; retain the configured regularizer
+   // at zero/unresolvable drop. Residual equations/targets/budget are unchanged.
+			const double ClampedDeltaPPa = bHasStoppedPump && DeltaPPa!=0.0 ? FMath::Abs(DeltaPPa)
+    : FMath::Max(FMath::Abs(DeltaPPa), Settings.JacobianDeltaPFloorPa);
 			const double ConductanceM3sPa = 1.0 / (2.0 * FMath::Sqrt(Pipe.ResistancePaS2M6 * ClampedDeltaPPa));
 
 			const int32 FromUnknown = NodeToUnknown[Pipe.FromNodeIndex];
@@ -615,7 +660,7 @@ FHydraulicSolveResult FHydraulicNetwork::Solve(const FHydraulicSolveSettings& Se
 			const double R = LeakResistancePaS2M6(Leak, FluidDensityKgM3);
 			const int32 Unknown = NodeToUnknown[Leak.NodeIndex];
 			if (R <= 0.0 || Unknown == INDEX_NONE) continue;
-			const double DeltaPPa = NodePressurePa[Leak.NodeIndex] - Leak.AmbientPressurePa;
+			const double DeltaPPa = GetNodePressurePa(Leak.NodeIndex) - Leak.AmbientPressurePa;
 			const double ClampedDeltaPPa = FMath::Max(DeltaPPa, Settings.JacobianDeltaPFloorPa);
 			AddJacobian(Unknown, Unknown, 1.0 / (2.0 * FMath::Sqrt(R * ClampedDeltaPPa)));
 		}
@@ -752,7 +797,7 @@ FHydraulicSolveResult FHydraulicNetwork::Solve(const FHydraulicSolveSettings& Se
    Result.bColdStartRetry=true; ++LastCosts.ColdRetries;
    { FElapsedTimer Time(LastCosts.SetupMs);
      SeedInitialGuess();
-     for(int32 N=0;N<Nodes.Num();++N) if(NodeIsolated[N]) NodePressurePa[N]=-NodeHydrostaticPa(N);
+     for(int32 N=0;N<Nodes.Num();++N) if(NodeIsolated[N]) NodePressurePa[N]=RelativePressureNode[N] ? -PressureReferencePa[N] : -NodeHydrostaticPa(N);
    }
    CurrentResidual=EvaluateResidual(Settings,Residual,NumFreeNodes,Result.ReferenceFlowM3s,Result.ReferencePressurePa);
    Result.bLinearSolveFailed=false; // recovered attempt stays observable in bWarmStartFailed/bColdStartRetry
