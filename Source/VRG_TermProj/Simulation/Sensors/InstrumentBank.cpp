@@ -12,6 +12,11 @@ const TCHAR* InstrumentSpecs::SiteCode(EInstrumentSite Site)
 	case EInstrumentSite::Cdu: return TEXT("cdu");
 	case EInstrumentSite::RackDripTray: return TEXT("rack_drip_tray");
 	case EInstrumentSite::RackManifoldRope: return TEXT("rack_manifold_rope");
+	case EInstrumentSite::TrayColdPlate: return TEXT("tray_cold_plate");
+	case EInstrumentSite::TrayManifold: return TEXT("tray_manifold");
+	case EInstrumentSite::CduDripTray: return TEXT("cdu_drip_tray");
+	case EInstrumentSite::CduFloorSpot: return TEXT("cdu_floor_spot");
+	case EInstrumentSite::PlantMakeup: return TEXT("plant_makeup");
 	default: return TEXT("unknown");
 	}
 }
@@ -41,6 +46,8 @@ FInstrumentChannelSpec InstrumentSpecs::Make(FName Name, EInstrumentQuantity Qua
 		S.SamplePeriodS = 1.0; S.TimeConstantS = 1.0; S.NoiseStdK = 0.005 * M; S.ResolutionK = 10.0; break;
 	case EInstrumentQuantity::Cop:            // derived from the plant's own heat and power meters
 		S.SamplePeriodS = 1.0; S.TimeConstantS = 5.0; S.NoiseStdK = 0.0; S.ResolutionK = 0.01; break;
+	case EInstrumentQuantity::VolumeM3:       // W5: level transmitter on a vessel, 0.2 % of its volume, 10 mL (Scale = vessel volume)
+		S.SamplePeriodS = 1.0; S.TimeConstantS = 1.0; S.NoiseStdK = 0.002 * M; S.ResolutionK = 1.0e-5; break;
 	}
 	return C;
 }
@@ -91,14 +98,17 @@ TArray<FLeakAlarm> FInstrumentBank::Advance(double SimTimeS, double DtS, const T
 		if (S.Def.bWaterContact)
 		{
 			const FWaterContactSpec& Spec = S.Def.Contact;
-			// Absent/invalid/regressing data cannot clear a latch or invent contact.
-			if (!ContactCumulativeM3.IsValidIndex(P) || !FMath::IsFinite(ContactCumulativeM3[P]) || ContactCumulativeM3[P] < S.WaterM3
+			// Absent/invalid/regressing data cannot clear a latch or invent contact (a current-water value may fall).
+			if (!ContactCumulativeM3.IsValidIndex(P) || !FMath::IsFinite(ContactCumulativeM3[P]) || ContactCumulativeM3[P] < 0.0
+				|| (!Spec.bCurrentWater && ContactCumulativeM3[P] < S.WaterM3)
 				|| !FMath::IsFinite(Spec.WettingVolumeM3) || Spec.WettingVolumeM3 < 0.0
 				|| !FMath::IsFinite(Spec.ResponseDelayS) || Spec.ResponseDelayS < 0.0 || !FMath::IsFinite(Spec.SamplePeriodS) || Spec.SamplePeriodS <= 0.0) continue;
-			S.WaterM3 = ContactCumulativeM3[P]; // cumulative model value, NOT integrated a second time
+			S.WaterM3 = ContactCumulativeM3[P]; // model value, NOT integrated a second time
 			if (S.WaterM3 > 0.0 && S.FirstContactS < 0.0) S.FirstContactS = SimTimeS;
+			// A cumulative record has no drying: after a reset the water it recorded is taken to remain and re-raises the alarm.
 			const bool bWet = S.WaterM3 > 0.0 && S.WaterM3 >= Spec.WettingVolumeM3;
 			if (bWet && S.ThresholdS < 0.0) S.ThresholdS = SimTimeS;
+			if (!bWet && Spec.bCurrentWater) S.ThresholdS = -1.0;   // dried before the debounce ended
 			if (SimTimeS + 1e-9 < S.NextPollS) continue;
 			while (S.NextPollS <= SimTimeS + 1e-9) S.NextPollS += Spec.SamplePeriodS;
 			if (!S.bLeakAlarm && bWet && SimTimeS + 1e-9 >= S.ThresholdS + Spec.ResponseDelayS)
@@ -125,6 +135,21 @@ TArray<FLeakAlarm> FInstrumentBank::Advance(double SimTimeS, double DtS, const T
 	}
 	AlarmLog.Append(Raised);
 	return Raised;
+}
+
+int32 FInstrumentBank::ResetLeakAlarm(int32 PointIndex)
+{
+	int32 Cleared = 0;
+	for (int32 P = 0; P < Points.Num(); ++P)
+	{
+		if (PointIndex != INDEX_NONE && P != PointIndex) continue;
+		FState& S = Points[P];
+		if (!S.Def.bWaterContact) continue;
+		Cleared += S.bLeakAlarm ? 1 : 0;
+		S.bLeakAlarm = false; S.LeakAlarmS = -1.0;
+		S.ThresholdS = -1.0;   // still-wet water restarts the debounce from the next step
+	}
+	return Cleared;
 }
 
 bool FInstrumentBank::HasReading(int32 PointIndex, int32 Channel) const

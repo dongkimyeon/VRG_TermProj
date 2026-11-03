@@ -55,18 +55,23 @@ bool FRackLeakSensorRoom::RunTest(const FString& Parameters)
 			}
 		};
 		Run(150);
-		const int32 BeforeRepair = Sim->GetInstruments().GetAlarmLog().Num();
+		// W3.5 rack-level alarms only: after a repair the floor water left behind may still reach W5 floor ropes.
+		auto CountRackAlarms = [&]() { int32 N = 0; for (const auto& A : Sim->GetInstruments().GetAlarmLog()) { const auto S = Sim->GetInstruments().GetPoint(A.Point).Site;
+			N += S == EInstrumentSite::RackDripTray || S == EInstrumentSite::RackManifoldRope ? 1 : 0; } return N; };
+		const int32 BeforeRepair = CountRackAlarms();
 		Room->SetInternalLeakHoleDiameterM(Rack, 20, 0, 0.0); Room->SetInternalLeakHoleDiameterM(Rack, 0, 2, 0.0);
 		Run(50);
 		const auto& Bank = Sim->GetInstruments(); const auto& C = Sim->GetRackInteriorCoupling(); const auto& W = C.GetWater();
 		TArray<FString> Ids;
 		for (int32 I = 0; I < Bank.Num(); ++I)
 		{
-			const auto& P = Bank.GetPoint(I); if (!P.bWaterContact) continue;
+			const auto& P = Bank.GetPoint(I);
+			if (P.RackId == Other->LayoutId) TestFalse(TEXT("no cross rack alarm"), Bank.IsLeakAlarm(I));
+			// W3.5 rack-level sensors only (W5 added tray, pipe-rope and CDU detectors, checked in LeakContactSensorTest).
+			if (!P.bWaterContact || (P.Site != EInstrumentSite::RackDripTray && P.Site != EInstrumentSite::RackManifoldRope)) continue;
 			Ids.Add(P.Id);
 			if (P.Site == EInstrumentSite::RackDripTray)
 				TestEqual(TEXT("drip uses generated bottom arrival, independently of W3 acknowledgements"), Bank.GetContactWaterM3(I), W.FloorM3[P.Key] + W.RearFloorM3[P.Key]);
-			if (P.RackId == Other->LayoutId) TestFalse(TEXT("no cross rack alarm"), Bank.IsLeakAlarm(I));
 			if (P.Site == EInstrumentSite::RackManifoldRope)
 			{
 				double LocalMax = 0.0;
@@ -74,12 +79,14 @@ bool FRackLeakSensorRoom::RunTest(const FString& Parameters)
 				TestEqual(TEXT("rope uses local exposure, not sum of repeated downstream contacts"), Bank.GetContactWaterM3(I), LocalMax);
 			}
 		}
+		const int32 RackAlarms = CountRackAlarms();
 		TestEqual(TEXT("two contact points per native rack, or none when disabled"), Ids.Num(), Path == 2 ? 0 : 4);
-		TestEqual(TEXT("only actual wet rack alarms, no internal leaks misreported as room pipes"), Bank.GetAlarmLog().Num(), Path == 2 ? 0 : 2);
-		TestEqual(TEXT("repair retains existing alarms without duplicates"), Bank.GetAlarmLog().Num(), BeforeRepair);
+		TestEqual(TEXT("only actual wet rack alarms"), RackAlarms, Path == 2 ? 0 : 2);
+		TestEqual(TEXT("repair retains existing alarms without duplicates"), RackAlarms, BeforeRepair);
 		for (const auto& A : Bank.GetAlarmLog())
 		{
 			const auto& P = Bank.GetPoint(A.Point);
+			if (P.RackId.IsEmpty()) { TestTrue(TEXT("a floor detector alarm has its water"), A.WaterM3 >= P.Contact.WettingVolumeM3); continue; }   // W5 floor ropes / CDU spots
 			TestTrue(TEXT("contact alarm attributed to wet rack"), P.bWaterContact && P.RackId == Rack->LayoutId && A.FirstContactS > 0);
 			TestTrue(TEXT("native polling and response bounds"), A.TimeS >= A.ThresholdS + P.Contact.ResponseDelayS - 1e-9
 				&& A.TimeS <= A.ThresholdS + P.Contact.ResponseDelayS + P.Contact.SamplePeriodS + Sim->FixedStepS);
@@ -154,7 +161,7 @@ bool FRackLeakSensorRoom::RunTest(const FString& Parameters)
 				for (int32 I = 0; I < FMath::Min(Events.Num(), Bank.GetAlarmLog().Num()); ++I)
 				{
 					const auto E = Events[I]->AsObject(); const auto& A = Bank.GetAlarmLog()[I]; const auto& P = Bank.GetPoint(A.Point);
-					TestTrue(TEXT("report identity, type and timing match measured alarm"), E->GetStringField(TEXT("sensorId")) == P.Id && E->GetStringField(TEXT("rackId")) == P.RackId
+					TestTrue(TEXT("report identity, type and timing match measured alarm"), E->GetStringField(TEXT("sensorId")) == (P.Id.IsEmpty() ? FString::Printf(TEXT("instrument:%d"), A.Point) : P.Id) && E->GetStringField(TEXT("rackId")) == P.RackId
 						&& E->GetStringField(TEXT("type")) == InstrumentSpecs::SiteCode(P.Site) && E->GetNumberField(TEXT("timeS")) == A.TimeS
 						&& E->GetNumberField(TEXT("firstContactS")) == A.FirstContactS && E->GetNumberField(TEXT("thresholdReachedS")) == A.ThresholdS
 						&& E->GetNumberField(TEXT("contactWaterM3")) == A.WaterM3 && !E->GetBoolField(TEXT("flowBased")));

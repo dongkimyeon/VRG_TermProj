@@ -8,6 +8,7 @@
 #include "Simulation/Coupling/CouplingBridge.h"
 #include "Simulation/Evaluation/VrgEvaluation.h"
 #include "Simulation/Sensors/InstrumentBank.h"
+#include "Simulation/Sensors/ProcessLeakMonitor.h"
 #include "Simulation/Evaluation/VrgFaultMonitor.h"
 #include "Simulation/Plant/FacilityPlant.h"
 #include "Simulation/Water/LeakSpray.h"
@@ -560,6 +561,8 @@ public:
 	// 2026-10-22 instruments on the pipes (flow, water temperature, leak-detection cable every vrg.Sensors.PipeIntervalM)
 	// and on the plant units / CDUs (DataCenterSimulationInstruments.cpp). Simulated measurements (D9).
 	const FInstrumentBank& GetInstruments() const { return Instruments; }
+	// W5: clears latched water-contact alarms (INDEX_NONE = all); water still there raises them again. vrg.Sensors.ResetLeak.
+	int32 ResetLeakAlarms(int32 PointIndex) { return Instruments.ResetLeakAlarm(PointIndex) + (PointIndex == INDEX_NONE ? ProcessMonitor.ResetAlarms() : 0); }
 	// Native setup only (also used for controlled read-only sensor A/B tests); no new UI.
 	bool bRackLeakSensors = true;
 	// One line of an instrument point's latest readings for the viewport (empty before its first reading).
@@ -596,9 +599,55 @@ private:
 	FString RoomAirDomainMessage;
 	FVrgEvaluation Eval;
 	FInstrumentBank Instruments;
-	TArray<FVector> InstrumentPlantNodesM[3];   // plant network node positions at the build (where plant leaks sit)
+	// W5 (2026-11-03): where each water-contact point reads the computed water, parallel to the instrument points.
+	// Floor cells (room pipe rope, CDU floor spot), ground bins (yard rope), network leaks (tray inner manifold sensor).
+	TArray<TArray<int32>> InstrumentFloorCells;
+	TArray<TArray<FIntPoint>> InstrumentGroundBins;
+	TArray<TArray<int32>> InstrumentLeakIndices;
+	// W5-2 process-value monitoring: one loop per CDU group, then one per facility loop; the instrument point it reads.
+	FProcessLeakMonitor ProcessMonitor;
+	TArray<int32> ProcessLoopPoints;
+	// W5-3 state: alarms already handled, leaking trays per rack, pending compute-tray shutdown timers, done isolations.
+	int32 ProtectionAlarmCursor = 0, ProtectionProcessCursor = 0;
+	TMap<int32, TSet<int32>> ProtectionLeakingTrays;
+	TArray<TTuple<int32, int32, double>> ProtectionTimers;   // rack, slot, due time
+	TSet<int32> ProtectionIsolatedRacks, ProtectionShutRows;
+public:
+	// W5-3 policy (Tools/누수_실시간_계획.md L5 (다)). NVIDIA Mission Control / NICo response matrix: a tray detector shuts
+	// that tray (compute: BMC shutdown timer, switch: out-of-band power off); two leaking trays in a rack (NICo NVL72
+	// default) or a rack-level detector isolate the rack (power shelf DC output off -> rack power off -> supply and return
+	// valves shut); a data-centre-level detector (CDU spot sensors, ropes along the room piping) shuts every rack of its
+	// row and the row CDU; process-value alarms (location unknown) only alert. Off by default (explicit policy). The
+	// compute-tray timer length is not public: ESTIMATE. Actions reuse the slot power, the busbar, the rack valves and
+	// the CDU power (no new physics); the response is the network / thermal solve (D4). Events are logged apart from the
+	// W4 failure events (cause: protection).
+	struct FLeakProtectionPolicy
+	{
+		bool bEnabled = false;
+		double ComputeTrayShutdownDelayS = 10.0;   // ESTIMATE
+		int32 RackIsolationTrays = 2;              // NICo default for NVL72
+	};
+	FLeakProtectionPolicy LeakProtectionPolicy;
+	struct FLeakProtectionEvent
+	{
+		double TimeS = 0.0;
+		FString Level, Action, Trigger;
+		int32 Rack = INDEX_NONE, Slot = INDEX_NONE, Row = INDEX_NONE;
+	};
+	const TArray<FLeakProtectionEvent>& GetLeakProtectionEvents() const { return LeakProtectionEvents; }
+private:
+	TArray<FLeakProtectionEvent> LeakProtectionEvents;
+public:
+	const FProcessLeakMonitor& GetProcessLeakMonitor() const { return ProcessMonitor; }
+private:
 	void RebuildInstruments();
 	void InstrumentsAfterStep();
+	// W5-3 (2026-11-03): protective shutdown / isolation from the leak detectors (DataCenterLeakProtection.cpp).
+	void LeakProtectionAfterStep();
+	void ResetLeakProtection();
+	void ProtectSlotOff(int32 Rack, int32 Slot, const FString& Level, const FString& Trigger);
+	void ProtectRackIsolate(int32 Rack, const FString& Trigger);
+	void ProtectRowShutdown(int32 Row, const FString& Trigger);
 	FVrgFaultMonitor FaultMonitor;
 	int32 LastTankSampleSecond = -1;
 	void FaultAfterStep();

@@ -730,6 +730,7 @@ void ADataCenterRoomActor::BuildNetwork()
 	RackReturnPipeIndices.Reset();
 	RackSupplyValvePipe.Reset();
 	RackReturnValvePipe.Reset();
+	PipeRows.Reset();
 	bPipeIsSupplySide.Reset();
 	PipeStartOverrideCm.Reset();
 	PipeEndOverrideCm.Reset();
@@ -741,6 +742,8 @@ void ADataCenterRoomActor::BuildNetwork()
 		{
 			continue;
 		}
+
+		const int32 RowPipesBegin = Network.GetNumPipes();   // W5-3: pipes added for this row (loop + leak splits)
 
 		// 위상은 InRowLoopBuilder가 만든다. 이 액터는 거기에 좌표만 붙인다.
 		FInRowLoopSpec Spec;
@@ -786,6 +789,7 @@ void ADataCenterRoomActor::BuildNetwork()
 		Row.CduSupplyNodeIndex = Handles.SupplyNodeIndices.IsEmpty() ? INDEX_NONE : Handles.SupplyNodeIndices[0];
 		Row.CduReturnNodeIndex = Handles.ReturnNodeIndices.IsEmpty() ? INDEX_NONE : Handles.ReturnNodeIndices[0];
 		Row.FarSupplyNodeIndex = Row.FarReturnNodeIndex = INDEX_NONE;
+		Row.CduReturnPipeIndex = Handles.ReturnToCduPipeIndex;
 		for (int32 Column = Handles.RackNodeIndices.Num() - 1; Column >= 0 && Row.FarSupplyNodeIndex == INDEX_NONE; --Column)
 			if (Handles.RackNodeIndices[Column] != INDEX_NONE) { Row.FarSupplyNodeIndex = Handles.SupplyNodeIndices[Column]; Row.FarReturnNodeIndex = Handles.ReturnNodeIndices[Column]; }
 		// Remote rack design differential: the two branch losses of a full rack at its design flow (InRowLoopBuilder budget),
@@ -950,6 +954,8 @@ void ADataCenterRoomActor::BuildNetwork()
 		}
 		Row.TankIndex = Inventory.AddTank(Network, Handles.CduNodeIndex, Handles.PumpIndex, RowLeaks,
 			Row.Cdu != nullptr ? Row.Cdu->ExpansionTank : FallbackExpansionTank);
+		PipeRows.SetNum(Network.GetNumPipes(), EAllowShrinking::No);
+		for (int32 P = RowPipesBegin; P < Network.GetNumPipes(); ++P) PipeRows[P] = int32(&Row - Rows.GetData());
 	}
 
 	if (Network.GetNumNodes() == 0)

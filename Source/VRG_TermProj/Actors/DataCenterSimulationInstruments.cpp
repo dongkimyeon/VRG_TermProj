@@ -14,6 +14,7 @@
 #include "Simulation/Core/SimUnits.h"
 #include "Visualization/PlantDisplay.h"
 #include "HAL/IConsoleManager.h"
+#include "EngineUtils.h"
 
 namespace
 {
@@ -22,20 +23,33 @@ namespace
 	TAutoConsoleVariable<float> CVarPipeIntervalM(TEXT("vrg.Sensors.PipeIntervalM"), 3.f,
 		TEXT("Spacing [m] of the pipe instrument points (flow, water temperature, leak-detection cable). Applied at the next simulation entry."));
 
+	// W5 (2026-11-03): operator alarm reset. Water still on/in the detector raises the alarm again after its debounce.
+	FAutoConsoleCommandWithWorldAndArgs GVrgSensorsResetLeak(TEXT("vrg.Sensors.ResetLeak"),
+		TEXT("누수 감지 경보 해제(물이 남아 있으면 다시 울림). vrg.Sensors.ResetLeak <계측 지점 번호|all>"),
+		FConsoleCommandWithWorldAndArgsDelegate::CreateLambda([](const TArray<FString>& Args, UWorld* World)
+		{
+			if (!World) return;
+			const int32 Index = Args.Num() == 0 || Args[0].Equals(TEXT("all"), ESearchCase::IgnoreCase) ? INDEX_NONE : FCString::Atoi(*Args[0]);
+			for (TActorIterator<ADataCenterSimulationActor> It(World); It; ++It)
+				UE_LOG(LogTemp, Display, TEXT("[Sensor] 누수 경보 해제 %d건(%s)"), It->ResetLeakAlarms(Index), Index == INDEX_NONE ? TEXT("all") : *Args[0]);
+		}));
+
 	// Point placement along a polyline: N = round(length / interval) >= 1 points at the centres of N equal sections,
 	// each covering its section (the cover radius reaches both section ends, plus a 0.3 m allowance for the drawn
 	// fittings - a display abstraction, not a physical range).
-	void PlaceAlong(const TArray<FVector>& Pts, double IntervalM, TArray<FVector>& OutPositions, double& OutCoverM)
+	void PlaceAlong(const TArray<FVector>& Pts, double IntervalM, TArray<FVector>& OutPositions, double& OutCoverM, TArray<FVector2D>* OutRanges = nullptr)
 	{
 		OutPositions.Reset();
+		if (OutRanges) OutRanges->Reset();
 		double Length = 0.0;
 		for (int32 K = 0; K + 1 < Pts.Num(); ++K) Length += FVector::Distance(Pts[K], Pts[K + 1]);
-		if (Pts.Num() < 2 || Length <= UE_DOUBLE_SMALL_NUMBER) { if (Pts.Num() > 0) OutPositions.Add(Pts[0]); OutCoverM = 0.3; return; }
+		if (Pts.Num() < 2 || Length <= UE_DOUBLE_SMALL_NUMBER) { if (Pts.Num() > 0) { OutPositions.Add(Pts[0]); if (OutRanges) OutRanges->Add(FVector2D(0.0, 0.0)); } OutCoverM = 0.3; return; }
 		const int32 N = FMath::Max(1, FMath::RoundToInt32(Length / FMath::Max(IntervalM, 0.1)));
 		const double Section = Length / N;
 		OutCoverM = 0.5 * Section + 0.3;
 		for (int32 I = 0; I < N; ++I)
 		{
+			if (OutRanges) OutRanges->Add(FVector2D(I * Section, (I + 1) * Section));
 			double Target = (I + 0.5) * Section, Walked = 0.0;
 			for (int32 K = 0; K + 1 < Pts.Num(); ++K)
 			{
@@ -48,6 +62,39 @@ namespace
 				Walked += Seg;
 			}
 		}
+	}
+
+	// Points every StepM along the polyline between arc lengths [Range.X, Range.Y] (W5: where a rope under a pipe lies).
+	TArray<FVector> SampleAlong(const TArray<FVector>& Pts, const FVector2D& Range, double StepM)
+	{
+		TArray<FVector> Out;
+		double Walked = 0.0;
+		for (int32 K = 0; K + 1 < Pts.Num(); ++K)
+		{
+			const double Seg = FVector::Distance(Pts[K], Pts[K + 1]);
+			for (double D = FMath::Max(Range.X, Walked); D <= FMath::Min(Range.Y, Walked + Seg) + 1e-9; D += StepM)
+				Out.Add(Pts[K] + (Pts[K + 1] - Pts[K]) * (Seg > 0.0 ? FMath::Clamp((D - Walked) / Seg, 0.0, 1.0) : 0.0));
+			Walked += Seg;
+		}
+		if (Out.IsEmpty() && Pts.Num() > 0) Out.Add(Pts[0]);
+		return Out;
+	}
+
+	// W5 contact specs (2026-11-03). ESTIMATES for generic detectors (no product rating): a floor rope / spot sensor is
+	// wet with 5 mL on the cells it covers now; a tray cold-plate or inner-manifold detector with 2 mL; a drip-tray spot
+	// sensor with 30 mL (the W3.5 drip tray value). Poll 1 s, debounce 1 s (the existing generic detector assumptions).
+	FWaterContactSpec ContactSpec(double WettingM3, bool bCurrent)
+	{
+		FWaterContactSpec S; S.WettingVolumeM3 = WettingM3; S.bCurrentWater = bCurrent; return S;
+	}
+
+	// W5-2: a make-up water meter is a positive-displacement / pulse meter: it reads zero without flow (no zero noise,
+	// only its resolution and low-flow cutoff). ESTIMATE of a generic meter.
+	FInstrumentChannelSpec MakeupMeter(double ScaleM3s)
+	{
+		FInstrumentChannelSpec C = InstrumentSpecs::Make(TEXT("makeup_flow"), EInstrumentQuantity::FlowM3s, ScaleM3s);
+		C.Sensor.NoiseStdK = 0.0;
+		return C;
 	}
 
 	const TCHAR* LoopKorean(EPlantLoopId L) { return L == EPlantLoopId::Fws ? TEXT("FWS") : L == EPlantLoopId::Chw ? TEXT("냉수") : TEXT("응축수"); }
@@ -99,20 +146,55 @@ namespace
 void ADataCenterSimulationActor::RebuildInstruments()
 {
 	Instruments.Reset();
-	for (TArray<FVector>& N : InstrumentPlantNodesM) N.Reset();
+	InstrumentFloorCells.Reset(); InstrumentGroundBins.Reset(); InstrumentLeakIndices.Reset();
+	ProcessLoopPoints.Reset();
+	TArray<FString> ProcessNames; TArray<double> ProcessDesign;
 	const double IntervalM = FMath::Max(double(CVarPipeIntervalM.GetValueOnGameThread()), 0.1);
 	using namespace InstrumentSpecs;
+	// W5: floor cells under a set of points (room floor grid, open cells only), ground bins under them (yard).
+	const double CellM = FloorWater.GetCellM();
+	auto FloorCellsUnder = [&](const TArray<FVector>& Samples)
+	{
+		TArray<int32> Cells;
+		for (const FVector& P : Samples)
+		{
+			const int32 I = FMath::FloorToInt32((P.X - FloorWater.GetOriginM().X) / CellM), J = FMath::FloorToInt32((P.Y - FloorWater.GetOriginM().Y) / CellM);
+			if (I < 0 || J < 0 || I >= FloorWater.GetNx() || J >= FloorWater.GetNy() || FloorWater.GetSolid()[FloorWater.Index(I, J)]) continue;
+			Cells.AddUnique(FloorWater.Index(I, J));
+		}
+		return Cells;
+	};
+	auto GroundBinsUnder = [&](const TArray<FVector>& Samples)
+	{
+		TArray<FIntPoint> Bins;
+		const double Bin = Spray.GetSettings().FloorBinM;
+		for (const FVector& P : Samples) Bins.AddUnique(FIntPoint(FMath::FloorToInt32(P.X / Bin), FMath::FloorToInt32(P.Y / Bin)));
+		return Bins;
+	};
+	auto AddPoint = [&](const FInstrumentPoint& Pt, const TArray<double>& Initial, TArray<int32> Cells = {}, TArray<FIntPoint> Bins = {}, TArray<int32> Leaks = {})
+	{
+		Instruments.AddPoint(Pt, Initial);
+		InstrumentFloorCells.Add(MoveTemp(Cells)); InstrumentGroundBins.Add(MoveTemp(Bins)); InstrumentLeakIndices.Add(MoveTemp(Leaks));
+	};
 	auto AddPipePoints = [&](EInstrumentSite Site, const TArray<FVector>& PointsM, const FString& Label, int32 Key, int32 Loop, double FlowScale, double FlowNow, double TempNow)
 	{
-		TArray<FVector> Positions; double Cover = 0.0;
-		PlaceAlong(PointsM, IntervalM, Positions, Cover);
-		for (const FVector& P : Positions)
+		TArray<FVector> Positions; TArray<FVector2D> Ranges; double Cover = 0.0;
+		PlaceAlong(PointsM, IntervalM, Positions, Cover, &Ranges);
+		for (int32 K = 0; K < Positions.Num(); ++K)
 		{
 			FInstrumentPoint Pt;
-			Pt.Site = Site; Pt.Label = Label; Pt.PositionM = P; Pt.Key = Key; Pt.Loop = Loop;
+			Pt.Site = Site; Pt.Label = Label; Pt.PositionM = Positions[K]; Pt.Key = Key; Pt.Loop = Loop;
 			Pt.Channels = { Make(NFlow, EInstrumentQuantity::FlowM3s, FlowScale), Make(NTemp, EInstrumentQuantity::TemperatureK, 300.0) };
 			Pt.bLeakCable = true; Pt.CoverRadiusM = Cover;
-			Instruments.AddPoint(Pt, { FlowNow, TempNow });
+			// W5 (2026-11-03): the cable is a rope laid on the floor (room) or the ground (yard) under its pipe section and
+			// reads the computed water there - the water shown is the water sensed. Room: water on its floor cells now
+			// (W3); yard: the spray's cumulative ground deposits under it (no outdoor spreading model).
+			Pt.bWaterContact = true;
+			Pt.Contact = ContactSpec(5.0e-6, Site == EInstrumentSite::RoomPipe);
+			const TArray<FVector> Samples = SampleAlong(PointsM, Ranges[K], 0.5 * (Site == EInstrumentSite::RoomPipe ? CellM : Spray.GetSettings().FloorBinM));
+			Pt.CoverageStartM = Samples[0]; Pt.CoverageEndM = Samples.Last();
+			if (Site == EInstrumentSite::RoomPipe) AddPoint(Pt, { FlowNow, TempNow }, FloorCellsUnder(Samples));
+			else AddPoint(Pt, { FlowNow, TempNow }, {}, GroundBinsUnder(Samples));
 		}
 	};
 
@@ -120,7 +202,6 @@ void ADataCenterSimulationActor::RebuildInstruments()
 	if (bPlantBuilt && Plant.IsBuilt())
 	{
 		const FPlantDisplaySnapshot S = PlantDisplay::Build(Plant, MakePlantDisplayInput());
-		for (int32 L = 0; L < 3; ++L) InstrumentPlantNodesM[L] = S.NodePositionsM[L];
 		for (const FPlantDisplayPipe& P : S.Pipes)
 		{
 			// Key = edge (pump index for pump pipes); Loop packs the loop and, above it, the volume and the pump flag.
@@ -177,7 +258,19 @@ void ADataCenterSimulationActor::RebuildInstruments()
 			Pt.Channels = Ch;
 			TArray<double> Initial;
 			for (const FInstrumentChannelSpec& C : Ch) Initial.Add(TruthOf(T, C.Name));
-			Instruments.AddPoint(Pt, Initial);
+			AddPoint(Pt, Initial);
+		}
+		// W5-2: the make-up water meter of every facility loop (the plant's make-up keeps a leaking loop full, so its flow
+		// is the plant model's make-up flow, read through the meter).
+		for (const EPlantLoopId L : { EPlantLoopId::Fws, EPlantLoopId::Chw, EPlantLoopId::Cw })
+		{
+			if (!Plant.GetLoopFor(L)) continue;
+			FInstrumentPoint Pt;
+			Pt.Site = EInstrumentSite::PlantMakeup; Pt.Loop = int32(L);
+			Pt.Label = FString::Printf(TEXT("%s 보충수"), LoopKorean(L));
+			Pt.Channels = { MakeupMeter(1.0e-3) };
+			ProcessLoopPoints.Add(Instruments.Num()); ProcessNames.Add(Pt.Label); ProcessDesign.Add(0.0);
+			AddPoint(Pt, { 0.0 });
 		}
 	}
 
@@ -227,8 +320,40 @@ void ADataCenterSimulationActor::RebuildInstruments()
 				// end of the row, system (gauge) pressure at the CDU node, and pump speed feedback (0 when unpowered).
 				Make(TEXT("tcs_flow"), EInstrumentQuantity::FlowM3s, FMath::Max(N.GetPumpFlowM3s(Room->GetRowPumpIndex(CduGroupRows[G])), 1e-4)),
 				Make(TEXT("tcs_dp"), EInstrumentQuantity::PressurePa, 1e5), Make(TEXT("tcs_pressure"), EInstrumentQuantity::PressurePa, 2e5),
-				Make(TEXT("pump_speed"), EInstrumentQuantity::Ratio, 1.0) };
-			Instruments.AddPoint(Pt, { NAN, NAN, NAN, NAN, NAN, NAN, NAN, NAN, NAN });
+				Make(TEXT("pump_speed"), EInstrumentQuantity::Ratio, 1.0),
+				// W5-2 (2026-11-03) process signals: the return flow meter (supply - return = what left between them),
+				// the expansion vessel level transmitter and the make-up water meter.
+				Make(TEXT("tcs_return_flow"), EInstrumentQuantity::FlowM3s, FMath::Max(N.GetPumpFlowM3s(Room->GetRowPumpIndex(CduGroupRows[G])), 1e-4)),
+				Make(TEXT("tank_level"), EInstrumentQuantity::VolumeM3, Cdu->ExpansionTank.TankVolumeM3),
+				MakeupMeter(FMath::Max(Cdu->ExpansionTank.MakeupMaxFlowM3s, 1e-6)) };
+			ProcessLoopPoints.Add(Instruments.Num());
+			ProcessNames.Add(Pt.Label); ProcessDesign.Add(FMath::Max(N.GetPumpFlowM3s(Room->GetRowPumpIndex(CduGroupRows[G])), 1e-4));
+			AddPoint(Pt, { NAN, NAN, NAN, NAN, NAN, NAN, NAN, NAN, NAN, NAN, NAN, NAN });
+		}
+		// W5: CDU spot sensors (BMS level in NVIDIA's three-level detection): the drip tray under it and the floor of its
+		// footprint. Trays are the floor model's trays in CDU actor order (P5); the footprint cells from its oriented box.
+		int32 TrayIndex = 0;
+		for (TActorIterator<ACoolingDistributionUnitActor> It(GetWorld()); It; ++It)
+		{
+			const FVector CenterM = SimUnits::UnrealToMeters(It->GetActorLocation());
+			const FString Id = It->GetName();
+			if (bCduDripTrays && CduDripTrayDepthM > 0.0 && FloorWater.GetTrays().IsValidIndex(TrayIndex))
+			{
+				FInstrumentPoint Pt;
+				Pt.Site = EInstrumentSite::CduDripTray; Pt.Key = TrayIndex++; Pt.Id = Id + TEXT(":drip_tray");
+				Pt.Label = FString::Printf(TEXT("%s 드립 트레이"), *Id); Pt.PositionM = CenterM;
+				Pt.bWaterContact = true; Pt.Contact = ContactSpec(30.0e-6, false);
+				AddPoint(Pt, {});
+			}
+			TArray<FVector> Footprint;
+			for (double X = -.5 * It->SizeM.X; X <= .5 * It->SizeM.X; X += .5 * CellM)
+				for (double Y = -.5 * It->SizeM.Y; Y <= .5 * It->SizeM.Y; Y += .5 * CellM)
+					Footprint.Add(CenterM + It->GetActorRotation().RotateVector(FVector(X, Y, 0.0)));
+			FInstrumentPoint Pt;
+			Pt.Site = EInstrumentSite::CduFloorSpot; Pt.Id = Id + TEXT(":floor_spot");
+			Pt.Label = FString::Printf(TEXT("%s 바닥 스팟"), *Id); Pt.PositionM = CenterM;
+			Pt.bWaterContact = true; Pt.Contact = ContactSpec(5.0e-6, true);
+			AddPoint(Pt, {}, FloorCellsUnder(Footprint));
 		}
 	}
 	for (int32 R = 0; bRackLeakSensors && R < Racks.Num(); ++R)
@@ -250,11 +375,35 @@ void ADataCenterSimulationActor::RebuildInstruments()
 			Pt.PositionM = bRope ? WorldM(-.5 * Rack->RackSizeM.X, .5 * (Bottom + Top)) : WorldM(0.0, 0.0);
 			Pt.CoverageStartM = bRope ? WorldM(-.5 * Rack->RackSizeM.X, Bottom) : Pt.PositionM;
 			Pt.CoverageEndM = bRope ? WorldM(-.5 * Rack->RackSizeM.X, Top) : Pt.PositionM;
-			Instruments.AddPoint(Pt, {});
+			AddPoint(Pt, {});
+		}
+		// W5 (2026-11-03): tray-level detectors (NVIDIA Mission Control: per chassis a cold plate and an inner manifold
+		// leak detector, read by the tray BMC). Cold plate: the water that came into the tray (its plate leak, its
+		// connectors, water from above); inner manifold: the water out of the tray's own connector sites.
+		const FInRackHandles* H = Room->GetInRackHandles(Rack);
+		for (int32 T = 0; T < H->Slots.Num(); ++T)
+		{
+			const int32 Slot = H->Slots[T];
+			const FRackSlot& S = Rack->Params.Slots[Slot];
+			for (const bool bManifold : { false, true })
+			{
+				FInstrumentPoint Pt;
+				Pt.Site = bManifold ? EInstrumentSite::TrayManifold : EInstrumentSite::TrayColdPlate;
+				Pt.Key = R; Pt.Loop = Slot; Pt.RackId = Rack->LayoutId.IsEmpty() ? Rack->GetFName().ToString() : Rack->LayoutId;
+				Pt.Id = FString::Printf(TEXT("%s:tray%d:%s"), *Pt.RackId, T, bManifold ? TEXT("manifold") : TEXT("cold_plate"));
+				Pt.Label = FString::Printf(TEXT("랙 %s 트레이 %d %s"), *Pt.RackId, T, bManifold ? TEXT("내부 매니폴드") : TEXT("냉각판"));
+				Pt.PositionM = WorldM(bManifold ? -.4 * Rack->RackSizeM.X : 0.0, S.BottomZM + .5 * S.HeightM);
+				Pt.bWaterContact = true; Pt.Contact = ContactSpec(2.0e-6, false);
+				TArray<int32> Leaks;
+				if (bManifold) { Leaks.Add(H->Leaks[5 * T + 1]); Leaks.Add(H->Leaks[5 * T + 3]); }   // supply / return connector
+				AddPoint(Pt, {}, {}, {}, Leaks);
+			}
 		}
 	}
-	UE_LOG(LogTemp, Display, TEXT("[Sensor] 계측 지점 %d개(누수 감지 케이블 %d개, 배관 간격 %.1f m) - 모의 계측값(D9), 계측기 사양은 추정값"),
-		Instruments.Num(), Instruments.GetNumLeakCables(), IntervalM);
+	ProcessMonitor.Reset(ProcessNames, ProcessDesign);
+	ResetLeakProtection();   // W5-3 follows this run's detectors from their first alarm
+	UE_LOG(LogTemp, Display, TEXT("[Sensor] 계측 지점 %d개(누수 감지 케이블 %d개, 배관 간격 %.1f m), 공정값 감시 루프 %d개 - 모의 계측값(D9), 계측기 사양은 추정값"),
+		Instruments.Num(), Instruments.GetNumLeakCables(), IntervalM, ProcessMonitor.NumLoops());
 }
 
 void ADataCenterSimulationActor::InstrumentsAfterStep()
@@ -302,6 +451,12 @@ void ADataCenterSimulationActor::InstrumentsAfterStep()
 			for (const FInstrumentChannelSpec& C : P.Channels) V.Add(TruthOf(T, C.Name));
 			break;
 		}
+		case EInstrumentSite::PlantMakeup:
+		{
+			const FFacilityWaterLoop* WL = bPlant ? Plant.GetLoopFor(static_cast<EPlantLoopId>(P.Loop)) : nullptr;
+			V = { WL ? WL->GetSupplySideLeakM3s() + WL->GetReturnSideLeakM3s() : NAN };   // make-up = loss (plant make-up model)
+			break;
+		}
 		case EInstrumentSite::Cdu:
 		{
 			const int32 G = P.Key;
@@ -312,36 +467,67 @@ void ADataCenterSimulationActor::InstrumentsAfterStep()
 				At(Bridge.GetLastCduSupplyK(), G), At(Bridge.GetLastCduReturnK(), G) };
 			const int32 Row = CduGroupRows.IsValidIndex(G) ? CduGroupRows[G] : INDEX_NONE;
 			const int32 Pump = Room != nullptr ? Room->GetRowPumpIndex(Row) : INDEX_NONE;
-			if (RoomNet == nullptr || Pump == INDEX_NONE) { V.Append({ NAN, NAN, NAN, NAN }); break; }
+			if (RoomNet == nullptr || Pump == INDEX_NONE) { V.Append({ NAN, NAN, NAN, NAN, NAN, NAN, NAN }); break; }
 			const int32 S = Room->GetRowCduSupplyNodeIndex(Row), Rt = Room->GetRowCduReturnNodeIndex(Row), C = Room->GetRowCduNodeIndex(Row);
 			V.Append({ RoomNet->GetPumpFlowM3s(Pump),
 				S != INDEX_NONE && Rt != INDEX_NONE ? RoomNet->GetNodePressurePa(S) - RoomNet->GetNodePressurePa(Rt) : NAN,
 				C != INDEX_NONE ? RoomNet->GetNodePressurePa(C) : NAN,
 				RoomNet->IsPumpPowered(Pump) ? RoomNet->GetPumpSpeedRatio(Pump) : 0.0 });
+			const int32 Ret = Room->GetRowCduReturnPipeIndex(Row), Tank = Room->GetRowTankIndex(Row);
+			const TArray<FCoolantInventory::FTank>& Tanks = Room->GetCoolantInventory().GetTanks();
+			V.Append({ Ret != INDEX_NONE ? RoomNet->GetPipeFlowM3s(Ret) : NAN,
+				Tanks.IsValidIndex(Tank) ? Tanks[Tank].State.WaterVolumeM3 : NAN,
+				Tanks.IsValidIndex(Tank) ? Tanks[Tank].LastMakeupM3s : NAN });
 			break;
 		}
 		}
 	}
-	// Leaks as the solves have them now: plant loops (positions of their nodes in the yard) and the room TCS.
-	TArray<FInstrumentLeak> Leaks;
-	if (bPlant)
-		for (const EPlantLoopId L : { EPlantLoopId::Fws, EPlantLoopId::Chw, EPlantLoopId::Cw })
-			if (const FFacilityWaterLoop* WL = Plant.GetLoopFor(L))
-				for (int32 K = 0; K < WL->GetNumLeaks(); ++K)
-				{
-					const int32 Node = WL->GetNetwork().GetLeak(WL->GetLeak(K).NetworkLeak).NodeIndex;
-					if (InstrumentPlantNodesM[uint8(L)].IsValidIndex(Node)) Leaks.Add({ InstrumentPlantNodesM[uint8(L)][Node], WL->GetLeakFlowM3s(K) });
-				}
-	if (RoomNet != nullptr)
-		for (int32 K = 0; K < RoomNet->GetNumLeaks(); ++K)
-			if (!Room->IsInternalLeak(K)) Leaks.Add({ Room->GetNodePositionM(RoomNet->GetLeak(K).NodeIndex), RoomNet->GetLeakFlowM3s(K) });
 	TArray<double> Contact; Contact.Init(NAN, Instruments.Num());
 	const FRackInteriorWater& Water = RackInterior.GetWater();
+	const double CellA = FMath::Square(FloorWater.GetCellM());
+	const TArray<double>& Depth = FloorWater.GetDepthM();
 	for (int32 I = 0; I < Instruments.Num(); ++I)
 	{
 		const FInstrumentPoint& P = Instruments.GetPoint(I);
+		if (!P.bWaterContact) continue;
+		// W5: water computed by W2/W3/W3.5 under or inside the detector (never the solve's leak flow).
+		switch (P.Site)
+		{
+		case EInstrumentSite::RoomPipe: case EInstrumentSite::CduFloorSpot:
+		{
+			double V = 0.0;
+			if (InstrumentFloorCells.IsValidIndex(I)) for (const int32 C : InstrumentFloorCells[I]) V += Depth.IsValidIndex(C) ? FMath::Max(Depth[C], 0.0) * CellA : 0.0;
+			Contact[I] = V;
+			continue;
+		}
+		case EInstrumentSite::PlantPipe:
+		{
+			double V = 0.0;
+			if (InstrumentGroundBins.IsValidIndex(I)) for (const FIntPoint& B : InstrumentGroundBins[I]) V += Spray.GetGroundBinsM3().FindRef(B);
+			Contact[I] = V;
+			continue;
+		}
+		case EInstrumentSite::CduDripTray:
+			Contact[I] = FloorWater.GetTrays().IsValidIndex(P.Key) ? FloorWater.GetTrays()[P.Key].StoredM3 : NAN;
+			continue;
+		case EInstrumentSite::TrayManifold:
+		{
+			double V = 0.0;
+			if (InstrumentLeakIndices.IsValidIndex(I)) for (const int32 L : InstrumentLeakIndices[I]) V += GetInternalLeakedM3().FindRef(L);
+			Contact[I] = V;
+			continue;
+		}
+		case EInstrumentSite::TrayColdPlate:
+		{
+			const int32 S = Water.Start.IsValidIndex(P.Key) ? Water.Start[P.Key] + P.Loop : INDEX_NONE;
+			// Water that entered the tray itself: everything that passed its slot minus what only ran down the rear.
+			Contact[I] = Water.PassedM3.IsValidIndex(S) ? FMath::Max(0.0, Water.PassedM3[S] - Water.RearExposureM3[S]) : NAN;
+			continue;
+		}
+		default: break;
+		}
 		const int32 R = P.Key;
-		if (!P.bWaterContact || !Water.FloorM3.IsValidIndex(R)) continue;
+		if (!Water.FloorM3.IsValidIndex(R)) continue;
 		if (P.Site == EInstrumentSite::RackDripTray) Contact[I] = Water.FloorM3[R] + Water.RearFloorM3[R];
 		else if (P.Site == EInstrumentSite::RackManifoldRope)
 		{
@@ -351,18 +537,36 @@ void ADataCenterSimulationActor::InstrumentsAfterStep()
 			for (int32 S = Water.Start[R]; S < Water.Start[R + 1]; ++S) Contact[I] = FMath::Max(Contact[I], Water.RearExposureM3[S]);
 		}
 	}
-	for (const FLeakAlarm& A : Instruments.Advance(Clock.GetSimTimeS(), Clock.GetFixedStepS(), Truth, Leaks, Contact))
+	// W5 (2026-11-03): every leak detector reads computed water (Contact); the solve's leak flows are not passed.
+	for (const FLeakAlarm& A : Instruments.Advance(Clock.GetSimTimeS(), Clock.GetFixedStepS(), Truth, {}, Contact))
 	{
 		const FInstrumentPoint& P = Instruments.GetPoint(A.Point);
 		if (P.bWaterContact)
 		{
 			UE_LOG(LogTemp, Display, TEXT("[Sensor] %s t=%.2fs, rack=%s type=%s contact=%.12g m3 - 모의 계측값(D9), 문턱/지연 추정"),
-				*P.Id, A.TimeS, *P.RackId, InstrumentSpecs::SiteCode(P.Site), A.WaterM3);
+				P.Id.IsEmpty() ? *P.Label : *P.Id, A.TimeS, *P.RackId, InstrumentSpecs::SiteCode(P.Site), A.WaterM3);
 			continue;
 		}
 		UE_LOG(LogTemp, Warning, TEXT("[Sensor] 누수 감지 t=%.1f s: %s (%.2f, %.2f, %.2f m), 덮는 누수 유량 %.3f L/s - 모의 계측값(D9)"),
 			A.TimeS, *P.Label, P.PositionM.X, P.PositionM.Y, P.PositionM.Z, A.FlowM3s * 1e3);
 	}
+	// W5-2: process values from the readings only (the instruments' sampling, lag, noise and resolution).
+	TArray<FProcessLeakReading> Readings;
+	for (const int32 Point : ProcessLoopPoints)
+	{
+		FProcessLeakReading R;
+		const FInstrumentPoint& P = Instruments.GetPoint(Point);
+		auto Read = [&](const TCHAR* Name) -> double { for (int32 C = 0; C < P.Channels.Num(); ++C) if (P.Channels[C].Name == FName(Name)) return Instruments.HasReading(Point, C) ? Instruments.GetReading(Point, C) : NAN; return NAN; };
+		R.MakeupM3s = Read(TEXT("makeup_flow"));
+		if (P.Site == EInstrumentSite::Cdu)
+		{
+			R.LevelM3 = Read(TEXT("tank_level")); R.SupplyM3s = Read(TEXT("tcs_flow")); R.ReturnM3s = Read(TEXT("tcs_return_flow")); R.PressurePa = Read(TEXT("tcs_pressure"));
+		}
+		Readings.Add(R);
+	}
+	for (const FProcessLeakAlarm& A : ProcessMonitor.Step(Clock.GetSimTimeS(), Readings))
+		UE_LOG(LogTemp, Warning, TEXT("[Sensor] 공정값 누수 경보 t=%.2f s: %s %s = %.6g (위치 미상, 모의 계측값 D9·문턱 추정)"),
+			A.TimeS, *ProcessMonitor.GetLoopName(A.Loop), FProcessLeakMonitor::SignalName(A.Signal), A.Value);
 }
 
 FString ADataCenterSimulationActor::DescribeInstrument(int32 Index) const
@@ -381,6 +585,7 @@ FString ADataCenterSimulationActor::DescribeInstrument(int32 Index) const
 		case EInstrumentQuantity::PressurePa: return FString::Printf(TEXT("%.0f kPa"), R * 1e-3);
 		case EInstrumentQuantity::Ratio: return FString::Printf(TEXT("%.0f %%"), R * 100.0);
 		case EInstrumentQuantity::PowerW: return FString::Printf(TEXT("%.1f kW"), R * 1e-3);
+		case EInstrumentQuantity::VolumeM3: return FString::Printf(TEXT("%.2f L"), R * 1e3);
 		default: return FString::Printf(TEXT("%.2f"), R);
 		}
 	};

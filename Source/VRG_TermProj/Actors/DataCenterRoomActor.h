@@ -282,6 +282,11 @@ public:
 	// [Pa] now and its setpoint (0 when the row has no control), and whether the speed sits at a limit.
 	double GetRowRemoteDpPa(int32 RowIndex) const;
 	double GetRowDpSetpointPa(int32 RowIndex) const { return Rows.IsValidIndex(RowIndex) ? Rows[RowIndex].DpSetpointPa : 0.0; }
+	int32 GetRowTankIndex(int32 RowIndex) const { return Rows.IsValidIndex(RowIndex) ? Rows[RowIndex].TankIndex : INDEX_NONE; }
+	// W5-3 (2026-11-03): the row a pipe (or a pump) of the room network belongs to (INDEX_NONE if none).
+	int32 GetPipeRow(int32 Pipe) const { return PipeRows.IsValidIndex(Pipe) ? PipeRows[Pipe] : INDEX_NONE; }
+	int32 GetPumpRow(int32 Pump) const { for (int32 R = 0; R < Rows.Num(); ++R) if (Rows[R].PumpIndex == Pump) return R; return INDEX_NONE; }
+	int32 GetRowCduReturnPipeIndex(int32 RowIndex) const { return Rows.IsValidIndex(RowIndex) ? Rows[RowIndex].CduReturnPipeIndex : INDEX_NONE; }
 	bool IsRowPumpSpeedSaturated(int32 RowIndex) const { return Rows.IsValidIndex(RowIndex) && Rows[RowIndex].bSpeedSaturated; }
 	// N+1 pump fault of a row's CDU (runtime, D4: the loop's response comes from the network solve). Returns false if
 	// the row has no CDU or no healthy pump left. Console: vrg.Cdu.PumpFault <row>, vrg.Cdu.PumpRepair <row>.
@@ -417,6 +422,7 @@ private:
 		// CDU pump VFD control (2026-11-03): headers at the hydraulically remote rack (last column with a rack branch),
 		// the setpoint there [Pa], this row's tank, and whether the speed hit a limit at the last control update.
 		int32 FarSupplyNodeIndex = INDEX_NONE, FarReturnNodeIndex = INDEX_NONE, TankIndex = INDEX_NONE;
+		int32 CduReturnPipeIndex = INDEX_NONE;   // W5: return header -> CDU (the CDU's return flow meter)
 		double DpSetpointPa = 0.0;
 		bool bSpeedSaturated = false;
 	};
@@ -435,6 +441,7 @@ private:
 	TArray<int32> RackBranchPipeIndices;
 	TArray<int32> RackReturnPipeIndices;
 	TArray<int32> RackSupplyValvePipe, RackReturnValvePipe;   // S2b step 4, routed order
+	TArray<int32> PipeRows;                                    // W5-3: row of every network pipe
 	TArray<double> RackDesignFlowM3s;                          // S2b step 5, routed order
 	TArray<TWeakObjectPtr<const ARackThermalActor>> ClosedValveRacks;
 	FValveReport LastValveReport;

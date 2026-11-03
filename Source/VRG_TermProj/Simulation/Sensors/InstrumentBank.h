@@ -21,7 +21,7 @@
 //
 // Plain C++ in SI units (K, m^3/s, Pa, W, ratio); positions in metres (rule 1). Game thread only (rule 5).
 
-enum class EInstrumentQuantity : uint8 { TemperatureK, FlowM3s, PressurePa, Ratio, PowerW, Cop };
+enum class EInstrumentQuantity : uint8 { TemperatureK, FlowM3s, PressurePa, Ratio, PowerW, Cop, VolumeM3 };
 
 struct FInstrumentChannelSpec
 {
@@ -44,7 +44,9 @@ struct FLeakCableSpec
 	double SamplePeriodS = 1.0;      // detector polling (ESTIMATE)
 };
 
-enum class EInstrumentSite : uint8 { RoomPipe, PlantPipe, PlantUnit, Cdu, RackDripTray, RackManifoldRope };
+// W5 (2026-11-03): tray sensors (NVIDIA Mission Control: per chassis a cold plate and an inner manifold leak detector),
+// the CDU drip tray spot sensor and the CDU footprint floor spot sensor.
+enum class EInstrumentSite : uint8 { RoomPipe, PlantPipe, PlantUnit, Cdu, RackDripTray, RackManifoldRope, TrayColdPlate, TrayManifold, CduDripTray, CduFloorSpot, PlantMakeup };
 
 struct FWaterContactSpec
 {
@@ -55,6 +57,10 @@ struct FWaterContactSpec
 	double WettingVolumeM3 = 30.0e-6;
 	double SamplePeriodS = 1.0; // reuse the existing generic detector polling assumption
 	double ResponseDelayS = 1.0; // ESTIMATE: fixed wet-contact debounce, then first poll
+	// W5 (2026-11-03): the contact value is the water present now (it can fall: a floor rope dries when the water moves
+	// on or drains), not a cumulative record. Wet = at or above WettingVolumeM3 for ResponseDelayS; drying before that
+	// restarts the debounce. The alarm latches either way until reset.
+	bool bCurrentWater = false;
 };
 
 namespace InstrumentSpecs
@@ -108,6 +114,9 @@ public:
 	double GetLeakAlarmTimeS(int32 PointIndex) const { return Points.IsValidIndex(PointIndex) ? Points[PointIndex].LeakAlarmS : -1.0; }
 	double GetContactWaterM3(int32 PointIndex) const { return Points.IsValidIndex(PointIndex) ? Points[PointIndex].WaterM3 : 0.0; }
 	const TArray<FLeakAlarm>& GetAlarmLog() const { return AlarmLog; }
+	// W5: clears the latched alarm of a water-contact point (INDEX_NONE: every point). Water still present raises it again
+	// after the debounce. Returns how many latched alarms were cleared.
+	int32 ResetLeakAlarm(int32 PointIndex);
 	int32 GetNumLeakCables() const;
 
 private:

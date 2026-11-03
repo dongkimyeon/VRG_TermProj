@@ -155,17 +155,20 @@ bool FInstrumentIntegrationTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("facility leak added"), Sim->ApplyPlantFault({ TEXT("leak"), TEXT("fws"), TEXT("branchsupply"), TEXT("0"), TEXT("10") }));
 	Run(14.0);
 	const FVector RoomLeakM = Room->GetNodePositionM(Room->GetNetwork().GetLeak(Room->GetLeakNetworkIndex(RoomLeak)).NodeIndex);
-	int32 RoomAlarms = 0, PlantAlarms = 0;
+	int32 RoomAlarms = 0, PlantAlarms = 0, DryAlarms = 0;
 	double RoomFirst = TNumericLimits<double>::Max(), RoomLast = 0.0, First = TNumericLimits<double>::Max(), Last = 0.0, WorstRoomDistM = 0.0;
 	for (const FLeakAlarm& A : Bank.GetAlarmLog())
 	{
 		const FInstrumentPoint& P = Bank.GetPoint(A.Point);
+		// W5 (2026-11-03): pipe ropes read the computed water under them; an alarm without that water is wrong.
+		if (P.Site == EInstrumentSite::RoomPipe || P.Site == EInstrumentSite::PlantPipe) DryAlarms += A.WaterM3 >= P.Contact.WettingVolumeM3 ? 0 : 1;
 		if (P.Site == EInstrumentSite::RoomPipe)
 		{
 			++RoomAlarms; WorstRoomDistM = FMath::Max(WorstRoomDistM, FVector::Dist(P.PositionM, RoomLeakM));
 			RoomFirst = FMath::Min(RoomFirst, A.TimeS); RoomLast = FMath::Max(RoomLast, A.TimeS);
 			continue;
 		}
+		if (P.Site != EInstrumentSite::PlantPipe) continue;
 		++PlantAlarms;
 		First = FMath::Min(First, A.TimeS); Last = FMath::Max(Last, A.TimeS);
 	}
@@ -178,11 +181,13 @@ bool FInstrumentIntegrationTest::RunTest(const FString& Parameters)
 	AddInfo(FString::Printf(TEXT("방 누수 위치 %s, 유량 %.4f L/s, 구멍 %.4f m, 누수 번호 %d / %d, 재고 풀이 %d회, 탱크 %d, 가장 가까운 방 배관 지점 %.2f m"), *RoomLeakM.ToCompactString(),
 		Room->GetNetwork().GetLeakFlowM3s(Room->GetLeakNetworkIndex(RoomLeak)) * 1e3, Room->GetNetwork().GetLeak(Room->GetLeakNetworkIndex(RoomLeak)).HoleDiameterM,
 		Room->GetLeakNetworkIndex(RoomLeak), Room->GetNetwork().GetNumLeaks(), Room->GetCoolantInventory().GetNumSolves(), Room->GetCoolantInventory().GetTanks().Num(), NearestRoomM));
-	TestTrue(TEXT("the room leak is detected by points near it"), RoomAlarms > 0 && WorstRoomDistM < 3.0);
-	TestTrue(TEXT("the facility leak is detected"), PlantAlarms > 0);
-	// The leak flows are around 0.36 L/s (room, 5 mm) and 1.25 L/s (facility, 10 mm): 0.5 L comes out within 2 s.
-	TestTrue(TEXT("room alarms within 3 s of the start"), RoomFirst <= 3.0);
-	TestTrue(TEXT("facility alarms after the leak, within 2 s"), First > LeakStartS && Last <= LeakStartS + 2.0 + 0.1);
+	// W5 (2026-11-03): the ropes read real water. The room leak is found once its floor water reaches a rope under the
+	// pipes (later than the old leak-flow cover, which assumed the water reached the cable at once). The yard has no
+	// ground spreading: a jet that lands metres from its pipe may miss the rope under it - vendors give exactly this as
+	// the reason process-value monitoring is the primary layer (W5-2 detects this facility leak).
+	TestTrue(TEXT("the room leak is detected by ropes near it"), RoomAlarms > 0 && WorstRoomDistM < 3.0 && RoomFirst > 0.0);
+	TestTrue(TEXT("every pipe-rope alarm has computed water at or above its threshold"), DryAlarms == 0);
+	TestTrue(TEXT("no yard rope alarms before the facility leak"), PlantAlarms == 0 || First > LeakStartS);
 	Sim->EnterLayoutMode();
 	GEngine->DestroyWorldContext(World);
 	World->DestroyWorld(false);

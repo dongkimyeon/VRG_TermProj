@@ -4009,6 +4009,7 @@ void ADataCenterSimulationActor::EvalAfterStep()
 	Power.PlantW = Power.bPlant ? Plant.GetPlantElectricW() : 0.0;
 	Eval.AfterStep(Clock.GetSimTimeS(), Clock.GetFixedStepS(), Inlets, Power);
 	InstrumentsAfterStep();
+	LeakProtectionAfterStep();   // W5-3: acts on the next step's inputs
 }
 
 double ADataCenterSimulationActor::GetSiteEnergyInJ() const
@@ -4205,10 +4206,29 @@ bool ADataCenterSimulationActor::WriteEvaluationReport(const FString& Name, FStr
 	TArray<TSharedPtr<FJsonValue>> RackWaterSensors;
 	auto ContactCoords = [](const FVector& V) -> TArray<TSharedPtr<FJsonValue>>
 	{ return {MakeShared<FJsonValueNumber>(V.X), MakeShared<FJsonValueNumber>(V.Y), MakeShared<FJsonValueNumber>(V.Z)}; };
+	// W5 (2026-11-03): every leak detector reads computed water; per type, how many and how many in alarm. The
+	// rackWaterSensors list below keeps its W3.5 meaning (rack drip tray and manifold rope only).
+	{
+		TMap<FString, FIntPoint> ByType;
+		for (int32 I = 0; I < Instruments.Num(); ++I)
+			if (Instruments.GetPoint(I).bWaterContact)
+			{
+				FIntPoint& C = ByType.FindOrAdd(InstrumentSpecs::SiteCode(Instruments.GetPoint(I).Site));
+				++C.X; C.Y += Instruments.IsLeakAlarm(I) ? 1 : 0;
+			}
+		TArray<TSharedPtr<FJsonValue>> TypeItems;
+		for (const auto& E : ByType)
+		{
+			auto Item = MakeShared<FJsonObject>();
+			Item->SetStringField(TEXT("type"), E.Key); Item->SetNumberField(TEXT("count"), E.Value.X); Item->SetNumberField(TEXT("alarms"), E.Value.Y);
+			TypeItems.Add(MakeShared<FJsonValueObject>(Item));
+		}
+		InstrumentsJson->SetArrayField(TEXT("leakDetectorSummary"), TypeItems);
+	}
 	for (int32 I = 0; I < Instruments.Num(); ++I)
 	{
 		const auto& Pt = Instruments.GetPoint(I);
-		if (!Pt.bWaterContact) continue;
+		if (!Pt.bWaterContact || (Pt.Site != EInstrumentSite::RackDripTray && Pt.Site != EInstrumentSite::RackManifoldRope)) continue;
 		auto Item = MakeShared<FJsonObject>();
 		Item->SetStringField(TEXT("sensorId"), Pt.Id); Item->SetStringField(TEXT("rackId"), Pt.RackId);
 		Item->SetStringField(TEXT("type"), InstrumentSpecs::SiteCode(Pt.Site)); Item->SetBoolField(TEXT("estimatedSpec"), true);
@@ -4220,6 +4240,31 @@ bool ADataCenterSimulationActor::WriteEvaluationReport(const FString& Name, FStr
 		RackWaterSensors.Add(MakeShared<FJsonValueObject>(Item));
 	}
 	InstrumentsJson->SetArrayField(TEXT("rackWaterSensors"), RackWaterSensors);
+	// W5-3 (2026-11-03): protective actions taken from the detectors (cause: protection, apart from W4 failures).
+	{
+		TArray<TSharedPtr<FJsonValue>> Items;
+		for (const FLeakProtectionEvent& E : LeakProtectionEvents)
+		{
+			auto Item = MakeShared<FJsonObject>();
+			Item->SetNumberField(TEXT("timeS"), E.TimeS); Item->SetStringField(TEXT("level"), E.Level); Item->SetStringField(TEXT("action"), E.Action);
+			Item->SetStringField(TEXT("trigger"), E.Trigger); Item->SetNumberField(TEXT("rack"), E.Rack); Item->SetNumberField(TEXT("slot"), E.Slot); Item->SetNumberField(TEXT("row"), E.Row);
+			Items.Add(MakeShared<FJsonValueObject>(Item));
+		}
+		InstrumentsJson->SetBoolField(TEXT("leakProtectionPolicy"), LeakProtectionPolicy.bEnabled);
+		InstrumentsJson->SetArrayField(TEXT("leakProtection"), Items);
+	}
+	// W5-2 (2026-11-03): process-value leak alarms (loop level, location unknown; readings only, thresholds ESTIMATES).
+	{
+		TArray<TSharedPtr<FJsonValue>> Items;
+		for (const FProcessLeakAlarm& A : ProcessMonitor.GetAlarmLog())
+		{
+			auto Item = MakeShared<FJsonObject>();
+			Item->SetNumberField(TEXT("timeS"), A.TimeS); Item->SetStringField(TEXT("loop"), ProcessMonitor.GetLoopName(A.Loop));
+			Item->SetStringField(TEXT("signal"), FProcessLeakMonitor::SignalName(A.Signal)); Item->SetNumberField(TEXT("value"), A.Value);
+			Items.Add(MakeShared<FJsonValueObject>(Item));
+		}
+		InstrumentsJson->SetArrayField(TEXT("processAlarms"), Items);
+	}
 	TArray<TSharedPtr<FJsonValue>> LeakAlarmItems;
 	for (const FLeakAlarm& A : Instruments.GetAlarmLog())
 	{

@@ -187,6 +187,8 @@ public:
 	const TArray<uint8>& GetLastStepTrailIsJet() const { return TrailJet; }
 	const TArray<FSprayFilm>& GetFilms() const { return Films; }
 	const TMap<FIntPoint, double>& GetFloorBinsM3() const { return FloorBins; }
+	// Outdoor ground deposits (cumulative, FloorBinM bins), W5 yard leak cables read them (2026-11-03).
+	const TMap<FIntPoint, double>& GetGroundBinsM3() const { return GroundBins; }
 	// W3: the water that reached the room floor during the last step (point, volume), in order. The floor model takes
 	// exactly these (the bins above keep the cumulative record).
 	const TArray<TPair<FVector, double>>& GetLastStepFloorDepositsM3() const { return StepFloorDeposits; }
