@@ -130,6 +130,7 @@ struct FCrahCouplingUnit
 	// Fan electric input at this airflow [W] (D8: already the electric input, not divided by an efficiency again).
 	// Becomes heat in the supply air and a global ledger input next to the IT heat.
 	double FanPowerW = 0.0;
+	bool bPowered = true; // Runtime command; nominal flow/coil/fan settings remain intact.
 
 	bool HasBothSides() const { return FaceIsExhaust.Contains(0) && FaceIsExhaust.Contains(1); }
 };
@@ -284,6 +285,7 @@ public:
 	// CRAH units become ducts after the racks' ones. Call after Initialize (Initialize clears them).
 	void SetCrahUnits(const TArray<FCrahCouplingUnit>& InUnits) { CrahUnits = InUnits; BuildDuctFaces(); }
 	int32 GetNumCrahUnits() const { return CrahUnits.Num(); }
+ bool SetCrahPowered(int32 Unit,bool bPowered);
 
 	// 물의 밀도 [kg/m^3]. 체적유량을 질량유량으로 바꿀 때만 쓴다.
 	void SetCoolantDensityKgM3(double InDensityKgM3) { CoolantDensityKgM3 = InDensityKgM3; }
@@ -373,8 +375,7 @@ public:
 	{
 		if (!CrahUnits.IsValidIndex(Unit)) return;
 		CrahUnits[Unit].CoilUAWK = UAWK; CrahUnits[Unit].WaterSupplyTempK = WaterK;
-		const int32 D = CrahDuctBase + Unit;
-		if (AirSolverInput.DuctCoilUAWK.IsValidIndex(D)) { AirSolverInput.DuctCoilUAWK[D] = UAWK; AirSolverInput.DuctCoilWaterTempK[D] = WaterK; }
+		UpdateCrahDuctThermalInputs(Unit);
 	}
 	// Wall time of the rack models in the last step [ms] (measurement).
 	double GetLastRackModelsMs() const { return LastRackModelsMs; }
@@ -428,6 +429,7 @@ private:
 	double CouplingStageMs[5] = {}, AirStageMs[7] = {};
 	FPoissonCpuCosts CpuPressureCosts;
  TArray<double> LastCduDutyW, LastCduReturnK, LastCduSupplyK, LastCduFacilityReturnK, LastCduHotWK, LastCduCoolantKgs;
+	void UpdateCrahDuctThermalInputs(int32 Unit);
 	int32 CrahDuctBase = 0;  // duct id of CrahUnits[0]
 	TArray<double> ScratchLayerFlowKgs, ScratchLayerIntakeK;
 	TArray<int32> ScratchLayerIntakeCount, ScratchLayerExhaustCount;

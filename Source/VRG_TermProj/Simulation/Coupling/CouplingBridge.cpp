@@ -107,10 +107,7 @@ void FCouplingBridge::BuildDuctFaces()
 		In.DuctCoilUAWK.Init(0.0, NumDucts); In.DuctCoilWaterTempK.Init(291.15, NumDucts); In.DuctFanHeatW.Init(0.0, NumDucts);
 		for (int32 U = 0; U < CrahUnits.Num(); ++U)
 		{
-			In.DuctCoilUAWK[CrahDuctBase + U] = CrahUnits[U].CoilUAWK;
-			In.DuctCoilWaterTempK[CrahDuctBase + U] = CrahUnits[U].WaterSupplyTempK;
-			// A unit that cannot carry air (faces on one side only) runs no fan.
-			In.DuctFanHeatW[CrahDuctBase + U] = CrahUnits[U].HasBothSides() ? CrahUnits[U].FanPowerW : 0.0;
+			UpdateCrahDuctThermalInputs(U);
 		}
 	}
 	In.NumDucts = NumDucts;
@@ -207,13 +204,30 @@ void FCouplingBridge::UpdateDuctVelocities()
 	{
 		const FCrahCouplingUnit& Unit = CrahUnits[U];
 		const int32 D = CrahDuctBase + U;
-		const double VolumeFlowM3s = Unit.HasBothSides() ? Unit.VolumeFlowM3s : 0.0;
+		const double VolumeFlowM3s = Unit.bPowered && Unit.HasBothSides() ? Unit.VolumeFlowM3s : 0.0;
 		for (int32 F = 0; F < Unit.FaceIndex.Num(); ++F, ++FaceCursor)
 		{
 			const int32 Count = Unit.FaceIsExhaust[F] ? ScratchLayerExhaustCount[D] : ScratchLayerIntakeCount[D];
 			AirSolverInput.DuctFaceVelocityMs[FaceCursor] = Count > 0 ? Unit.FaceSign[F] * VolumeFlowM3s / (Count * FaceAreaM2) : 0.0;
 		}
 	}
+}
+
+void FCouplingBridge::UpdateCrahDuctThermalInputs(int32 Unit)
+{
+ if(!CrahUnits.IsValidIndex(Unit)) return;
+ const auto& U=CrahUnits[Unit];const int32 D=CrahDuctBase+Unit;
+ if(AirSolverInput.DuctCoilUAWK.IsValidIndex(D)) {
+  AirSolverInput.DuctCoilUAWK[D]=U.bPowered?U.CoilUAWK:0.0;
+  AirSolverInput.DuctCoilWaterTempK[D]=U.WaterSupplyTempK;
+  AirSolverInput.DuctFanHeatW[D]=U.bPowered && U.HasBothSides()?U.FanPowerW:0.0;
+ }
+}
+
+bool FCouplingBridge::SetCrahPowered(int32 Unit,bool bPowered)
+{
+ if(!CrahUnits.IsValidIndex(Unit)) return false;
+ CrahUnits[Unit].bPowered=bPowered;UpdateCrahDuctThermalInputs(Unit);return true;
 }
 
 bool FCouplingBridge::GetLastCrahUnitReadings(TArray<double>& OutRemovedW, TArray<double>& OutIntakeMixK, TArray<double>& OutSupplyK) const
@@ -841,7 +855,7 @@ FCouplingSnapshot FCouplingBridge::MakeSnapshot(double SimTimeS) const
 	{
 		Snapshot.CrahCoilRemovedW = AirSolver->GetLastDuctCoilRemovedW();
 		Snapshot.CrahFanPowerW = AirSolver->GetLastDuctFanHeatW();
-		for (const FCrahCouplingUnit& U : CrahUnits) Snapshot.CrahFlowM3s += U.HasBothSides() ? U.VolumeFlowM3s : 0.0;
+		for (const FCrahCouplingUnit& U : CrahUnits) Snapshot.CrahFlowM3s += U.bPowered && U.HasBothSides() ? U.VolumeFlowM3s : 0.0;
 	}
 
 	Snapshot.EnergyInJ = EnergyInJ;

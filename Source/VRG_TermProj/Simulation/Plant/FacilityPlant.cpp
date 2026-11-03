@@ -551,16 +551,20 @@ double FFacilityPlant::CrahOpeningFor(int32 Unit, double IntakeK, double TargetK
 	return FMath::Clamp(1.0 - FMath::Loge(RValve / ROpen) / (2.0 * FMath::Loge(Rv)), 0.0, 1.0);
 }
 
-bool FFacilityPlant::ControlCrahValves(double DtS, const TArray<double>& IntakeMixK)
+bool FFacilityPlant::ControlCrahValves(double DtS, const TArray<double>& IntakeMixK, const TArray<bool>& ControlEnabled)
 {
 	State.bCrahReadingsMissing = false;
-	if (!IsChilledWaterActive() || !Thermal.bCrahValveControl || IntakeMixK.Num() != CrahCoils.Num()) return false;
+	if (!IsChilledWaterActive() || !Thermal.bCrahValveControl || IntakeMixK.Num() != CrahCoils.Num()
+  || (!ControlEnabled.IsEmpty() && ControlEnabled.Num()!=CrahCoils.Num())) return false;
 	const double MaxStep = Thermal.ValveStrokeS > 0.0 ? DtS / Thermal.ValveStrokeS : 1.0;
 	bool bChanged = false;
 	int32 Full = 0, Shut = 0;
 	for (int32 U = 0; U < CrahCoils.Num(); ++U)
 	{
 		if (CrahCoils[U].CoilLeavingSetpointK <= 0.0) continue;
+  // No valid forced-air reading when electrically off. Hold the existing valve;
+  // shutdown is not automatic hydraulic isolation. Other units keep normal control.
+  if(!ControlEnabled.IsEmpty() && !ControlEnabled[U]) {const double Opening=ChwLoop.GetValveOpening(U);Full+=Opening>=1.0?1:0;Shut+=Opening<=0.0?1:0;continue;}
 		bool bSat = false;
 		const double Target = CrahOpeningFor(U, IntakeMixK[U], CrahCoils[U].CoilLeavingSetpointK, bSat);
 		const double Now = ChwLoop.GetValveOpening(U);

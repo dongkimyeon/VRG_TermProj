@@ -80,7 +80,11 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Visualization")
 	bool bUseReferenceModel = true;
 
+ // Runtime electrical command only: not a layout setting, valve command or stored fault.
+ bool IsPowered() const { return bPowered; }
+ void SetPowered(bool bInPowered) { bPowered=bInPowered; }
 private:
+ bool bPowered=true;
 	UPROPERTY(VisibleAnywhere, Category = "CRAH")
 	TObjectPtr<UStaticMeshComponent> Body;
 

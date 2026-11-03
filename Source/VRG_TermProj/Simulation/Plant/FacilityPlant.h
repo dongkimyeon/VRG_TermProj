@@ -321,7 +321,7 @@ public:
 	double GetCrahWaterKgs(int32 Unit) const { return CrahWaterKgs.IsValidIndex(Unit) ? CrahWaterKgs[Unit] : 0.0; }
 	// CRAH valve control from the units' mixed intake temperatures of the last step (one per CRAH). Returns true when
 	// any opening changed (then the CHW network was re-solved and the equivalent UAs updated).
-	bool ControlCrahValves(double DtS, const TArray<double>& IntakeMixK);
+	bool ControlCrahValves(double DtS, const TArray<double>& IntakeMixK, const TArray<bool>& ControlEnabled = {});
 	void MarkCrahReadingsMissing() { State.bCrahReadingsMissing = true; }
 	double GetCrahOpening(int32 Unit) const { return ChwLoop.GetValveOpening(Unit); }
 	// Opening that makes the unit's coil leave at TargetK from IntakeK (inverse used by the control; no ramp).
