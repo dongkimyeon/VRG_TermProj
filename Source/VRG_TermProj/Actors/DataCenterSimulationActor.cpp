@@ -367,9 +367,32 @@ void ADataCenterSimulationActor::EnterSimulationMode()
 	bSimRunning = true;
 	RebuildLiveLeakSites();   // W1: room sites are built closed with the rows; the plant nodes exist once BuildCoupling built it
 	// W2: no water anywhere at t = 0; the tanks start full (their leaked volume is the spray's starting point).
-	Spray.Reset(BuildSprayGeometry(&WaterSourceTargets), Spray.GetSettings(), Spray.GetFluid());
+	Spray.Reset(BuildSprayGeometry(&WaterSourceTargets), Spray.GetSettings(), Spray.GetFluid(), Spray.GetCoolantFluid());
 	FloorWater.ResetForRoom(Spray.GetGeometry(), FloorWaterSettings);   // W3: dry floor
+	// P5 (2026-11-03): drip trays under the CDUs and floor drains in front of them (ESTIMATES, see the header).
+	for (TActorIterator<ACoolingDistributionUnitActor> It(GetWorld()); It; ++It)
+	{
+		const FVector CenterM = SimUnits::UnrealToMeters(It->GetActorLocation());
+		const FRotator Rot = It->GetActorRotation();
+		if (bCduDripTrays && CduDripTrayDepthM > 0.0)
+		{
+			FBox2D Box(ForceInit);
+			for (const double Sx : { -.5, .5 }) for (const double Sy : { -.5, .5 })
+			{
+				const FVector C = CenterM + Rot.RotateVector(FVector(Sx * It->SizeM.X, Sy * It->SizeM.Y, 0.0));
+				Box += FVector2D(C.X, C.Y);
+			}
+			FloorWater.AddTray(FString::Printf(TEXT("%s drip tray"), *It->GetName()), Box.Min, Box.Max, It->SizeM.X * It->SizeM.Y * CduDripTrayDepthM);
+		}
+		if (bFloorDrains && FloorDrainDiameterM > 0.0)
+		{
+			const FVector P = CenterM + Rot.RotateVector(FVector(.5 * It->SizeM.X + FloorDrainOffsetM, 0.0, 0.0));
+			if (!FloorWater.AddDrain(FString::Printf(TEXT("%s floor drain"), *It->GetName()), P, FloorDrainDiameterM))
+				UE_LOG(LogTemp, Warning, TEXT("[Water] %s 앞 바닥 배수구가 바닥 격자 밖이거나 벽 칸이라 넣지 않았다"), *It->GetName());
+		}
+	}
 	FloorOffGridM3 = 0.0;
+	CondensationRiskS = 0.0; MinDewMarginK = TNumericLimits<double>::Max(); bCondensationLogged = false;
 	FlowAverager.Reset(); bFlowGridValid = false;   // the air view averages this run only
 	SetAirView(AirView);
 	SprayTankLeakedM3.Reset();
@@ -1252,6 +1275,7 @@ void ADataCenterSimulationActor::BuildCduGroups()
 	bPlantBuilt = false;
 	CduSummaries.Reset();
 	CduGroupRows.Reset();
+	CduSupplyControls.Reset();
 	TArray<FCduCouplingGroup> Groups;
 	if (CoolantRejection == ECoolantRejection::CduHeatExchanger && Room != nullptr)
 	{
@@ -1317,6 +1341,12 @@ void ADataCenterSimulationActor::BuildCduGroups()
 			}
 			S.UAWK = Hx.UAWK;
 			S.FacilityMassFlowKgs = Hx.FacilityMassFlowKgs;
+			// 2026-11-03: secondary supply setpoint = design facility supply + design approach (the sizing point).
+			FCduSupplyControl& C = CduSupplyControls.AddDefaulted_GetRef();
+			C.SetpointK = Hx.FacilitySupplyTempK + Cdu->HxDesignApproachK;
+			C.DesignFacilityKgs = Hx.FacilityMassFlowKgs;
+			C.StrokeS = Cdu->PrimaryValveStrokeS; C.Rangeability = Cdu->PrimaryValveRangeability;
+			C.bEnabled = Cdu->bSupplyTempControl;
 		}
 		bPlantActive = false;
 		// Built with vrg.Plant.Enable 0 too (2026-10-21): the yard is always drawn; only Enable 1 couples it.
@@ -1336,14 +1366,14 @@ void ADataCenterSimulationActor::BuildFacilityLoop(TArray<FCduCouplingGroup>& Gr
 	double DesignHeatW = 0.0;
 	for (int32 G = 0; G < Groups.Num(); ++G)
 	{
-		Spec.BranchDesignFlowM3s.Add(Groups[G].Hx.FacilityMassFlowKgs / CoolantDensityKgM3);
+		Spec.BranchDesignFlowM3s.Add(Groups[G].Hx.FacilityMassFlowKgs / FacilityWater::DensityKgM3);   // primary side = facility water (2026-11-03)
 		if (CduSummaries.IsValidIndex(G)) DesignHeatW += CduSummaries[G].DesignDutyW;
 		// F5: the CDU pump's input ends up in the coolant and so in the facility water (2026-10-22 audit: left out of the
 		// design heat, the trim chiller was sized exactly that short; docs/기록/09).
 		const int32 Pump = Room != nullptr && CduGroupRows.IsValidIndex(G) ? Room->GetRowPumpIndex(CduGroupRows[G]) : INDEX_NONE;
 		if (Pump != INDEX_NONE) DesignHeatW += Room->GetNetwork().GetPumpElectricalInputPowerW(Pump);
 	}
-	const double WaterCp = Groups.Num() > 0 ? Groups[0].Hx.FacilityCpJKgK : 4180.0;
+	const double WaterCp = Groups.Num() > 0 ? Groups[0].Hx.FacilityCpJKgK : FacilityWater::CpJKgK;
 	// S8 F3: the CRAH coils as sized by BuildCrahUnits (design air flow, old infinite-water UA). No units (ceiling coil
 	// mode) = no chilled water loop; the coil keeps its fixed water temperature.
 	TArray<FPlantCrahCoil> Coils;
@@ -1364,7 +1394,7 @@ void ADataCenterSimulationActor::BuildFacilityLoop(TArray<FCduCouplingGroup>& Gr
 	// S8 F8: units placed in layout mode set the count of their kind; kinds with none keep the automatic sizing rule.
 	// F8-2: the automatic plant (no placed units) is built too; its units become actors on the first direct addition.
 	AutomaticPlant = MakeUnique<FFacilityPlant>();
-	if (Groups.Num() == 0 || !AutomaticPlant->Build(Spec, PlantThermalSpec, DesignHeatW, CoolantDensityKgM3, WaterCp, FHydraulicSolveSettings(), Coils, CoilSupplyTempK))
+	if (Groups.Num() == 0 || !AutomaticPlant->Build(Spec, PlantThermalSpec, DesignHeatW, FacilityWater::DensityKgM3, WaterCp, FHydraulicSolveSettings(), Coils, CoilSupplyTempK))
 		AutomaticPlant.Reset();
 	PlantBuild.bValid = Groups.Num() > 0;
 	PlantBuild.Spec = Spec; PlantBuild.DesignHeatW = DesignHeatW; PlantBuild.WaterCp = WaterCp; PlantBuild.Coils = Coils;
@@ -1407,6 +1437,11 @@ void ADataCenterSimulationActor::BuildFacilityLoop(TArray<FCduCouplingGroup>& Gr
 	{
 		Groups[G].Hx.FacilityMassFlowKgs = Plant.GetBranchMassFlowKgs(G);
 		if (Plant.IsThermalActive()) Groups[G].Hx.FacilitySupplyTempK = Plant.GetSupplyTempK();
+		if (CduSupplyControls.IsValidIndex(G) && Plant.IsThermalActive())
+		{
+			const ACoolingDistributionUnitActor* Cdu = Room != nullptr && CduGroupRows.IsValidIndex(G) ? Room->GetRowCdu(CduGroupRows[G]) : nullptr;
+			CduSupplyControls[G].SetpointK = PlantThermalSpec.SupplySetpointK + (Cdu ? Cdu->HxDesignApproachK : 4.0);
+		}
 		if (CduSummaries.IsValidIndex(G))
 		{
 			CduSummaries[G].FacilityMassFlowKgs = Groups[G].Hx.FacilityMassFlowKgs;
@@ -1465,9 +1500,61 @@ bool ADataCenterSimulationActor::SyncCrahPower()
  return true;
 }
 
+void ADataCenterSimulationActor::ControlCduSupply(double DtS)
+{
+	const TArray<double>& HotWK = Bridge.GetLastCduHotWK();
+	const TArray<double>& MixK = Bridge.GetLastCduReturnK();
+	const bool bPlantValves = bPlantActive && Plant.IsThermalActive() && Plant.GetTopology() == EPlantTopology::Separate;
+	if (bPlantActive && !bPlantValves) return;   // CDU branches in the chilled-water loop (F6) or a fixed plant: not controlled
+	TArray<double> TargetM3s; TArray<bool> Enabled;
+	for (int32 G = 0; G < Bridge.GetNumCduGroups() && G < CduSupplyControls.Num(); ++G)
+	{
+		FCduSupplyControl& C = CduSupplyControls[G];
+		TargetM3s.Add(0.0); Enabled.Add(false);
+		// No coolant flow (pump off) or no step yet: nothing to measure, the valve holds.
+		if (!C.bEnabled || !HotWK.IsValidIndex(G) || !(HotWK[G] > UE_DOUBLE_SMALL_NUMBER) || !(MixK[G] > 0.0)) continue;
+		FCduHeatExchangerParams Hx = Bridge.GetCduGroups()[G].Hx;
+		const double NeedW = HotWK[G] * (MixK[G] - C.SetpointK);
+		// Largest flow the valve can pass: the design flow (fixed boundary) or, with the plant, a bound well above the
+		// full-open branch flow (the plant's inverse clamps the opening at 1).
+		const double MaxKgs = bPlantValves ? 4.0 * FMath::Max(C.DesignFacilityKgs, Hx.FacilityMassFlowKgs) : C.DesignFacilityKgs;
+		double TargetKgs = 0.0;
+		C.bSaturated = false;
+		if (NeedW > 0.0 && MaxKgs > 0.0)
+		{
+			Hx.FacilityMassFlowKgs = MaxKgs;
+			if (CduHeatExchanger::DutyW(Hx, HotWK[G], MixK[G]) <= NeedW) { TargetKgs = MaxKgs; C.bSaturated = true; }
+			else
+			{
+				// Duty rises monotonically with the facility flow: bisection to a relative 1e-12 of the bracket.
+				double Lo = 0.0, Hi = MaxKgs;
+				for (int32 I = 0; I < 60; ++I)
+				{
+					Hx.FacilityMassFlowKgs = 0.5 * (Lo + Hi);
+					(CduHeatExchanger::DutyW(Hx, HotWK[G], MixK[G]) < NeedW ? Lo : Hi) = Hx.FacilityMassFlowKgs;
+				}
+				TargetKgs = 0.5 * (Lo + Hi);
+			}
+		}
+		else C.bSaturated = NeedW <= 0.0;   // already below the setpoint with the valve shut
+		TargetM3s.Last() = TargetKgs / FacilityWater::DensityKgM3;
+		Enabled.Last() = true;
+		if (bPlantValves) continue;
+		// Fixed boundary: equal-percentage valve, flow fraction f(x) = Rv^(x - 1) (0 when shut), stroke-limited.
+		const double Rv = FMath::Max(C.Rangeability, 1.0 + 1e-9);
+		const double F = C.DesignFacilityKgs > 0.0 ? TargetKgs / C.DesignFacilityKgs : 0.0;
+		const double XTarget = F >= 1.0 ? 1.0 : F <= 1.0 / Rv ? (F > 0.0 ? FMath::Max(0.0, 1.0 + FMath::Loge(F) / FMath::Loge(Rv)) : 0.0) : 1.0 + FMath::Loge(F) / FMath::Loge(Rv);
+		const double MaxStep = C.StrokeS > 0.0 ? DtS / C.StrokeS : 1.0;
+		C.Opening = FMath::Clamp(XTarget, C.Opening - MaxStep, C.Opening + MaxStep);
+		Bridge.SetCduFacilityFlowKgs(G, C.Opening > 0.0 ? C.DesignFacilityKgs * FMath::Pow(Rv, C.Opening - 1.0) : 0.0);
+	}
+	if (bPlantValves) Plant.ControlCduValves(DtS, TargetM3s, Enabled);
+}
+
 void ADataCenterSimulationActor::PlantBeforeStep()
 {
  if(!SyncCrahPower()) return; // Also runs with fixed chilled-water boundary (plant disabled).
+	ControlCduSupply(Clock.GetFixedStepS());   // 2026-11-03: before the plant hands the CDUs their branch flows
 	if (!bPlantActive || !Plant.IsThermalActive()) return;
 	for (int32 G = 0; G < Bridge.GetNumCduGroups(); ++G)
 	{
@@ -1497,8 +1584,30 @@ void ADataCenterSimulationActor::PlantBeforeStep()
 	}
 }
 
+void ADataCenterSimulationActor::CheckDewPoint(double DtS)
+{
+	const TArray<double>& SupplyK = Bridge.GetLastCduSupplyK();
+	bool bRisk = false;
+	for (int32 G = 0; G < SupplyK.Num(); ++G)
+	{
+		if (!(SupplyK[G] > 0.0)) continue;   // no exchange this step (no coolant flow)
+		const double MarginK = SupplyK[G] - RoomDewPointK;
+		MinDewMarginK = FMath::Min(MinDewMarginK, MarginK);
+		if (MarginK >= DewPointMarginK) continue;
+		bRisk = true;
+		if (!bCondensationLogged)
+		{
+			bCondensationLogged = true;
+			UE_LOG(LogTemp, Warning, TEXT("[Dew] t=%.2f s CDU %d 냉각수 공급 %.2f C < 방 이슬점 %.2f C + %.1f K: 결로 위험(ASHRAE S 등급 조건, 습도는 입력값)"),
+				Clock.GetSimTimeS(), G + 1, SupplyK[G] - 273.15, RoomDewPointK - 273.15, DewPointMarginK);
+		}
+	}
+	if (bRisk) CondensationRiskS += DtS;
+}
+
 void ADataCenterSimulationActor::PlantAfterStep(double DtS)
 {
+	CheckDewPoint(DtS);   // P6 (2026-11-03): both step loops call PlantAfterStep
 	if (!bPlantActive || !Plant.IsThermalActive()) return;
 	// CRAH coil heat of this step: the air solver's own duct coil total (rule 6; every solver path records it).
 	const double CrahW = (Plant.IsChilledWaterActive() && AirField != nullptr) ? AirField->GetSolver().GetLastDuctCoilRemovedW() : 0.0;
@@ -2166,7 +2275,7 @@ bool ADataCenterSimulationActor::BuildPlantWithCounts(const FPlantEquipmentCount
 	FFacilityLoopSpec Spec = PlantBuild.Spec;
 	FacilityPlantLayout::ApplyEquipmentCounts(Placed, Thermal, Spec);
 	PlantBuild.Placed = Placed;
-	return PlantBuild.bValid && Plant.Build(Spec, Thermal, PlantBuild.DesignHeatW, CoolantDensityKgM3, PlantBuild.WaterCp, FHydraulicSolveSettings(),
+	return PlantBuild.bValid && Plant.Build(Spec, Thermal, PlantBuild.DesignHeatW, FacilityWater::DensityKgM3, PlantBuild.WaterCp, FHydraulicSolveSettings(),
 		PlantBuild.Coils, CoilSupplyTempK);
 }
 
@@ -2500,6 +2609,7 @@ void ADataCenterSimulationActor::SprayAfterStep(double DtS)
 				S.Id = SiteIndex; S.OriginM = LiveLeakSites[SiteIndex].PositionM; S.DirectionM = LiveLeakSites[SiteIndex].SprayDirectionM;
 				S.GaugePressurePa = Net.GetNodePressurePa(Leak.NodeIndex) - Leak.AmbientPressurePa;
 				S.VolumeM3 = DeltaM3 * H.Value / Sum;
+				S.FluidIndex = 1;   // room TCS coolant = PG25 (2026-11-03)
 			}
 		}
 	}
@@ -2551,8 +2661,8 @@ void ADataCenterSimulationActor::LogSprayStatus() const
 			Clock.GetSimTimeS() + Clock.GetFixedStepS(), I.ReceivedM3, I.BalanceErrorM3(), RackInterior.PendingInputM3(GetInternalLeakedM3()), RackInterior.PendingFloorM3());
 	int32 Flooded = 0;
 	for (const FFloorFlood& Fl : FloorWater.GetFloods()) Flooded += Fl.FirstWetS >= 0.0 ? 1 : 0;
-	UE_LOG(LogTemp, Display, TEXT("[Water] t=%.2f s 바닥 물 %.3f L (받음 %.3f L, 격자 밖 %.3f L), 젖은 칸 %d, 최대 수심 %.2f mm, 최대 속도 %.3f m/s, 이번 스텝 부분 스텝 %d(%s, GPU 스텝 누적 %d), 물 밑 장비 %d | 잔차 %.2e, 음수 수심 보정 %.2e L"),
-		Clock.GetSimTimeS(), F.StoredM3 * 1e3, F.ReceivedM3 * 1e3, FloorOffGridM3 * 1e3, F.WetCells, F.MaxDepthM * 1e3, F.MaxSpeedMs, F.LastSubsteps,
+	UE_LOG(LogTemp, Display, TEXT("[Water] t=%.2f s 바닥 물 %.3f L (받음 %.3f L, 격자 밖 %.3f L, 배수 %.3f L, 드립 트레이 %.3f L), 젖은 칸 %d, 최대 수심 %.2f mm, 최대 속도 %.3f m/s, 이번 스텝 부분 스텝 %d(%s, GPU 스텝 누적 %d), 물 밑 장비 %d | 잔차 %.2e, 음수 수심 보정 %.2e L"),
+		Clock.GetSimTimeS(), F.StoredM3 * 1e3, F.ReceivedM3 * 1e3, FloorOffGridM3 * 1e3, F.DrainedM3 * 1e3, F.TrayM3 * 1e3, F.WetCells, F.MaxDepthM * 1e3, F.MaxSpeedMs, F.LastSubsteps,
 		F.bLastStepGpu ? TEXT("GPU") : TEXT("CPU"), F.GpuSteps, Flooded, F.Residual, F.ClippedM3 * 1e3);
 }
 
@@ -4008,6 +4118,16 @@ bool ADataCenterSimulationActor::WriteEvaluationReport(const FString& Name, FStr
 	Power->SetStringField(TEXT("partialPueScope"), TEXT("(IT + CRAH fans + pumps) / IT; chillers, cooling towers, UPS/distribution losses and lighting are not modelled"));
 	if (P.bPlant) Power->SetStringField(TEXT("coolingPueScope"), TEXT("(IT + CRAH fans + CDU pumps + plant pumps + dry cooler fans + chiller compressors) / IT; UPS/distribution losses and lighting are not modelled, so not a facility PUE"));
 	Root->SetObjectField(TEXT("power"), Power);
+	// P6 (2026-11-03, optional fields): condensation check of the CDU coolant supply against the room dew point input.
+	{
+		TSharedRef<FJsonObject> Dew = MakeShared<FJsonObject>();
+		Dew->SetNumberField(TEXT("roomDewPointK"), RoomDewPointK);
+		Dew->SetNumberField(TEXT("marginK"), DewPointMarginK);
+		if (MinDewMarginK < TNumericLimits<double>::Max()) Dew->SetNumberField(TEXT("minSupplyAboveDewK"), MinDewMarginK);
+		Dew->SetNumberField(TEXT("riskS"), CondensationRiskS);
+		Dew->SetStringField(TEXT("scope"), TEXT("CDU coolant supply vs one room dew point input (ASHRAE S-class 2 K margin); no humidity model"));
+		Root->SetObjectField(TEXT("dewPoint"), Dew);
+	}
 
 	TArray<TSharedPtr<FJsonValue>> InletItems;
 	int32 AboveRecommended = 0, AboveAllowable = 0, SensorAlarms = 0;

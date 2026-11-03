@@ -61,6 +61,10 @@ void ARackThermalActor::ConformInputArrays()
 	{
 		UE_LOG(LogTemp, Verbose, TEXT("RackThermalActor %s: preset device definitions refreshed from code."), *GetName());
 	}
+	if (FRackThermalModel::RefreshCoolantFluid(Params))
+	{
+		UE_LOG(LogTemp, Verbose, TEXT("RackThermalActor %s: saved water coolant values replaced by PG25 (TcsCoolant.h)."), *GetName());
+	}
 
 	if (Input.ComponentHeatW.Num() != FRackThermalModel::CountNodes(Params))
 	{
@@ -73,6 +77,14 @@ void ARackThermalActor::ConformInputArrays()
 	if (const int32 Repaired = FRackThermalModel::RepairKindHeatSpread(Params, Input.ComponentHeatW))
 	{
 		UE_LOG(LogTemp, Display, TEXT("RackThermalActor %s: 옛 CPU/GPU 발열 손잡이가 다른 부품에 쓴 값 %d개를 부품 기본값 비율로 바로잡았다."), *GetName(), Repaired);
+	}
+
+	// 2026-11-03: a changed slot list (layout edit, test fixture) left SlotPowered at the old length, and
+	// SlotPoweredOf reads a length mismatch as "every slot unpowered" (zero design heat, InRackNetwork check).
+	// Runtime power cuts belong to the old slot list; the new list starts powered (as ResetSim does).
+	if (!Input.SlotPowered.IsEmpty() && Input.SlotPowered.Num() != NumSleds)
+	{
+		Input.SlotPowered.Init(true, NumSleds);
 	}
 
 	if (Input.SledDocked.Num() != NumSleds)
@@ -153,7 +165,7 @@ void ARackThermalActor::ApplyGb200Nvl72Preset()
 	Input.ComponentHeatW = FRackThermalModel::MakeGb200Nvl72HeatW();
 	Input.SledDocked.Init(true, Params.Slots.Num());
 	Input.SlotAirInletTempK.Reset();
-	Input.CoolantMassFlowKgs = 2.3;     // NVL72 branch design flow (S4 room hydraulics)
+	Input.CoolantMassFlowKgs = 2.3e-3 * TcsCoolant::DensityKgM3;     // NVL72 branch design flow 2.3 L/s (S4 room hydraulics), PG25
 	ResetSim();
 }
 

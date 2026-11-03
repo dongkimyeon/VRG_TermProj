@@ -551,6 +551,39 @@ double FFacilityPlant::CrahOpeningFor(int32 Unit, double IntakeK, double TargetK
 	return FMath::Clamp(1.0 - FMath::Loge(RValve / ROpen) / (2.0 * FMath::Loge(Rv)), 0.0, 1.0);
 }
 
+bool FFacilityPlant::ControlCduValves(double DtS, const TArray<double>& TargetM3s, const TArray<bool>& ControlEnabled)
+{
+	if (!bBuilt || Topo != EPlantTopology::Separate || TargetM3s.Num() > Loop.GetNumBranches() || ControlEnabled.Num() != TargetM3s.Num()) return false;
+	const double MaxStep = Thermal.ValveStrokeS > 0.0 ? DtS / Thermal.ValveStrokeS : 1.0;
+	const double Rv = FMath::Max(Loop.GetSpec().ValveRangeability, 1.0 + 1e-9);
+	bool bChanged = false;
+	for (int32 G = 0; G < TargetM3s.Num(); ++G)
+	{
+		if (!ControlEnabled[G]) continue;
+		// Same inverse as the CRAH valves: full-open flow Q = sqrt(dp / R_branch(1)); R_valve(x) = R_open Rv^(2 (1 - x)).
+		const double Q = FMath::Max(TargetM3s[G], 0.0);
+		const double Dp = FMath::Max(Loop.GetBranchDeltaPPa(G), 1.0);
+		const double RFull = Loop.BranchResistancePaS2M6(G, 1.0);
+		double Target = 0.0;
+		if (Q >= FMath::Sqrt(Dp / RFull)) Target = 1.0;
+		else if (Q > 0.0)
+		{
+			const double ROpen = Loop.ValveResistancePaS2M6(G, 1.0);
+			const double RValve = Dp / (Q * Q) - (RFull - ROpen);
+			Target = RValve <= ROpen ? 1.0 : FMath::Clamp(1.0 - FMath::Loge(RValve / ROpen) / (2.0 * FMath::Loge(Rv)), 0.0, 1.0);
+		}
+		const double Now = Loop.GetValveOpening(G);
+		const double Next = FMath::Clamp(Target, Now - MaxStep, Now + MaxStep);
+		if (Next != Now) { Loop.SetValveOpening(G, Next); bChanged = true; }
+	}
+	if (bChanged)
+	{
+		LoopResult = Loop.Solve(SolveSettings);
+		RefreshFwsFlows();
+	}
+	return bChanged;
+}
+
 bool FFacilityPlant::ControlCrahValves(double DtS, const TArray<double>& IntakeMixK, const TArray<bool>& ControlEnabled)
 {
 	State.bCrahReadingsMissing = false;

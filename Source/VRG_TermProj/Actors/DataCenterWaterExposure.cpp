@@ -169,7 +169,8 @@ bool ADataCenterSimulationActor::ActualWaterPower(const TArray<bool>& OtherPower
   if(!Racks.IsValidIndex(B.InteriorRack) || !IsValid(Racks[B.InteriorRack])) {Reason=TEXT("Stale rack power mapping");return false;}
   const auto* Rack=Racks[B.InteriorRack].Get();const int32 Count=FRackThermalModel::NumSlotsOf(Rack->Params);
   if(B.Slot<0 || B.Slot>=Count || !FRackThermalModel::IsSlotPowerInputValid(Rack->GetInput(),Count)) {Reason=TEXT("Invalid native slot electrical input");return false;}
-  Next[I]=FRackThermalModel::SlotPoweredOf(Rack->GetInput(),B.Slot,Count) && Rack->IsSledDocked(B.Slot);
+  // 2026-11-03 (P4): a tripped rack busbar de-energizes every slot whatever its own power command.
+  Next[I]=Rack->GetModel().IsSlotLive(Rack->GetInput(),B.Slot,Count) && Rack->IsSledDocked(B.Slot);
  }
  Actual=MoveTemp(Next);Reason.Reset();return true;
 }

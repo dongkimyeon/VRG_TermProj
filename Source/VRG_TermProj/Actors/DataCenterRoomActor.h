@@ -274,6 +274,19 @@ public:
 	// Web dashboard cooling tab: rows and each row's pump in the hydraulic network (INDEX_NONE if none).
 	int32 GetNumRows() const { return Rows.Num(); }
 	int32 GetRowPumpIndex(int32 RowIndex) const { return Rows.IsValidIndex(RowIndex) ? Rows[RowIndex].PumpIndex : INDEX_NONE; }
+	// CDU instruments (2026-11-03, Mission Control CDU telemetry: flow, differential pressure, system pressure).
+	int32 GetRowCduNodeIndex(int32 RowIndex) const { return Rows.IsValidIndex(RowIndex) ? Rows[RowIndex].CduNodeIndex : INDEX_NONE; }
+	int32 GetRowCduSupplyNodeIndex(int32 RowIndex) const { return Rows.IsValidIndex(RowIndex) ? Rows[RowIndex].CduSupplyNodeIndex : INDEX_NONE; }
+	int32 GetRowCduReturnNodeIndex(int32 RowIndex) const { return Rows.IsValidIndex(RowIndex) ? Rows[RowIndex].CduReturnNodeIndex : INDEX_NONE; }
+	// CDU pump VFD control (2026-11-03, CoolingDistributionUnitActor bPumpDpControl): remote-rack differential pressure
+	// [Pa] now and its setpoint (0 when the row has no control), and whether the speed sits at a limit.
+	double GetRowRemoteDpPa(int32 RowIndex) const;
+	double GetRowDpSetpointPa(int32 RowIndex) const { return Rows.IsValidIndex(RowIndex) ? Rows[RowIndex].DpSetpointPa : 0.0; }
+	bool IsRowPumpSpeedSaturated(int32 RowIndex) const { return Rows.IsValidIndex(RowIndex) && Rows[RowIndex].bSpeedSaturated; }
+	// N+1 pump fault of a row's CDU (runtime, D4: the loop's response comes from the network solve). Returns false if
+	// the row has no CDU or no healthy pump left. Console: vrg.Cdu.PumpFault <row>, vrg.Cdu.PumpRepair <row>.
+	bool FailRowCduPump(int32 RowIndex);
+	bool RepairRowCduPumps(int32 RowIndex);
 
 	// 배관을 다시 이었는지. 통합 액터가 이번 스텝에 유량이 바뀌었는지 알아야 한다.
 	bool ConsumeRebuiltFlag();
@@ -398,6 +411,14 @@ private:
 		TObjectPtr<ACoolingDistributionUnitActor> Cdu;
 
 		int32 PumpIndex = INDEX_NONE;
+		// CDU-side nodes for the CDU instruments (2026-11-03): the CDU (tank) node and the supply / return headers at
+		// the CDU end of the row (the first rack column). INDEX_NONE until the row is built.
+		int32 CduNodeIndex = INDEX_NONE, CduSupplyNodeIndex = INDEX_NONE, CduReturnNodeIndex = INDEX_NONE;
+		// CDU pump VFD control (2026-11-03): headers at the hydraulically remote rack (last column with a rack branch),
+		// the setpoint there [Pa], this row's tank, and whether the speed hit a limit at the last control update.
+		int32 FarSupplyNodeIndex = INDEX_NONE, FarReturnNodeIndex = INDEX_NONE, TankIndex = INDEX_NONE;
+		double DpSetpointPa = 0.0;
+		bool bSpeedSaturated = false;
 	};
 
 	FHydraulicNetwork Network;
@@ -526,6 +547,12 @@ private:
 	// (GJ ports, CDU ports and the pump supply route included), so the solver's z is the mesh's z.
 	// A node no drawn end touches keeps its anchor height. Called before the solve.
 	void AssignNodeElevationsFromRoutes();
+	// CDU pump VFD control (2026-11-03). Settle: at build, solve to the controlled speed (every pressure difference of a
+	// closed loop with quadratic losses scales with r^2, so r_new = r sqrt(setpoint / dp) lands in a few solves).
+	// Control: once per step, move each row's speed toward that target within the VFD ramp; true if a speed changed.
+	void SettleCduPumpSpeeds();
+	bool ControlCduPumps(double DtS);
+	double RowSpeedTarget(const FRackRow& Row, bool& bOutSaturated) const;
 	void BuildPipeMeshes();
 	void BuildDecorMeshes();
 	void DestroyMeshes(TArray<TObjectPtr<UStaticMeshComponent>>& Meshes);

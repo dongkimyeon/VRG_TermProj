@@ -734,7 +734,8 @@ bool FWebDashboardLeaksTest::RunTest(const FString& Parameters)
 		Rack->ApplyGb200Nvl72Preset(); Rack->bShowReadout = false;
 		Rack->RackSizeM = FVector(GjRackLayout::FrameDepthM, GjRackLayout::FrameWidthM, GjRackLayout::FrameHeightM);
 	}
-	World->SpawnActor<ACoolingDistributionUnitActor>(FVector(-300, 100, 0), FRotator::ZeroRotator);
+	// The dashboard reports a leak's impact on rack flows vs design: a fixed-speed pump (P3 VFD control off) shows it.
+	World->SpawnActor<ACoolingDistributionUnitActor>(FVector(-300, 100, 0), FRotator::ZeroRotator)->bPumpDpControl = false;
 	Room->RebuildRoomNow();
 	auto AddEvent = [Sim](double T, const TCHAR* Kind, double Value)
 	{

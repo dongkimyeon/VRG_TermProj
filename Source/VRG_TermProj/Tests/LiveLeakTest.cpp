@@ -206,6 +206,7 @@ bool FLiveLeakHeaderTest::RunTest(const FString& Parameters)
 	const int32 Found = R.Sim->FindLiveLeakSite(Near);
 	const int32 Far = R.Sim->FindLiveLeakSite(Near + FVector(50, 0, 0));
 	const TArray<double> Before = R.Sim->GetSnapshot().RackCoolantMassFlowKgs;
+	const double SpeedBefore = R.Room->GetNetwork().GetPumpSpeedRatio(R.Room->GetRowPumpIndex(0));
 	const bool bOpened = R.Sim->SetLiveLeak(Found, 10.0e-3, TEXT("test"));
 	R.Run(1.0);
 	const TArray<double> After = R.Sim->GetSnapshot().RackCoolantMassFlowKgs;
@@ -216,8 +217,13 @@ bool FLiveLeakHeaderTest::RunTest(const FString& Parameters)
 	AddInfo(FString::Printf(TEXT("지점 %d개, 헤더 지점 %d, 가까운 점 -> %d, 50 m 밖 -> %d | 10 mm 헤더 누수 %.4f L/s, 랙 냉각수 %.4f/%.4f -> %.4f/%.4f kg/s, 누수 열 %.3f kW | 냉각수 장부 %.3e, 전역 %.3e, 결합/분기 %.3e"),
 		Sites.Num(), Header, Found, Far, D.Leaks.Num() ? D.Leaks[0].FlowM3s * 1e3 : -1.0, Before[0], Before[1], After[0], After[1], D.LeakHeatW * 1e-3, Ledger, Global, Cross));
 	TestTrue(TEXT("the nearest site to a point is found, nothing beyond 2 m"), Header != INDEX_NONE && Found == Header && Far == INDEX_NONE);
-	TestTrue(TEXT("a header leak (no split) flows and lowers the racks' coolant (the solve decides how much, D4)"),
-		bOpened && D.Leaks.Num() == 1 && D.Leaks[0].FlowM3s > 0.0 && After[0] < Before[0] && After[1] < Before[1]);
+	// 2026-11-03 (P3): the CDU pump VFD holds the remote-rack differential pressure, so the leak raises the pump speed
+	// and the racks keep their coolant within 1 % (a fixed-speed pump lost flow here). The solve decides how much (D4).
+	const double SpeedAfter = R.Room->GetNetwork().GetPumpSpeedRatio(R.Room->GetRowPumpIndex(0));
+	AddInfo(FString::Printf(TEXT("CDU 펌프 회전 %.5f -> %.5f"), SpeedBefore, SpeedAfter));
+	TestTrue(TEXT("a header leak (no split) flows; the controlled CDU pump speeds up and holds the racks' coolant (< 1 %, D4)"),
+		bOpened && D.Leaks.Num() == 1 && D.Leaks[0].FlowM3s > 0.0 && SpeedAfter > SpeedBefore
+		&& FMath::Abs(After[0] - Before[0]) < 0.01 * Before[0] && FMath::Abs(After[1] - Before[1]) < 0.01 * Before[1]);
 	// Leak heat = m cp (T_leak - T_tank reference): supply water leaks colder than the reference, so it is negative here.
 	TestTrue(TEXT("the header leak heat is booked and closes the coolant and global ledgers (< 1e-9)"), Ledger < 1e-9 && Global < 1e-9 && D.LeakHeatW != 0.0);
 	TestTrue(TEXT("coupled flow = branch flow x density (exact)"), Cross == 0.0);

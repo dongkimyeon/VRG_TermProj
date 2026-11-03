@@ -310,7 +310,9 @@ namespace
 				Rack->ApplyGb200Nvl72Preset(); Rack->bShowReadout = false;
 				Rack->RackSizeM = FVector(GjRackLayout::FrameDepthM, GjRackLayout::FrameWidthM, GjRackLayout::FrameHeightM);
 			}
-			World->SpawnActor<ACoolingDistributionUnitActor>(FVector(-300, 100, 0), FRotator::ZeroRotator);
+			// The plant-leak ledger checks integrate the leak flow per frame: the CDU supply temperature control (P3) would
+			// move the FWS valves every step.
+			World->SpawnActor<ACoolingDistributionUnitActor>(FVector(-300, 100, 0), FRotator::ZeroRotator)->bSupplyTempControl = false;
 			Room->RebuildRoomNow();
 		}
 		~FSprayLiveRoom()
@@ -352,7 +354,8 @@ bool FLeakSprayLiveRoomTest::RunTest(const FString& Parameters)
 	const FHydraulicNetwork& Net = R.Room->GetNetwork();
 	const int32 NetLeak = R.Room->GetLeakNetworkIndex(R.Sim->GetLiveLeakSites()[Site].RoomSpec);
 	const FHydraulicLeak& Leak = Net.GetLeak(NetLeak);
-	const double V0 = FLeakSpray::JetVelocityMs(Net.GetNodePressurePa(Leak.NodeIndex) - Leak.AmbientPressurePa, Spray.GetSettings(), Spray.GetFluid());
+	// A room (TCS) leak sprays PG25, the same liquid the orifice solve used (2026-11-03, TcsCoolant.h).
+	const double V0 = FLeakSpray::JetVelocityMs(Net.GetNodePressurePa(Leak.NodeIndex) - Leak.AmbientPressurePa, Spray.GetSettings(), Spray.GetCoolantFluid());
 	const double JetArea = Net.GetLeakFlowM3s(NetLeak) / V0;
 	const double OrificeRel = FMath::Abs(JetArea / (PI * .25 * Leak.HoleDiameterM * Leak.HoleDiameterM) - Leak.DischargeCoefficient / Spray.GetSettings().VelocityCoefficient)
 		/ (Leak.DischargeCoefficient / Spray.GetSettings().VelocityCoefficient);

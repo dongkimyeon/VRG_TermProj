@@ -58,7 +58,7 @@ FFloorWater::~FFloorWater() = default;
 
 bool FFloorWater::WantsGpu() const
 {
-	if (Settings.GpuMode == 0 || !FVrgFloorWaterGpu::IsAvailable()) return false;
+	if (Settings.GpuMode == 0 || !Drains.IsEmpty() || !FVrgFloorWaterGpu::IsAvailable()) return false;   // sinks: CPU only
 	if (Settings.GpuMode == 1) return true;
 	const int64 Box = WetI0 <= WetI1 ? int64(WetI1 - WetI0 + 3) * (WetJ1 - WetJ0 + 3) : 0;
 	return Box >= Settings.GpuMinCells;
@@ -121,6 +121,8 @@ void FFloorWater::Reset(const FVector2D& OriginM, int32 InNx, int32 InNy, double
 	for (TArray<double>* A : { &FxH, &FxNL, &FxNH, &FxT }) A->Init(0.0, (Nx + 1) * Ny);
 	for (TArray<double>* A : { &FyH, &FyNL, &FyNH, &FyT }) A->Init(0.0, Nx * (Ny + 1));
 	Floods.Reset();
+	Drains.Reset();
+	Trays.Reset();
 	Totals = FFloorWaterTotals();
 	WetI0 = 1; WetJ0 = 1; WetI1 = 0; WetJ1 = 0;
 	bGpuConfigured = false; bGpuStateCurrent = false;
@@ -203,9 +205,51 @@ void FFloorWater::AddFlood(const FString& Name, const TArray<int32>& Cells)
 	F.Name = Name; F.Cells = Cells;
 }
 
+bool FFloorWater::AddDrain(const FString& Name, const FVector& PointM, double DiameterM, double Cd)
+{
+	const int32 I = FMath::FloorToInt32((PointM.X - Origin.X) / Settings.CellM), J = FMath::FloorToInt32((PointM.Y - Origin.Y) / Settings.CellM);
+	if (I < 0 || J < 0 || I >= Nx || J >= Ny || Solid[Index(I, J)] || !(DiameterM > 0.0)) return false;
+	FFloorDrain& D = Drains.AddDefaulted_GetRef();
+	D.Name = Name; D.Cell = Index(I, J); D.AreaM2 = PI * .25 * DiameterM * DiameterM; D.Cd = Cd;
+	return true;
+}
+
+void FFloorWater::AddTray(const FString& Name, const FVector2D& MinM, const FVector2D& MaxM, double CapacityM3)
+{
+	FFloorTray& T = Trays.AddDefaulted_GetRef();
+	T.Name = Name; T.MinM = MinM; T.MaxM = MaxM; T.CapacityM3 = FMath::Max(CapacityM3, 0.0);
+}
+
+void FFloorWater::ApplyDrains(double DtS)
+{
+	const double CellA = Settings.CellM * Settings.CellM;
+	for (FFloorDrain& D : Drains)
+	{
+		const double H0 = H[D.Cell];
+		if (H0 <= 0.0) continue;
+		// Orifice under the head h, limited to the water in the cell this substep.
+		const double V = FMath::Min(D.Cd * D.AreaM2 * FMath::Sqrt(2.0 * Settings.GravityMs2 * H0) * DtS, H0 * CellA);
+		const double H1 = H0 - V / CellA;
+		const double Keep = H1 > 0.0 ? H1 / H0 : 0.0;
+		H[D.Cell] = H1 > 0.0 ? H1 : 0.0; HU[D.Cell] *= Keep; HV[D.Cell] *= Keep;   // the momentum leaves with its water
+		D.DrainedM3 += V; D.LastFlowM3s += V;
+		Totals.DrainedM3 += V;
+	}
+}
+
 bool FFloorWater::AddWater(const FVector& PointM, double VolumeM3)
 {
 	if (VolumeM3 <= 0.0) return true;
+	// A drip tray under the point takes what it can hold first (2026-11-03, P5); only the overflow reaches the floor.
+	for (FFloorTray& T : Trays)
+	{
+		if (PointM.X < T.MinM.X || PointM.X > T.MaxM.X || PointM.Y < T.MinM.Y || PointM.Y > T.MaxM.Y) continue;
+		const double Take = FMath::Min(VolumeM3, T.CapacityM3 - T.StoredM3);
+		if (Take > 0.0) { T.StoredM3 += Take; Totals.ReceivedM3 += Take; Totals.TrayM3 += Take; VolumeM3 -= Take; }
+		T.OverflowM3 += VolumeM3;
+		if (VolumeM3 <= 0.0) return true;
+		break;
+	}
 	int32 I = FMath::FloorToInt32((PointM.X - Origin.X) / Settings.CellM), J = FMath::FloorToInt32((PointM.Y - Origin.Y) / Settings.CellM);
 	if (I < 0 || J < 0 || I >= Nx || J >= Ny) return false;
 	if (Solid[Index(I, J)])
@@ -350,6 +394,7 @@ void FFloorWater::Step(double DtS, double NowS)
 	}
 	bGpuStateCurrent = false;   // the CPU copy moves on; the GPU copy is stale
 	double Left = DtS;
+	for (FFloorDrain& D : Drains) D.LastFlowM3s = 0.0;
 	while (Left > 0.0 && WetI0 <= WetI1)
 	{
 		// The region: the wet box grown by one cell (water moves at most one cell per substep under the CFL limit).
@@ -361,11 +406,13 @@ void FFloorWater::Step(double DtS, double NowS)
 		// Avoid a sliver at the end: two equal halves instead of a full step and a tiny one.
 		if (Left - Dt > 0.0 && Left - Dt < .1 * Dt) Dt = .5 * Left;
 		Substep(Dt, I0, I1, J0, J1);
+		ApplyDrains(Dt);
 		UpdateWetBox(I0, I1, J0, J1);
 		Left -= Dt;
 		++Totals.LastSubsteps;
 	}
 	Totals.Substeps += Totals.LastSubsteps;
+	for (FFloorDrain& D : Drains) D.LastFlowM3s /= DtS;
 	UpdateTotals(NowS + DtS);
 }
 
@@ -384,8 +431,10 @@ void FFloorWater::UpdateTotals(double NowS)
 		}
 	Totals.StoredM3 = Stored * Settings.CellM * Settings.CellM;
 	Totals.WetCells = Wet; Totals.MaxSpeedMs = MaxSpeed; Totals.MaxDepthM = MaxDepth;
-	Totals.Residual = Totals.ReceivedM3 > 0.0 ? FMath::Abs(Totals.ReceivedM3 - Totals.StoredM3 + Totals.ClippedM3) / Totals.ReceivedM3 : 0.0;
+	Totals.Residual = Totals.ReceivedM3 > 0.0
+		? FMath::Abs(Totals.ReceivedM3 - Totals.StoredM3 - Totals.DrainedM3 - Totals.TrayM3 + Totals.ClippedM3) / Totals.ReceivedM3 : 0.0;
 	if (NowS < 0.0) return;
+	for (FFloorTray& T : Trays) if (T.FirstWetS < 0.0 && T.StoredM3 > 0.0) T.FirstWetS = NowS;
 	for (FFloorFlood& F : Floods)
 	{
 		double Sum = 0.0, Max = 0.0;

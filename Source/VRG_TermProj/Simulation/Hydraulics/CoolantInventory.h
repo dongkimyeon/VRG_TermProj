@@ -107,6 +107,9 @@ public:
 	// Opening, resizing or repairing the last hole must invalidate the previous solve,
 	// including a closed loop without make-up (which otherwise becomes immediately idle).
 	void MarkHydraulicsDirty() { bDirty = true; }
+	// 2026-11-03 (CDU pump VFD control): the speed the controller settled at build is the tank's "as built" speed
+	// (Restart returns to it). The controller is the only caller.
+	void SetBuiltPumpSpeed(int32 TankIndex, double SpeedRatio) { if (Tanks.IsValidIndex(TankIndex)) Tanks[TankIndex].PumpSpeedRatio = SpeedRatio; }
 	const TArray<FTank>& GetTanks() const { return Tanks; }
 	double GetTankGaugePressurePa(int32 Tank) const;
 	int32 GetNumSolves() const { return NumSolves; }

@@ -323,6 +323,11 @@ public:
 	// any opening changed (then the CHW network was re-solved and the equivalent UAs updated).
 	bool ControlCrahValves(double DtS, const TArray<double>& IntakeMixK, const TArray<bool>& ControlEnabled = {});
 	void MarkCrahReadingsMissing() { State.bCrahReadingsMissing = true; }
+	// 2026-11-03 (CDU supply temperature control): move each CDU branch's FWS 2-way valve toward the opening that passes
+	// TargetM3s[G] at the branch differential of the last solve, within the valve stroke. Separate topology only (the
+	// FWS loop owns the CDU branches); returns true when an opening changed (the FWS loop was then re-solved).
+	bool ControlCduValves(double DtS, const TArray<double>& TargetM3s, const TArray<bool>& ControlEnabled);
+	double GetCduValveOpening(int32 Branch) const { return Loop.GetValveOpening(Branch); }
 	double GetCrahOpening(int32 Unit) const { return ChwLoop.GetValveOpening(Unit); }
 	// Opening that makes the unit's coil leave at TargetK from IntakeK (inverse used by the control; no ramp).
 	double CrahOpeningFor(int32 Unit, double IntakeK, double TargetK, bool& bSaturated) const;

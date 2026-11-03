@@ -190,8 +190,9 @@ void ADataCenterRoomActor::GetRackLeakIndices(const ARackThermalActor* Rack, TAr
 bool ADataCenterRoomActor::SyncCduPumpPower()
 {
  bool bChanged=false;
- for(const FRackRow& Row:Rows) if(Row.Cdu && Network.IsPumpPowered(Row.PumpIndex)!=Row.Cdu->IsPumpPowered()) {
-  Network.SetPumpPowered(Row.PumpIndex,Row.Cdu->IsPumpPowered());bChanged=true;
+ // 2026-11-03: the network pump runs only with CDU power (W4), a healthy pump unit and no changeover in progress (N+1).
+ for(const FRackRow& Row:Rows) if(Row.Cdu && Network.IsPumpPowered(Row.PumpIndex)!=Row.Cdu->IsPumpRunning()) {
+  Network.SetPumpPowered(Row.PumpIndex,Row.Cdu->IsPumpRunning());bChanged=true;
  }
  if(bChanged) Inventory.MarkHydraulicsDirty();
  return bChanged;
@@ -200,7 +201,9 @@ bool ADataCenterRoomActor::SyncCduPumpPower()
 void ADataCenterRoomActor::StepCoolantInventory(double DtS, double NowS)
 {
 	SyncInRackDocking();
+	for (const FRackRow& Row : Rows) if (Row.Cdu) Row.Cdu->AdvancePumpSwitchover(DtS);
 	SyncCduPumpPower();
+	if (ControlCduPumps(DtS)) Inventory.MarkHydraulicsDirty();
 	FHydraulicSolveResult Result;
 	const uint64 StartCycles = FPlatformTime::Cycles64();
 	if (!Inventory.Step(Network, SolveSettings, DtS, NowS, Result)) return;
@@ -357,7 +360,7 @@ void ADataCenterRoomActor::OpenAllValves()
 void ADataCenterRoomActor::RestartCoolantInventory()
 {
 	OpenAllValves();
-	for(TActorIterator<ACoolingDistributionUnitActor> It(GetWorld());It;++It) It->SetPumpPowered(true);
+	for(TActorIterator<ACoolingDistributionUnitActor> It(GetWorld());It;++It) { It->SetPumpPowered(true); It->RepairPumps(); }
 	const bool bPowerChanged=SyncCduPumpPower();
 	for (FRoomLeakSpec& Spec : LeakSpecs) Spec.bEverOpened = Spec.HoleDiameterM > 0.0;
 	FHydraulicSolveResult Result;
@@ -369,6 +372,85 @@ void ADataCenterRoomActor::RestartCoolantInventory()
 		bPipeColorsDirty = true;
 	}
 	LastInventoryLogSecond = -1;
+}
+
+double ADataCenterRoomActor::GetRowRemoteDpPa(int32 RowIndex) const
+{
+	if (!Rows.IsValidIndex(RowIndex) || Rows[RowIndex].FarSupplyNodeIndex == INDEX_NONE) return 0.0;
+	return Network.GetNodePiezometricPa(Rows[RowIndex].FarSupplyNodeIndex) - Network.GetNodePiezometricPa(Rows[RowIndex].FarReturnNodeIndex);
+}
+
+double ADataCenterRoomActor::RowSpeedTarget(const FRackRow& Row, bool& bOutSaturated) const
+{
+	bOutSaturated = false;
+	const double Speed = Network.GetPumpSpeedRatio(Row.PumpIndex);
+	const double MinR = Row.Cdu->PumpMinSpeedRatio, MaxR = FMath::Max(Row.Cdu->PumpMaxSpeedRatio, MinR);
+	const double Dp = Network.GetNodePiezometricPa(Row.FarSupplyNodeIndex) - Network.GetNodePiezometricPa(Row.FarReturnNodeIndex);
+	// Without a positive differential (pump just restarting, everything closed) hold the speed: no division by zero.
+	if (!(Dp > 0.0) || !(Speed > 0.0)) return Speed;
+	const double Ideal = Speed * FMath::Sqrt(Row.DpSetpointPa / Dp);
+	bOutSaturated = Ideal > MaxR || Ideal < MinR;
+	return FMath::Clamp(Ideal, MinR, MaxR);
+}
+
+// Every rack-branch, header and pump-curve loss is quadratic and the pump head scales with r^2, so with the tank node
+// as the only pressure reference every pressure difference of the loop scales exactly with r^2 (no leak is open here:
+// the design solve closes them). r_new = r sqrt(setpoint / dp) is then exact; a few solves absorb the solver tolerance.
+void ADataCenterRoomActor::SettleCduPumpSpeeds()
+{
+	bool bAny = false;
+	for (const FRackRow& Row : Rows) bAny |= Row.Cdu && Row.Cdu->bPumpDpControl && Row.DpSetpointPa > 0.0 && Row.FarSupplyNodeIndex != INDEX_NONE;
+	if (!bAny) return;
+	for (int32 It = 0; It < 8; ++It)
+	{
+		bool bChanged = false;
+		for (FRackRow& Row : Rows)
+		{
+			if (!Row.Cdu || !Row.Cdu->bPumpDpControl || Row.DpSetpointPa <= 0.0 || Row.FarSupplyNodeIndex == INDEX_NONE) continue;
+			const double Speed = Network.GetPumpSpeedRatio(Row.PumpIndex);
+			const double Target = RowSpeedTarget(Row, Row.bSpeedSaturated);
+			if (FMath::Abs(Target - Speed) > 1e-12 * FMath::Max(Speed, 1.0)) { Network.SetPumpSpeedRatio(Row.PumpIndex, Target); bChanged = true; }
+		}
+		if (!bChanged) break;
+		Network.Solve(SolveSettings);
+	}
+	for (const FRackRow& Row : Rows) if (Row.TankIndex != INDEX_NONE) Inventory.SetBuiltPumpSpeed(Row.TankIndex, Network.GetPumpSpeedRatio(Row.PumpIndex));
+}
+
+bool ADataCenterRoomActor::ControlCduPumps(double DtS)
+{
+	bool bChanged = false;
+	const TArray<FCoolantInventory::FTank>& Tanks = Inventory.GetTanks();
+	for (FRackRow& Row : Rows)
+	{
+		if (!Row.Cdu || !Row.Cdu->bPumpDpControl || Row.DpSetpointPa <= 0.0 || Row.FarSupplyNodeIndex == INDEX_NONE) continue;
+		// A stopped pump (W4 power, N+1 changeover, empty tank) holds its VFD speed: nothing to control.
+		if (!Network.IsPumpPowered(Row.PumpIndex) || (Tanks.IsValidIndex(Row.TankIndex) && Tanks[Row.TankIndex].State.bDepleted)) continue;
+		const double Speed = Network.GetPumpSpeedRatio(Row.PumpIndex);
+		const double Target = RowSpeedTarget(Row, Row.bSpeedSaturated);
+		const double MaxStep = Row.Cdu->PumpRampPerS * DtS;
+		const double Next = FMath::Clamp(Target, Speed - MaxStep, Speed + MaxStep);
+		// Below 1e-9 of the speed the change is solver noise: holding it keeps a settled loop from re-solving every step.
+		if (FMath::Abs(Next - Speed) <= 1e-9 * FMath::Max(Speed, 1e-3)) continue;
+		Network.SetPumpSpeedRatio(Row.PumpIndex, Next);
+		bChanged = true;
+	}
+	return bChanged;
+}
+
+bool ADataCenterRoomActor::FailRowCduPump(int32 RowIndex)
+{
+	if (!Rows.IsValidIndex(RowIndex) || !Rows[RowIndex].Cdu || !Rows[RowIndex].Cdu->FailRunningPump()) return false;
+	if (SyncCduPumpPower()) Inventory.MarkHydraulicsDirty();
+	return true;
+}
+
+bool ADataCenterRoomActor::RepairRowCduPumps(int32 RowIndex)
+{
+	if (!Rows.IsValidIndex(RowIndex) || !Rows[RowIndex].Cdu) return false;
+	Rows[RowIndex].Cdu->RepairPumps();
+	if (SyncCduPumpPower()) Inventory.MarkHydraulicsDirty();
+	return true;
 }
 
 void ADataCenterRoomActor::SetCoolantDensityKgM3(double InDensityKgM3)
@@ -700,6 +782,17 @@ void ADataCenterRoomActor::BuildNetwork()
 				InternalSpecs.Add(Rack ? InRackNetwork::FromThermal(Rack->Params, Rack->GetMutableInput()) : FInRackSpec());
 		const FInRowLoopHandles Handles = InRowLoopBuilder::AddLoop(Network, Spec, &InternalSpecs);
 		Row.PumpIndex = Handles.PumpIndex;
+		Row.CduNodeIndex = Handles.CduNodeIndex;
+		Row.CduSupplyNodeIndex = Handles.SupplyNodeIndices.IsEmpty() ? INDEX_NONE : Handles.SupplyNodeIndices[0];
+		Row.CduReturnNodeIndex = Handles.ReturnNodeIndices.IsEmpty() ? INDEX_NONE : Handles.ReturnNodeIndices[0];
+		Row.FarSupplyNodeIndex = Row.FarReturnNodeIndex = INDEX_NONE;
+		for (int32 Column = Handles.RackNodeIndices.Num() - 1; Column >= 0 && Row.FarSupplyNodeIndex == INDEX_NONE; --Column)
+			if (Handles.RackNodeIndices[Column] != INDEX_NONE) { Row.FarSupplyNodeIndex = Handles.SupplyNodeIndices[Column]; Row.FarReturnNodeIndex = Handles.ReturnNodeIndices[Column]; }
+		// Remote rack design differential: the two branch losses of a full rack at its design flow (InRowLoopBuilder budget),
+		// times the debug knob's r^2.
+		Row.DpSetpointPa = Row.Cdu && Row.Cdu->bPumpDpControl ? 2.0 * Spec.RackBranchResistancePaS2M6 * FMath::Square(Row.Cdu->RackDesignFlowM3s)
+			* FMath::Square(Row.Cdu->PumpSpeedRatio) : 0.0;
+		Row.bSpeedSaturated = false;
 		if(Row.Cdu) Network.SetPumpPowered(Row.PumpIndex,Row.Cdu->IsPumpPowered());
 
 		NodePositionM.SetNum(Network.GetNumNodes());
@@ -855,7 +948,7 @@ void ADataCenterRoomActor::BuildNetwork()
 			Leak.NetworkLeak = Network.AddLeak(Orifice);
 			RowLeaks.Add(Leak.NetworkLeak);
 		}
-		Inventory.AddTank(Network, Handles.CduNodeIndex, Handles.PumpIndex, RowLeaks,
+		Row.TankIndex = Inventory.AddTank(Network, Handles.CduNodeIndex, Handles.PumpIndex, RowLeaks,
 			Row.Cdu != nullptr ? Row.Cdu->ExpansionTank : FallbackExpansionTank);
 	}
 
@@ -872,6 +965,7 @@ void ADataCenterRoomActor::BuildNetwork()
 		TArray<double> Diameters;
 		for (int32 L = 0; L < Network.GetNumLeaks(); ++L) { Diameters.Add(Network.GetLeak(L).HoleDiameterM); Network.SetLeakHoleDiameterM(L, 0.0); }
 		Network.Solve(SolveSettings);
+		SettleCduPumpSpeeds();   // 2026-11-03: design flows at the controlled pump speed
 		RackDesignFlowM3s.Reset();
 		for (const int32 Pipe : RackBranchPipeIndices) RackDesignFlowM3s.Add(Pipe != INDEX_NONE ? FMath::Abs(Network.GetPipeFlowM3s(Pipe)) : 0.0);
 		for (int32 L = 0; L < Diameters.Num(); ++L) Network.SetLeakHoleDiameterM(L, Diameters[L]);
@@ -1791,6 +1885,32 @@ static FAutoConsoleCommand GVrgLeakStatusCommand(
 						Net.GetNodeElevationM(Net.GetLeak(L).NodeIndex), Net.GetLeakFlowM3s(L) * 1e3);
 			}
 		}
+	}));
+
+// 2026-11-03 (Tools/실사양정합_계획.md P3): N+1 pump fault of a row's CDU. The running pump fails; the standby takes
+// over after the CDU's PumpSwitchoverS (the loop has no active pump meanwhile). The response is the network solve (D4).
+static FAutoConsoleCommand GVrgCduPumpFaultCommand(
+	TEXT("vrg.Cdu.PumpFault"),
+	TEXT("줄 CDU의 운전 펌프 고장(N+1: 대기 펌프가 전환 시간 뒤 운전). vrg.Cdu.PumpFault <줄 번호>"),
+	FConsoleCommandWithArgsDelegate::CreateLambda([](const TArray<FString>& Args)
+	{
+		for (ADataCenterRoomActor* Room : LeakRoomActors())
+		{
+			const int32 Row = Args.Num() > 0 ? FCString::Atoi(*Args[0]) : 0;
+			if (!Room->FailRowCduPump(Row)) { UE_LOG(LogTemp, Warning, TEXT("[CDU] 줄 %d: CDU가 없거나 남은 정상 펌프가 없다"), Row); continue; }
+			const ACoolingDistributionUnitActor* Cdu = Room->GetRowCdu(Row);
+			UE_LOG(LogTemp, Display, TEXT("[CDU] 줄 %d 펌프 고장: 고장 %d / %d대, 전환 남은 %.1f s%s"), Row, Cdu->GetFailedPumps(), Cdu->GetNumPumps(),
+				Cdu->GetSwitchoverRemainingS(), Cdu->HasHealthyPump() ? TEXT("") : TEXT(" - 정상 펌프 없음(유동 정지)"));
+		}
+	}));
+
+static FAutoConsoleCommand GVrgCduPumpRepairCommand(
+	TEXT("vrg.Cdu.PumpRepair"),
+	TEXT("줄 CDU의 펌프를 모두 수리한다. vrg.Cdu.PumpRepair <줄 번호>"),
+	FConsoleCommandWithArgsDelegate::CreateLambda([](const TArray<FString>& Args)
+	{
+		for (ADataCenterRoomActor* Room : LeakRoomActors())
+			if (!Room->RepairRowCduPumps(Args.Num() > 0 ? FCString::Atoi(*Args[0]) : 0)) UE_LOG(LogTemp, Warning, TEXT("[CDU] CDU가 없는 줄"));
 	}));
 
 static FAutoConsoleCommand GVrgValveCommand(

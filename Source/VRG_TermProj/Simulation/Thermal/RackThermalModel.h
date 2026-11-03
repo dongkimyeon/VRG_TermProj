@@ -172,6 +172,11 @@ public:
 	// the code stays the single source of physical defaults. The slot layout is kept. Returns true if changed.
 	static bool RefreshKnownDeviceTypes(FRackThermalParams& InOutParams);
 
+	// 2026-11-03 (PG25, TcsCoolant.h): racks saved before the coolant change carry water values. Replace exactly the old
+	// water defaults (cp 4182, GB200 rack 9.2e4 J/K, generic 4.0e4 J/K) by the same volume of PG25; any other value was
+	// set on purpose and is kept. Returns true if changed.
+	static bool RefreshCoolantFluid(FRackThermalParams& InOutParams);
+
 	// Cheap accessors for the coupling (the snapshot copies every per-node array).
 	const TArray<double>& GetLastSlotAirMassFlowKgs() const { return LastSlotAirMassFlowKgs; }
 	const TArray<double>& GetLastSlotHeatToAirW() const { return LastSlotHeatToAirW; }
@@ -183,6 +188,17 @@ public:
 	// PSU conversion loss of the last step [W] (sum of LossFractionOfRackLoad x DC load, without the PSU fans' share).
 	// Recorded where the step computes it; already part of GetLastTotalHeatW (dashboard power breakdown, 2026-10-14).
 	double GetLastConversionLossW() const { return LastConversionLossW; }
+	// Shared busbar (2026-11-03, P4). Shelves = power shelf slots (devices with conversion-loss parts); live = docked and
+	// powered. Capacity = sum of the live shelves' RatedOutputW. The busbar trips (every slot of the rack loses power,
+	// latched until the next Initialize) when no shelf is live or the last step's DC load exceeded the capacity: the
+	// order of a real overload response (OCP, power capping) is not public, ESTIMATE.
+	bool IsBusbarTripped() const { return bBusbarTripped; }
+	int32 GetLiveShelves() const { return LastLiveShelves; }
+	int32 GetTotalShelves() const { return LastTotalShelves; }
+	double GetBusbarCapacityW() const { return LastBusbarCapacityW; }
+	double GetLastDcLoadW() const { return LastDcLoadW; }
+	// A slot delivers power: SlotPoweredOf and the busbar is not tripped.
+	bool IsSlotLive(const FRackThermalInput& Input, int32 Slot, int32 NumSlots) const { return !bBusbarTripped && SlotPoweredOf(Input, Slot, NumSlots); }
 
 	// 누적 에너지 [J]. 보존 검사용.
 	double GetEnergyInJ() const { return EnergyInJ; }
@@ -240,6 +256,10 @@ private:
 	TArray<double> LastSledAirOutletTempK;
 	double LastTotalHeatW = 0.0;
 	double LastConversionLossW = 0.0;
+	bool bBusbarTripped = false;
+	int32 LastLiveShelves = 0, LastTotalShelves = 0;
+	double LastBusbarCapacityW = 0.0, LastDcLoadW = 0.0;
+	void UpdateBusbar(const FRackThermalInput& Input);
 	double LastHeatRemovedByCoolantW = 0.0;
 	double LastTotalHeatToRoomAirW = 0.0;
 	bool bLastStepStable = true;

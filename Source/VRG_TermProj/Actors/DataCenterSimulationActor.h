@@ -164,9 +164,10 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Simulation", meta = (ClampMin = "1", ClampMax = "16"))
 	int32 MaxStepsPerFrame = 4;
 
-	// 물의 밀도 [kg/m^3]. 수력의 체적유량을 질량유량으로 바꿀 때만 쓴다.
+	// 랙 냉각수(TCS) 밀도 [kg/m^3]. 방 수력의 체적유량을 질량유량으로 바꾸고 정수압·누수 오리피스에 쓴다.
+	// 2026-11-03: PG25(TcsCoolant.h). 설비수(FWS·CHW·CW)는 FacilityWater::DensityKgM3로 따로 둔다.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Simulation")
-	double CoolantDensityKgM3 = 997.0;
+	double CoolantDensityKgM3 = TcsCoolant::DensityKgM3;
 
 	// ---- 공기 결합 (m) ----
 	// 랙 앞면에서 흡기 셀을 잡을 거리. 이 안쪽 셀들의 평균 온도가 랙 흡기 온도가 된다.
@@ -405,6 +406,33 @@ public:
 	const FFloorWater& GetFloorWater() const { return FloorWater; }
 	// Floor water settings (cell size, Manning n, contact angle; the next simulation entry uses them).
 	FFloorWaterSettings FloorWaterSettings;
+	// 2026-11-03 (user decision, Tools/실사양정합_계획.md P5): a drip tray under every CDU and a floor drain in front of
+	// every CDU (its port side). Facilities put containment pans under CDUs / pumps and drain the floor; sizes and
+	// positions here are ESTIMATES (no public design rule found): tray rim 50 mm over the CDU footprint, a 100 mm (4 in)
+	// drain 0.5 m in front of the CDU, Cd 0.6. Applied at the next simulation entry.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Water")
+	bool bCduDripTrays = true;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Water", meta = (ClampMin = "0.0"))
+	double CduDripTrayDepthM = 0.05;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Water")
+	bool bFloorDrains = true;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Water", meta = (ClampMin = "0.0"))
+	double FloorDrainDiameterM = 0.1;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Water", meta = (ClampMin = "0.0"))
+	double FloorDrainOffsetM = 0.5;
+
+	// 2026-11-03 (Tools/실사양정합_계획.md P6): condensation check, no humidity model. ASHRAE TC 9.9 liquid cooling S classes
+	// ask the coolant supply to stay at least 2 K above the room dew point. The room dew point is one input: 15 C, the top
+	// of the ASHRAE recommended envelope's dew point range (the worst case it allows), ESTIMATE for this room. The check
+	// covers the CDU coolant supply (the liquid reaching the IT cold plates); CRAH chilled-water coils are meant to
+	// condense (condensate pans) and are not flagged. Humidity transport and latent heat are not modelled.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Simulation")
+	double RoomDewPointK = 288.15;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Simulation", meta = (ClampMin = "0.0"))
+	double DewPointMarginK = 2.0;
+	// Time any CDU supply spent below dew point + margin [s], the lowest margin seen [K] (+inf before the first step).
+	double GetCondensationRiskS() const { return CondensationRiskS; }
+	double GetMinDewMarginK() const { return MinDewMarginK; }
 	double GetFloorOffGridM3() const { return FloorOffGridM3; }
 	// Sets the jet direction of a site (normalised; a zero vector restores the default cone direction).
 	bool SetLiveLeakDirection(int32 Site, const FVector& DirectionM);
@@ -726,6 +754,20 @@ private:
 	double LastPlantDisplayWallS = -1.0;
 	struct FPlantDisplayInput MakePlantDisplayInput() const;
 	TArray<int32> CduGroupRows;   // S8 F5: room row of every CDU group (its pump feeds the group's coolant)
+	// CDU secondary supply temperature control (2026-11-03, Tools/실사양정합_계획.md P3), one entry per CDU group:
+	// setpoint [K], design facility flow [kg/s] (fixed boundary), valve opening (fixed boundary; the plant keeps its own),
+	// enabled (CDU bSupplyTempControl), valve stroke [s] and rangeability, and whether the target sat at a limit.
+	struct FCduSupplyControl { double SetpointK = 0.0, DesignFacilityKgs = 0.0, Opening = 1.0, StrokeS = 60.0, Rangeability = 50.0; bool bEnabled = false, bSaturated = false; };
+	TArray<FCduSupplyControl> CduSupplyControls;
+	double CondensationRiskS = 0.0, MinDewMarginK = TNumericLimits<double>::Max();
+	bool bCondensationLogged = false;
+	void CheckDewPoint(double DtS);
+	// Moves every group's primary valve toward the facility flow that brings the coolant supply to its setpoint (inverse
+	// of the exchanger's epsilon-NTU at the last step's mixed return), within the valve stroke. Runs in PlantBeforeStep.
+	void ControlCduSupply(double DtS);
+public:
+	const FCduSupplyControl* GetCduSupplyControl(int32 Group) const { return CduSupplyControls.IsValidIndex(Group) ? &CduSupplyControls[Group] : nullptr; }
+private:
 	int32 LastPlantLogSecond = -1;
 	// S8 F1: builds and solves the FWS network from the sized CDU groups and hands each exchanger its branch flow.
 	void BuildFacilityLoop(TArray<FCduCouplingGroup>& Groups);

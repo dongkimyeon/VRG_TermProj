@@ -3,6 +3,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Simulation/Thermal/TcsCoolant.h"
 
 // W2 (Tools/누수_실시간_계획.md L2, 2026-10-26): where the water that leaves a leak hole goes before it reaches the floor.
 //
@@ -35,6 +36,15 @@ struct VRG_TERMPROJ_API FSprayFluid
 	double AirDensityKgM3 = 1.18;         // air at 25 °C, 1 atm (handbook)
 	double AirViscosityPaS = 1.85e-5;     // air at 25 °C (handbook)
 	double GravityMs2 = 9.81;
+
+	// 2026-11-03 (Tools/실사양정합_계획.md P2): the rack coolant (TCS) is PG25 (TcsCoolant.h; surface tension ESTIMATE).
+	// Air and gravity as the defaults above. Facility (yard) leaks keep the water defaults.
+	static FSprayFluid TcsCoolantFluid()
+	{
+		FSprayFluid F;
+		F.WaterDensityKgM3 = TcsCoolant::DensityKgM3; F.WaterViscosityPaS = TcsCoolant::ViscosityPaS; F.SurfaceTensionNm = TcsCoolant::SurfaceTensionNm;
+		return F;
+	}
 };
 
 struct VRG_TERMPROJ_API FSpraySettings
@@ -97,6 +107,8 @@ struct VRG_TERMPROJ_API FSpraySource
 	FVector DirectionM = FVector(0, 0, -1);
 	double GaugePressurePa = 0.0;     // pressure at the hole minus the pressure it discharges into
 	double VolumeM3 = 0.0;            // water that left the network through this hole during the step
+	// Liquid of this hole (2026-11-03): 0 = the spray's Fluid (facility water), 1 = its CoolantFluid (TCS PG25).
+	uint8 FluidIndex = 0;
 };
 
 enum class ESpraySurface : uint8 { Floor, Ground, Wall, Ceiling, Equipment, Barrier, RoomExterior };
@@ -116,6 +128,9 @@ struct VRG_TERMPROJ_API FSprayFilm
 	double LastOutflowM3s = 0.0;
 	double LastThicknessM = 0.0;
 	double InflowM3 = 0.0;            // arrived this step (consumed by the film step)
+	// Liquid of the film: that of the first water to land on the face (a room face and a yard face never share
+	// water; a face hit by both liquids keeps the first one's properties - limitation).
+	uint8 FluidIndex = 0;
 };
 
 // What a box saw of the water (input of W4).
@@ -137,7 +152,8 @@ struct VRG_TERMPROJ_API FSprayTotals
 class VRG_TERMPROJ_API FLeakSpray
 {
 public:
-	void Reset(const FSprayGeometry& InGeometry, const FSpraySettings& InSettings = FSpraySettings(), const FSprayFluid& InFluid = FSprayFluid());
+	void Reset(const FSprayGeometry& InGeometry, const FSpraySettings& InSettings = FSpraySettings(), const FSprayFluid& InFluid = FSprayFluid(),
+		const FSprayFluid& InCoolantFluid = FSprayFluid::TcsCoolantFluid());
 	// One integrated step [s] ending at NowS + DtS (the shared clock, rule 4).
 	void Step(const TArray<FSpraySource>& Sources, double DtS, double NowS);
 
@@ -178,6 +194,8 @@ public:
 	const FSprayGeometry& GetGeometry() const { return Geometry; }
 	const FSpraySettings& GetSettings() const { return Settings; }
 	const FSprayFluid& GetFluid() const { return Fluid; }
+	const FSprayFluid& GetCoolantFluid() const { return CoolantFluid; }
+	const FSprayFluid& FluidAt(uint8 FluidIndex) const { return FluidIndex == 1 ? CoolantFluid : Fluid; }
 	// The obstacle a point lies inside (INDEX_NONE: none).
 	int32 FindObstacleContaining(const FVector& PointM) const;
 	bool HasWater() const { return Totals.EmittedM3 > 0.0; }
@@ -193,6 +211,9 @@ private:
 	FSprayGeometry Geometry;
 	FSpraySettings Settings;
 	FSprayFluid Fluid;
+	FSprayFluid CoolantFluid = FSprayFluid::TcsCoolantFluid();
+	// Liquid of a parcel = that of its hole (the emitter keeps the hole's last source).
+	const FSprayFluid& FluidOfSource(int32 SourceId) const { const FEmitter* E = Emitters.Find(SourceId); return FluidAt(E ? E->Source.FluidIndex : 0); }
 
 	// Parcel SoA (read set) and the set the step writes.
 	TArray<FVector> Pos, Vel;

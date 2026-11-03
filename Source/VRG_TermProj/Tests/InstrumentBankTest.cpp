@@ -91,7 +91,8 @@ bool FInstrumentIntegrationTest::RunTest(const FString& Parameters)
 		Rack->RackSizeM = FVector(GjRackLayout::FrameDepthM, GjRackLayout::FrameWidthM, GjRackLayout::FrameHeightM);
 		Racks.Add(Rack);
 	}
-	World->SpawnActor<ACoolingDistributionUnitActor>(FVector(-300, 100, 0), FRotator::ZeroRotator);
+	// Readings are compared with steady solves: the CDU supply temperature control (P3) would keep moving the FWS valves.
+	World->SpawnActor<ACoolingDistributionUnitActor>(FVector(-300, 100, 0), FRotator::ZeroRotator)->bSupplyTempControl = false;
 	Room->RebuildRoomNow();
 	// A 5 mm room leak from the start (its topology is fixed before the run, as vrg.Leak.Add requires).
 	const int32 RoomLeak = Room->AddLeak(Racks[0], false, 5.0e-3);
@@ -122,6 +123,29 @@ bool FInstrumentIntegrationTest::RunTest(const FString& Parameters)
 		}
 	}
 	TestTrue(TEXT("points on room pipes, plant pipes, plant units and the CDU"), RoomPipes > 0 && PlantPipes > 0 && Units > 0 && Cdus == 1);
+	// 2026-11-03: CDU coolant-side channels (Mission Control CDU telemetry) against the solved room network.
+	double CduFlowRel = 1.0, CduDpRel = 1.0, CduPressRel = 1.0, CduSpeed = NAN;
+	const double TrueSpeed = Room->GetNetwork().GetPumpSpeedRatio(Room->GetRowPumpIndex(0));   // the VFD speed (P3)
+	for (int32 I = 0; I < Bank.Num(); ++I)
+	{
+		const FInstrumentPoint& P = Bank.GetPoint(I);
+		if (P.Site != EInstrumentSite::Cdu) continue;
+		auto Ch = [&](const TCHAR* Name) { for (int32 C = 0; C < P.Channels.Num(); ++C) if (P.Channels[C].Name == FName(Name)) return C; return int32(INDEX_NONE); };
+		const FHydraulicNetwork& RN = Room->GetNetwork();
+		const int32 Pump = Room->GetRowPumpIndex(0);
+		const double TrueFlow = RN.GetPumpFlowM3s(Pump);
+		const double TrueDp = RN.GetNodePressurePa(Room->GetRowCduSupplyNodeIndex(0)) - RN.GetNodePressurePa(Room->GetRowCduReturnNodeIndex(0));
+		const double TruePress = RN.GetNodePressurePa(Room->GetRowCduNodeIndex(0));
+		const int32 F = Ch(TEXT("tcs_flow")), D = Ch(TEXT("tcs_dp")), Pr = Ch(TEXT("tcs_pressure")), S = Ch(TEXT("pump_speed"));
+		if (Bank.HasReading(I, F) && TrueFlow > 0.0) CduFlowRel = FMath::Abs(Bank.GetReading(I, F) - TrueFlow) / TrueFlow;
+		if (Bank.HasReading(I, D) && TrueDp > 0.0) CduDpRel = FMath::Abs(Bank.GetReading(I, D) - TrueDp) / TrueDp;
+		if (Bank.HasReading(I, Pr) && TruePress > 0.0) CduPressRel = FMath::Abs(Bank.GetReading(I, Pr) - TruePress) / TruePress;
+		if (Bank.HasReading(I, S)) CduSpeed = Bank.GetReading(I, S);
+		AddInfo(FString::Printf(TEXT("CDU 2차측: 유량 참값 %.4f L/s 판독 상대 차 %.3e | 차압 참값 %.1f kPa 상대 차 %.3e | 계통 압력 참값 %.1f kPa(g) 상대 차 %.3e | 펌프 회전 판독 %.3f"),
+			TrueFlow * 1e3, CduFlowRel, TrueDp * 1e-3, CduDpRel, TruePress * 1e-3, CduPressRel, CduSpeed));
+	}
+	TestTrue(TEXT("CDU coolant flow / differential pressure / system pressure readings within 3 % of the solve"), CduFlowRel < 0.03 && CduDpRel < 0.03 && CduPressRel < 0.03);
+	TestTrue(TEXT("CDU pump speed feedback reads the running pump's VFD speed"), FMath::Abs(CduSpeed - TrueSpeed) < 0.03 * TrueSpeed);
 	TestTrue(TEXT("no facility alarm before the facility leak"), !Bank.GetAlarmLog().ContainsByPredicate([&](const FLeakAlarm& A) { return Bank.GetPoint(A.Point).Site == EInstrumentSite::PlantPipe; }));
 	TestTrue(TEXT("room pipe flow readings within 3 % of the solve"), WorstRoomFlowRel < 0.03);
 	TestTrue(TEXT("FWS pump flow readings within 3 % of the solve"), WorstPumpFlowRel < 0.03);

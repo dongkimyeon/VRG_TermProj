@@ -84,7 +84,7 @@ struct FRackCouplingLink
 
 	// 수력에 안 붙어 있을 때 쓸 냉각수 질량유량 [kg/s].
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Coupling")
-	double FallbackCoolantMassFlowKgs = 2.3;
+	double FallbackCoolantMassFlowKgs = 2.3e-3 * TcsCoolant::DensityKgM3;   // design 2.3 L/s of PG25 (2026-11-03)
 
 	// Per-slot air coupling (optional). Slot s uses cells [Start[s], Start[s+1]) of the flat lists: the
 	// inlet / exhaust cells whose height overlaps that slot. When these are sized NumSlots + 1 the bridge
@@ -397,7 +397,7 @@ private:
 	FHydraulicNetwork* HydraulicNetwork = nullptr;
 	FAirSolver* AirSolver = nullptr;
 
-	double CoolantDensityKgM3 = 997.0;
+	double CoolantDensityKgM3 = TcsCoolant::DensityKgM3;
 
 	// 전역 장부 [J]. Step()이 매번 다시 합산한다.
 	double EnergyInJ = 0.0;

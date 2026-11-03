@@ -3,6 +3,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Simulation/Thermal/TcsCoolant.h"
 
 // CDU liquid-to-liquid heat exchanger (2026-09-27): the rack coolant (technology cooling system, TCS) of one row
 // against facility water (FWS). Replaces one radiator per rack, which could not show a CDU's capacity limit.
@@ -22,7 +23,7 @@ struct FCduHeatExchangerParams
 	double UAWK = 0.0;                 // exchanger conductance [W/K]
 	double FacilitySupplyTempK = 295.15;
 	double FacilityMassFlowKgs = 0.0;
-	double FacilityCpJKgK = 4180.0;    // water
+	double FacilityCpJKgK = FacilityWater::CpJKgK;    // facility water (primary side)
 };
 
 namespace CduHeatExchanger

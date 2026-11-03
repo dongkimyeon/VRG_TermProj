@@ -3,6 +3,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Simulation/Thermal/TcsCoolant.h"
 #include "RackThermalTypes.generated.h"
 
 // 규약 5: 계산 입력 / 계산 상태 / 렌더 스냅샷을 구분한다.
@@ -153,6 +154,11 @@ struct FRackDeviceType
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Device")
 	FRackFanSpec Fans;
+
+	// 2026-11-03 (Tools/실사양정합_계획.md P4): DC output rating of a power shelf on the rack's shared busbar [W]. 0 = not
+	// a power shelf. Every live shelf feeds the one busbar that feeds every tray (NVL72: 8 x 33 kW, N+N).
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Device", meta = (ClampMin = "0.0"))
+	double RatedOutputW = 0.0;
 };
 
 // A mounted device: which type and where (rack-local, from the rack floor).
@@ -181,12 +187,13 @@ struct FRackThermalParams
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Rack")
 	int32 NumSleds = 0;
 
-	// 랙 내부 냉각수 노드 열용량 [J/K]. 약 9.6 kg의 물.
+	// 랙 내부 냉각수 노드 열용량 [J/K]. 냉각수 약 9.6 L(이전 "물 약 9.6 kg"과 같은 부피), 2026-11-03 PG25(TcsCoolant.h).
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Rack")
-	double CoolantHeatCapacityJK = 4.0e4;
+	double CoolantHeatCapacityJK = 4.0e4 / (4182.0 * 997.0) * TcsCoolant::DensityKgM3 * TcsCoolant::CpJKgK;
 
+	// Rack coolant specific heat: PG25 (TcsCoolant.h, 2026-11-03; was water 4182).
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Rack")
-	double CoolantCpJKgK = 4182.0;
+	double CoolantCpJKgK = TcsCoolant::CpJKgK;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Rack")
 	double AirCpJKgK = 1005.0;
@@ -228,9 +235,10 @@ struct FRackThermalInput
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Rack")
 	double CoolantInletTempK = 300.15;
 
-	// GB200 NVL72 설계점 (랙당 약 2.3 kg/s, 냉각수 ΔT 약 10 K). 통합 구동에서는 수력 해가 준다.
+	// GB200 NVL72 설계점 (랙당 체적 2.3 L/s ≈ 138 L/min, 냉각수 ΔT 약 10 K). 통합 구동에서는 수력 해가 준다.
+	// 2026-11-03: 체적 설계 유량 x PG25 밀도(TcsCoolant.h). OCP 1.25~2.0 L/min/kW 범위 안.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Rack")
-	double CoolantMassFlowKgs = 2.3;
+	double CoolantMassFlowKgs = 2.3e-3 * TcsCoolant::DensityKgM3;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Rack")
 	double AirInletTempK = 297.15;

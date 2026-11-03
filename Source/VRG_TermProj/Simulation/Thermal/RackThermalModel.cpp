@@ -101,6 +101,7 @@ void FRackThermalModel::Initialize(const FRackThermalParams& InParams, const FRa
 	LastConversionLossW = 0.0;
 	LastHeatRemovedByCoolantW = 0.0;
 	bLastStepStable = true;
+	bBusbarTripped = false; LastLiveShelves = LastTotalShelves = 0; LastBusbarCapacityW = LastDcLoadW = 0.0;
 
 	LastHeatToCoolantW.Init(0.0, NumNodes);
 	LastHeatToAirW.Init(0.0, NumNodes);
@@ -262,6 +263,7 @@ bool FRackThermalModel::StepInternal(const FRackThermalInput& Input, double Delt
 	bLastStepStable = IsStepStable(Input, DeltaTimeS);
 
 	const int32 NumSleds = Params.NumSleds;
+	UpdateBusbar(Input);
 	ComputeSlotAirFlows(Input, LastSlotAirMassFlowKgs);
 
 	double TotalHeatW = 0.0;
@@ -280,11 +282,11 @@ bool FRackThermalModel::StepInternal(const FRackThermalInput& Input, double Delt
 	for (int32 SledIndex = 0; SledIndex < NumSleds; ++SledIndex)
 	{
 		const bool bDocked = IsDocked(Input.SledDocked, SledIndex, NumSleds);
-		LastSlotFanPowerW[SledIndex] = SlotFanPowerW(SledIndex, bDocked && SlotPoweredOf(Input,SledIndex,NumSleds), Input);
+		LastSlotFanPowerW[SledIndex] = SlotFanPowerW(SledIndex, bDocked && IsSlotLive(Input,SledIndex,NumSleds), Input);
 		const FRackFanSpec* Fans = FansOf(Params, SledIndex);
 		LastSlotPressureRisePa[SledIndex] = bFanMode && Fans && bDocked
 			? DockedResistanceOf(Params, SledIndex) * FMath::Square(LastSlotAirMassFlowKgs[SledIndex]) : 0.0;
-		if (!bDocked || !SlotPoweredOf(Input,SledIndex,NumSleds)) continue;
+		if (!bDocked || !IsSlotLive(Input,SledIndex,NumSleds)) continue;
 		const double Utilization = SlotUtilizationOf(Input, SledIndex, NumSleds);
 		const double FanShareW = SlotFanHeatNodes[SledIndex] > 0 ? LastSlotFanPowerW[SledIndex] / SlotFanHeatNodes[SledIndex] : 0.0;
 		for (int32 Index = SlotNodeStart[SledIndex]; Index < SlotNodeStart[SledIndex + 1]; ++Index)
@@ -299,14 +301,17 @@ bool FRackThermalModel::StepInternal(const FRackThermalInput& Input, double Delt
 		}
 	}
 	LastConversionLossW = 0.0;
+	LastDcLoadW = DcLoadW;
+	// P4: the live shelves share the whole conversion loss (LossFractionOfRackLoad was set for every shelf live).
+	const double LossShare = LastLiveShelves > 0 ? double(LastTotalShelves) / LastLiveShelves : 0.0;
 	for (int32 SledIndex = 0; SledIndex < NumSleds; ++SledIndex)
 	{
-		if (!IsDocked(Input.SledDocked, SledIndex, NumSleds) || !SlotPoweredOf(Input,SledIndex,NumSleds)) continue;
+		if (!IsDocked(Input.SledDocked, SledIndex, NumSleds) || !IsSlotLive(Input,SledIndex,NumSleds)) continue;
 		const double FanShareW = SlotFanHeatNodes[SledIndex] > 0 ? LastSlotFanPowerW[SledIndex] / SlotFanHeatNodes[SledIndex] : 0.0;
 		for (int32 Index = SlotNodeStart[SledIndex]; Index < SlotNodeStart[SledIndex + 1]; ++Index)
 			if (NodeParams[Index].LossFractionOfRackLoad > 0.0)
 			{
-				const double LossW = NodeParams[Index].LossFractionOfRackLoad * DcLoadW;
+				const double LossW = NodeParams[Index].LossFractionOfRackLoad * DcLoadW * LossShare;
 				ScratchNodeHeatW[Index] = LossW + (NodeGetsFanHeat[Index] ? FanShareW : 0.0);
 				LastConversionLossW += LossW;
 			}
@@ -425,7 +430,7 @@ bool FRackThermalModel::StepInternal(const FRackThermalInput& Input, double Delt
 			const FRackFanSpec* Fans = FansOf(Params, SledIndex);
 			if (!Fans) continue;
 			double& Ratio = State.SlotFanSpeedRatio[SledIndex];
-			if (!SlotPoweredOf(Input,SledIndex,NumSleds)) { Ratio=0.0;continue; }
+			if (!IsSlotLive(Input,SledIndex,NumSleds)) { Ratio=0.0;continue; }
 			if (Input.FanSpeedOverride >= 0.0) { Ratio = FMath::Clamp(Input.FanSpeedOverride, 0.0, 1.0); continue; }
 			if (!IsDocked(Input.SledDocked, SledIndex, NumSleds)) continue;
 			const double Target = FanTargetSpeedRatio(*Fans, SlotControlTempK(SledIndex));
@@ -494,6 +499,33 @@ double FRackThermalModel::SlotUtilizationOf(const FRackThermalInput& Input, int3
 	return FMath::Clamp(U, 0.0, 1.0);
 }
 
+void FRackThermalModel::UpdateBusbar(const FRackThermalInput& Input)
+{
+	const int32 NumSleds = Params.NumSleds;
+	int32 Total = 0, Live = 0;
+	double CapacityW = 0.0;
+	for (int32 Slot = 0; Slot < NumSleds; ++Slot)
+	{
+		bool bShelf = false;
+		for (int32 I = SlotNodeStart[Slot]; I < SlotNodeStart[Slot + 1] && !bShelf; ++I) bShelf = NodeParams[I].LossFractionOfRackLoad > 0.0;
+		if (!bShelf || !IsDocked(Input.SledDocked, Slot, NumSleds)) continue;
+		++Total;
+		if (!SlotPoweredOf(Input, Slot, NumSleds)) continue;
+		++Live;
+		const int32 Type = Params.Slots.IsValidIndex(Slot) ? Params.Slots[Slot].DeviceType : INDEX_NONE;
+		CapacityW += Params.DeviceTypes.IsValidIndex(Type) ? Params.DeviceTypes[Type].RatedOutputW : 0.0;
+	}
+	LastTotalShelves = Total; LastLiveShelves = Live; LastBusbarCapacityW = CapacityW;
+	// No shelves at all (spine, generic racks): no busbar model. A rating of 0 means "not rated": only "no live shelf" trips.
+	if (Total == 0 || bBusbarTripped) return;
+	if (Live == 0 || (CapacityW > 0.0 && LastDcLoadW > CapacityW))
+	{
+		bBusbarTripped = true;
+		UE_LOG(LogTemp, Warning, TEXT("[Busbar] 랙 버스바 차단: 살아 있는 전원 셸프 %d / %d, 용량 %.1f kW, 직전 DC 부하 %.1f kW (차단 순서는 추정)"),
+			Live, Total, CapacityW * 1e-3, LastDcLoadW * 1e-3);
+	}
+}
+
 void FRackThermalModel::ComputeSlotAirFlows(const FRackThermalInput& Input, TArray<double>& OutSlotFlowKgs) const
 {
 	// Each device pulls its own air. An empty slot or a fanless device gets no forced flow.
@@ -504,7 +536,7 @@ void FRackThermalModel::ComputeSlotAirFlows(const FRackThermalInput& Input, TArr
 	for (int32 Slot = 0; Slot < NumSleds; ++Slot)
 	{
 		const FRackFanSpec* Fans = FansOf(Params, Slot);
-		if (!Fans || !IsDocked(Input.SledDocked, Slot, NumSleds) || !SlotPoweredOf(Input,Slot,NumSleds)) { OutSlotFlowKgs[Slot] = 0.0; continue; }
+		if (!Fans || !IsDocked(Input.SledDocked, Slot, NumSleds) || !IsSlotLive(Input,Slot,NumSleds)) { OutSlotFlowKgs[Slot] = 0.0; continue; }
 		const double Ratio = Input.FanSpeedOverride >= 0.0 ? FMath::Clamp(Input.FanSpeedOverride, 0.0, 1.0)
 			: State.SlotFanSpeedRatio.IsValidIndex(Slot) ? State.SlotFanSpeedRatio[Slot] : 1.0;
 		OutSlotFlowKgs[Slot] = FanOperatingMassFlowKgs(*Fans, DockedResistanceOf(Params, Slot), Params.AirDensityKgM3, Ratio);
@@ -624,7 +656,8 @@ FRackThermalSnapshot FRackThermalModel::MakeSnapshot(double SimTimeS) const
 //   - 1U 컴퓨트 트레이 18장(Grace 2 + Blackwell 4), 1U NVLink 스위치 트레이 9장(NVSwitch 2개),
 //     1U 전원 셸프 6~8개(셸프당 5.5 kW PSU 6개, 33 kW), 관리 스위치 2대 (DGX GB200 가이드, Lenovo GB300 NVL72 가이드).
 //   - 컴퓨트 트레이 CPU·GPU는 콜드플레이트, 네트워크·스토리지는 공랭 (DGX 가이드).
-//   - NVLink 스위치 트레이는 "fully liquid-cooled" (Lenovo GB300 NVL72 가이드).
+//   - NVLink 스위치 트레이는 "fully liquid-cooled" (Lenovo GB300 NVL72 가이드). GB200 근거는 미확인(2026-11-03 재검증:
+//     NVIDIA DGX GB200 가이드에 이 트레이의 냉각 방식이 없다).
 //   - 랙 전체 공기:액체 약 10:90 (Lenovo), 컴퓨트 트레이 약 15:85 (fibermall 분석).
 //   - 컴퓨트 트레이 최대 TDP 6.3 kW (SemiAnalysis), Blackwell 약 1200 W, GB200 슈퍼칩 약 2700 W.
 //   - PSU 효율 97.5% 이상 (ORv3 전원 셸프, LITEON / Lenovo).
@@ -693,6 +726,8 @@ namespace
 
 	// PSU conversion loss shared by every PSU module of every shelf: (1/eta - 1) / (shelves * PSUs).
 	constexpr double PsuEfficiency = .975;
+	// GB200 rack coolant volume (manifolds + 27 trays of cold plates), ESTIMATE: the volume of the earlier "about 22 kg of water".
+	constexpr double Gb200RackCoolantVolumeM3 = 92000.0 / (4182.0 * 997.0);
 	constexpr int32 PsusPerShelf = 6;
 
 	// Bottom-up U map (U0 at Gb200SlotZ0M). -1 = blank.
@@ -744,7 +779,9 @@ FRackDeviceType FRackThermalModel::Gb200NvLinkSwitchTray()
 	FRackDeviceType D;
 	D.Name = TEXT("NVLink Switch Tray");
 	D.bLiquidCooled = true;
-	D.DockedResistancePaS2Kg2 = 1.0e6;  // fully liquid-cooled: no fans, no forced air (Lenovo GB300 NVL72 guide)
+	// fully liquid-cooled: no fans, no forced air (Lenovo GB300 NVL72 guide). UNVERIFIED for GB200 (2026-11-03): the
+	// source is the GB300 guide; the NVIDIA DGX GB200 user guide does not state how this tray is cooled.
+	D.DockedResistancePaS2Kg2 = 1.0e6;
 	// UA: each ASIC 230 W at ~9 K; board (retimers, CPLD, mgmt) 85 W on the plate at ~10 K.
 	for (int32 I = 0; I < 2; ++I) D.Components.Add(Part(*FString::Printf(TEXT("NVSwitch %d"), I), ERackPartKind::Switch, 230.0, 300.0, 25.0, 0.0, .05, -1, .5));
 	D.Components.Add(Part(TEXT("Switch board"), ERackPartKind::Other, 85.0, 300.0, 8.0, 0.0, .05, -1, .6));
@@ -755,6 +792,9 @@ FRackDeviceType FRackThermalModel::Gb200PowerShelf(int32 NumShelves)
 {
 	FRackDeviceType D;
 	D.Name = TEXT("Power Shelf 33 kW");
+	// 2026-11-03 (P4): shelf DC output on the shared rack busbar. "six air-cooled 5.5kW PSUs ... 33kW per power shelf"
+	// (NVIDIA DGX GB200 user guide); Flex/Vertiv 33 kW shelves (6 PSUs, max output 33 kW).
+	D.RatedOutputW = 33000.0;
 	// Shelf loss at full rack load ~2.98 kW / 8 shelves = 373 W -> R ~ 1.9e5.
 	D.DockedResistancePaS2Kg2 = ImpedanceFor(373.0);
 	D.Fans = San9Hva(PsusPerShelf);  // one fan per PSU module; its power heats the PSUs (no separate fan part)
@@ -803,6 +843,22 @@ FRackDeviceType FRackThermalModel::QuantumSpineSwitch()
 	return D;
 }
 
+bool FRackThermalModel::RefreshCoolantFluid(FRackThermalParams& InOutParams)
+{
+	constexpr double OldWaterCp = 4182.0, OldGb200CapJK = 9.2e4, OldGenericCapJK = 4.0e4;
+	bool bChanged = false;
+	if (InOutParams.CoolantCpJKgK == OldWaterCp) { InOutParams.CoolantCpJKgK = TcsCoolant::CpJKgK; bChanged = true; }
+	// Same volume: old J/K / (water cp x water density 997) m^3, times PG25 rho cp.
+	if (InOutParams.CoolantHeatCapacityJK == OldGb200CapJK || InOutParams.CoolantHeatCapacityJK == OldGenericCapJK)
+	{
+		const double VolumeM3 = InOutParams.CoolantHeatCapacityJK == OldGb200CapJK ? Gb200RackCoolantVolumeM3
+			: InOutParams.CoolantHeatCapacityJK / (OldWaterCp * FacilityWater::DensityKgM3);
+		InOutParams.CoolantHeatCapacityJK = VolumeM3 * TcsCoolant::DensityKgM3 * TcsCoolant::CpJKgK;
+		bChanged = true;
+	}
+	return bChanged;
+}
+
 bool FRackThermalModel::RefreshKnownDeviceTypes(FRackThermalParams& InOutParams)
 {
 	bool bChanged = false;
@@ -834,8 +890,9 @@ FRackThermalParams FRackThermalModel::MakeGb200Nvl72Params()
 		if (LayoutU[U] >= 0) Params.Slots.Add({LayoutU[U], Gb200SlotZ0M + U * Gb200UnitM, Gb200UnitM});
 	Params.NumSleds = Params.Slots.Num();
 
-	// 랙 매니폴드 + 콜드플레이트 27개 트레이분의 물 약 22 kg.
-	Params.CoolantHeatCapacityJK = 9.2e4;
+	// 랙 매니폴드 + 콜드플레이트 27개 트레이분의 냉각수 약 22 L(추정, 이전 "물 약 22 kg" = 9.2e4 J/K와 같은 부피).
+	// 2026-11-03: PG25 물성으로 다시 계산(부피 x 밀도 x 비열, TcsCoolant.h).
+	Params.CoolantHeatCapacityJK = Gb200RackCoolantVolumeM3 * TcsCoolant::DensityKgM3 * TcsCoolant::CpJKgK;
 	return Params;
 }
 

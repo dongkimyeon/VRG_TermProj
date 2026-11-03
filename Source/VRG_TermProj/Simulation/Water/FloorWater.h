@@ -27,8 +27,14 @@ class FVrgFloorWaterGpu;
 //    A wet cell thinner than h_eq does not advance into a dry cell: that face is a wall (pinned contact line).
 //  - Walls, barriers and the room edge are impermeable. Equipment stands on the floor with a gap underneath: water
 //    flows under it, and the depth under its footprint is its flood depth (input of W4).
-//  - Bed slope 0 by default (2026-10-27 user decision: no drain, level floor, epoxy). No drain.
-//  - Ledger: received = water on the floor (exact to round-off; clipped negative depths are counted and reported).
+//  - Bed slope 0 by default (2026-10-27 user decision: level floor, epoxy).
+//  - Floor drains and drip trays (2026-11-03 user decision, replacing "no drain"; Tools/실사양정합_계획.md P5): a drain
+//    is an orifice sink in its cell, Q = Cd A sqrt(2 g h), limited to the water in the cell and applied after every
+//    substep (momentum leaves with the water). A drip tray (under a CDU) catches the water deposited inside its
+//    footprint up to its capacity; the rest falls to the floor. Positions, sizes and capacities are ESTIMATES.
+//    With a drain the CPU path is used (the GPU kernel has no sinks).
+//  - Ledger: received = water on the floor + drained + held in trays (exact to round-off; clipped negative depths are
+//    counted and reported).
 // Plain C++: no actor access (rule 5), SI units (rule 1).
 
 struct VRG_TERMPROJ_API FFloorWaterSettings
@@ -63,10 +69,29 @@ struct VRG_TERMPROJ_API FFloorFlood
 	int32 SourceObstacle = INDEX_NONE; // observation metadata only; duplicate display names are not identities
 };
 
+// A floor drain: orifice sink in one cell (2026-11-03, P5).
+struct VRG_TERMPROJ_API FFloorDrain
+{
+	FString Name;
+	int32 Cell = INDEX_NONE;
+	double AreaM2 = 0.0, Cd = 0.6;
+	double DrainedM3 = 0.0, LastFlowM3s = 0.0;
+};
+
+// A drip tray: catches water deposited inside its footprint up to its capacity (2026-11-03, P5).
+struct VRG_TERMPROJ_API FFloorTray
+{
+	FString Name;
+	FVector2D MinM = FVector2D::ZeroVector, MaxM = FVector2D::ZeroVector;
+	double CapacityM3 = 0.0, StoredM3 = 0.0, OverflowM3 = 0.0;
+	double FirstWetS = -1.0;
+};
+
 struct VRG_TERMPROJ_API FFloorWaterTotals
 {
 	double ReceivedM3 = 0.0, StoredM3 = 0.0, ClippedM3 = 0.0;
-	double Residual = 0.0;        // |received - stored - clipped| / received
+	double DrainedM3 = 0.0, TrayM3 = 0.0;   // 2026-11-03: left through drains / held in drip trays
+	double Residual = 0.0;        // |received - stored - drained - trays - clipped| / received
 	int32 WetCells = 0, Substeps = 0, LastSubsteps = 0;
 	int32 GpuSteps = 0;           // steps taken on the GPU
 	bool bLastStepGpu = false;
@@ -92,6 +117,12 @@ public:
 	void SetBed(int32 I, int32 J, double BedM);
 	void SetState(int32 I, int32 J, double DepthM, double Hu = 0.0, double Hv = 0.0);   // not counted as received
 	void AddFlood(const FString& Name, const TArray<int32>& Cells);
+	// Floor drain at a point (diameter, discharge coefficient); false when the point is off the grid or in a solid cell.
+	bool AddDrain(const FString& Name, const FVector& PointM, double DiameterM, double Cd = 0.6);
+	// Drip tray over an axis-aligned footprint [m] holding up to CapacityM3.
+	void AddTray(const FString& Name, const FVector2D& MinM, const FVector2D& MaxM, double CapacityM3);
+	const TArray<FFloorDrain>& GetDrains() const { return Drains; }
+	const TArray<FFloorTray>& GetTrays() const { return Trays; }
 
 	// Water arriving at a point (world metres). False when the point is off the grid (the caller keeps it).
 	bool AddWater(const FVector& PointM, double VolumeM3);
@@ -130,6 +161,9 @@ private:
 	// (different only by the bed-slope term of the reconstruction), transverse momentum.
 	TArray<double> FxH, FxNL, FxNH, FxT, FyH, FyNL, FyNH, FyT;
 	TArray<FFloorFlood> Floods;
+	TArray<FFloorDrain> Drains;
+	TArray<FFloorTray> Trays;
+	void ApplyDrains(double DtS);
 	FFloorWaterTotals Totals;
 	int32 WetI0 = 1, WetJ0 = 1, WetI1 = 0, WetJ1 = 0;
 	// GPU twin: configured for this grid / holding this state? Cells changed by deposits since its last step.

@@ -186,7 +186,9 @@ bool FFwsCouplingDesignTest::RunTest(const FString& Parameters)
 				Rack->ApplyGb200Nvl72Preset(); Rack->bShowReadout = false;
 				Rack->RackSizeM = FVector(GjRackLayout::FrameDepthM, GjRackLayout::FrameWidthM, GjRackLayout::FrameHeightM);
 			}
-		World->SpawnActor<ACoolingDistributionUnitActor>(FVector(-300, 100, 0), FRotator::ZeroRotator);
+		// The comparison is hydraulic at design with every valve open: the CDU supply temperature control (P3, 2026-11-03)
+		// would move the primary valve in the fixed run only (the plant here has a fixed supply temperature).
+		World->SpawnActor<ACoolingDistributionUnitActor>(FVector(-300, 100, 0), FRotator::ZeroRotator)->bSupplyTempControl = false;
 		Room->RebuildRoomNow();
 		Sim->EnterSimulationMode();
 		for (int32 F = 0; F < 10; ++F) Sim->Tick(.1f);

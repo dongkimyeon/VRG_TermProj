@@ -130,6 +130,50 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "CDU")
 	FVector GetReturnPortWorldM() const;
 
+	// ---- CDU control and redundancy (2026-11-03, Tools/실사양정합_계획.md P3) ----
+	// Real CDUs run two independent loops (DMTF Redfish CDU controls draft; vendor CDUs): the pumps' VFD holds the
+	// secondary differential pressure (or flow), and the primary valve holds the secondary supply temperature.
+	// Secondary pump speed control: the VFD holds the differential pressure at the hydraulically remote (last) rack
+	// at the value that rack needs for its design flow, 2 R_branch Q_design^2 (remote differential-pressure sensing,
+	// variable-flow pumping practice). Debug keys 5/6 scale this setpoint by r^2 (equivalent to a speed ratio r at
+	// design). Off = the old fixed-speed pump.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Control")
+	bool bPumpDpControl = true;
+
+	// Rack branch design flow [m^3/s]: GB200 NVL72 2.3 L/s (the branch resistance was derived from it; OCP
+	// 1.25-2.0 L/min/kW range).
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Control", meta = (ClampMin = "0.0"))
+	double RackDesignFlowM3s = 2.3e-3;
+
+	// VFD limits and ramp. ESTIMATES (typical VFD minimum speed 20-30 %; no public CDU ramp rate found). The pump
+	// curve was sized for the design row at speed 1 (no margin), so the maximum is 1.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Control", meta = (ClampMin = "0.0", ClampMax = "1.0"))
+	double PumpMinSpeedRatio = 0.3;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Control", meta = (ClampMin = "0.0", ClampMax = "1.5"))
+	double PumpMaxSpeedRatio = 1.0;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Control", meta = (ClampMin = "0.001"))
+	double PumpRampPerS = 0.1;
+
+	// Secondary supply temperature control through the primary (facility) valve. Setpoint = design facility supply +
+	// HxDesignApproachK (the design operating point; no extra margin). Off = the old fixed facility flow.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Control")
+	bool bSupplyTempControl = true;
+	// Valve full stroke time [s] and equal-percentage rangeability, used without the plant model (with it, the FWS
+	// loop's valves are used). ESTIMATES, the same values as the plant's valves (ValveStrokeS, ValveRangeability).
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Control", meta = (ClampMin = "0.1"))
+	double PrimaryValveStrokeS = 60.0;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Control", meta = (ClampMin = "1.01"))
+	double PrimaryValveRangeability = 50.0;
+
+	// N+1 pumps (vendor CDUs: duty + standby, e.g. "dual hot-swap pumps"). Identical pumps in parallel behind check
+	// valves with one running are hydraulically the same as that one pump, so the network keeps one pump element and
+	// this CDU keeps the pump units' state. Two pumps running together (lead-lag) is not modelled.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Control", meta = (ClampMin = "0"))
+	int32 StandbyPumps = 1;
+	// Automatic changeover to a standby pump after a pump fault [s]: the loop has no active pump meanwhile. ESTIMATE.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Control", meta = (ClampMin = "0.0"))
+	double PumpSwitchoverS = 2.0;
+
 	// 디버그 키용.
 	UFUNCTION(BlueprintCallable, Category = "Hydraulics")
 	void SetPumpSpeedRatio(double InSpeedRatio);
@@ -137,8 +181,23 @@ public:
 	// Runtime command only; not layout/save settings. A new simulation resets it.
 	bool IsPumpPowered() const { return bPumpPowered; }
 	void SetPumpPowered(bool bPowered) { bPumpPowered=bPowered; }
+
+	// Runtime pump unit faults (N+1). A fault of the running pump starts the changeover; with no healthy pump left the
+	// loop has no active pump. Not saved; a new simulation repairs every pump.
+	int32 GetFailedPumps() const { return FailedPumps; }
+	int32 GetNumPumps() const { return 1 + FMath::Max(StandbyPumps, 0); }
+	bool HasHealthyPump() const { return FailedPumps < GetNumPumps(); }
+	double GetSwitchoverRemainingS() const { return SwitchoverRemainingS; }
+	// Fails the running pump. Returns false when no healthy pump is left to fail.
+	bool FailRunningPump() { if (!HasHealthyPump()) return false; ++FailedPumps; SwitchoverRemainingS = HasHealthyPump() ? PumpSwitchoverS : 0.0; return true; }
+	void RepairPumps() { FailedPumps = 0; SwitchoverRemainingS = 0.0; }
+	void AdvancePumpSwitchover(double DtS) { SwitchoverRemainingS = FMath::Max(0.0, SwitchoverRemainingS - DtS); }
+	// The network pump runs: CDU powered (W4), a healthy pump, and no changeover in progress.
+	bool IsPumpRunning() const { return bPumpPowered && HasHealthyPump() && SwitchoverRemainingS <= 0.0; }
 private:
 	bool bPumpPowered=true;
+	int32 FailedPumps = 0;
+	double SwitchoverRemainingS = 0.0;
 public:
 
 protected:

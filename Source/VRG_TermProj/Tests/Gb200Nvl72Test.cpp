@@ -211,9 +211,9 @@ bool FGb200Nvl72RowHydraulicsTest::RunTest(const FString& Parameters)
 	// 랙 1대의 액랭 부하와 그 유량이 내는 냉각수 ΔT.
 	const double LiquidPerRackW = LiquidDesignHeatW(FRackThermalModel::MakeGb200Nvl72Params());
 
-	// 물 밀도 1000 kg/m^3, 비열 4182 J/(kg*K).
-	const double MinBranchDeltaTK = LiquidPerRackW / (MaxBranchM3s * 1000.0 * 4182.0);
-	const double MaxBranchDeltaTK = LiquidPerRackW / (MinBranchM3s * 1000.0 * 4182.0);
+	// 랙 냉각수 PG25 (TcsCoolant.h, 2026-11-03; 이전 물 1000 kg/m^3, 4182 J/(kg*K)).
+	const double MinBranchDeltaTK = LiquidPerRackW / (MaxBranchM3s * TcsCoolant::DensityKgM3 * TcsCoolant::CpJKgK);
+	const double MaxBranchDeltaTK = LiquidPerRackW / (MinBranchM3s * TcsCoolant::DensityKgM3 * TcsCoolant::CpJKgK);
 
 	const double ItLoadW = LiquidPerRackW * RacksPerRow;
 	const double PumpFractionOfIt = PumpElectricalW / ItLoadW;

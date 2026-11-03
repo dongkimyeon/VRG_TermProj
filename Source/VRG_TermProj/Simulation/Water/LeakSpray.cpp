@@ -87,11 +87,12 @@ FVector FLeakSpray::ConeDirection(uint32 InSeed, double HalfAngleRad)
 	return FVector(SinT * FMath::Cos(Phi), SinT * FMath::Sin(Phi), -CosT);
 }
 
-void FLeakSpray::Reset(const FSprayGeometry& InGeometry, const FSpraySettings& InSettings, const FSprayFluid& InFluid)
+void FLeakSpray::Reset(const FSprayGeometry& InGeometry, const FSpraySettings& InSettings, const FSprayFluid& InFluid, const FSprayFluid& InCoolantFluid)
 {
 	Geometry = InGeometry;
 	Settings = InSettings;
 	Fluid = InFluid;
+	CoolantFluid = InCoolantFluid;
 	for (TArray<FVector>* A : { &Pos, &Vel, &NPos, &NVel, &TrailFrom, &TrailTo }) A->Reset();
 	TrailJet.Reset();
 	for (TArray<double>* A : { &Vol, &Dia, &JetDia, &Path, &Breakup, &NVol, &NDia, &NJetDia, &NPath, &NBreakup }) A->Reset();
@@ -258,6 +259,8 @@ void FLeakSpray::Deposit(const FHit& Hit, const FVector& PointM, double Volume, 
 		FSprayFilm& F = Films.AddDefaulted_GetRef();
 		F.Obstacle = Hit.Obstacle; F.Face = Hit.Face; F.Surface = Hit.Surface; F.WidthM = FMath::Max(WidthM, 1e-3);
 		F.FootM = FootM; F.bFootOutdoors = IsOutdoors(FootM) || Hit.Obstacle == RoomExteriorObstacle;
+		const FEmitter* E = Emitters.Find(Source);
+		F.FluidIndex = E ? E->Source.FluidIndex : 0;
 		Found = &FilmIndex.Add(Key, Films.Num() - 1);
 	}
 	FSprayFilm& F = Films[*Found];
@@ -275,7 +278,8 @@ void FLeakSpray::StepFilms(double DtS)
 		// Implicit in the outflow: Dt k x^3 + x = V0, k = W rho g / (3 mu (W H)^3). Newton from x = V0 (above the root,
 		// the function is convex and increasing): monotone convergence. Outflow = V0 - x, so the ledger is exact.
 		const double WH = F.WidthM * FMath::Max(F.WetHeightM, 1e-3);
-		const double K = F.WidthM * Fluid.WaterDensityKgM3 * Fluid.GravityMs2 / (3.0 * Fluid.WaterViscosityPaS * WH * WH * WH);
+		const FSprayFluid& FF = FluidAt(F.FluidIndex);
+		const double K = F.WidthM * FF.WaterDensityKgM3 * FF.GravityMs2 / (3.0 * FF.WaterViscosityPaS * WH * WH * WH);
 		double X = V0;
 		for (int32 It = 0; It < 100; ++It)
 		{
@@ -316,7 +320,7 @@ void FLeakSpray::Step(const TArray<FSpraySource>& Sources, double DtS, double No
 			continue;
 		}
 		Waiting.FindOrAdd(S.Id) += S.VolumeM3;
-		const double V0 = JetVelocityMs(S.GaugePressurePa, Settings, Fluid);
+		const double V0 = JetVelocityMs(S.GaugePressurePa, Settings, FluidAt(S.FluidIndex));
 		FEmitter& E = Emitters.FindOrAdd(S.Id);
 		E.Source = S;
 		E.JetDiameterM = V0 > 1e-6 ? JetDiameterM(S.VolumeM3 / DtS, V0) : Settings.DripDiameterM;
@@ -334,12 +338,13 @@ void FLeakSpray::Step(const TArray<FSpraySource>& Sources, double DtS, double No
 		const double Volume = Wait;
 		Wait = 0.0;
 		const FSpraySource& S = E->Source;
-		const double V0 = JetVelocityMs(S.GaugePressurePa, Settings, Fluid);
+		const FSprayFluid& SF = FluidAt(S.FluidIndex);
+		const double V0 = JetVelocityMs(S.GaugePressurePa, Settings, SF);
 		const uint32 ParcelSeed = HashCombine(GetTypeHash(Id), Emissions.FindOrAdd(Id)++);
 		const bool bDrip = V0 <= 1e-6;
 		const double D = E->JetDiameterM;
 		Pos.Add(S.OriginM); Vel.Add(S.DirectionM.GetSafeNormal() * V0); Vol.Add(Volume); Dia.Add(D); JetDia.Add(D); Path.Add(0.0);
-		Breakup.Add(bDrip ? 0.0 : BreakupLengthM(D, V0, Fluid)); Jet.Add(bDrip ? 0 : 1); Splashed.Add(bDrip ? 1 : 0); Src.Add(Id); Seed.Add(ParcelSeed);
+		Breakup.Add(bDrip ? 0.0 : BreakupLengthM(D, V0, SF)); Jet.Add(bDrip ? 0 : 1); Splashed.Add(bDrip ? 1 : 0); Src.Add(Id); Seed.Add(ParcelSeed);
 	}
 
 	// 2. Every parcel over the step, written into the second set.
@@ -348,9 +353,10 @@ void FLeakSpray::Step(const TArray<FSpraySource>& Sources, double DtS, double No
 	for (TArray<double>* A : { &NVol, &NDia, &NJetDia, &NPath, &NBreakup }) A->Reset();
 	for (TArray<uint8>* A : { &NJet, &NSplashed }) A->Reset();
 	NSrc.Reset(); NSeed.Reset();
-	const double DensityRatio = Fluid.AirDensityKgM3 / Fluid.WaterDensityKgM3;
 	for (int32 I = 0; I < Pos.Num(); ++I)
 	{
+		const FSprayFluid& PF = FluidOfSource(Src[I]);
+		const double DensityRatio = PF.AirDensityKgM3 / PF.WaterDensityKgM3;
 		const FVector X0 = Pos[I];
 		FVector V = Vel[I];
 		double D = Dia[I];
@@ -362,12 +368,12 @@ void FLeakSpray::Step(const TArray<FSpraySource>& Sources, double DtS, double No
 		FVector Acc = G;
 		if (!bJet)
 		{
-			const double DMax = MaxStableDropM(V.Size(), Settings, Fluid);
+			const double DMax = MaxStableDropM(V.Size(), Settings, PF);
 			if (D > DMax) { D = DMax; ++Totals.Breakups; }
 			const double Speed = V.Size();
 			if (Settings.bAirDrag && Speed > 0.0)
 			{
-				const double Re = Fluid.AirDensityKgM3 * Speed * D / Fluid.AirViscosityPaS;
+				const double Re = PF.AirDensityKgM3 * Speed * D / PF.AirViscosityPaS;
 				const double KDrag = 0.75 * DensityRatio * DropDragCoefficient(Re) * Speed / D;
 				Acc = ((V + G * DtS) / (1.0 + KDrag * DtS) - V) / DtS;
 			}
@@ -381,7 +387,7 @@ void FLeakSpray::Step(const TArray<FSpraySource>& Sources, double DtS, double No
 			const double Vn = FVector::DotProduct(VH, Hit.NormalM);   // < 0 approaching
 			const double DImpact = bJet ? JetDia[I] : D;
 			double Stay = Vol[I];
-			if (Splashed[I] == 0 && Splashes(-Vn, DImpact, Settings, Fluid))
+			if (Splashed[I] == 0 && Splashes(-Vn, DImpact, Settings, PF))
 			{
 				const double Secondary = Settings.SplashMassFraction * Vol[I];
 				Stay -= Secondary;
@@ -406,7 +412,7 @@ void FLeakSpray::Step(const TArray<FSpraySource>& Sources, double DtS, double No
 			{
 				// Breakup: Rayleigh drops, no larger than the air lets survive, spread a little (fixed seed).
 				const double SpeedMs = V1.Size();
-				D = FMath::Min(Settings.RayleighDropRatio * JetDia[I], MaxStableDropM(SpeedMs, Settings, Fluid));
+				D = FMath::Min(Settings.RayleighDropRatio * JetDia[I], MaxStableDropM(SpeedMs, Settings, PF));
 				FRandomStream R(static_cast<int32>(Seed[I]));
 				V1 = R.VRandCone(V1.GetSafeNormal(), float(Settings.BreakupSpreadRad)) * V1.Size();
 				bJet = false;

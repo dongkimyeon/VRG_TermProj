@@ -218,11 +218,17 @@ void ADataCenterSimulationActor::RebuildInstruments()
 			FInstrumentPoint Pt;
 			Pt.Site = EInstrumentSite::Cdu; Pt.Label = FString::Printf(TEXT("CDU %d"), G + 1); Pt.Key = G;
 			Pt.PositionM = SimUnits::UnrealToMeters(Cdu->GetActorLocation()) + FVector(0, 0, 2.3);
-			const double FacilityM3s = CduSummaries.IsValidIndex(G) ? CduSummaries[G].FacilityMassFlowKgs / FMath::Max(CoolantDensityKgM3, 1.0) : 1e-3;
+			const double FacilityM3s = CduSummaries.IsValidIndex(G) ? CduSummaries[G].FacilityMassFlowKgs / FacilityWater::DensityKgM3 : 1e-3;
 			Pt.Channels = { Make(TEXT("fws_in"), EInstrumentQuantity::TemperatureK, 300.0), Make(TEXT("fws_out"), EInstrumentQuantity::TemperatureK, 300.0),
 				Make(TEXT("fws_flow"), EInstrumentQuantity::FlowM3s, FMath::Max(FacilityM3s, 1e-4)),
-				Make(TEXT("tcs_supply"), EInstrumentQuantity::TemperatureK, 300.0), Make(TEXT("tcs_return"), EInstrumentQuantity::TemperatureK, 300.0) };
-			Instruments.AddPoint(Pt, { NAN, NAN, NAN, NAN, NAN });
+				Make(TEXT("tcs_supply"), EInstrumentQuantity::TemperatureK, 300.0), Make(TEXT("tcs_return"), EInstrumentQuantity::TemperatureK, 300.0),
+				// 2026-11-03 (re-verification vs NVIDIA Mission Control CDU telemetry: liquid flow, differential pressure,
+				// system pressure, status): coolant (secondary) flow, supply-return header differential pressure at the CDU
+				// end of the row, system (gauge) pressure at the CDU node, and pump speed feedback (0 when unpowered).
+				Make(TEXT("tcs_flow"), EInstrumentQuantity::FlowM3s, FMath::Max(N.GetPumpFlowM3s(Room->GetRowPumpIndex(CduGroupRows[G])), 1e-4)),
+				Make(TEXT("tcs_dp"), EInstrumentQuantity::PressurePa, 1e5), Make(TEXT("tcs_pressure"), EInstrumentQuantity::PressurePa, 2e5),
+				Make(TEXT("pump_speed"), EInstrumentQuantity::Ratio, 1.0) };
+			Instruments.AddPoint(Pt, { NAN, NAN, NAN, NAN, NAN, NAN, NAN, NAN, NAN });
 		}
 	}
 	for (int32 R = 0; bRackLeakSensors && R < Racks.Num(); ++R)
@@ -302,8 +308,16 @@ void ADataCenterSimulationActor::InstrumentsAfterStep()
 			const TArray<FCduCouplingGroup>& Groups = Bridge.GetCduGroups();
 			if (!Groups.IsValidIndex(G)) break;
 			auto At = [](const TArray<double>& A, int32 K) { return A.IsValidIndex(K) ? A[K] : NAN; };
-			V = { Groups[G].Hx.FacilitySupplyTempK, At(Bridge.GetLastCduFacilityReturnK(), G), Groups[G].Hx.FacilityMassFlowKgs / FMath::Max(CoolantDensityKgM3, 1.0),
+			V = { Groups[G].Hx.FacilitySupplyTempK, At(Bridge.GetLastCduFacilityReturnK(), G), Groups[G].Hx.FacilityMassFlowKgs / FacilityWater::DensityKgM3,
 				At(Bridge.GetLastCduSupplyK(), G), At(Bridge.GetLastCduReturnK(), G) };
+			const int32 Row = CduGroupRows.IsValidIndex(G) ? CduGroupRows[G] : INDEX_NONE;
+			const int32 Pump = Room != nullptr ? Room->GetRowPumpIndex(Row) : INDEX_NONE;
+			if (RoomNet == nullptr || Pump == INDEX_NONE) { V.Append({ NAN, NAN, NAN, NAN }); break; }
+			const int32 S = Room->GetRowCduSupplyNodeIndex(Row), Rt = Room->GetRowCduReturnNodeIndex(Row), C = Room->GetRowCduNodeIndex(Row);
+			V.Append({ RoomNet->GetPumpFlowM3s(Pump),
+				S != INDEX_NONE && Rt != INDEX_NONE ? RoomNet->GetNodePressurePa(S) - RoomNet->GetNodePressurePa(Rt) : NAN,
+				C != INDEX_NONE ? RoomNet->GetNodePressurePa(C) : NAN,
+				RoomNet->IsPumpPowered(Pump) ? RoomNet->GetPumpSpeedRatio(Pump) : 0.0 });
 			break;
 		}
 		}
@@ -383,7 +397,8 @@ FString ADataCenterSimulationActor::DescribeInstrument(int32 Index) const
 		break;
 	}
 	case EInstrumentSite::Cdu:
-		Text = FString::Printf(TEXT("%s | 설비수 %s, %s | 2차 %s"), *P.Label, *Pair(TEXT("fws_in"), TEXT("fws_out")), *Value(Find(TEXT("fws_flow"))), *Pair(TEXT("tcs_supply"), TEXT("tcs_return")));
+		Text = FString::Printf(TEXT("%s | 설비수 %s, %s | 2차 %s, %s, 차압 %s, 압력 %s | 펌프 %s"), *P.Label, *Pair(TEXT("fws_in"), TEXT("fws_out")), *Value(Find(TEXT("fws_flow"))),
+			*Pair(TEXT("tcs_supply"), TEXT("tcs_return")), *Value(Find(TEXT("tcs_flow"))), *Value(Find(TEXT("tcs_dp"))), *Value(Find(TEXT("tcs_pressure"))), *Value(Find(TEXT("pump_speed"))));
 		break;
 	default:
 		switch (static_cast<EUnitSource>(P.Loop >> 2))
