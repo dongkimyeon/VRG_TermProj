@@ -52,6 +52,7 @@ namespace
 void ADataCenterSimulationActor::ClearWaterObservation()
 {
  WaterImpactObservation=FWaterImpactModel();WaterImpactPowered.Reset();bWaterImpactConfigured=false;
+ WaterSpinePowerCuts.Reset();
  bSpineWaterTripResponse=bRackWaterTripResponse=bCduWaterTripResponse=bCrahWaterTripResponse=false;WaterRackPowerCuts.Reset();WaterCduPowerCuts.Reset();WaterCrahPowerCuts.Reset();
  WaterSourceTargets.Reset();WaterExposureBindings.Reset();WaterRackIds.Reset();WaterMappingDiagnostics.Reset();
  WaterExposureSnapshot=FWaterExposureSnapshot();WaterObservationCount=0;bWaterExposureCurrent=false;bWaterRegistryReady=false;
@@ -62,6 +63,7 @@ void ADataCenterSimulationActor::InitializeWaterObservation()
 {
  if(!bWaterExposureObservation) {ClearWaterObservation();WaterObservationDiagnostic=TEXT("Water observation disabled");return;}
  WaterImpactObservation=FWaterImpactModel();WaterImpactPowered.Reset();bWaterImpactConfigured=false;
+ WaterSpinePowerCuts.Reset();
  bSpineWaterTripResponse=bRackWaterTripResponse=bCduWaterTripResponse=bCrahWaterTripResponse=false;WaterRackPowerCuts.Reset();WaterCduPowerCuts.Reset();WaterCrahPowerCuts.Reset();
  WaterExposureBindings.Reset();WaterMappingDiagnostics.Reset();WaterExposureSnapshot=FWaterExposureSnapshot();
  WaterObservationCount=0;bWaterExposureCurrent=false;WaterRackIds.SetNum(Racks.Num());
@@ -266,7 +268,11 @@ void ADataCenterSimulationActor::WaterPowerBeforeStep()
   WaterBindingCdu(I)->SetPumpPowered(false);
   WaterCduPowerCuts.Add({WaterExposureBindings[I].EquipmentId,State.TripS[I]>=0?State.TripS[I]:State.DamageS[I],WaterExposureSnapshot.SimTimeS,Clock.GetSimTimeS()});
  }
- for(int32 I:PendingSpine) WaterBindingSpine(I)->SetPowered(false);
+ for (int32 I : PendingSpine) {
+  WaterBindingSpine(I)->SetPowered(false);
+  const double DecisionS = State.TripS[I] >= 0 ? State.TripS[I] : State.DamageS[I];
+  WaterSpinePowerCuts.Add({WaterExposureBindings[I].EquipmentId, DecisionS, WaterExposureSnapshot.SimTimeS, Clock.GetSimTimeS()});
+ }
  for(int32 I:PendingCrah) {
   WaterBindingCrah(I)->SetPowered(false);
   WaterCrahPowerCuts.Add({WaterExposureBindings[I].EquipmentId,State.TripS[I]>=0?State.TripS[I]:State.DamageS[I],WaterExposureSnapshot.SimTimeS,Clock.GetSimTimeS()});

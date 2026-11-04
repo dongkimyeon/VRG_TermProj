@@ -386,6 +386,8 @@ public:
  bool ConfigureCrahWaterTripResponse(const FWaterImpactPolicy& Policy,const TArray<bool>& OtherPowered,FString& Reason,bool bIncludeRackResponse=false,bool bIncludeCduResponse=false);
  bool ConfigureSpineWaterTripResponse(const FWaterImpactPolicy& Policy,const TArray<bool>& OtherPowered,FString& Reason,bool bRack=false,bool bCdu=false,bool bCrah=false);
  struct FWaterCrahPowerCut { FString EquipmentId;double TripTimeS=0,ObservedTimeS=0,AppliedTimeS=0; };
+ struct FWaterSpinePowerCut { FString EquipmentId; double TripTimeS, ObservedTimeS, AppliedTimeS; };
+ const TArray<FWaterSpinePowerCut>& GetWaterSpinePowerCuts() const { return WaterSpinePowerCuts; }
  const TArray<FWaterCrahPowerCut>& GetWaterCrahPowerCuts() const { return WaterCrahPowerCuts; }
  bool IsCrahWaterTripResponseEnabled() const { return bCrahWaterTripResponse; }
 	struct FWaterCduPowerCut { FString EquipmentId;double TripTimeS=0,ObservedTimeS=0,AppliedTimeS=0; };
@@ -778,6 +780,7 @@ private:
 	TArray<FWaterRackPowerCut> WaterRackPowerCuts;
 	TArray<FWaterCduPowerCut> WaterCduPowerCuts;
  TArray<FWaterCrahPowerCut> WaterCrahPowerCuts;
+ TArray<FWaterSpinePowerCut> WaterSpinePowerCuts;
  ACrahUnitActor* WaterBindingCrah(int32 Index) const;
  ASpineCabinetActor* WaterBindingSpine(int32 Index) const;
  bool bSpineWaterTripResponse=false;
