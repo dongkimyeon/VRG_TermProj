@@ -27,7 +27,7 @@ bool FSpineWaterPowerResponse::RunTest(const FString& Parameters)
    auto* Other=W->SpawnActor<ARackThermalActor>(FVector(200,450,0),FRotator(0,90,0));Other->Rename(TEXT("CrahRackB"));Other->ApplyGb200Nvl72Preset();Other->bShowReadout=false;
    W->SpawnActor<ACoolingDistributionUnitActor>(FVector(70,60,0),FRotator::ZeroRotator);
    W->SpawnActor<ACoolingDistributionUnitActor>(FVector(70,450,0),FRotator::ZeroRotator);
-   auto* Wet=W->SpawnActor<ASpineCabinetActor>(FVector(400,150,0),FRotator::ZeroRotator);
+   auto* Wet=W->SpawnActor<ASpineCabinetActor>(FVector(315,70,0),FRotator::ZeroRotator);
    auto* Dry=W->SpawnActor<ASpineCabinetActor>(FVector(400,450,0),FRotator::ZeroRotator);
    Wet->LayoutId=TEXT("wet-spine"); Dry->LayoutId=TEXT("dry-spine");
    W->SpawnActor<AAirFieldDebugActor>()->bShowSummary=false;
