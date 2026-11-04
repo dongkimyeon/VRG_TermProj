@@ -384,6 +384,7 @@ public:
 	// Explicit CDU opt-in; optionally enable rack response under the same policy/baseline.
 	bool ConfigureCduWaterTripResponse(const FWaterImpactPolicy& Policy,const TArray<bool>& OtherPowered,FString& Reason,bool bIncludeRackResponse=false);
  bool ConfigureCrahWaterTripResponse(const FWaterImpactPolicy& Policy,const TArray<bool>& OtherPowered,FString& Reason,bool bIncludeRackResponse=false,bool bIncludeCduResponse=false);
+ bool ConfigureSpineWaterTripResponse(const FWaterImpactPolicy& Policy,const TArray<bool>& OtherPowered,FString& Reason,bool bRack=false,bool bCdu=false,bool bCrah=false);
  struct FWaterCrahPowerCut { FString EquipmentId;double TripTimeS=0,ObservedTimeS=0,AppliedTimeS=0; };
  const TArray<FWaterCrahPowerCut>& GetWaterCrahPowerCuts() const { return WaterCrahPowerCuts; }
  bool IsCrahWaterTripResponseEnabled() const { return bCrahWaterTripResponse; }
@@ -778,10 +779,12 @@ private:
 	TArray<FWaterCduPowerCut> WaterCduPowerCuts;
  TArray<FWaterCrahPowerCut> WaterCrahPowerCuts;
  ACrahUnitActor* WaterBindingCrah(int32 Index) const;
+ ASpineCabinetActor* WaterBindingSpine(int32 Index) const;
+ bool bSpineWaterTripResponse=false;
  bool ValidateCrahPowerTargets(FString& Reason) const;
 	ACoolingDistributionUnitActor* WaterBindingCdu(int32 Index) const;
 	bool ValidateWaterObservationTargets(FString& Reason) const;
-	bool ActualWaterPower(const TArray<bool>& OtherPowered,TArray<bool>& Actual,FString& Reason,bool bRack,bool bCdu,bool bCrah=false) const;
+	bool ActualWaterPower(const TArray<bool>& OtherPowered,TArray<bool>& Actual,FString& Reason,bool bRack,bool bCdu,bool bCrah=false,bool bSpine=false) const;
 	void WaterPowerBeforeStep();
 
 	void ClearWaterObservation();
