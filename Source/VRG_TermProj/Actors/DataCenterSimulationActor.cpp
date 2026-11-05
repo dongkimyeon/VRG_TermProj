@@ -2524,7 +2524,20 @@ FSprayGeometry ADataCenterSimulationActor::BuildSprayGeometry(TArray<FWaterSourc
 		const FTransform T = A->GetActorTransform();
 		AddBox(SimUnits::UnrealToMeters(T.GetLocation()), T.GetRotation(), SizeM * T.GetScale3D().GetAbs(), ESprayObstacleKind::Equipment, Name,Id,Rack,A);
 	};
-	for (int32 I = 0; I < Racks.Num(); ++I) if (Racks[I]) AddActor(Racks[I], Racks[I]->RackSizeM, FString::Printf(TEXT("랙 %d"), I),TEXT("rack/")+VrgRackLifecycle::Identity(Racks[I]),I);
+	for (int32 I = 0; I < Racks.Num(); ++I) if (Racks[I])
+	{
+		const int32 Before = G.Obstacles.Num();
+		AddActor(Racks[I], Racks[I]->RackSizeM, FString::Printf(TEXT("랙 %d"), I),TEXT("rack/")+VrgRackLifecycle::Identity(Racks[I]),I);
+		if (G.Obstacles.Num() == Before) continue;
+		// W4: which slot a hit landed on (contact record only). Racks only yaw; the slot ranges are rack-local heights.
+		FSprayObstacle& Box = G.Obstacles.Last();
+		const double BaseZM = SimUnits::UnrealToMeters(Racks[I]->GetActorLocation()).Z, ScaleZ = FMath::Abs(Racks[I]->GetActorScale3D().Z);
+		for (int32 Slot = 0; Slot < Racks[I]->Params.Slots.Num(); ++Slot)
+		{
+			double BottomM, HeightM; Racks[I]->GetSlotHeightRangeM(Slot, BottomM, HeightM);
+			Box.ZoneBottomZM.Add(BaseZM + BottomM * ScaleZ); Box.ZoneTopZM.Add(BaseZM + (BottomM + HeightM) * ScaleZ);
+		}
+	}
 	for (int32 I = 0; I < Spines.Num(); ++I)
 		if (Spines[I]) AddActor(Spines[I], FVector(GjRackLayout::FrameDepthM, GjRackLayout::FrameWidthM, GjRackLayout::FrameHeightM), FString::Printf(TEXT("스파인 %d"), I),TEXT("spine/")+VrgSpineLifecycle::Identity(Spines[I]));
 	for (int32 I = 0; I < CrahPlacements.Num(); ++I)
@@ -3961,6 +3974,7 @@ FVrgFaultInput ADataCenterSimulationActor::MakeFaultInput() const
 
 void ADataCenterSimulationActor::FaultAfterStep()
 {
+	WaterImpactAfterStep();
 	if (Room == nullptr) return;
 	const FVrgFaultInput In = MakeFaultInput();
 	const int32 Before = FaultMonitor.GetFaults().Num();
@@ -4198,6 +4212,7 @@ bool ADataCenterSimulationActor::WriteEvaluationReport(const FString& Name, FStr
 	Root->SetObjectField(TEXT("layout"), BuildDashboardLayout().ToJsonObject());
 	// S2b step 5 (optional field; older reports lack it): leaks, valves, tank history, first fault times.
 	Root->SetObjectField(TEXT("s2b"), FaultMonitor.ToJsonObject());
+	Root->SetObjectField(TEXT("waterImpact"), MakeWaterImpactReportJson());   // W4 (optional field): policy, state counts, power cuts
 	// 2026-10-23 (optional field): the instrument points and the leak alarms of their detection cables (D9 / D4).
 	TSharedRef<FJsonObject> InstrumentsJson = MakeShared<FJsonObject>();
 	InstrumentsJson->SetNumberField(TEXT("points"), Instruments.Num());

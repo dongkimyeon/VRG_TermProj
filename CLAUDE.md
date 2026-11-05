@@ -6,7 +6,9 @@ UE 5.8 / C++ / 가상현실게임 텀프로젝트. 이 파일은 팀이 합의�
 날짜별 상세 작업 기록은 2026-10-15에 `docs/기록/`으로 옮겼다(아래 "문서 지도"). 이 파일에는 새 절을 길게 쌓지 말고,
 작업 기록은 해당 주제 파일에, 오차 기준은 `docs/오차기준.md`에, 이 파일에는 상태 요약과 규칙만 갱신한다.
 
-## 현재 상태 (2026-11-04)
+## 현재 상태 (2026-11-05)
+
+2026-11-05 W4 마무리(완료 조건 통과, 화면 미검증): 응답이 테스트에서만 호출되던 것을 `vrg.Water.Impact 0|1 [트립 s] [손상 s]`(기본 끔, 재시작 뒤에도 요청 유지)로 게임에 연결했다. 추정 정책(`WaterImpactEstimates`: 통전 접촉 15 s → 트립, 60 s 또는 누적 1 L → 손상, 전부 추정), 트립·손상은 `R` 재시작까지 유지(사용자 결정). 분사는 맞은 높이의 슬롯으로 기록, 차단 수단 없는 대상(랙 상자·설비 마당·가상 CRAH)은 상태 불변. 사건 `[WaterImpact]`, 리포트 `waterImpact`·`s2b.waterImpacts`, 장애 `waterTrip`·`waterDamage`. 전체 `VRG` 379건 성공/실패 0(GPU 7 포함), Editor·Game 빌드 성공, 창 없는 L_Test 끔·켬·켬+보호(전역 |잔차| ≤ 1.82e-14, 보호 켬이면 트립 0). 설비 마당 펌프 모터 침수는 물 퍼짐 모델이 없어 미구현. 상세 `Tools/누수_실시간_계획.md` "W4 결과". 아래의 "W4 전체 미완료" 기록은 당시 상태다. **W3.5 성능 미달(누수 중 12.7 FPS)·D10 미충족은 그대로이고, W3.5 전체 완료는 이것 때문에 보류다.** W6은 시작 전.
 
 **2026-11-01 사용자 순서 변경:** 프레임 검사·최적화를 후속으로 유예하고 **W4-1 독립 기반 착수**를 명시적으로 승인했다. D10(목표60/최저30FPS)과 W3.5 성능 미충족·전체 미완료는 그대로 유지한다. 아래 이전의 “W4 미착수/다음 압력 최적화” 기록은 당시 상태이며 현재 순서는 이 결정이 우선한다. W4 전체 완료를 뜻하지 않는다.
 W4-1 독립 기반: W2 장비 상자·W3 평균 침수·W3.5 정확한 슬롯 자료의 읽기 전용 SoA와 Normal/Wet/Tripped/Damaged 일반 C++ 모델을 추가했다. 미분류 분사 진단·중복 합산 금지·명시적 정책/SimTime·거절 원자성·재시작을 검사했다. 운영 문턱은 미설정이며 시험 수치는 실장비 고장 기준이 아니다. 신규 고유5건 성공(순간 앞쪽 통과 보완 후 상태3건만 재검증); 실제 발열/팬/펌프/코일·Tick/RunSteps/UI 연결은 후속이다. Editor71.76s/보완15.87s·Game89.27s/최종 증분31.88s 성공. 수치/단위는 `docs/오차기준.md`, API·한계·재개는 `Tools/W4-1_침수상태_2026-11-01.md`.
@@ -71,7 +73,7 @@ F0(근거 수집)·F1(FWS 수력망)·F2(드라이쿨러·설비수 열)·F3(냉
 - **누수 분사(W2):** 수력이 장부에 적은 누수량을 받아(규약 6) 물줄기(Cv·√(2Δp/ρ), Grant-Middleman 분열 길이) → 액적(Rayleigh·임계 We 12, Schiller-Naumann 항력) → 장비·벽·천장 판·방·땅 충돌(Mundo 튐),
   수직면 Nusselt 물막, 젖은 장비 기록(W4 입력). 방향 기본 = 지점 위치 씨앗의 아래쪽 원뿔(추정). 정지 공기.
 - **바닥 물(W3):** 분사가 내려놓은 물을 2차원 얕은 물(1차 HLL + 정수압 재구성, Manning, 접촉선 고정 h_eq 3.1 mm, 2.5 cm 칸)로 퍼뜨림. 벽은 막고 장비 발판 밑은 흐르며 장비별 수심 기록(W4 입력). 에폭시·경사 0(추정·사용자 결정). 2026-11-03: CDU마다 드립 트레이(50 mm)·앞 0.5 m 바닥 배수구(100 mm, 오리피스) - 크기·위치 추정, 배수구가 있으면 CPU 경로. GPU 경로(`VrgFloorWater.usf`, FP64)는 CPU와 같은 결과지만 이 노트북에서 빠르지 않아 기본은 CPU(`vrg.Water.Gpu`).
-- **랙 내부 물(W3.5):** 실제 누수 장부의 델타를37슬롯 보유/이동/뒤쪽 노출로 전달하고 바닥 도착분만 W3에 주입. 전달 실패는 대기하며 W2와 중복하지 않는다. 드립/뒤 로프 모의 센서·리포트와 L 도구/B 지점 순환·읽기 전용 상태 표시 연결, 사용자 화면/입력 정상 확인. 명시적 정책/랙 응답 활성화 때 native 슬롯 발열·팬 정지를 연결했고 다른 장비 정지는 후속이다.
+- **랙 내부 물(W3.5):** 실제 누수 장부의 델타를37슬롯 보유/이동/뒤쪽 노출로 전달하고 바닥 도착분만 W3에 주입. 전달 실패는 대기하며 W2와 중복하지 않는다. 드립/뒤 로프 모의 센서·리포트와 L 도구/B 지점 순환·읽기 전용 상태 표시 연결, 사용자 화면/입력 정상 확인. 침수 영향(W4, `vrg.Water.Impact`, 기본 끔, 문턱 추정)을 켜면 젖은 슬롯·CDU·CRAH·스파인의 전원이 끊긴다.
 - **CDU:** 줄 단위 액-액 열교환기(대향류 ε-NTU). 줄 첫 랙에서 가장 가까운 CDU가 담당. CDU가 없으면 랙별 라디에이터 + 가상 루프.
   2026-11-03: 펌프 VFD가 먼 랙 차압을 2 R Q_d²(179.9 kPa)로 유지(하한 0.3·상한 1.0·램프 0.1/s 추정), 1차 밸브가 2차 공급을 설계 공급(설비수 + 접근 온도)으로 유지(공용 냉수·직렬 구성 제외), 펌프 1+1(전환 2 s 추정, 망 요소는 하나). CDU 계측에 2차 유량·차압·계통 압력·회전.
 - **설비수(FWS, S8 F1·F2):** CDU 1차측 수력망(펌프 N+1·체크밸브, 차압 제어, 동일 퍼센트 2방 밸브)과 드라이쿨러(교차류 ε-NTU, Liebert 정격 역산, 팬 r³),
@@ -137,7 +139,7 @@ L_Test32랙·스파인2·CRAH8·33210셀/h0.25m/dt0.02s,200스텝 예열/20s cap
   `9/0` 부하율, `E` 바라보는 유닛 하나 뽑기/꽂기, `R` 현재 배치로 t=0 재시작, `L` 누수 도구(외부5/30mm·내부1/3mm → 파단 → 수리 → 끔, `B` 내부 종류 순환, 클릭 적용, 도구 중 `E` 탈착 차단·`Esc` 끔), `V` 공기 보기 순환(온도 볼륨 → 유선 속도 → 유선 온도 → 유선+볼륨 → 평면 → 화살표). 발열 손잡이는 각 부품 기본값에 배율로 적용한다.
 - **주요 콘솔:** `vrg.Air.RunSteps <N>`, `vrg.Air.CellSize <h> 0.25`, `vrg.Air.Gpu -1|0|1`, `vrg.Air.Turbulence`, `vrg.Sim.CrahLayout 0|1|2`,
   `vrg.Sim.Containment 0|1|2`, `vrg.Sim.CoolantRejection 0|1`, `vrg.Eval.Event/Report/ReportWhenDone/Compare`, `vrg.Layout.Save/Load`,
-  `vrg.Perf.Capture <초> [라벨] [quit]`, `vrg.Leak.Add/Size/Clear/Status/Sites/At/Repair/Direction`, `vrg.Water.Status/Show/CellM/Gpu`, `vrg.Air.View/PlanHeight`, `vrg.Valve`(이벤트 `valve`·`leak`·`leakat`), `vrg.Cdu.PumpFault/PumpRepair <줄>`, `vrg.Plant.Enable/Topology/Ambient/Fault/Show`(이벤트 `ambient`·`plant`), `vrg.Pipes.Temperature`, `vrg.Sensors.PipeIntervalM`, `vrg.Hud.Temps/TempsRange`, `vrg.Cam <x y z m> <피치> <요>`, `vrg.Room.Shell`, `vrg.Patch.Map`, `vrg.Web.Enable`, `vrg.Hud.Debug`.
+  `vrg.Perf.Capture <초> [라벨] [quit]`, `vrg.Leak.Add/Size/Clear/Status/Sites/At/Repair/Direction`, `vrg.Water.Status/Show/CellM/Gpu/Impact`, `vrg.Leak.AutoIsolate`, `vrg.Air.View/PlanHeight`, `vrg.Valve`(이벤트 `valve`·`leak`·`leakat`), `vrg.Cdu.PumpFault/PumpRepair <줄>`, `vrg.Plant.Enable/Topology/Ambient/Fault/Show`(이벤트 `ambient`·`plant`), `vrg.Pipes.Temperature`, `vrg.Sensors.PipeIntervalM`, `vrg.Hud.Temps/TempsRange`, `vrg.Cam <x y z m> <피치> <요>`, `vrg.Room.Shell`, `vrg.Patch.Map`, `vrg.Web.Enable`, `vrg.Hud.Debug`.
   `-ExecCmds`로 여러 명령을 줄 때는 **쉼표**로 나눈다.
 
 화면에는 단축키 안내와 시뮬레이션 모드 계측 라벨(캐비닛 최고 부품, 흡기 센서·냉각수, 배관 지점 유량·수온, 설비 장비 값, 누수 경보; `vrg.Hud.Temps 0|1`·`vrg.Hud.TempsRange <m>`, 2026-10-22 사용자 요청)만 둔다.
@@ -301,6 +303,7 @@ UE 5.8은 레지스트리에 등록되지 않을 수 있어 경로를 직접 지
 - 테스트 파일에 `Flags` 같은 흔한 전역 이름을 두지 않는다(유니티 빌드에서 엔진 이름을 가려 C4459).
 - 메시 개수 검사는 특정 컴포넌트만 센다(자동 방 셸 큐브가 붙어 "모든 StaticMeshComponent" 가정이 깨졌다).
 - `UnrealEditor.exe`를 `-log`와 함께 백그라운드로 띄우면 같이 죽는다. 무인 측정은 `-abslog`.
+- 창 없는 L_Test를 Git Bash에서 돌릴 때 `MSYS_NO_PATHCONV=1`을 쓴다(`/Game/...`이 Git 설치 경로로 바뀌어 맵을 못 여는데 종료 코드는 0이다). 맵이 열렸는지 로그로 확인한다. `vrg.Eval.ReportWhenDone`은 종료하지 않는다: 리포트 줄을 보고 멈추게 한다(2026-11-05, 한 번 38분 허비).
 - 실패한 화면 도구 입력을 같은 환경에서 반복하지 않는다. 직접 확인 절차를 문서로 남기고 사용자 확인과 구분한다.
 - 레벨·저장 배치에는 1 cm 규칙 이전의 맞닿은 장비(L_Test 줄 끝 인로우 쿨러, 간격 0)가 있다. "자기 원래 자리"로 돌리는 경로(Undo, 그룹 이동)에 일반 배치 검사를 그대로 쓰면 영원히 거절된다(2026-10-23).
 - 시뮬레이션 스텝 반복은 두 곳이다: `Tick`과 `vrg.Air.RunSteps`의 `DrainWarmupSteps`. 새 도메인(W2 분사)을 Tick에만 넣었더니 RunSteps 실행에서 빠졌다(자동화는 Tick만 써서 못 잡음, 2026-10-26).

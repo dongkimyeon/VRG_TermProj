@@ -18,6 +18,11 @@ struct FWaterImpactPolicy
  EWaterThresholdBasis Basis=EWaterThresholdBasis::Unspecified;
  FString BasisNote;
  TArray<FString> PublicSources;
+ // Optional second damage branch of plan L4: a tripped target whose largest single source history since the baseline
+ // reaches this volume. Negative = off. Sources are compared one by one, never added (they can overlap).
+ double DamageCumulativeM3=-1;
+ // Optional, one per target: 1 = stays Normal (no actuator, or outdoor equipment, plan L4). Empty = none exempt.
+ TArray<uint8> ExemptTargets;
  bool IsValid(FString& Error) const;
 };
 struct FWaterImpactEvent
@@ -25,6 +30,7 @@ struct FWaterImpactEvent
  int32 Target=INDEX_NONE;
  EWaterImpactPhase From=EWaterImpactPhase::Normal, To=EWaterImpactPhase::Normal;
  double SimTimeS=0;
+ uint8 Cause=0; // EWaterEvidence mask behind this transition
 };
 struct FWaterImpactState
 {
@@ -32,6 +38,14 @@ struct FWaterImpactState
  TArray<double> FirstWetS, TripS, DamageS, PoweredContactS, ContactAfterTripS;
  TArray<uint8> LastContact, LastPowered;
 };
+// The game's policy (vrg.Water.Impact). Every value is an uncalibrated ESTIMATE, see the .cpp and plan L4.
+namespace WaterImpactEstimates
+{
+ constexpr double TripPoweredContactS=15, DamageContactAfterTripS=60;
+ FWaterImpactPolicy MakePolicy(double TripS=TripPoweredContactS,double DamageS=DamageContactAfterTripS);
+}
+const TCHAR* WaterImpactPhaseName(EWaterImpactPhase Phase);
+FString WaterEvidenceNames(uint8 Mask);
 class FWaterImpactModel
 {
 public:
@@ -47,7 +61,7 @@ public:
  bool IsInitialized() const {return bInitialized;}
 private:
  FWaterImpactPolicy Policy;
- FWaterExposureSnapshot Previous;
+ FWaterExposureSnapshot Previous,BaselineSnapshot;
  FWaterImpactState State;
  TArray<FWaterImpactEvent> Events;
  bool bInitialized=false;

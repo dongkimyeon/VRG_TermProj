@@ -5,7 +5,7 @@
 void FVrgFaultMonitor::Reset(const FVrgFaultSettings& InSettings)
 {
 	Settings = InSettings;
-	Faults.Reset(); Seen.Reset(); Leaks.Reset(); Valves.Reset(); TankSamples.Reset();
+	Faults.Reset(); Seen.Reset(); Leaks.Reset(); Valves.Reset(); TankSamples.Reset(); WaterImpacts.Reset();
 }
 
 void FVrgFaultMonitor::Record(double TimeS, int32 Rack, EVrgFaultKind Kind, double Value, int32& InOutNew)
@@ -38,6 +38,21 @@ int32 FVrgFaultMonitor::Update(const FVrgFaultInput& In)
 	return New;
 }
 
+int32 FVrgFaultMonitor::AddWaterImpact(const FVrgWaterImpactRecord& R)
+{
+	int32 New = 0;
+	if (R.Rack != INDEX_NONE && R.To == TEXT("tripped")) Record(R.TimeS, R.Rack, EVrgFaultKind::WaterTrip, R.Slot, New);
+	if (R.Rack != INDEX_NONE && R.To == TEXT("damaged")) Record(R.TimeS, R.Rack, EVrgFaultKind::WaterDamage, R.Slot, New);
+	return WaterImpacts.Add(R);
+}
+
+void FVrgFaultMonitor::SetWaterImpactCut(int32 Index, double AppliedS, double ItBeforeW, double ItAfterW)
+{
+	if (!WaterImpacts.IsValidIndex(Index)) return;
+	FVrgWaterImpactRecord& R = WaterImpacts[Index];
+	R.CutAppliedS = AppliedS; R.ItBeforeW = ItBeforeW; R.ItAfterW = ItAfterW;
+}
+
 double FVrgFaultMonitor::GetFirstFaultTimeS(int32 Rack) const
 {
 	double T = -1.0;
@@ -52,6 +67,8 @@ const TCHAR* FVrgFaultMonitor::KindName(EVrgFaultKind Kind)
 	case EVrgFaultKind::LowCoolantFlow: return TEXT("lowCoolantFlow");
 	case EVrgFaultKind::OverTemperature: return TEXT("overTemperature");
 	case EVrgFaultKind::InventoryDepleted: return TEXT("inventoryDepleted");
+	case EVrgFaultKind::WaterTrip: return TEXT("waterTrip");
+	case EVrgFaultKind::WaterDamage: return TEXT("waterDamage");
 	default: return TEXT("hydraulicNotConverged");
 	}
 }
@@ -118,6 +135,18 @@ TSharedRef<FJsonObject> FVrgFaultMonitor::ToJsonObject() const
 	Root->SetArrayField(TEXT("leaks"), L);
 	Root->SetArrayField(TEXT("valves"), V);
 	Root->SetArrayField(TEXT("tank"), T);
+	// W4 (optional field; older reports lack it).
+	TArray<TSharedPtr<FJsonValue>> W;
+	for (const FVrgWaterImpactRecord& R : WaterImpacts)
+	{
+		TSharedRef<FJsonObject> O = MakeShared<FJsonObject>();
+		O->SetNumberField(TEXT("timeS"), R.TimeS); O->SetStringField(TEXT("equipmentId"), R.EquipmentId); O->SetNumberField(TEXT("rack"), R.Rack); O->SetNumberField(TEXT("slot"), R.Slot);
+		O->SetStringField(TEXT("device"), R.Device); O->SetStringField(TEXT("from"), R.From); O->SetStringField(TEXT("to"), R.To); O->SetStringField(TEXT("cause"), R.Cause);
+		O->SetNumberField(TEXT("immersionM"), R.ImmersionM); O->SetNumberField(TEXT("sprayM3"), R.SprayM3); O->SetNumberField(TEXT("interiorM3"), R.InteriorM3);
+		O->SetNumberField(TEXT("cutAppliedS"), R.CutAppliedS); O->SetNumberField(TEXT("itBeforeW"), R.ItBeforeW); O->SetNumberField(TEXT("itAfterW"), R.ItAfterW);
+		W.Add(MakeShared<FJsonValueObject>(O));
+	}
+	Root->SetArrayField(TEXT("waterImpacts"), W);
 	return Root;
 }
 
@@ -137,7 +166,7 @@ bool FVrgFaultMonitor::FromJsonObject(const TSharedPtr<FJsonObject>& Object, FVr
 			R.TimeS = O->GetNumberField(TEXT("timeS")); R.Rack = int32(O->GetNumberField(TEXT("rack"))); R.Value = O->GetNumberField(TEXT("value"));
 			const FString Kind = O->GetStringField(TEXT("kind"));
 			bool bKnown = false;
-			for (const EVrgFaultKind K : { EVrgFaultKind::LowCoolantFlow, EVrgFaultKind::OverTemperature, EVrgFaultKind::InventoryDepleted, EVrgFaultKind::HydraulicNotConverged })
+			for (const EVrgFaultKind K : { EVrgFaultKind::LowCoolantFlow, EVrgFaultKind::OverTemperature, EVrgFaultKind::InventoryDepleted, EVrgFaultKind::HydraulicNotConverged, EVrgFaultKind::WaterTrip, EVrgFaultKind::WaterDamage })
 				if (Kind == KindName(K)) { R.Kind = K; bKnown = true; }
 			if (!bKnown) return false;
 			Out.Faults.Add(R);
@@ -176,11 +205,23 @@ bool FVrgFaultMonitor::FromJsonObject(const TSharedPtr<FJsonObject>& Object, FVr
 			S.WaterM3 = O->GetNumberField(TEXT("waterM3")); S.LeakedM3 = O->GetNumberField(TEXT("leakedM3")); S.bDepleted = O->GetBoolField(TEXT("depleted"));
 			Out.TankSamples.Add(S);
 		}
+	if (Object->TryGetArrayField(TEXT("waterImpacts"), A))
+		for (const TSharedPtr<FJsonValue>& V : *A)
+		{
+			const TSharedPtr<FJsonObject> O = V->AsObject();
+			if (!O.IsValid()) return false;
+			FVrgWaterImpactRecord R;
+			R.TimeS = O->GetNumberField(TEXT("timeS")); R.EquipmentId = O->GetStringField(TEXT("equipmentId")); R.Rack = int32(O->GetNumberField(TEXT("rack"))); R.Slot = int32(O->GetNumberField(TEXT("slot")));
+			R.Device = O->GetStringField(TEXT("device")); R.From = O->GetStringField(TEXT("from")); R.To = O->GetStringField(TEXT("to")); R.Cause = O->GetStringField(TEXT("cause"));
+			R.ImmersionM = O->GetNumberField(TEXT("immersionM")); R.SprayM3 = O->GetNumberField(TEXT("sprayM3")); R.InteriorM3 = O->GetNumberField(TEXT("interiorM3"));
+			R.CutAppliedS = O->GetNumberField(TEXT("cutAppliedS")); R.ItBeforeW = O->GetNumberField(TEXT("itBeforeW")); R.ItAfterW = O->GetNumberField(TEXT("itAfterW"));
+			Out.WaterImpacts.Add(R);
+		}
 	return true;
 }
 
 bool FVrgFaultMonitor::operator==(const FVrgFaultMonitor& O) const
 {
 	return Settings.LowFlowRatio == O.Settings.LowFlowRatio && Settings.MaxComponentTempK == O.Settings.MaxComponentTempK
-		&& Faults == O.Faults && Leaks == O.Leaks && Valves == O.Valves && TankSamples == O.TankSamples;
+		&& Faults == O.Faults && Leaks == O.Leaks && Valves == O.Valves && TankSamples == O.TankSamples && WaterImpacts == O.WaterImpacts;
 }

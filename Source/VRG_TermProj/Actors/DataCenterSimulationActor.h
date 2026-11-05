@@ -377,6 +377,14 @@ public:
 	const FString& GetWaterObservationDiagnostic() const { return WaterObservationDiagnostic; }
 	// Explicit C++ policy AND power observations; no invented runtime operating/electrical defaults.
 	bool ConfigureWaterImpactObservation(const FWaterImpactPolicy& Policy,const TArray<bool>& Powered,FString& Reason);
+	// W4 game path (vrg.Water.Impact, default off): estimated policy (WaterImpactEstimates) + every actuator this run has.
+	// The request survives R restart; trips, damage and power cuts of a run last until that restart.
+	struct FWaterImpactRequest { bool bEnabled=false; double TripS=WaterImpactEstimates::TripPoweredContactS,DamageS=WaterImpactEstimates::DamageContactAfterTripS; };
+	FWaterImpactRequest WaterImpactRequest;
+	bool SetWaterImpactRequest(const FWaterImpactRequest& Request,FString& Reason);
+	const TArray<FString>& GetWaterImpactNoActuator() const { return WaterImpactNoActuator; }
+	bool IsSpineWaterTripResponseEnabled() const { return bSpineWaterTripResponse; }
+	FString DescribeWaterImpact() const;
 	bool SetWaterImpactPowerObservation(const TArray<bool>& Powered,FString& Reason);
 	bool HasWaterImpactPolicy() const { return bWaterImpactConfigured; }
 	// Explicit actuator opt-in, separate from the existing read-only observation API.
@@ -789,6 +797,15 @@ private:
 	bool ValidateWaterObservationTargets(FString& Reason) const;
 	bool ActualWaterPower(const TArray<bool>& OtherPowered,TArray<bool>& Actual,FString& Reason,bool bRack,bool bCdu,bool bCrah=false,bool bSpine=false) const;
 	void WaterPowerBeforeStep();
+	bool ApplyWaterImpactRequest(FString& Reason);
+	void WaterImpactAfterStep();
+	TSharedRef<FJsonObject> MakeWaterImpactReportJson() const;
+	FWaterImpactPolicy WaterImpactPolicyInUse;
+	TArray<FString> WaterImpactNoActuator;
+	int32 WaterImpactEventCursor=0;
+	TMap<int32,int32> WaterImpactTargetRecord;   // target -> its first tripped/damaged record in FaultMonitor
+	TArray<int32> WaterCutsAwaitingIt;           // records whose cut was applied at the start of the current step
+	double WaterCutItBeforeW=0,WaterCutAppliedS=0;
 
 	void ClearWaterObservation();
 	void InitializeWaterObservation();

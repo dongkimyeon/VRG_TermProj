@@ -113,17 +113,22 @@ bool FWaterExposureRoomLifecycle::RunTest(const FString& Parameters)
  if(Site!=INDEX_NONE && RackBox!=INDEX_NONE) {
   Sim->SetLiveLeakDirection(Site,Sim->GetLeakSpray().GetGeometry().Obstacles[RackBox].CenterM-Sites[Site].PositionM);
   Sim->SetLiveLeak(Site,.005,TEXT("W4 observer fixture"));for(int32 I=0;I<10;++I) Sim->Tick(.1f);
-  const auto& E=Sim->GetWaterExposure();bool RootContact=false;int32 Diagnostics=0;
+  const auto& E=Sim->GetWaterExposure();bool RootContact=false;int32 LocalizedSlots=0;
   for(int32 I=0;I<E.EquipmentId.Num();++I) {
    const auto& B=Sim->GetWaterExposureBindings()[I];
    if(E.Slot[I]==INDEX_NONE) {TestEqual(TEXT("Live W2 contact copied once"),E.SprayTouchedM3[I],Sim->GetLeakSpray().GetWetting()[B.SprayObstacle].WaterM3);RootContact|=E.SprayTouchedM3[I]>0;}
-   else {TestEqual(TEXT("Live box contact never distributed among native slots"),E.SprayTouchedM3[I],0.0);TestTrue(TEXT("Spray-only policy cannot trip unlocalized slots"),Sim->GetWaterImpactObservation().GetState().Phase[I]==EWaterImpactPhase::Normal);}
+   else {
+    // 2026-11-05 (W4): native rack slots read the impact-height band of the box, never a share of the box total.
+    const auto& Wet=Sim->GetLeakSpray().GetWetting()[B.SprayObstacle];
+    TestEqual(TEXT("Live slot contact is its own height band"),E.SprayTouchedM3[I],Wet.ZoneWaterM3[E.Slot[I]]);
+    if(E.SprayTouchedM3[I]>0) ++LocalizedSlots;
+    else TestTrue(TEXT("Spray-only policy cannot trip a slot the water missed"),Sim->GetWaterImpactObservation().GetState().Phase[I]==EWaterImpactPhase::Normal);
+   }
    if(B.FloorFlood!=INDEX_NONE) TestEqual(TEXT("Live W3 immersion from the exact footprint"),E.FloodImmersionM[I],FMath::Max(0.0,Sim->GetFloorWater().GetFloods()[B.FloorFlood].MeanDepthM-B.FloorContactDepthM));
   }
-  for(const auto& D:E.Diagnostics) if(D.Reason.Contains(TEXT("cannot localize"))) ++Diagnostics;
-  TestTrue(TEXT("Live spray reached equipment and unlocalized diagnostic retained"),RootContact && Diagnostics>0);
+  TestTrue(TEXT("Live spray reached equipment and its slots"),RootContact && LocalizedSlots>0);
   TestTrue(TEXT("Existing W2/W3 conservation"),Sim->GetLeakSpray().GetTotals().Residual<1e-12 && Sim->GetFloorWater().GetTotals().Residual<1e-12);
-  AddInfo(FString::Printf(TEXT("W4 actual W2 emitted=%.17g m3 residual=%.17g; actual W3 received=%.17g m3 normalized residual=%.17g; unlocalized diagnostics=%d"),Sim->GetLeakSpray().GetTotals().EmittedM3,Sim->GetLeakSpray().GetTotals().Residual,Sim->GetFloorWater().GetTotals().ReceivedM3,Sim->GetFloorWater().GetTotals().Residual,Diagnostics));
+  AddInfo(FString::Printf(TEXT("W4 actual W2 emitted=%.17g m3 residual=%.17g; actual W3 received=%.17g m3 normalized residual=%.17g; localized slots=%d"),Sim->GetLeakSpray().GetTotals().EmittedM3,Sim->GetLeakSpray().GetTotals().Residual,Sim->GetFloorWater().GetTotals().ReceivedM3,Sim->GetFloorWater().GetTotals().Residual,LocalizedSlots));
  }
  Sim->EnterLayoutMode();GEngine->DestroyWorldContext(World);World->DestroyWorld(false);return true;
 }

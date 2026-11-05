@@ -88,6 +88,8 @@ struct VRG_TERMPROJ_API FSprayObstacle
 	FVector HalfM = FVector::ZeroVector;
 	ESprayObstacleKind Kind = ESprayObstacleKind::Equipment;
 	FString Name;
+	// W4: optional height bands [world m], one per native rack slot. Contact bookkeeping only, no effect on the water path.
+	TArray<double> ZoneBottomZM, ZoneTopZM;
 };
 
 struct VRG_TERMPROJ_API FSprayGeometry
@@ -139,6 +141,7 @@ struct VRG_TERMPROJ_API FSprayWetting
 	double FirstWetS = -1.0;
 	double TopWetZM = -1.0e30;         // highest point water touched (it runs down to the floor from there)
 	double WaterM3 = 0.0;              // cumulative water that touched it (impacts + water leaking inside it)
+	TArray<double> ZoneWaterM3;        // W4: the part of WaterM3 that hit inside each ZoneBottomZM/ZoneTopZM band (impact height only, a film running down is not counted)
 };
 
 struct VRG_TERMPROJ_API FSprayTotals

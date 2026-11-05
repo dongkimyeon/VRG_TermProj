@@ -36,8 +36,10 @@ bool WaterExposure::Collect(const TArray<FWaterExposureBinding>& Bindings,double
    if(O.Name!=SourceName || O.Kind!=ESprayObstacleKind::Equipment) return Fail(TEXT("Spray equipment identity mismatch"));
    if(!FMath::IsFinite(W.WaterM3) || W.WaterM3<0) return Fail(TEXT("Invalid spray contact history"));
    if(B.Slot!=INDEX_NONE) {
-    // A box maximum impact height is not per-slot arrival evidence. No volume split or broad wetting.
-    if(!Unlocalized.Contains(B.SprayObstacle)) {Next.Diagnostics.Add({B.EquipmentId,TEXT("Spray box contact cannot localize native slots"),B.SprayObstacle,W.WaterM3});Unlocalized.Add(B.SprayObstacle);}
+    // Exact impact-height band when the box has one (native racks). Without bands a box maximum impact height is not
+    // per-slot arrival evidence: no volume split or broad wetting.
+    if(W.ZoneWaterM3.IsValidIndex(B.Slot)) {Next.SprayTouchedM3[I]=W.ZoneWaterM3[B.Slot];Next.Available[I]|=uint8(EWaterEvidence::Spray);}
+    else if(!Unlocalized.Contains(B.SprayObstacle)) {Next.Diagnostics.Add({B.EquipmentId,TEXT("Spray box contact cannot localize native slots"),B.SprayObstacle,W.WaterM3});Unlocalized.Add(B.SprayObstacle);}
    } else {Next.SprayTouchedM3[I]=W.WaterM3;Next.Available[I]|=uint8(EWaterEvidence::Spray);}
   }
   if(B.FloorFlood!=INDEX_NONE) {

@@ -26,6 +26,31 @@ namespace
   return A.Phase==B.Phase && A.FirstWetS==B.FirstWetS && A.TripS==B.TripS && A.DamageS==B.DamageS && A.PoweredContactS==B.PoweredContactS && A.ContactAfterTripS==B.ContactAfterTripS && A.LastContact==B.LastContact && A.LastPowered==B.LastPowered;
  }
 }
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FWaterImpactCumulativeTest,"VRG.Water.Impact.CumulativeAndExempt",ImpactFlags)
+bool FWaterImpactCumulativeTest::RunTest(const FString& Parameters)
+{
+ // Exact hand values: trip after 2 s, duration damage far away, cumulative damage at 1 m3 of one source.
+ FString Error;auto S=ImpactBaseline();auto P=ImpactFixturePolicy();const TArray<bool> Power={true,true,true};
+ P.DamageContactAfterTripS=1e6;P.DamageCumulativeM3=1;P.ExemptTargets={0,0,1};
+ S.InteriorPassedM3[1]=7;S.RearPassedM3[1]=7;   // history from before the baseline, and rear-only, must not count
+ FWaterImpactModel M;TestTrue(TEXT("Reset"),M.Reset(S,Power,P,Error));
+ auto Bad=P;Bad.ExemptTargets={1};FWaterImpactModel Rejected;TestFalse(TEXT("Exempt list length checked"),Rejected.Reset(S,Power,Bad,Error));
+ Bad=P;Bad.DamageCumulativeM3=std::numeric_limits<double>::quiet_NaN();TestFalse(TEXT("NaN volume rejected"),Bad.IsValid(Error));
+ auto At=[&](double T,double Spray0,double Spray2){auto N=S;N.SimTimeS=T;N.SprayTouchedM3[0]=Spray0;N.SprayTouchedM3[2]=Spray2;return N;};
+ TestTrue(TEXT("Step 1"),M.Step(At(1,.1,.1),Power,Error));
+ TestTrue(TEXT("Wet with its cause"),M.GetState().Phase[0]==EWaterImpactPhase::Wet);
+ if(TestEqual(TEXT("One event so far"),M.GetEvents().Num(),1)) TestEqual(TEXT("Cause recorded"),M.GetEvents()[0].Cause,uint8(EWaterEvidence::Spray));
+ TestTrue(TEXT("Exempt target ignores water"),M.GetState().Phase[2]==EWaterImpactPhase::Normal);
+ TestTrue(TEXT("Step 2"),M.Step(At(2,.2,.2),Power,Error));TestTrue(TEXT("Step 3"),M.Step(At(3,.3,.3),Power,Error));
+ TestTrue(TEXT("Tripped at 3 s"),M.GetState().Phase[0]==EWaterImpactPhase::Tripped);TestEqual(TEXT("Trip time"),M.GetState().TripS[0],3.0);
+ TestTrue(TEXT("Below the volume"),M.Step(At(4,.9,.9),Power,Error) && M.GetState().Phase[0]==EWaterImpactPhase::Tripped);
+ TestTrue(TEXT("At the volume"),M.Step(At(5,1.0,1.0),Power,Error) && M.GetState().Phase[0]==EWaterImpactPhase::Damaged);
+ TestEqual(TEXT("Damage time"),M.GetState().DamageS[0],5.0);
+ TestTrue(TEXT("Rear-only history stays Normal"),M.GetState().Phase[1]==EWaterImpactPhase::Normal);
+ TestTrue(TEXT("Exempt target never changes"),M.GetState().Phase[2]==EWaterImpactPhase::Normal);
+ TestEqual(TEXT("Names"),WaterEvidenceNames(uint8(EWaterEvidence::Spray)|uint8(EWaterEvidence::Interior)),FString(TEXT("spray+interior")));
+ return true;
+}
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FWaterImpactHistoryTest,"VRG.Water.Impact.StateHistory",ImpactFlags)
 bool FWaterImpactHistoryTest::RunTest(const FString& Parameters)
 {

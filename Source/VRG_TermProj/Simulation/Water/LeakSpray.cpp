@@ -100,6 +100,7 @@ void FLeakSpray::Reset(const FSprayGeometry& InGeometry, const FSpraySettings& I
 	Src.Reset(); NSrc.Reset(); Seed.Reset(); NSeed.Reset();
 	Films.Reset(); FilmIndex.Reset(); FloorBins.Reset(); GroundBins.Reset(); Waiting.Reset(); Emitters.Reset(); Emissions.Reset();
 	Wetting.Init(FSprayWetting(), Geometry.Obstacles.Num());
+	for (int32 I = 0; I < Wetting.Num(); ++I) Wetting[I].ZoneWaterM3.Init(0.0, Geometry.Obstacles[I].ZoneBottomZM.Num());
 	FirstImpacts.Reset(); FirstBreakups.Reset();
 	Totals = FSprayTotals();
 	StepFloorDeposits.Reset();
@@ -197,6 +198,9 @@ void FLeakSpray::Touch(int32 Obstacle, const FVector& PointM, double Volume, dou
 	if (W.FirstWetS < 0.0) W.FirstWetS = NowS;
 	W.TopWetZM = FMath::Max(W.TopWetZM, PointM.Z);
 	W.WaterM3 += Volume;
+	const FSprayObstacle& Box = Geometry.Obstacles[Obstacle];
+	for (int32 Z = 0; Z < W.ZoneWaterM3.Num(); ++Z)
+		if (PointM.Z >= Box.ZoneBottomZM[Z] && PointM.Z < Box.ZoneTopZM[Z]) { W.ZoneWaterM3[Z] += Volume; break; }
 }
 
 void FLeakSpray::Deposit(const FHit& Hit, const FVector& PointM, double Volume, int32 Source, double NowS)

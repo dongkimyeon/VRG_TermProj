@@ -941,7 +941,7 @@ $('senstbtn').addEventListener('click', () => { $('senstable').hidden = !$('sens
 let leaks = null;
 const leakOn = () => $('leakbtn').getAttribute('aria-pressed') === 'true';
 const LEAK_C = 0xe5484d, ISO_C = 0xc678dd, IMP_C = 0x4fc1c9;
-const FAULT_NAME = { lowCoolantFlow:'냉각수 저유량', overTemperature:'부품 과열', inventoryDepleted:'재고 고갈', hydraulicNotConverged:'수력 수렴 실패' };
+const FAULT_NAME = { lowCoolantFlow:'냉각수 저유량', overTemperature:'부품 과열', inventoryDepleted:'재고 고갈', hydraulicNotConverged:'수력 수렴 실패', waterTrip:'침수 트립', waterDamage:'침수 손상' };
 const lps = m3s => (m3s * 1e3).toFixed(4);
 const kpa = pa => (pa * 1e-3).toFixed(1);
 async function pollLeaks() {
@@ -953,7 +953,8 @@ const leakRack = i => leaks ? leaks.racks.find(r => r.rack === i) : null;
 const rackLabel = i => { const r = leakRack(i); return i < 0 ? '망 전체' : '#' + i + (r ? ' ' + r.name : ''); };
 function faultValue(f) {
   return f.kind === 'lowCoolantFlow' ? '유량비 ' + f.value.toFixed(3) : f.kind === 'overTemperature' ? fmtC(f.value) + ' °C'
-    : f.kind === 'hydraulicNotConverged' ? '잔차 ' + f.value.toExponential(2) : '';
+    : f.kind === 'hydraulicNotConverged' ? '잔차 ' + f.value.toExponential(2)
+    : f.kind === 'waterTrip' || f.kind === 'waterDamage' ? '슬롯 ' + f.value : '';
 }
 function faultText(f) { const v = faultValue(f); return `${f.timeS.toFixed(2)} s ${FAULT_NAME[f.kind] || f.kind}${v ? ' (' + v + ')' : ''}`; }
 function leakState(l) {

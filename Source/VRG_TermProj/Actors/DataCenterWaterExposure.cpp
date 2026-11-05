@@ -8,9 +8,26 @@
 #include "Interaction/VrgCduLifecycle.h"
 #include "Simulation/Core/SimUnits.h"
 #include "Visualization/GjRackLayout.h"
+#include "Dom/JsonObject.h"
+#include "EngineUtils.h"
+#include "HAL/IConsoleManager.h"
 
 namespace
 {
+ FAutoConsoleCommandWithWorldAndArgs GVrgWaterImpact(TEXT("vrg.Water.Impact"),
+  TEXT("침수 영향(W4, 기본 0=끔, 문턱은 추정). 켜면 젖은 랙 슬롯·CDU·CRAH·스파인이 트립·손상되어 전원이 끊기고 R 재시작까지 유지. vrg.Water.Impact 0|1 [트립 s] [손상 s], 인자 없으면 상태"),
+  FConsoleCommandWithWorldAndArgsDelegate::CreateLambda([](const TArray<FString>& Args,UWorld* World)
+  {
+   if(!World) return;
+   for(TActorIterator<ADataCenterSimulationActor> It(World);It;++It) {
+    if(Args.Num()==0) {UE_LOG(LogTemp,Display,TEXT("[WaterImpact] %s"),*It->DescribeWaterImpact());continue;}
+    auto Request=It->WaterImpactRequest;Request.bEnabled=FCString::Atoi(*Args[0])!=0;
+    if(Args.Num()>1) Request.TripS=FCString::Atod(*Args[1]);
+    if(Args.Num()>2) Request.DamageS=FCString::Atod(*Args[2]);
+    FString Reason;const bool bOk=It->SetWaterImpactRequest(Request,Reason);
+    UE_LOG(LogTemp,Display,TEXT("[WaterImpact] %s%s%s"),*It->DescribeWaterImpact(),bOk?TEXT(""):TEXT(" 거절: "),bOk?TEXT(""):*Reason);
+   }
+  }));
  FString WaterActorIdentity(const AActor* Actor)
  {
   if(const auto* R=Cast<ARackThermalActor>(Actor)) return TEXT("rack/")+VrgRackLifecycle::Identity(R);
@@ -51,6 +68,7 @@ namespace
 
 void ADataCenterSimulationActor::ClearWaterObservation()
 {
+ WaterImpactEventCursor=0;WaterImpactTargetRecord.Reset();WaterCutsAwaitingIt.Reset();WaterImpactNoActuator.Reset();
  WaterImpactObservation=FWaterImpactModel();WaterImpactPowered.Reset();bWaterImpactConfigured=false;
  WaterSpinePowerCuts.Reset();
  bSpineWaterTripResponse=bRackWaterTripResponse=bCduWaterTripResponse=bCrahWaterTripResponse=false;WaterRackPowerCuts.Reset();WaterCduPowerCuts.Reset();WaterCrahPowerCuts.Reset();
@@ -62,6 +80,7 @@ void ADataCenterSimulationActor::ClearWaterObservation()
 void ADataCenterSimulationActor::InitializeWaterObservation()
 {
  if(!bWaterExposureObservation) {ClearWaterObservation();WaterObservationDiagnostic=TEXT("Water observation disabled");return;}
+ WaterImpactEventCursor=0;WaterImpactTargetRecord.Reset();WaterCutsAwaitingIt.Reset();WaterImpactNoActuator.Reset();
  WaterImpactObservation=FWaterImpactModel();WaterImpactPowered.Reset();bWaterImpactConfigured=false;
  WaterSpinePowerCuts.Reset();
  bSpineWaterTripResponse=bRackWaterTripResponse=bCduWaterTripResponse=bCrahWaterTripResponse=false;WaterRackPowerCuts.Reset();WaterCduPowerCuts.Reset();WaterCrahPowerCuts.Reset();
@@ -93,6 +112,105 @@ void ADataCenterSimulationActor::InitializeWaterObservation()
   }
  }
  bWaterRegistryReady=true;ObserveWaterExposure(Clock.GetSimTimeS(),true);
+ // vrg.Water.Impact outlives a restart: the new run starts from t=0 with every target Normal and powered.
+ if(WaterImpactRequest.bEnabled) {FString Reason;if(!ApplyWaterImpactRequest(Reason)) UE_LOG(LogTemp,Warning,TEXT("[WaterImpact] 침수 영향을 켜지 못함: %s"),*Reason);}
+}
+
+bool ADataCenterSimulationActor::ApplyWaterImpactRequest(FString& Reason)
+{
+ if(WaterImpactRequest.TripS<=0 || WaterImpactRequest.DamageS<=0) {Reason=TEXT("Trip and damage durations must be positive");return false;}
+ FString CrahReason;const bool bCrah=ValidateCrahPowerTargets(CrahReason);
+ FWaterImpactPolicy Policy=WaterImpactEstimates::MakePolicy(WaterImpactRequest.TripS,WaterImpactRequest.DamageS);
+ // A target nothing can switch off stays Normal: a "tripped" entry with the equipment still running would be false.
+ // That covers whole-rack boxes (their slots are the targets), outdoor yard equipment (plan L4) and virtual automatic CRAHs.
+ TArray<FString> NoActuator;Policy.ExemptTargets.Init(0,WaterExposureBindings.Num());
+ for(int32 I=0;I<WaterExposureBindings.Num();++I) {
+  const auto& B=WaterExposureBindings[I];
+  const bool bActuator=B.Slot!=INDEX_NONE?B.InteriorRack!=INDEX_NONE:(WaterBindingCdu(I)!=nullptr || WaterBindingSpine(I)!=nullptr || (bCrah && WaterBindingCrah(I)!=nullptr));
+  if(bActuator) continue;
+  Policy.ExemptTargets[I]=1;
+  if(!B.EquipmentId.StartsWith(TEXT("rack/"))) NoActuator.AddUnique(B.EquipmentId);
+ }
+ TArray<bool> Power;Power.Init(true,WaterExposureBindings.Num());
+ if(!ConfigureSpineWaterTripResponse(Policy,Power,Reason,true,true,bCrah)) return false;
+ WaterImpactPolicyInUse=MoveTemp(Policy);WaterImpactNoActuator=MoveTemp(NoActuator);
+ WaterImpactEventCursor=0;WaterImpactTargetRecord.Reset();WaterCutsAwaitingIt.Reset();
+ WaterObservationDiagnostic=TEXT("vrg.Water.Impact: estimated policy, every available power response enabled");
+ UE_LOG(LogTemp,Display,TEXT("[WaterImpact] 침수 영향 켬(문턱 추정): 트립 %.1f s, 손상 %.1f s, 대상 %d개, 차단 수단 없어 제외 %d개"),WaterImpactRequest.TripS,WaterImpactRequest.DamageS,WaterExposureBindings.Num(),WaterImpactNoActuator.Num());
+ return true;
+}
+
+bool ADataCenterSimulationActor::SetWaterImpactRequest(const FWaterImpactRequest& Request,FString& Reason)
+{
+ if(Request.bEnabled && (!FMath::IsFinite(Request.TripS) || !FMath::IsFinite(Request.DamageS) || Request.TripS<=0 || Request.DamageS<=0)) {Reason=TEXT("Trip and damage durations must be positive");return false;}
+ WaterImpactRequest=Request;Reason.Reset();
+ if(Mode!=ESimMode::Simulation || !bWaterRegistryReady) return true; // applied at the next simulation entry
+ if(Request.bEnabled) return ApplyWaterImpactRequest(Reason);
+ // Off stops new judgements only: what is already cut stays cut until the R restart, and its records stay.
+ bWaterImpactConfigured=bRackWaterTripResponse=bCduWaterTripResponse=bCrahWaterTripResponse=bSpineWaterTripResponse=false;
+ WaterCutsAwaitingIt.Reset();WaterObservationDiagnostic=TEXT("vrg.Water.Impact off");
+ return true;
+}
+
+FString ADataCenterSimulationActor::DescribeWaterImpact() const
+{
+ int32 Counts[4]={0,0,0,0};
+ for(EWaterImpactPhase P:WaterImpactObservation.GetState().Phase) ++Counts[int32(P)];
+ return FString::Printf(TEXT("요청 %s(트립 %.1f s, 손상 %.1f s, 문턱 추정), 적용 %s, 젖음 %d, 트립 %d, 손상 %d, 차단 랙 슬롯 %d·CDU %d·CRAH %d·스파인 %d. %s"),
+  WaterImpactRequest.bEnabled?TEXT("켬"):TEXT("끔"),WaterImpactRequest.TripS,WaterImpactRequest.DamageS,bWaterImpactConfigured?TEXT("중"):TEXT("안 함"),Counts[1],Counts[2],Counts[3],
+  WaterRackPowerCuts.Num(),WaterCduPowerCuts.Num(),WaterCrahPowerCuts.Num(),WaterSpinePowerCuts.Num(),*WaterObservationDiagnostic);
+}
+
+void ADataCenterSimulationActor::WaterImpactAfterStep()
+{
+ // The whole-site IT heat around a cut: read at the start of the step that applied it and at the end of that step.
+ if(!WaterCutsAwaitingIt.IsEmpty()) {
+  const double ItAfterW=GetSnapshot().TotalItHeatW;
+  for(int32 Index:WaterCutsAwaitingIt) {
+   FaultMonitor.SetWaterImpactCut(Index,WaterCutAppliedS,WaterCutItBeforeW,ItAfterW);
+   const auto& R=FaultMonitor.GetWaterImpacts()[Index];
+   UE_LOG(LogTemp,Warning,TEXT("[WaterImpact] t=%.2f s %s 슬롯 %d(%s) 전원 차단 적용, 그 스텝 전체 IT %.1f → %.1f kW"),WaterCutAppliedS,*R.EquipmentId,R.Slot,*R.Device,WaterCutItBeforeW*1e-3,ItAfterW*1e-3);
+  }
+  WaterCutsAwaitingIt.Reset();
+ }
+ if(!bWaterImpactConfigured) return;
+ const auto& Events=WaterImpactObservation.GetEvents();
+ for(;WaterImpactEventCursor<Events.Num();++WaterImpactEventCursor) {
+  const auto& E=Events[WaterImpactEventCursor];
+  if(!WaterExposureBindings.IsValidIndex(E.Target) || !WaterExposureSnapshot.EquipmentId.IsValidIndex(E.Target)) continue;
+  const auto& B=WaterExposureBindings[E.Target];const auto& X=WaterExposureSnapshot;
+  FVrgWaterImpactRecord R;
+  R.TimeS=E.SimTimeS;R.EquipmentId=B.EquipmentId;R.Rack=B.Slot!=INDEX_NONE?B.InteriorRack:INDEX_NONE;R.Slot=B.Slot;
+  if(R.Rack!=INDEX_NONE && Racks.IsValidIndex(R.Rack) && IsValid(Racks[R.Rack]) && Racks[R.Rack]->Params.Slots.IsValidIndex(R.Slot)) {
+   const auto& P=Racks[R.Rack]->Params;const int32 Type=P.Slots[R.Slot].DeviceType;
+   if(P.DeviceTypes.IsValidIndex(Type)) R.Device=P.DeviceTypes[Type].Name.ToString();
+  }
+  R.From=WaterImpactPhaseName(E.From);R.To=WaterImpactPhaseName(E.To);R.Cause=WaterEvidenceNames(E.Cause);
+  R.ImmersionM=X.FloodImmersionM[E.Target];R.SprayM3=X.SprayTouchedM3[E.Target];R.InteriorM3=X.InteriorPassedM3[E.Target]-X.RearPassedM3[E.Target];
+  const int32 Index=FaultMonitor.AddWaterImpact(R);
+  if((E.To==EWaterImpactPhase::Tripped || E.To==EWaterImpactPhase::Damaged) && !WaterImpactTargetRecord.Contains(E.Target)) WaterImpactTargetRecord.Add(E.Target,Index);
+  UE_LOG(LogTemp,Display,TEXT("[WaterImpact] t=%.2f s %s 슬롯 %d(%s) %s → %s, 원인 %s, 침수 %.1f mm, 분사 %.1f mL, 내부 %.1f mL (문턱 추정)"),
+   R.TimeS,*R.EquipmentId,R.Slot,*R.Device,*R.From,*R.To,*R.Cause,R.ImmersionM*1e3,R.SprayM3*1e6,R.InteriorM3*1e6);
+ }
+}
+
+TSharedRef<FJsonObject> ADataCenterSimulationActor::MakeWaterImpactReportJson() const
+{
+ auto Root=MakeShared<FJsonObject>();
+ Root->SetBoolField(TEXT("enabled"),WaterImpactRequest.bEnabled);Root->SetBoolField(TEXT("applied"),bWaterImpactConfigured);
+ Root->SetBoolField(TEXT("thresholdsEstimated"),true);Root->SetStringField(TEXT("basis"),WaterImpactEstimates::MakePolicy().BasisNote);
+ const FWaterImpactPolicy Shown=WaterImpactEstimates::MakePolicy(WaterImpactRequest.TripS,WaterImpactRequest.DamageS);
+ Root->SetNumberField(TEXT("tripPoweredContactS"),Shown.TripPoweredContactS);Root->SetNumberField(TEXT("damageContactAfterTripS"),Shown.DamageContactAfterTripS);
+ Root->SetNumberField(TEXT("damageCumulativeM3"),Shown.DamageCumulativeM3);Root->SetNumberField(TEXT("sprayArrivalM3"),Shown.SprayArrivalM3);
+ Root->SetNumberField(TEXT("floodImmersionM"),Shown.FloodImmersionM);Root->SetNumberField(TEXT("interiorPresentM3"),Shown.InteriorPresentM3);
+ int32 Counts[4]={0,0,0,0};
+ for(EWaterImpactPhase P:WaterImpactObservation.GetState().Phase) ++Counts[int32(P)];
+ Root->SetNumberField(TEXT("wetTargets"),Counts[1]);Root->SetNumberField(TEXT("trippedTargets"),Counts[2]);Root->SetNumberField(TEXT("damagedTargets"),Counts[3]);
+ Root->SetNumberField(TEXT("rackSlotCuts"),WaterRackPowerCuts.Num());Root->SetNumberField(TEXT("cduCuts"),WaterCduPowerCuts.Num());
+ Root->SetNumberField(TEXT("crahCuts"),WaterCrahPowerCuts.Num());Root->SetNumberField(TEXT("spineCuts"),WaterSpinePowerCuts.Num());
+ TArray<TSharedPtr<FJsonValue>> NoActuator;for(const FString& Id:WaterImpactNoActuator) NoActuator.Add(MakeShared<FJsonValueString>(Id));
+ Root->SetArrayField(TEXT("noActuatorEquipment"),NoActuator);
+ return Root;
 }
 
 
@@ -258,6 +376,11 @@ void ADataCenterSimulationActor::WaterPowerBeforeStep()
  // Preflight both actuator types together before changing anything. No event replay or water mutation.
  FWaterImpactModel Next=WaterImpactObservation;
  if(!Next.SetPowerAtCurrentTime(Clock.GetSimTimeS(),Actual,Error)) {Reject(Error);return;}
+ if(!PendingRack.IsEmpty() || !PendingCdu.IsEmpty() || !PendingCrah.IsEmpty() || !PendingSpine.IsEmpty()) {
+  // Report: which state record caused each cut, and the IT heat just before it (read by WaterImpactAfterStep).
+  WaterCutItBeforeW=GetSnapshot().TotalItHeatW;WaterCutAppliedS=Clock.GetSimTimeS();
+  for(const TArray<int32>* List:{&PendingRack,&PendingCdu,&PendingCrah,&PendingSpine}) for(int32 I:*List) if(const int32* Record=WaterImpactTargetRecord.Find(I)) WaterCutsAwaitingIt.AddUnique(*Record);
+ }
  for(int32 I:PendingRack) {
   const auto& B=WaterExposureBindings[I];auto* Rack=Racks[B.InteriorRack].Get();auto& Input=Rack->GetMutableInput();
   if(Input.SlotPowered.IsEmpty()) Input.SlotPowered.Init(true,FRackThermalModel::NumSlotsOf(Rack->Params));

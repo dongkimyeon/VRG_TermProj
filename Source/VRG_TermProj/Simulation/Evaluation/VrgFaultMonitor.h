@@ -12,7 +12,8 @@
 // (rack, kind) pair is recorded on the integrated clock (rule 4). The monitor also keeps the leak / valve record
 // and tank history for the evaluation report. Plain C++, game thread, no actors (rule 5).
 
-enum class EVrgFaultKind : uint8 { LowCoolantFlow, OverTemperature, InventoryDepleted, HydraulicNotConverged };
+// WaterTrip/WaterDamage (W4): first slot of a rack that water tripped/damaged. Value = that slot index.
+enum class EVrgFaultKind : uint8 { LowCoolantFlow, OverTemperature, InventoryDepleted, HydraulicNotConverged, WaterTrip, WaterDamage };
 
 struct VRG_TERMPROJ_API FVrgFaultSettings
 {
@@ -53,6 +54,17 @@ struct VRG_TERMPROJ_API FVrgTankSample
 	bool operator==(const FVrgTankSample& O) const { return TimeS == O.TimeS && Row == O.Row && PressurePa == O.PressurePa && WaterM3 == O.WaterM3 && LeakedM3 == O.LeakedM3 && bDepleted == O.bDepleted; }
 };
 
+// W4: one state change of one target from the water it touched (any equipment; rack targets are per slot).
+struct VRG_TERMPROJ_API FVrgWaterImpactRecord
+{
+	double TimeS = 0.0; FString EquipmentId; int32 Rack = INDEX_NONE, Slot = INDEX_NONE; FString Device;
+	FString From, To, Cause;
+	double ImmersionM = 0.0, SprayM3 = 0.0, InteriorM3 = 0.0;
+	// The power cut this state caused, when one was applied: its time and the whole-site IT heat over that shared step.
+	double CutAppliedS = -1.0, ItBeforeW = 0.0, ItAfterW = 0.0;
+	bool operator==(const FVrgWaterImpactRecord& O) const { return TimeS == O.TimeS && EquipmentId == O.EquipmentId && Rack == O.Rack && Slot == O.Slot && Device == O.Device && From == O.From && To == O.To && Cause == O.Cause && ImmersionM == O.ImmersionM && SprayM3 == O.SprayM3 && InteriorM3 == O.InteriorM3 && CutAppliedS == O.CutAppliedS && ItBeforeW == O.ItBeforeW && ItAfterW == O.ItAfterW; }
+};
+
 // One step's computed values, per rack in routed order.
 struct VRG_TERMPROJ_API FVrgFaultInput
 {
@@ -72,12 +84,16 @@ public:
 	void AddLeak(const FVrgLeakRecord& R) { Leaks.Add(R); }
 	void AddValve(const FVrgValveRecord& R) { Valves.Add(R); }
 	void AddTankSample(const FVrgTankSample& S) { TankSamples.Add(S); }
+	// Keeps the record; a rack slot reaching tripped/damaged also adds the rack's first WaterTrip/WaterDamage fault. Returns its index.
+	int32 AddWaterImpact(const FVrgWaterImpactRecord& R);
+	void SetWaterImpactCut(int32 Index, double AppliedS, double ItBeforeW, double ItAfterW);
 
 	const FVrgFaultSettings& GetSettings() const { return Settings; }
 	const TArray<FVrgFaultRecord>& GetFaults() const { return Faults; }
 	const TArray<FVrgLeakRecord>& GetLeaks() const { return Leaks; }
 	const TArray<FVrgValveRecord>& GetValves() const { return Valves; }
 	const TArray<FVrgTankSample>& GetTankSamples() const { return TankSamples; }
+	const TArray<FVrgWaterImpactRecord>& GetWaterImpacts() const { return WaterImpacts; }
 	// First fault time of any kind for a rack, or < 0 if none.
 	double GetFirstFaultTimeS(int32 Rack) const;
 
@@ -94,5 +110,6 @@ private:
 	TArray<FVrgLeakRecord> Leaks;
 	TArray<FVrgValveRecord> Valves;
 	TArray<FVrgTankSample> TankSamples;
+	TArray<FVrgWaterImpactRecord> WaterImpacts;
 	void Record(double TimeS, int32 Rack, EVrgFaultKind Kind, double Value, int32& InOutNew);
 };

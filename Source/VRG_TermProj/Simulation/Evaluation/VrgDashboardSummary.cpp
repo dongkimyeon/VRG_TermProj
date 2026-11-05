@@ -1099,7 +1099,7 @@ bool FVrgDashboardLeaks::FromJson(const FString& Json, FVrgDashboardLeaks& Out)
 		bOk = bOk && O->TryGetNumberField(TEXT("timeS"), R.TimeS) && ReadIntField(*O, TEXT("rack"), R.Rack)
 			&& O->TryGetStringField(TEXT("kind"), Kind) && O->TryGetNumberField(TEXT("value"), R.Value);
 		bool bKnown = false;
-		for (const EVrgFaultKind K : { EVrgFaultKind::LowCoolantFlow, EVrgFaultKind::OverTemperature, EVrgFaultKind::InventoryDepleted, EVrgFaultKind::HydraulicNotConverged })
+		for (const EVrgFaultKind K : { EVrgFaultKind::LowCoolantFlow, EVrgFaultKind::OverTemperature, EVrgFaultKind::InventoryDepleted, EVrgFaultKind::HydraulicNotConverged, EVrgFaultKind::WaterTrip, EVrgFaultKind::WaterDamage })
 			if (Kind == FVrgFaultMonitor::KindName(K)) { R.Kind = K; bKnown = true; }
 		bOk = bOk && bKnown;
 	}
