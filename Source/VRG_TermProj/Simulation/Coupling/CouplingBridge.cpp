@@ -7,6 +7,7 @@
 #include "Simulation/Core/VrgPerfCounters.h"
 #include "Simulation/Hydraulics/HydraulicNetwork.h"
 #include "Simulation/Thermal/RackThermalModel.h"
+#include "Async/ParallelFor.h"
 
 void FCouplingBridge::Initialize(const TArray<FRackCouplingTarget>& InTargets,
 	const TArray<FRackCouplingLink>& InLinks)
@@ -21,6 +22,7 @@ void FCouplingBridge::Initialize(const TArray<FRackCouplingTarget>& InTargets,
 	Targets.SetNum(NumRacks);
 	Links.SetNum(NumRacks);
 	TrayInputs.Reset(); TrayInputs.SetNum(NumRacks);
+	TrayTransportKeys.Reset(); TrayTransportKeys.SetNum(NumRacks); TrayTransportBuilt.Reset(); TrayTransportBuilt.SetNum(NumRacks);
 	LastInternalLeakKgs.Init(0.0, 3 * NumRacks); LastInternalLeakHeatW = LastInternalLeakKgs;
 	RackTankTempK.Init(0.0, NumRacks); LastCoupledSubsteps = 0;
 	for (int32 R = 0; R < NumRacks; ++R)
@@ -680,14 +682,18 @@ void FCouplingBridge::StepOnce(double DeltaTimeS, bool bHydraulicsResolved, bool
 	{ FElapsedTimer Time(CouplingStageMs[3]); CloseCoolantLoop(DeltaTimeS); }
 
 	// 4) 랙 열모델을 돌린다. 규약 4대로 모든 도메인이 같은 dt를 쓴다.
+	// 2026-11-06: racks step in parallel (each touches only its own model, input and per-rack entries; no UObject calls,
+	// the game thread waits), then every sum below is taken in rack order exactly as the serial loop did.
 	double ItHeatW = 0.0, ConversionLossW = 0.0;
 	const uint64 RackStart = FPlatformTime::Cycles64();
-	for (int32 RackIndex = 0; RackIndex < Targets.Num(); ++RackIndex)
+	TArray<double> RackLeakW; RackLeakW.Init(0.0, Targets.Num());
+	TArray<uint8> RackFailed; RackFailed.Init(0, Targets.Num());
+	ParallelFor(Targets.Num(), [&](int32 RackIndex)
 	{
 		const FRackCouplingTarget& Target = Targets[RackIndex];
 		if (Target.Model == nullptr || Target.Input == nullptr)
 		{
-			continue;
+			return;
 		}
 
 		if (Target.Model->UsesTrayCoolant() && !Links[RackIndex].Internal.Slots.IsEmpty())
@@ -703,13 +709,23 @@ void FCouplingBridge::StepOnce(double DeltaTimeS, bool bHydraulicsResolved, bool
 					OldWater.GetTrayTempK(), OldWater.GetReturnTempK(), Water.SupplyTempK, Water.ReturnBoundaryTempK, OldWater.GetReferenceTempK())
 					+ Water.Network.ClassLeakKgs[Kind] * Cp * (OldWater.GetReferenceTempK() - RackTankTempK[RackIndex]);
 			}
-			if (!ensureMsgf(Target.Model->StepWithTrayCoolant(*Target.Input, Water, DeltaTimeS, 1), TEXT("Invalid common tray coupling step"))) return;
+			if (!Target.Model->StepWithTrayCoolant(*Target.Input, Water, DeltaTimeS, 1)) { RackFailed[RackIndex] = 1; return; }
 			// Initial-temperature enthalpy -> existing tank-reference net heat (rule 6).
-			const double LeakW = Target.Model->GetLastTrayLeakHeatW()
+			RackLeakW[RackIndex] = Target.Model->GetLastTrayLeakHeatW()
 				+ Water.Network.LeakKgs * Cp * (OldWater.GetReferenceTempK() - RackTankTempK[RackIndex]);
-			LastLeakHeatW += LeakW; LeakHeatJ += LeakW * DeltaTimeS;
 		}
 		else Target.Model->Step(*Target.Input, DeltaTimeS);
+	}, IsRackParallel() ? EParallelForFlags::None : EParallelForFlags::ForceSingleThread);
+	// A failed rack rejects the coupled step as before (the other racks have now stepped too; the step is rejected anyway).
+	if (!ensureMsgf(!RackFailed.Contains(1), TEXT("Invalid common tray coupling step"))) return;
+	for (int32 RackIndex = 0; RackIndex < Targets.Num(); ++RackIndex)
+	{
+		const FRackCouplingTarget& Target = Targets[RackIndex];
+		if (Target.Model == nullptr || Target.Input == nullptr) continue;
+		if (Target.Model->UsesTrayCoolant() && !Links[RackIndex].Internal.Slots.IsEmpty())
+		{
+			LastLeakHeatW += RackLeakW[RackIndex]; LeakHeatJ += RackLeakW[RackIndex] * DeltaTimeS;
+		}
 		ItHeatW += Target.Model->GetLastTotalHeatW();
 		ConversionLossW += Target.Model->GetLastConversionLossW();
 		RackCoolantOutJ += Target.Model->GetLastHeatRemovedByCoolantW() * DeltaTimeS;

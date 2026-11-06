@@ -2653,7 +2653,11 @@ void ADataCenterSimulationActor::SprayAfterStep(double DtS)
 	}
 	// W3 advances ONCE over the shared interval, including residual water after repair.
 	if (FloorWater.HasWater()) FloorWater.Step(DtS, Clock.GetSimTimeS());
-	ObserveWaterExposure(Clock.GetSimTimeS()+DtS); // Once, after all W2/W3/W3.5 water; also runs when dry.
+	{
+		const uint64 ObserveStart = FPlatformTime::Cycles64();
+		ObserveWaterExposure(Clock.GetSimTimeS()+DtS); // Once, after all W2/W3/W3.5 water; also runs when dry.
+		if (bWarmupMeasuring) WarmupObserveMs += FPlatformTime::ToMilliseconds64(FPlatformTime::Cycles64() - ObserveStart);
+	}
 	if (!bStepSpray && !FloorWater.HasWater() && RackInterior.GetWater().ReceivedM3 == 0.0) return;
 	const int32 Second = FMath::FloorToInt32((Clock.GetSimTimeS() + DtS) / 2.0);
 	if (Second != LastSprayLogSecond) { LastSprayLogSecond = Second; LogSprayStatus(); }
@@ -3672,6 +3676,8 @@ void ADataCenterSimulationActor::QueueWarmupSteps(int32 NumSteps)
 	WarmupStepsReported = PendingWarmupSteps;
 	if (AirField != nullptr) AirField->GetMutableSolver().ResetStageTimes();
 	WarmupCouplingMs = WarmupRackMs = 0.0;
+	FMemory::Memzero(WarmupStageMs); FMemory::Memzero(WarmupEvalMs); FMemory::Memzero(WarmupDetailMs); FMemory::Memzero(WarmupCpuPressureMs);
+	WarmupObserveMs = WarmupInventoryMs = WarmupWaterMs = 0.0; WarmupTransportReuses = WarmupTransportBuilds = 0;
 	WarmupInletSumK.Reset(); WarmupInletMaxK.Reset();
 	WarmupInletSamples = 0;
 	VrgPerf::PendingWarmupSteps() = PendingWarmupSteps;
@@ -3700,22 +3706,39 @@ void ADataCenterSimulationActor::DrainWarmupSteps()
 		const bool bHydraulicsResolved = (Room != nullptr) && Room->ConsumeRebuiltFlag();
 		Clock.BeginFrame(Clock.GetFixedStepS());
 		const uint64 StepStart = FPlatformTime::Cycles64();
-		EvalBeforeStep();
-		WaterPowerBeforeStep();
+		const VrgPerf::FFrameCosts CostsBefore = VrgPerf::Accumulator();
+		uint64 Mark = StepStart;
+		auto Lap = [&Mark, this](int32 Stage) { const uint64 Now = FPlatformTime::Cycles64(); WarmupStageMs[Stage] += FPlatformTime::ToMilliseconds64(Now - Mark); Mark = Now; };
+		bWarmupMeasuring = true;
+		EvalBeforeStep(); Lap(0);
+		WaterPowerBeforeStep(); Lap(1);
 		if (Room != nullptr) Room->StepCoolantInventory(Clock.GetFixedStepS(), Clock.GetSimTimeS());
-		PlantBeforeStep();
-		Bridge.Step(Clock.GetFixedStepS(), bHydraulicsResolved, (Room == nullptr) || Room->GetLastSolveResult().bConverged);
-		PlantAfterStep(Clock.GetFixedStepS());
-		SprayAfterStep(Clock.GetFixedStepS()); AirFlowAfterStep(Clock.GetFixedStepS());   // W2: the same step path as Tick
+		Lap(2);
+		PlantBeforeStep(); Lap(3);
+		Bridge.Step(Clock.GetFixedStepS(), bHydraulicsResolved, (Room == nullptr) || Room->GetLastSolveResult().bConverged); Lap(4);
+		PlantAfterStep(Clock.GetFixedStepS()); Lap(5);
+		SprayAfterStep(Clock.GetFixedStepS()); Lap(6);
+		AirFlowAfterStep(Clock.GetFixedStepS()); Lap(7);   // W2: the same step path as Tick
 		WarmupCouplingMs +=FPlatformTime::ToMilliseconds64(FPlatformTime::Cycles64() - StepStart);
 		WarmupRackMs += Bridge.GetLastRackModelsMs();
+		WarmupTransportReuses += Bridge.GetLastTrayTransportReuses(); WarmupTransportBuilds += Bridge.GetLastTrayTransportBuilds();
 		VrgPerf::Accumulator().RackModelsMs += Bridge.GetLastRackModelsMs();
  for(int32 I=0;I<5;++I) VrgPerf::Accumulator().DetailMs[9+I]+=Bridge.GetLastCouplingStageMs(I);
  for(int32 I=0;I<7;++I) VrgPerf::Accumulator().DetailMs[14+I]+=Bridge.GetLastAirStageMs(I);
  for(int32 I=0;I<10;++I) VrgPerf::Accumulator().CpuPressureMs[I]+=Bridge.GetLastCpuPressureCosts().Ms[I];
  VrgPerf::Accumulator().CpuMgBuilds+=Bridge.GetLastCpuPressureCosts().Builds;VrgPerf::Accumulator().CpuMgSolves+=Bridge.GetLastCpuPressureCosts().Solves;
 		Clock.CompleteStep();
-		EvalAfterStep();
+		Mark = FPlatformTime::Cycles64();
+		EvalAfterStep(); Lap(8);   // outside WarmupCouplingMs and the Tick CouplingMs scope, measured on its own
+		bWarmupMeasuring = false;
+		{
+			// Nested costs the step left in the frame accumulator (the frame may also end elsewhere: only this step's delta).
+			const VrgPerf::FFrameCosts& After = VrgPerf::Accumulator();
+			for (int32 I = 0; I < 21; ++I) WarmupDetailMs[I] += After.DetailMs[I] - CostsBefore.DetailMs[I];
+			for (int32 I = 0; I < 10; ++I) WarmupCpuPressureMs[I] += After.CpuPressureMs[I] - CostsBefore.CpuPressureMs[I];
+			WarmupInventoryMs += After.InventoryHydraulicsMs - CostsBefore.InventoryHydraulicsMs;
+			WarmupWaterMs += After.WaterMs - CostsBefore.WaterMs;
+		}
 		--PendingWarmupSteps;
 
 		if (PendingWarmupSteps < WarmupStepsReported / 4)
@@ -3782,6 +3805,25 @@ void ADataCenterSimulationActor::DrainWarmupSteps()
 		UE_LOG(LogTemp, Display, TEXT("[VrgSim] 스텝 평균 %.2f ms = 랙 모델 %.2f ms + 공기 + 나머지 | %s"),
 			WarmupCouplingMs / FMath::Max(WarmupStepsReported, 1), WarmupRackMs / FMath::Max(WarmupStepsReported, 1),
 			AirField ? *AirField->GetMutableSolver().DescribeStageTimes() : TEXT("-"));
+		{
+			// W3.5 cost table (ms per step, measurement only). Sections are disjoint; details are nested inside them.
+			const double N = FMath::Max(WarmupStepsReported, 1);
+			static const TCHAR* StageNames[9] = { TEXT("EvalBefore"), TEXT("WaterPower"), TEXT("Inventory"), TEXT("PlantBefore"), TEXT("Bridge"), TEXT("PlantAfter"), TEXT("Water"), TEXT("AirFlowView"), TEXT("EvalAfter") };
+			static const TCHAR* DetailNames[21] = { TEXT("HydSetup"), TEXT("HydResidual"), TEXT("HydJacobian"), TEXT("SparseAssembly"), TEXT("SparseAnalyze"), TEXT("SparseFactor"), TEXT("SparseBacksolve"), TEXT("HydDense"), TEXT("InventoryOther"),
+				TEXT("Transport"), TEXT("TrayLimit"), TEXT("PullInputs"), TEXT("CoolantHx"), TEXT("PushAir"), TEXT("Air0"), TEXT("Air1"), TEXT("Air2"), TEXT("Air3"), TEXT("Air4"), TEXT("Air5"), TEXT("Air6") };
+			static const TCHAR* MgNames[10] = { TEXT("Cache"), TEXT("Pack"), TEXT("Setup"), TEXT("ApplyA"), TEXT("Smooth"), TEXT("Restrict"), TEXT("Prolong"), TEXT("GaugeDot"), TEXT("Residual"), TEXT("Update") };
+			FString Line; double Total = 0.0;
+			for (int32 I = 0; I < 9; ++I) { Line += FString::Printf(TEXT(" %s=%.3f"), StageNames[I], WarmupStageMs[I] / N); Total += WarmupStageMs[I]; }
+			UE_LOG(LogTemp, Display, TEXT("[VrgCost] 스텝 %d개, 합계 %.3f ms/스텝 |%s"), WarmupStepsReported, Total / N, *Line);
+			Line.Reset();
+			for (int32 I = 0; I < 21; ++I) Line += FString::Printf(TEXT(" %s=%.3f"), DetailNames[I], WarmupDetailMs[I] / N);
+			UE_LOG(LogTemp, Display, TEXT("[VrgCost] 안쪽 | RackModels=%.3f InventoryHyd=%.3f WaterAll=%.3f WaterObserve=%.3f |%s"), WarmupRackMs / N, WarmupInventoryMs / N, WarmupWaterMs / N, WarmupObserveMs / N, *Line);
+			Line.Reset();
+			for (int32 I = 0; I < 10; ++I) Line += FString::Printf(TEXT(" %s=%.3f"), MgNames[I], WarmupCpuPressureMs[I] / N);
+			UE_LOG(LogTemp, Display, TEXT("[VrgCost] 랙 수송 계수: 재사용 %lld, 새로 만듦 %lld"), WarmupTransportReuses, WarmupTransportBuilds);
+			UE_LOG(LogTemp, Display, TEXT("[VrgCost] EvalAfter | Fault=%.3f Eval=%.3f Instruments=%.3f Protection=%.3f | CPU 압력 MG%s"),
+				WarmupEvalMs[0] / N, WarmupEvalMs[1] / N, WarmupEvalMs[2] / N, WarmupEvalMs[3] / N, *Line);
+		}
 		// Which cabinet breathes the hottest air (racks first, then spines, as in the bridge).
 		int32 HottestIndex = 0;
 		for (int32 I = 1; I < Snap.RackAirInletTempK.Num(); ++I)
@@ -4003,7 +4045,9 @@ void ADataCenterSimulationActor::FaultAfterStep()
 
 void ADataCenterSimulationActor::EvalAfterStep()
 {
-	FaultAfterStep();
+	uint64 Mark = FPlatformTime::Cycles64();
+	auto Lap = [&Mark, this](int32 Part) { const uint64 Now = FPlatformTime::Cycles64(); if (bWarmupMeasuring) WarmupEvalMs[Part] += FPlatformTime::ToMilliseconds64(Now - Mark); Mark = Now; };
+	FaultAfterStep(); Lap(0);
 	const TArray<double>& Inlets = Bridge.GetLastAirInletTempK();
 	if (!bEvalReady || Eval.GetNumInlets() != Inlets.Num())
 	{
@@ -4021,9 +4065,9 @@ void ADataCenterSimulationActor::EvalAfterStep()
 	// S8 F5: plant pumps, dry cooler fans, compressors (only with the plant model; the fixed boundary has none).
 	Power.bPlant = bPlantActive && Plant.IsThermalActive();
 	Power.PlantW = Power.bPlant ? Plant.GetPlantElectricW() : 0.0;
-	Eval.AfterStep(Clock.GetSimTimeS(), Clock.GetFixedStepS(), Inlets, Power);
-	InstrumentsAfterStep();
-	LeakProtectionAfterStep();   // W5-3: acts on the next step's inputs
+	Eval.AfterStep(Clock.GetSimTimeS(), Clock.GetFixedStepS(), Inlets, Power); Lap(1);
+	InstrumentsAfterStep(); Lap(2);
+	LeakProtectionAfterStep(); Lap(3);   // W5-3: acts on the next step's inputs
 }
 
 double ADataCenterSimulationActor::GetSiteEnergyInJ() const

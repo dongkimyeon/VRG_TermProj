@@ -8,9 +8,12 @@ bool FWaterExposureSnapshot::IsValid(FString& Error) const
   if(A->Num()!=N) {Error=TEXT("Exposure SoA length mismatch");return false;}
   for(double V:*A) if(!FMath::IsFinite(V) || V<0) {Error=TEXT("Exposure must be finite and nonnegative");return false;}
  }
+ // Hashed duplicate check: the pairwise string compare was O(N^2) and cost 23.6 ms per step at L_Test's 1227 targets (2026-11-06).
+ TSet<TPair<FString,int32>> Seen;Seen.Reserve(N);
  for(int32 I=0;I<N;++I) {
   if(EquipmentId[I].IsEmpty() || Slot[I]<INDEX_NONE || (Available[I]&~uint8(15))) {Error=TEXT("Invalid equipment/slot/source mask");return false;}
-  for(int32 J=0;J<I;++J) if(EquipmentId[J]==EquipmentId[I] && Slot[J]==Slot[I]) {Error=TEXT("Duplicate equipment/slot target");return false;}
+  bool bDuplicate=false;Seen.Add(TPair<FString,int32>(EquipmentId[I],Slot[I]),&bDuplicate);
+  if(bDuplicate) {Error=TEXT("Duplicate equipment/slot target");return false;}
   if(RearPassedM3[I]>InteriorPassedM3[I]) {Error=TEXT("Rear history is not a separate mass ledger");return false;}
   const bool Values[]={SprayTouchedM3[I]!=0,FloodImmersionM[I]!=0,InteriorPassedM3[I]!=0 || InteriorHeldM3[I]!=0 || InteriorMovingM3[I]!=0,RearPassedM3[I]!=0 || RearMovingM3[I]!=0};
   for(int32 K=0;K<4;++K) if(!(Available[I]&(1<<K)) && Values[K]!=0) {Error=TEXT("Exposure value without a known source");return false;}

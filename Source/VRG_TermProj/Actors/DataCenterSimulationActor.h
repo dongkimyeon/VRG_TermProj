@@ -706,6 +706,12 @@ private:
 	TArray<double> WarmupInletSumK, WarmupInletMaxK;
 	int32 WarmupInletSamples = 0;
 	double WarmupCouplingMs = 0.0, WarmupRackMs = 0.0;  // wall time over the warmup (measurement)
+	// W3.5 step cost by section over vrg.Air.RunSteps (measurement only, 2026-11-06): the step calls in order, then the
+	// after-step evaluation split (fault, evaluation, instruments, protection) and the W4 water observation.
+	double WarmupStageMs[9] = {}, WarmupEvalMs[4] = {}, WarmupObserveMs = 0.0;
+	double WarmupDetailMs[21] = {}, WarmupCpuPressureMs[10] = {}, WarmupInventoryMs = 0.0, WarmupWaterMs = 0.0;
+	bool bWarmupMeasuring = false;
+	int64 WarmupTransportReuses = 0, WarmupTransportBuilds = 0;
 	void DrainWarmupSteps();
 
 	// 연결이 성립했는지. 안 되면 화면에 이유를 띄운다.

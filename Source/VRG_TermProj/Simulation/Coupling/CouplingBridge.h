@@ -382,6 +382,13 @@ public:
 
 #if WITH_DEV_AUTOMATION_TESTS
 	void SetIndexedTransportForTesting(bool bEnable) { bIndexedTransport=bEnable; }
+	// Reuse of a rack's tray transport when every value its builder reads is bit-identical (2026-11-06). On by default;
+	// tests turn it off to compare. Hits/builds of the last Step.
+	void SetTrayTransportReuse(bool bEnable) { bReuseTrayTransport=bEnable; for (auto& K : TrayTransportKeys) K.Reset(); }
+	void SetRackParallel(bool bEnable) { bRackParallel=bEnable; }
+	bool IsRackParallel() const;
+	int32 GetLastTrayTransportReuses() const { return LastTrayTransportReuses; }
+	int32 GetLastTrayTransportBuilds() const { return LastTrayTransportBuilds; }
 #endif
 
 private:
@@ -389,6 +396,11 @@ private:
 	bool PrepareTrayTransport();
 	bool bIndexedTransport=false; // candidate until same-input verification
 	TArray<FTrayCoolantInput> TrayInputs;
+	bool bReuseTrayTransport=true;
+	TArray<TArray<double>> TrayTransportKeys;      // per rack: the exact builder inputs of the cached output
+	TArray<FTrayCoolantInput> TrayTransportBuilt;  // per rack: the builder's output as it left the builder
+	bool bRackParallel=true;
+	int32 LastTrayTransportReuses=0, LastTrayTransportBuilds=0;
 	TArray<double> LastInternalLeakKgs, LastInternalLeakHeatW, RackTankTempK;
 	int32 LastCoupledSubsteps = 0;
 	TArray<FRackCouplingTarget> Targets;

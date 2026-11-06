@@ -240,12 +240,12 @@ bool ADataCenterSimulationActor::ObserveWaterExposure(double EndTimeS,bool bBase
  FWaterExposureSnapshot Next;FString Error;
  if(!WaterExposure::Collect(WaterExposureBindings,EndTimeS,Spray.GetGeometry(),Spray.GetWetting(),FloorWater.GetFloods(),RackInterior.GetWater(),WaterRackIds,Next,Error)) return Fail(Error);
  Next.Diagnostics.Append(WaterMappingDiagnostics);
- // Publish exposure and impact together. A rejected state sample cannot advance either ledger.
- FWaterImpactModel NextImpact=WaterImpactObservation;
+ // Publish exposure and impact together. A rejected state sample cannot advance either ledger: Step changes nothing when it
+ // fails and is the last check, so it runs on the model itself (copying the model copied two 1227-target snapshots per step).
  TArray<bool> ActualPower=WaterImpactPowered;
  if((bRackWaterTripResponse || bCduWaterTripResponse || bCrahWaterTripResponse || bSpineWaterTripResponse) && !ActualWaterPower(WaterImpactPowered,ActualPower,Error,bRackWaterTripResponse,bCduWaterTripResponse,bCrahWaterTripResponse,bSpineWaterTripResponse)) return Fail(Error);
- if(bWaterImpactConfigured && !NextImpact.Step(Next,ActualPower,Error)) return Fail(Error);
- WaterExposureSnapshot=MoveTemp(Next);if(bWaterImpactConfigured) WaterImpactObservation=MoveTemp(NextImpact);bWaterExposureCurrent=true;if(!bBaseline) ++WaterObservationCount;
+ if(bWaterImpactConfigured && !WaterImpactObservation.Step(Next,ActualPower,Error)) return Fail(Error);
+ WaterExposureSnapshot=MoveTemp(Next);bWaterExposureCurrent=true;if(!bBaseline) ++WaterObservationCount;
  WaterObservationDiagnostic=bWaterImpactConfigured?((bRackWaterTripResponse || bCduWaterTripResponse || bCrahWaterTripResponse || bSpineWaterTripResponse)?TEXT("Water exposure/state current; explicit equipment trip response enabled"):TEXT("Water exposure/state current; observational policy (no new shutdown commands)")):TEXT("Water exposure current; impact policy unset (state not evaluated)");return true;
 }
 
