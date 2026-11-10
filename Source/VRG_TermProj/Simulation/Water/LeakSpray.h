@@ -188,6 +188,8 @@ public:
 	const TArray<FVector>& GetLastStepTrailFromM() const { return TrailFrom; }
 	const TArray<FVector>& GetLastStepTrailToM() const { return TrailTo; }
 	const TArray<uint8>& GetLastStepTrailIsJet() const { return TrailJet; }
+	// W6: diameter of what travelled each trail (jet: the jet diameter, drop: the drop diameter at the start of the step).
+	const TArray<double>& GetLastStepTrailDiameterM() const { return TrailDia; }
 	const TArray<FSprayFilm>& GetFilms() const { return Films; }
 	const TMap<FIntPoint, double>& GetFloorBinsM3() const { return FloorBins; }
 	// Outdoor ground deposits (cumulative, FloorBinM bins), W5 yard leak cables read them (2026-11-03).
@@ -234,6 +236,7 @@ private:
 
 	TArray<FVector> TrailFrom, TrailTo;
 	TArray<uint8> TrailJet;
+	TArray<double> TrailDia;
 	TArray<FSprayFilm> Films;
 	TMap<uint64, int32> FilmIndex;
 	TMap<FIntPoint, double> FloorBins, GroundBins;

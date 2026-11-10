@@ -2262,6 +2262,7 @@ void ADataCenterSimulationActor::Tick(float DeltaTime)
 		DrawSummary();
 	}
 	DrawSpray();
+	UpdateWaterDisplay();
 	UpdateAirFlowView();
 	UpdatePlantDisplay(false);
 	// After the steps so the published copy is the state at this frame's SimTime.
@@ -2919,8 +2920,8 @@ void ADataCenterSimulationActor::UpdateAirFlowView()
 void ADataCenterSimulationActor::DrawSpray() const
 {
 	UWorld* World = GetWorld();
-	if (World == nullptr || !bShowSpray || !Spray.HasWater() || Mode != ESimMode::Simulation) return;
-	// Debug drawing of the computed water (W2 check view; the real water surface is W6). Each point is one parcel.
+	if (World == nullptr || !bShowSpray || WaterShowStyle != 2 || !Spray.HasWater() || Mode != ESimMode::Simulation) return;
+	// Debug drawing of the computed water (W2 check view, vrg.Water.Show 2; the water display is W6). Each point is one parcel.
 	const TArray<FVector>& P = Spray.GetParcelPositionsM();
 	const TArray<uint8>& J = Spray.GetParcelIsJet();
 	for (int32 I = 0; I < P.Num(); ++I)
@@ -4257,6 +4258,21 @@ bool ADataCenterSimulationActor::WriteEvaluationReport(const FString& Name, FStr
 	// S2b step 5 (optional field; older reports lack it): leaks, valves, tank history, first fault times.
 	Root->SetObjectField(TEXT("s2b"), FaultMonitor.ToJsonObject());
 	Root->SetObjectField(TEXT("waterImpact"), MakeWaterImpactReportJson());   // W4 (optional field): policy, state counts, power cuts
+	{
+		// W6 (optional field): the drawn water against the computed water, from a snapshot built now.
+		FWaterDisplaySnapshot Now;
+		WaterDisplay::Build(FloorWater, Spray, &WaterEverWet, WaterDisplaySettings, Now);
+		const FWaterDisplayTotals& T = Now.Totals;
+		TSharedRef<FJsonObject> W = MakeShared<FJsonObject>();
+		W->SetNumberField(TEXT("floorShownM3"), T.FloorShownM3); W->SetNumberField(TEXT("floorComputedM3"), T.FloorComputedM3); W->SetNumberField(TEXT("floorHiddenM3"), T.FloorHiddenM3);
+		W->SetNumberField(TEXT("trayShownM3"), T.TrayShownM3); W->SetNumberField(TEXT("trayComputedM3"), T.TrayComputedM3);
+		W->SetNumberField(TEXT("filmShownM3"), T.FilmShownM3); W->SetNumberField(TEXT("filmComputedM3"), T.FilmComputedM3);
+		W->SetNumberField(TEXT("airShownM3"), T.AirShownM3); W->SetNumberField(TEXT("airComputedM3"), T.AirComputedM3);
+		W->SetNumberField(TEXT("parcelsShown"), T.ParcelsShown); W->SetNumberField(TEXT("parcelsComputed"), T.ParcelsComputed);
+		W->SetNumberField(TEXT("surfaceCells"), T.SurfaceCells); W->SetNumberField(TEXT("wetMarkCells"), T.WetMarkCells); W->SetNumberField(TEXT("wetSkins"), T.WetSkins);
+		W->SetNumberField(TEXT("residual"), T.Residual);
+		Root->SetObjectField(TEXT("waterDisplay"), W);
+	}
 	// 2026-10-23 (optional field): the instrument points and the leak alarms of their detection cables (D9 / D4).
 	TSharedRef<FJsonObject> InstrumentsJson = MakeShared<FJsonObject>();
 	InstrumentsJson->SetNumberField(TEXT("points"), Instruments.Num());
@@ -4671,10 +4687,19 @@ static FAutoConsoleCommand GVrgWaterGpuCommand(
 
 static FAutoConsoleCommand GVrgWaterShowCommand(
 	TEXT("vrg.Water.Show"),
-	TEXT("W2: 계산한 물 입자·물막·바닥 물 디버그 표시. vrg.Water.Show <0|1>"),
+	TEXT("계산한 물 표시. vrg.Water.Show <0|1|2> (0 끔, 1 물 표시 W6, 2 디버그 점·선 W2/W3)"),
 	FConsoleCommandWithArgsDelegate::CreateLambda([](const TArray<FString>& Args)
 	{
-		for (ADataCenterSimulationActor* Sim : EvalSimActors()) Sim->bShowSpray = Args.Num() == 0 || FCString::Atoi(*Args[0]) != 0;
+		const int32 Style = Args.Num() == 0 ? 1 : FMath::Clamp(FCString::Atoi(*Args[0]), 0, 2);
+		for (ADataCenterSimulationActor* Sim : EvalSimActors())
+		{
+			Sim->bShowSpray = Style != 0;
+			if (Style != 0) Sim->WaterShowStyle = Style;
+			const FWaterDisplayTotals& T = Sim->GetWaterDisplayTotals();
+			UE_LOG(LogTemp, Display, TEXT("[Water] 표시 %s, 바닥 표시 %.4f L / 계산 %.4f L (숨김 %.4f L), 공중 입자 %d/%d, 물막 %.4f/%.4f L, 표시 잔차 %.3g"),
+				Style == 0 ? TEXT("끔") : Style == 1 ? TEXT("물") : TEXT("디버그"), T.FloorShownM3 * 1e3, T.FloorComputedM3 * 1e3, T.FloorHiddenM3 * 1e3,
+				T.ParcelsShown, T.ParcelsComputed, T.FilmShownM3 * 1e3, T.FilmComputedM3 * 1e3, T.Residual);
+		}
 	}));
 
 static FAutoConsoleCommand GVrgWaterDemoCommand(

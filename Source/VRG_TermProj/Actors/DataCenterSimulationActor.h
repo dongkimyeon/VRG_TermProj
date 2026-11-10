@@ -19,6 +19,7 @@
 #include "Simulation/Air/AirStreamlines.h"
 #include "Simulation/Air/AirFlowAverager.h"
 #include "Visualization/AirFlowView.h"
+#include "Visualization/WaterDisplay.h"
 #include "Actors/PlantEquipmentActor.h"
 #include "Simulation/Evaluation/VrgDashboardSummary.h"
 #include "Interaction/VrgCrahLifecycle.h"
@@ -346,6 +347,28 @@ public:
 	// Debug drawing of the computed parcels (vrg.Water.Show). Display only.
 	UPROPERTY(EditAnywhere, Category = "Leak")
 	bool bShowSpray = true;
+	// W6 (2026-11-10): 1 = water display (Visualization/WaterDisplay.h, AWaterDisplayActor), 2 = the W2/W3 debug lines/points.
+	// vrg.Water.Show 0|1|2. Display only.
+	UPROPERTY(EditAnywhere, Category = "Leak")
+	int32 WaterShowStyle = 1;
+	// The last built water display snapshot's totals (shown vs computed volumes, parcels), zero when nothing is shown.
+	const FWaterDisplayTotals& GetWaterDisplayTotals() const { return WaterDisplaySnapshot.Totals; }
+	const FWaterDisplaySnapshot& GetWaterDisplaySnapshot() const { return WaterDisplaySnapshot; }
+	// Builds the snapshot now from the current water state (also used by tests); bUpdateMarks advances the wet-mark memory.
+	void BuildWaterDisplay(bool bUpdateMarks = true);
+	// W6: the W4 state of every exposure target that is not Normal, with the box to outline (world m).
+	struct FWaterImpactView
+	{
+		FString EquipmentId;
+		int32 Slot = INDEX_NONE;
+		uint8 Phase = 0;   // EWaterImpactPhase: 1 wet, 2 tripped, 3 damaged
+		FVector CenterM = FVector::ZeroVector;
+		FQuat Rotation = FQuat::Identity;
+		FVector HalfM = FVector::ZeroVector;
+	};
+	void GetWaterImpactViews(TArray<FWaterImpactView>& Out) const;
+	// The latest W4 state changes (newest last), as HUD lines.
+	void GetWaterImpactEventLines(int32 MaxLines, TArray<FString>& Out) const;
 	// ---- Air view (2026-10-27, the professor's streamtrace figure; Visualization/AirFlowView.h) ----
 	// Display only: the solver is not touched. Streamlines follow the time-averaged flow (last 30 s, FAirFlowAverager),
 	// rebuilt once a second while a stream / plan / arrow mode is on. V cycles the modes (ADataCenterDebugController).
@@ -819,6 +842,14 @@ private:
 	FSprayGeometry BuildSprayGeometry(TArray<FWaterSourceTarget>* Targets=nullptr) const;
 	void SprayAfterStep(double DtS);
 	void DrawSpray() const;
+	// W6 water display.
+	UPROPERTY(Transient) TObjectPtr<class AWaterDisplayActor> WaterDisplayActor;
+	FWaterDisplaySnapshot WaterDisplaySnapshot;
+	FWaterDisplaySettings WaterDisplaySettings;
+	TArray<uint8> WaterEverWet;
+	double LastWaterFloorWallS = -1.0, LastWaterDisplaySimS = -1.0;
+	void UpdateWaterDisplay();
+	void DrawWaterImpactOutlines() const;
 	double WaterDemoHoleM = -1.0;   // pending vrg.Water.Demo hole [m]; < 0 = none
 	void TickWaterDemo();
 	// S8 F8-2: the same plant with the automatic counts (no placed units), built at the same entry; layout conversion only.

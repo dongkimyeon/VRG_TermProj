@@ -104,6 +104,18 @@ void ADataCenterLayoutHud::DrawTemperatureLabels()
 		const FString Text = Sim->DescribeInstrument(I);
 		if (!Text.IsEmpty()) Label(WorldCm + FVector(0, 0, bPipe ? 12.0 : 0.0), Text, bPipe ? FLinearColor(.75f, .95f, .9f) : FLinearColor(.95f, .9f, .7f), bPipe ? 3 : 2);
 	}
+	// W6: W4 water states (after the leak alarms in priority, plan L6). Wet = cyan, tripped = orange, damaged = red.
+	{
+		TArray<ADataCenterSimulationActor::FWaterImpactView> Views;
+		Sim->GetWaterImpactViews(Views);
+		for (const auto& V : Views)
+		{
+			const TCHAR* State = V.Phase >= 3 ? TEXT("침수 손상") : V.Phase == 2 ? TEXT("침수 트립") : TEXT("젖음");
+			const FLinearColor C = V.Phase >= 3 ? FLinearColor(1.f, .25f, .25f) : V.Phase == 2 ? FLinearColor(1.f, .6f, .1f) : FLinearColor(.3f, .85f, 1.f);
+			const FString Text = V.Slot != INDEX_NONE ? FString::Printf(TEXT("%s | %s 슬롯 %d"), State, *V.EquipmentId, V.Slot) : FString::Printf(TEXT("%s | %s"), State, *V.EquipmentId);
+			Label(SimUnits::MetersToUnreal(V.CenterM + FVector(0, 0, V.HalfM.Z)), Text, C, V.Phase >= 2 ? 0 : 1);
+		}
+	}
 	Labels.Sort([](const FLabel& A, const FLabel& B) { return A.Priority != B.Priority ? A.Priority < B.Priority : A.DistCm < B.DistCm; });
 	TArray<FBox2f> Drawn;
 	for (const FLabel& L : Labels)
@@ -168,6 +180,24 @@ void ADataCenterLayoutHud::DrawHUD()
 	DrawTemperatureLabels();   // under the key hint
 	DrawRackLeakTool();
 	DrawAirLegend();
+	// W6: the latest W4 state changes, top right (the full record is in the report's faults).
+	if (UFont* Font = GEngine ? GEngine->GetSmallFont() : nullptr)
+	{
+		ADataCenterSimulationActor* Sim = nullptr;
+		for (TActorIterator<ADataCenterSimulationActor> It(GetWorld()); It; ++It) { Sim = *It; break; }
+		TArray<FString> Events;
+		if (Sim && Sim->GetSimMode() == ESimMode::Simulation) Sim->GetWaterImpactEventLines(6, Events);
+		if (!Events.IsEmpty())
+		{
+			Events.Insert(TEXT("침수 사건 (W4, 문턱 추정)"), 0);
+			float W = 0.f, H = 0.f, MaxW = 0.f;
+			for (const FString& L : Events) { Canvas->TextSize(Font, L, W, H); MaxW = FMath::Max(MaxW, W); }
+			const float LineH = Font->GetMaxCharHeight() + 4.f, X0 = Canvas->ClipX - MaxW - 30.f, Y0 = 20.f;
+			DrawRect(FLinearColor(0, 0, 0, .6f), X0 - 8.f, Y0 - 4.f, MaxW + 16.f, Events.Num() * LineH + 8.f);
+			for (int32 I = 0; I < Events.Num(); ++I)
+				DrawText(Events[I], I == 0 ? FLinearColor(.8f, .9f, 1.f) : FLinearColor(1.f, .75f, .5f), X0, Y0 + I * LineH, Font);
+		}
+	}
 
 	// Key hint on the canvas: the engine's on-screen message list would also print its "DisableAllScreenMessages" hint.
 	TArray<FString> Lines;
