@@ -193,6 +193,9 @@ public:
 	// latched until the next Initialize) when no shelf is live or the last step's DC load exceeded the capacity: the
 	// order of a real overload response (OCP, power capping) is not public, ESTIMATE.
 	bool IsBusbarTripped() const { return bBusbarTripped; }
+	// W5 recovery (2026-11-10): the operator recloses the rack breaker. The next step checks the live shelves again and
+	// trips once more when they cannot carry the load.
+	void ResetBusbarTrip() { bBusbarTripped = false; }
 	int32 GetLiveShelves() const { return LastLiveShelves; }
 	int32 GetTotalShelves() const { return LastTotalShelves; }
 	double GetBusbarCapacityW() const { return LastBusbarCapacityW; }

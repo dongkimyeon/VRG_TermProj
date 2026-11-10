@@ -34,6 +34,9 @@ namespace
 			Sim = World->SpawnActor<ADataCenterSimulationActor>();
 			Sim->bShowSummary = false; Sim->MaxStepsPerFrame = 16;
 			Sim->LeakProtectionPolicy.bEnabled = bPolicy;
+			// The response logic at the decision step (2026-11-10: actor delays are tested in LeakProtectionFollowupTest).
+			auto& Pol = Sim->LeakProtectionPolicy;
+			Pol.TrayBmcDelayS = Pol.BmsPollS = Pol.ShelfOffDelayS = Pol.ValveStrokeS = Pol.CduStopDelayS = 0.0;
 			Room = World->SpawnActor<ADataCenterRoomActor>();
 			Room->bUseGjConnections = true; Room->bShowSummary = false;
 			World->SpawnActor<AAirFieldDebugActor>()->bShowSummary = false;
@@ -72,8 +75,8 @@ namespace
 			return -1.0;
 		}
 		int32 CountEvents(const TCHAR* Level) const { int32 N = 0; for (const auto& E : Sim->GetLeakProtectionEvents()) N += E.Level == Level ? 1 : 0; return N; }
-		// Rack isolations / row shutdowns themselves (not the per-shelf power-off events they cause).
-		int32 CountWhole(const TCHAR* Level) const { int32 N = 0; for (const auto& E : Sim->GetLeakProtectionEvents()) N += E.Level == Level && E.Slot == INDEX_NONE ? 1 : 0; return N; }
+		// Rack isolations / row shutdowns themselves (their request, not the shelf, valve or CDU actions that follow).
+		int32 CountWhole(const TCHAR* Level) const { int32 N = 0; for (const auto& E : Sim->GetLeakProtectionEvents()) N += E.Level == Level && E.Slot == INDEX_NONE && E.Action.Contains(TEXT("requested")) ? 1 : 0; return N; }
 	};
 }
 

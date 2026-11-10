@@ -57,6 +57,35 @@ void FInstrumentBank::Reset(const FLeakCableSpec& InLeakSpec)
 	LeakSpec = InLeakSpec;
 	Points.Reset();
 	AlarmLog.Reset();
+	FaultLog.Reset();
+}
+
+const TCHAR* FInstrumentBank::HealthName(ESensorHealth Health)
+{
+	switch (Health)
+	{
+	case ESensorHealth::OpenCircuit: return TEXT("open");
+	case ESensorHealth::StuckWet: return TEXT("stuckwet");
+	case ESensorHealth::StuckDry: return TEXT("stuckdry");
+	default: return TEXT("ok");
+	}
+}
+
+bool FInstrumentBank::ParseHealth(const FString& Name, ESensorHealth& Out)
+{
+	for (ESensorHealth H : { ESensorHealth::Ok, ESensorHealth::OpenCircuit, ESensorHealth::StuckWet, ESensorHealth::StuckDry })
+		if (Name.Equals(HealthName(H), ESearchCase::IgnoreCase)) { Out = H; return true; }
+	return false;
+}
+
+bool FInstrumentBank::SetSensorHealth(int32 PointIndex, ESensorHealth Health)
+{
+	if (!Points.IsValidIndex(PointIndex) || !Points[PointIndex].Def.bWaterContact) return false;
+	FState& S = Points[PointIndex];
+	S.Health = Health;
+	if (Health == ESensorHealth::Ok) S.bFaultReported = false;
+	S.ThresholdS = -1.0;   // the reading changed: the debounce starts over
+	return true;
 }
 
 int32 FInstrumentBank::AddPoint(const FInstrumentPoint& Point, const TArray<double>& InitialValues)
@@ -64,6 +93,7 @@ int32 FInstrumentBank::AddPoint(const FInstrumentPoint& Point, const TArray<doub
 	FState& S = Points.AddDefaulted_GetRef();
 	S.Def = Point;
 	S.NextPollS = FMath::Max(Point.bWaterContact ? Point.Contact.SamplePeriodS : LeakSpec.SamplePeriodS, 1e-9);
+	S.FalseStream.Initialize(104729 * Points.Num() + 17);   // fixed per detector; drawn only when false triggers are on
 	for (int32 C = 0; C < Point.Channels.Num(); ++C)
 	{
 		FVirtualSensor& V = S.Sensors.AddDefaulted_GetRef();
@@ -106,15 +136,30 @@ TArray<FLeakAlarm> FInstrumentBank::Advance(double SimTimeS, double DtS, const T
 			S.WaterM3 = ContactCumulativeM3[P]; // model value, NOT integrated a second time
 			if (S.WaterM3 > 0.0 && S.FirstContactS < 0.0) S.FirstContactS = SimTimeS;
 			// A cumulative record has no drying: after a reset the water it recorded is taken to remain and re-raises the alarm.
-			const bool bWet = S.WaterM3 > 0.0 && S.WaterM3 >= Spec.WettingVolumeM3;
+			const bool bRealWet = S.WaterM3 > 0.0 && S.WaterM3 >= Spec.WettingVolumeM3;
+			// W5 follow-up: what the detector reports, by its health; a healthy one can show a spurious wet pulse.
+			bool bWet = S.Health == ESensorHealth::StuckWet || (S.Health == ESensorHealth::Ok && (bRealWet || SimTimeS < S.PulseEndS - 1e-9));
+			if (S.Health == ESensorHealth::OpenCircuit) bWet = false;
 			if (bWet && S.ThresholdS < 0.0) S.ThresholdS = SimTimeS;
-			if (!bWet && Spec.bCurrentWater) S.ThresholdS = -1.0;   // dried before the debounce ended
+			if (!bWet) S.ThresholdS = -1.0;   // dried (or the pulse ended) before the debounce ended; a cumulative record never gets here once wet
 			if (SimTimeS + 1e-9 < S.NextPollS) continue;
 			while (S.NextPollS <= SimTimeS + 1e-9) S.NextPollS += Spec.SamplePeriodS;
+			if (S.Health == ESensorHealth::OpenCircuit)
+			{
+				// The supervision current stops at a poll: a fault alarm, never a leak alarm.
+				if (!S.bFaultReported) { S.bFaultReported = true; FaultLog.Add({ P, SimTimeS, S.Health }); }
+				continue;
+			}
+			if (S.Health == ESensorHealth::Ok && FalseTriggers.PerDetectorHour > 0.0 && SimTimeS >= S.PulseEndS)
+			{
+				const double Chance = 1.0 - FMath::Exp(-FalseTriggers.PerDetectorHour * Spec.SamplePeriodS / 3600.0);
+				if (S.FalseStream.GetFraction() < Chance) S.PulseEndS = SimTimeS + FalseTriggers.PulseS;
+			}
 			if (!S.bLeakAlarm && bWet && SimTimeS + 1e-9 >= S.ThresholdS + Spec.ResponseDelayS)
 			{
 				S.bLeakAlarm = true; S.LeakAlarmS = SimTimeS;
-				Raised.Add({P, SimTimeS, 0.0, S.WaterM3, S.FirstContactS, S.ThresholdS});
+				FLeakAlarm& A = Raised.Add_GetRef({P, SimTimeS, 0.0, S.WaterM3, S.FirstContactS, S.ThresholdS});
+				A.bFalse = !bRealWet;
 			}
 			continue;
 		}

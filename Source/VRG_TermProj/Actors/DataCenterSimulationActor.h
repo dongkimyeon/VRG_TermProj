@@ -646,6 +646,19 @@ private:
 	TMap<int32, TSet<int32>> ProtectionLeakingTrays;
 	TArray<TTuple<int32, int32, double>> ProtectionTimers;   // rack, slot, due time
 	TSet<int32> ProtectionIsolatedRacks, ProtectionShutRows;
+	// W5 follow-up (2026-11-10): queued actions with their due time (who acts and how long it takes), what protection
+	// itself switched off (recovery undoes only that), detector fault alarms already handled.
+	enum class EProtectionAction : uint8 { SlotOff, ShelvesOff, ValvesClose, RowShelvesOff, CduStop, ValvesOpen, CduStart, PowerOn, RecoveryDone };
+	struct FPendingProtection { double DueS = 0.0; EProtectionAction Action = EProtectionAction::SlotOff; int32 Rack = INDEX_NONE, Slot = INDEX_NONE, Row = INDEX_NONE; FString Level, Trigger; };
+	TArray<FPendingProtection> ProtectionPending;
+	TSet<FIntPoint> ProtectionCutSlots;   // (rack, slot)
+	TSet<int32> ProtectionStoppedCdus;    // rows
+	int32 ProtectionFaultCursor = 0;
+	double NextBmsCycleS(double NowS) const;
+	void QueueProtection(double DueS, EProtectionAction Action, int32 Rack, int32 Slot, int32 Row, const FString& Level, const FString& Trigger);
+	void ApplyProtection(const FPendingProtection& P);
+	TArray<int32> RowRacks(int32 Row) const;
+	int32 LiveLeakSiteRack(int32 SiteIndex) const;
 public:
 	// W5-3 policy (Tools/누수_실시간_계획.md L5 (다)). NVIDIA Mission Control / NICo response matrix: a tray detector shuts
 	// that tray (compute: BMC shutdown timer, switch: out-of-band power off); two leaking trays in a rack (NICo NVL72
@@ -660,8 +673,22 @@ public:
 		bool bEnabled = false;
 		double ComputeTrayShutdownDelayS = 10.0;   // ESTIMATE
 		int32 RackIsolationTrays = 2;              // NICo default for NVL72
+		// W5 follow-up (2026-11-10), who acts and how long it takes. 0 everywhere = the decision of the same step end.
+		double TrayBmcDelayS = 1.0;          // ESTIMATE: the tray BMC reads its own detectors and acts (OOB power off / timer start)
+		double BmsPollS = 5.0;               // NVIDIA Mission Control-BMS integration heartbeat default 5 s, used as the BMS decision cycle
+		double ShelfOffDelayS = 0.5;         // ESTIMATE: power shelf DC output disable after the BMS command
+		double ValveStrokeS = 15.0;          // ESTIMATE: motorized ball valve full stroke; the valve model is shut/open at the stroke end
+		double CduStopDelayS = 2.0;          // ESTIMATE: row CDU stop after the BMS command
+		double RecoveryPowerOnDelayS = 5.0;  // ESTIMATE: after the valves are open, before the breakers and power come back
 	};
 	FLeakProtectionPolicy LeakProtectionPolicy;
+	// W5 follow-up: operator recovery of what protection isolated (vrg.Leak.Recover). Rack/Row INDEX_NONE = all. Refused
+	// while a leak of the scope is open or an alarm of the scope is latched. W4-tripped/damaged equipment stays off.
+	bool RecoverLeakProtection(int32 Rack, int32 Row, FString& Reason);
+	bool SetSensorHealth(int32 PointIndex, ESensorHealth Health) { return Instruments.SetSensorHealth(PointIndex, Health); }
+	// A detector by instrument number, or "rack:<rack>:slot:<slot>:cold|manifold" for a tray detector. INDEX_NONE if none.
+	int32 ResolveDetector(const FString& Selector) const;
+	void SetSensorFalseTriggers(const FFalseTriggerSpec& Spec) { Instruments.SetFalseTriggers(Spec); }
 	struct FLeakProtectionEvent
 	{
 		double TimeS = 0.0;

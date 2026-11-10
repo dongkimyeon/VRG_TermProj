@@ -8,6 +8,8 @@ UE 5.8 / C++ / 가상현실게임 텀프로젝트. 이 파일은 팀이 합의�
 
 ## 현재 상태 (2026-11-10)
 
+2026-11-10 W5 후속(구현·영향 35건 성공, 전체 회귀 일부만, 화면 미검증): 감지기 고장(단선 = 고장 알림만, 젖은 고착 = 오경보, 마른 고착 = 놓침)·오경보 펄스(기본 끔), 주체별 지연(BMC 1 s, BMS 주기 5 s, 셸프 0.5 s, 밸브 15 s, CDU 2 s, BMS 외 추정), 복구 `vrg.Leak.Recover`(보호가 끈 것만, W4 트립·손상은 R까지 유지). 나머지 전체 VRG 영역·Game 빌드·L_Test는 중단해 미실행. 상세·재개 `Tools/누수_실시간_계획.md` "W5 후속 결과".
+
 **2026-11-10 사용자 순서 변경:** 성능 시험(W3.5 화면 FPS·D10·랙 병렬 규약 5 확인 포함)은 맨 마지막 즈음에 몰아서 한다. 순서는 **W6 → W4·W5 후속 → (성능 묶음) → 웹 대시보드**. D10 미충족·W3.5 전체 미완료 표시는 그대로 둔다.
 
 2026-11-10 W6 물 표시(자동화 완료, 화면 사실감·성능 미확인): 계산한 물을 그대로 그린다(`Visualization/WaterDisplay` 스냅샷 + `AWaterDisplayActor`, 바닥 = 절차 메시, 입자·경로·물막·젖은 껍질 = 인스턴스, 재질 `/Game/Water/Materials`는 `Tools/install_water_materials.py`). 표시 부피 = 계산 부피(바닥 8.5e-15), 표시 입자 = 계산 입자(정확히 같음). `vrg.Water.Show 0|1|2`(2 = 기존 디버그), W4 상태 테두리·라벨·사건 목록, 리포트 `waterDisplay`. `VRG.Water` 44건 성공(신규 6). 상세 `Tools/누수_실시간_계획.md` "W6 결과".
@@ -145,7 +147,7 @@ L_Test32랙·스파인2·CRAH8·33210셀/h0.25m/dt0.02s,200스텝 예열/20s cap
   `9/0` 부하율, `E` 바라보는 유닛 하나 뽑기/꽂기, `R` 현재 배치로 t=0 재시작, `L` 누수 도구(외부5/30mm·내부1/3mm → 파단 → 수리 → 끔, `B` 내부 종류 순환, 클릭 적용, 도구 중 `E` 탈착 차단·`Esc` 끔), `V` 공기 보기 순환(온도 볼륨 → 유선 속도 → 유선 온도 → 유선+볼륨 → 평면 → 화살표). 발열 손잡이는 각 부품 기본값에 배율로 적용한다.
 - **주요 콘솔:** `vrg.Air.RunSteps <N>`, `vrg.Air.CellSize <h> 0.25`, `vrg.Air.Gpu -1|0|1`, `vrg.Air.Turbulence`, `vrg.Sim.CrahLayout 0|1|2`,
   `vrg.Sim.Containment 0|1|2`, `vrg.Sim.CoolantRejection 0|1`, `vrg.Eval.Event/Report/ReportWhenDone/Compare`, `vrg.Layout.Save/Load`,
-  `vrg.Perf.Capture <초> [라벨] [quit]`, `vrg.Leak.Add/Size/Clear/Status/Sites/At/Repair/Direction`, `vrg.Water.Status/Show/CellM/Gpu/Impact`, `vrg.Leak.AutoIsolate`, `vrg.Air.View/PlanHeight`, `vrg.Valve`(이벤트 `valve`·`leak`·`leakat`), `vrg.Cdu.PumpFault/PumpRepair <줄>`, `vrg.Plant.Enable/Topology/Ambient/Fault/Show`(이벤트 `ambient`·`plant`), `vrg.Pipes.Temperature`, `vrg.Sensors.PipeIntervalM`, `vrg.Hud.Temps/TempsRange`, `vrg.Cam <x y z m> <피치> <요>`, `vrg.Room.Shell`, `vrg.Patch.Map`, `vrg.Web.Enable`, `vrg.Hud.Debug`.
+  `vrg.Perf.Capture <초> [라벨] [quit]`, `vrg.Leak.Add/Size/Clear/Status/Sites/At/Repair/Direction/Recover`, `vrg.Sensors.Fault/FalseRate/ResetLeak`, `vrg.Water.Status/Show/CellM/Gpu/Impact`, `vrg.Leak.AutoIsolate`, `vrg.Air.View/PlanHeight`, `vrg.Valve`(이벤트 `valve`·`leak`·`leakat`), `vrg.Cdu.PumpFault/PumpRepair <줄>`, `vrg.Plant.Enable/Topology/Ambient/Fault/Show`(이벤트 `ambient`·`plant`), `vrg.Pipes.Temperature`, `vrg.Sensors.PipeIntervalM`, `vrg.Hud.Temps/TempsRange`, `vrg.Cam <x y z m> <피치> <요>`, `vrg.Room.Shell`, `vrg.Patch.Map`, `vrg.Web.Enable`, `vrg.Hud.Debug`.
   `-ExecCmds`로 여러 명령을 줄 때는 **쉼표**로 나눈다.
 
 화면에는 단축키 안내와 시뮬레이션 모드 계측 라벨(캐비닛 최고 부품, 흡기 센서·냉각수, 배관 지점 유량·수온, 설비 장비 값, 누수 경보; `vrg.Hud.Temps 0|1`·`vrg.Hud.TempsRange <m>`, 2026-10-22 사용자 요청)만 둔다.

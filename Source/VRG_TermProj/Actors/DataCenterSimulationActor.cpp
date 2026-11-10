@@ -3922,6 +3922,25 @@ void ADataCenterSimulationActor::EvalBeforeStep()
 			// S8 F6b: facility leak / trip at this step's start (rule 4), before PlantBeforeStep hands the flows over.
 			ApplyPlantFault(E.Args);
 		}
+		else if (E.Kind == TEXT("sensor") && E.Args.Num() >= 1)
+		{
+			ESensorHealth Health;
+			const FString Selector = E.Args.Num() >= 2 ? E.Args[1] : FString();
+			if (!FInstrumentBank::ParseHealth(E.Args[0], Health) || !SetSensorHealth(ResolveDetector(Selector), Health))
+				UE_LOG(LogTemp, Warning, TEXT("[VrgEval] t=%.2f s sensor: 감지기 %s / 상태 %s 적용 실패"), NowS, *Selector, *E.Args[0]);
+		}
+		else if (E.Kind == TEXT("resetleak"))
+		{
+			UE_LOG(LogTemp, Display, TEXT("[VrgEval] t=%.2f s 누수 경보 해제 %d건"), NowS, ResetLeakAlarms(E.Index));
+		}
+		else if (E.Kind == TEXT("recover"))
+		{
+			int32 RackScope = INDEX_NONE, RowScope = INDEX_NONE;
+			if (E.Args.Num() >= 2 && E.Args[0].Equals(TEXT("rack"), ESearchCase::IgnoreCase)) RackScope = FCString::Atoi(*E.Args[1]);
+			if (E.Args.Num() >= 2 && E.Args[0].Equals(TEXT("row"), ESearchCase::IgnoreCase)) RowScope = FCString::Atoi(*E.Args[1]);
+			FString Reason; const bool bOk = RecoverLeakProtection(RackScope, RowScope, Reason);
+			UE_LOG(LogTemp, Display, TEXT("[VrgEval] t=%.2f s 복구 %s: %s"), NowS, bOk ? TEXT("예약") : TEXT("거절"), *Reason);
+		}
 		else if (E.Kind == TEXT("leakat") && E.Args.Num() >= 1)
 		{
 			// W1: a live leak at the site nearest to a point [m], at this step's start (rule 4).
@@ -4315,6 +4334,31 @@ bool ADataCenterSimulationActor::WriteEvaluationReport(const FString& Name, FStr
 		RackWaterSensors.Add(MakeShared<FJsonValueObject>(Item));
 	}
 	InstrumentsJson->SetArrayField(TEXT("rackWaterSensors"), RackWaterSensors);
+	// W5 follow-up (2026-11-10): detector health, fault alarms and false leak alarms (ESTIMATED fault/false-trigger model).
+	{
+		TArray<TSharedPtr<FJsonValue>> Items;
+		for (const FSensorFaultAlarm& F : Instruments.GetFaultLog())
+		{
+			auto Item = MakeShared<FJsonObject>();
+			Item->SetNumberField(TEXT("timeS"), F.TimeS); Item->SetNumberField(TEXT("point"), F.Point);
+			Item->SetStringField(TEXT("sensorId"), Instruments.GetPoint(F.Point).Id); Item->SetStringField(TEXT("health"), FInstrumentBank::HealthName(F.Health));
+			Items.Add(MakeShared<FJsonValueObject>(Item));
+		}
+		InstrumentsJson->SetArrayField(TEXT("sensorFaults"), Items);
+		int32 FalseAlarms = 0, Unhealthy = 0;
+		for (const FLeakAlarm& A : Instruments.GetAlarmLog()) FalseAlarms += A.bFalse ? 1 : 0;
+		for (int32 I = 0; I < Instruments.Num(); ++I) Unhealthy += Instruments.GetSensorHealth(I) != ESensorHealth::Ok ? 1 : 0;
+		InstrumentsJson->SetNumberField(TEXT("falseLeakAlarms"), FalseAlarms);
+		InstrumentsJson->SetNumberField(TEXT("unhealthyDetectors"), Unhealthy);
+		InstrumentsJson->SetNumberField(TEXT("falseTriggerPerDetectorHour"), Instruments.GetFalseTriggers().PerDetectorHour);
+		const auto& Pol = LeakProtectionPolicy;
+		auto Delays = MakeShared<FJsonObject>();
+		Delays->SetNumberField(TEXT("trayBmcS"), Pol.TrayBmcDelayS); Delays->SetNumberField(TEXT("computeShutdownS"), Pol.ComputeTrayShutdownDelayS);
+		Delays->SetNumberField(TEXT("bmsCycleS"), Pol.BmsPollS); Delays->SetNumberField(TEXT("shelfOffS"), Pol.ShelfOffDelayS);
+		Delays->SetNumberField(TEXT("valveStrokeS"), Pol.ValveStrokeS); Delays->SetNumberField(TEXT("cduStopS"), Pol.CduStopDelayS);
+		Delays->SetNumberField(TEXT("recoveryPowerOnS"), Pol.RecoveryPowerOnDelayS); Delays->SetBoolField(TEXT("estimated"), true);
+		InstrumentsJson->SetObjectField(TEXT("leakProtectionDelays"), Delays);
+	}
 	// W5-3 (2026-11-03): protective actions taken from the detectors (cause: protection, apart from W4 failures).
 	{
 		TArray<TSharedPtr<FJsonValue>> Items;
@@ -4351,6 +4395,7 @@ bool ADataCenterSimulationActor::WriteEvaluationReport(const FString& Name, FStr
 		Item->SetStringField(TEXT("sensorId"), Pt.Id.IsEmpty() ? FString::Printf(TEXT("instrument:%d"), A.Point) : Pt.Id);
 		Item->SetStringField(TEXT("rackId"), Pt.RackId); Item->SetStringField(TEXT("type"), InstrumentSpecs::SiteCode(Pt.Site));
 		Item->SetBoolField(TEXT("flowBased"), !Pt.bWaterContact);
+		Item->SetBoolField(TEXT("falseAlarm"), A.bFalse);   // W5 follow-up: ground truth (no real water at the threshold), not known to the protection
 		if (Pt.bWaterContact)
 		{
 			Item->SetNumberField(TEXT("contactWaterM3"), A.WaterM3); Item->SetNumberField(TEXT("firstContactS"), A.FirstContactS);
@@ -4529,7 +4574,7 @@ static FAutoConsoleCommand GVrgEvalReportCommand(
 
 static FAutoConsoleCommand GVrgEvalEventCommand(
 	TEXT("vrg.Eval.Event"),
-	TEXT("시각 이벤트를 넣는다(시뮬레이션 진입마다 다시 적용). vrg.Eval.Event <t s> util <0~1> | <t s> rackutil <랙 번호> <0~1> | <t s> valve <랙 번호> close|open | <t s> leak <랙 번호> <supply|return> <mm> | <t s> ambient <외기 C> | <t s> plant <vrg.Plant.Fault 인자> | <t s> leakat <x m> <y m> <z m> <mm>(실시간 누수, 가장 가까운 지점, 0 = 수리) | clear"),
+	TEXT("시각 이벤트를 넣는다(시뮬레이션 진입마다 다시 적용). vrg.Eval.Event <t s> util <0~1> | <t s> rackutil <랙 번호> <0~1> | <t s> valve <랙 번호> close|open | <t s> leak <랙 번호> <supply|return> <mm> | <t s> ambient <외기 C> | <t s> plant <vrg.Plant.Fault 인자> | <t s> leakat <x m> <y m> <z m> <mm>(실시간 누수, 가장 가까운 지점, 0 = 수리) | <t s> sensor <감지기 번호|rack:<랙>:slot:<슬롯>:cold|manifold> ok|open|stuckwet|stuckdry | <t s> resetleak <번호|all> | <t s> recover all|rack <번호>|row <번호> | clear"),
 	FConsoleCommandWithArgsDelegate::CreateLambda([](const TArray<FString>& Args)
 	{
 		for (ADataCenterSimulationActor* Sim : EvalSimActors())
@@ -4547,6 +4592,9 @@ static FAutoConsoleCommand GVrgEvalEventCommand(
 			else if (E.Kind == TEXT("plant")) { for (int32 I = 2; I < Args.Num(); ++I) E.Args.Add(Args[I]); }   // S8 F6b: vrg.Plant.Fault arguments
 			else if (E.Kind == TEXT("leakat") && Args.Num() >= 6) { E.Args = { Args[2], Args[3], Args[4] }; E.Value = FCString::Atod(*Args[5]) * 1e-3; }   // W1: x y z [m], hole [mm]
 			else if (E.Kind == TEXT("leakat") && Args.Num() == 4) { E.Args = { Args[2] }; E.Value = FCString::Atod(*Args[3]) * 1e-3; } // W3.5: exact site key/quoted label, hole mm
+			else if (E.Kind == TEXT("sensor") && Args.Num() >= 4) { E.Args = { Args[3], Args[2] }; }   // W5 follow-up: detector health, then its selector
+			else if (E.Kind == TEXT("resetleak")) { E.Index = Args[2].Equals(TEXT("all"), ESearchCase::IgnoreCase) ? INDEX_NONE : FCString::Atoi(*Args[2]); }
+			else if (E.Kind == TEXT("recover")) { for (int32 I = 2; I < Args.Num(); ++I) E.Args.Add(Args[I]); }   // all | rack N | row N
 			else { UE_LOG(LogTemp, Warning, TEXT("[VrgEval] 모르는 이벤트: %s"), *E.Kind); continue; }
 			Sim->EvalEvents.Add(E);
 			Sim->EvalEvents.StableSort([](const ADataCenterSimulationActor::FEvalEvent& L, const ADataCenterSimulationActor::FEvalEvent& R) { return L.TimeS < R.TimeS; });

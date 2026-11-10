@@ -34,6 +34,28 @@ namespace
 				UE_LOG(LogTemp, Display, TEXT("[Sensor] 누수 경보 해제 %d건(%s)"), It->ResetLeakAlarms(Index), Index == INDEX_NONE ? TEXT("all") : *Args[0]);
 		}));
 
+	// W5 follow-up (2026-11-10): detector health and spurious triggers (ESTIMATES, off by default).
+	FAutoConsoleCommandWithWorldAndArgs GVrgSensorsFault(TEXT("vrg.Sensors.Fault"),
+		TEXT("누수 감지기 상태. vrg.Sensors.Fault <계측 지점 번호|rack:<랙>:slot:<슬롯>:cold|manifold> ok|open(단선, 고장 알림)|stuckwet(오경보)|stuckdry(놓침)"),
+		FConsoleCommandWithWorldAndArgsDelegate::CreateLambda([](const TArray<FString>& Args, UWorld* World)
+		{
+			if (!World || Args.Num() < 2) return;
+			ESensorHealth Health;
+			if (!FInstrumentBank::ParseHealth(Args[1], Health)) { UE_LOG(LogTemp, Warning, TEXT("[Sensor] 모르는 상태 %s"), *Args[1]); return; }
+			for (TActorIterator<ADataCenterSimulationActor> It(World); It; ++It)
+				UE_LOG(LogTemp, Display, TEXT("[Sensor] 감지기 %s 상태 %s: %s"), *Args[0], *Args[1], It->SetSensorHealth(It->ResolveDetector(Args[0]), Health) ? TEXT("적용") : TEXT("접촉식 감지기가 아님"));
+		}));
+	FAutoConsoleCommandWithWorldAndArgs GVrgSensorsFalseRate(TEXT("vrg.Sensors.FalseRate"),
+		TEXT("정상 감지기의 오경보 펄스(추정, 기본 0 = 끔). vrg.Sensors.FalseRate <감지기당 회/시간> [펄스 s, 기본 3]"),
+		FConsoleCommandWithWorldAndArgsDelegate::CreateLambda([](const TArray<FString>& Args, UWorld* World)
+		{
+			if (!World || Args.Num() < 1) return;
+			FFalseTriggerSpec Spec; Spec.PerDetectorHour = FMath::Max(0.0, FCString::Atod(*Args[0]));
+			if (Args.Num() > 1) Spec.PulseS = FMath::Max(0.0, FCString::Atod(*Args[1]));
+			for (TActorIterator<ADataCenterSimulationActor> It(World); It; ++It) It->SetSensorFalseTriggers(Spec);
+			UE_LOG(LogTemp, Display, TEXT("[Sensor] 오경보 펄스 %.3g 회/시간·감지기, %.1f s (추정)"), Spec.PerDetectorHour, Spec.PulseS);
+		}));
+
 	// Point placement along a polyline: N = round(length / interval) >= 1 points at the centres of N equal sections,
 	// each covering its section (the cover radius reaches both section ends, plus a 0.3 m allowance for the drawn
 	// fittings - a display abstraction, not a physical range).
@@ -404,6 +426,18 @@ void ADataCenterSimulationActor::RebuildInstruments()
 	ResetLeakProtection();   // W5-3 follows this run's detectors from their first alarm
 	UE_LOG(LogTemp, Display, TEXT("[Sensor] 계측 지점 %d개(누수 감지 케이블 %d개, 배관 간격 %.1f m), 공정값 감시 루프 %d개 - 모의 계측값(D9), 계측기 사양은 추정값"),
 		Instruments.Num(), Instruments.GetNumLeakCables(), IntervalM, ProcessMonitor.NumLoops());
+}
+
+int32 ADataCenterSimulationActor::ResolveDetector(const FString& Selector) const
+{
+	if (Selector.IsNumeric()) return FCString::Atoi(*Selector);
+	TArray<FString> Parts; Selector.ParseIntoArray(Parts, TEXT(":"));
+	if (Parts.Num() != 5 || Parts[0] != TEXT("rack") || Parts[2] != TEXT("slot")) return INDEX_NONE;
+	const int32 Rack = FCString::Atoi(*Parts[1]), Slot = FCString::Atoi(*Parts[3]);
+	const EInstrumentSite Site = Parts[4] == TEXT("manifold") ? EInstrumentSite::TrayManifold : EInstrumentSite::TrayColdPlate;
+	for (int32 I = 0; I < Instruments.Num(); ++I)
+		if (Instruments.GetPoint(I).Site == Site && Instruments.GetPoint(I).Key == Rack && Instruments.GetPoint(I).Loop == Slot) return I;
+	return INDEX_NONE;
 }
 
 void ADataCenterSimulationActor::InstrumentsAfterStep()

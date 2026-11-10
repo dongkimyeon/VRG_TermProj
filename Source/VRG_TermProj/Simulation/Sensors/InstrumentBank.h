@@ -92,7 +92,21 @@ struct FLeakAlarm
 	int32 Point = INDEX_NONE;
 	double TimeS = 0.0, FlowM3s = 0.0;
 	double WaterM3 = 0.0, FirstContactS = -1.0, ThresholdS = -1.0;
+	// W5 follow-up: ground truth for the report only (the protection cannot know it): no real water at the threshold.
+	bool bFalse = false;
 };
+
+// W5 follow-up (2026-11-10): health of a water-contact detector (D9: a virtual sensor is never 100 % reliable).
+// OpenCircuit = a cut cable or dead spot sensor that the cable supervision sees (a "sensor fault" alarm, no leak alarm,
+// NICo: field check). StuckWet = contaminated / shorted, reads wet (a false leak alarm the system cannot tell apart).
+// StuckDry = an undetected fault, never reads wet (a missed leak). Set by vrg.Sensors.Fault or the event "sensor".
+enum class ESensorHealth : uint8 { Ok, OpenCircuit, StuckWet, StuckDry };
+struct FSensorFaultAlarm { int32 Point = INDEX_NONE; double TimeS = 0.0; ESensorHealth Health = ESensorHealth::Ok; };
+
+// Spurious wet readings of healthy detectors (condensation, splash during maintenance...): ESTIMATES, off by default.
+// At each poll a pulse of PulseS starts with probability 1 - exp(-rate * poll / 3600 s); a pulse longer than the
+// debounce plus one poll (2 s with the default contact spec) raises a (false) leak alarm. Fixed seed per detector (D9).
+struct FFalseTriggerSpec { double PerDetectorHour = 0.0; double PulseS = 3.0; };
 
 class VRG_TERMPROJ_API FInstrumentBank
 {
@@ -118,6 +132,15 @@ public:
 	// after the debounce. Returns how many latched alarms were cleared.
 	int32 ResetLeakAlarm(int32 PointIndex);
 	int32 GetNumLeakCables() const;
+	// W5 follow-up: detector health (water-contact points only; false when the point is not one). Ok also clears the
+	// reported fault so a new fault alarms again.
+	bool SetSensorHealth(int32 PointIndex, ESensorHealth Health);
+	ESensorHealth GetSensorHealth(int32 PointIndex) const { return Points.IsValidIndex(PointIndex) ? Points[PointIndex].Health : ESensorHealth::Ok; }
+	void SetFalseTriggers(const FFalseTriggerSpec& Spec) { FalseTriggers = Spec; }
+	const FFalseTriggerSpec& GetFalseTriggers() const { return FalseTriggers; }
+	const TArray<FSensorFaultAlarm>& GetFaultLog() const { return FaultLog; }
+	static const TCHAR* HealthName(ESensorHealth Health);
+	static bool ParseHealth(const FString& Name, ESensorHealth& Out);
 
 private:
 	struct FState
@@ -128,8 +151,14 @@ private:
 		double WaterM3 = 0.0, NextPollS = 0.0, LeakAlarmS = -1.0;
 		double FirstContactS = -1.0, ThresholdS = -1.0;
 		bool bLeakAlarm = false;
+		ESensorHealth Health = ESensorHealth::Ok;
+		bool bFaultReported = false;
+		double PulseEndS = -1.0;
+		FRandomStream FalseStream;
 	};
 	FLeakCableSpec LeakSpec;
+	FFalseTriggerSpec FalseTriggers;
 	TArray<FState> Points;
 	TArray<FLeakAlarm> AlarmLog;
+	TArray<FSensorFaultAlarm> FaultLog;
 };
