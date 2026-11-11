@@ -2684,6 +2684,9 @@ void ADataCenterSimulationActor::LogSprayStatus() const
 		F.bLastStepGpu ? TEXT("GPU") : TEXT("CPU"), F.GpuSteps, Flooded, F.Residual, F.ClippedM3 * 1e3);
 }
 
+static TAutoConsoleVariable<float> GVrgWaterDemoEyeM(TEXT("vrg.Water.DemoEyeM"), 3.0f, TEXT("vrg.Water.Demo 시점: 누수 지점에서 줄을 따라 떨어진 거리 [m] (표시 전용)"));
+static TAutoConsoleVariable<float> GVrgWaterDemoEyeZ(TEXT("vrg.Water.DemoEyeZ"), 1.6f, TEXT("vrg.Water.Demo 시점 높이, 바닥 위 [m] (표시 전용)"));
+
 void ADataCenterSimulationActor::TickWaterDemo()
 {
 	if (WaterDemoHoleM < 0.0 || GetWorld() == nullptr || !GetWorld()->HasBegunPlay()) return;
@@ -2718,8 +2721,9 @@ void ADataCenterSimulationActor::TickWaterDemo()
 	SetLiveLeakDirection(Best, Away + FVector(0, 0, .25));
 	if (!SetLiveLeak(Best, HoleM, TEXT("vrg.Water.Demo"))) return;
 	const double FloorZ = DomainM.IsValid ? DomainM.Min.Z : 0.0;
-	FVector EyeM = Site.PositionM + Along * 3.0 + Away * .3;
-	EyeM.Z = FloorZ + 1.6;
+	// Viewpoint distance along the row and height (display only; W6 close-up captures use e.g. 1.2 m / 0.9 m).
+	FVector EyeM = Site.PositionM + Along * double(GVrgWaterDemoEyeM.GetValueOnGameThread()) + Away * .3;
+	EyeM.Z = FloorZ + double(GVrgWaterDemoEyeZ.GetValueOnGameThread());
 	const FVector TargetM = Site.PositionM + Away * .6;
 	for (TActorIterator<ADataCenterDebugController> It(GetWorld()); It; ++It) It->SetViewpointM(EyeM, (TargetM - EyeM).Rotation());
 	const FVector D = Site.SprayDirectionM;
