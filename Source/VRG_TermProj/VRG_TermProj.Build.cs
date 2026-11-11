@@ -21,6 +21,9 @@ public class VRG_TermProj : ModuleRules
 
 		PrivateDependencyModuleNames.AddRange(new string[] { "Eigen", "UMG", "Slate", "SlateCore", "Json", "JsonUtilities", "HTTPServer", "ProceduralMeshComponent" });   // ProceduralMeshComponent: W6 floor water surface (2026-11-10)
 
+		// 웹 대시보드 페이지와 오프라인 three.js 사본은 실행 중 <Project>/Web에서 읽는다. 패키지에도 같은 상대 경로로 넣는다(2026-11-11).
+		RuntimeDependencies.Add("$(ProjectDir)/Web/...", StagedFileType.NonUFS);
+
 		// Uncomment if you are using Slate UI
 		// PrivateDependencyModuleNames.AddRange(new string[] { "Slate", "SlateCore" });
 		

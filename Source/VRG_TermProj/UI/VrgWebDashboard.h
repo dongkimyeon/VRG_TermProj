@@ -20,6 +20,10 @@ class IHttpRouter;
 //   GET /api/cooling   -> CRAH units, CDUs, pumps and the power breakdown of the last step (tab 4)
 //   GET /api/leaks     -> leaks, tanks, valve isolation / hydraulic impact per rack, fault judgements (S2b step 6)
 //   POST /api/report?name= -> queue a report save (202); GET /api/reports -> saved reports; GET /api/reportfile?name= (stage 5)
+//   GET /api/roomair   -> room air statistics and horizontal temperature slices (2026-11-11, 202 until built)
+//   GET /api/status    -> plant live state, the report's plant / dew point / checks / water / instrument sections, step
+//                         costs (2026-11-11, 202 until built)
+//   GET /vendor/three.min.js, /vendor/OrbitControls.js -> <Project>/Web/vendor (offline 3D; the page falls back to the CDN)
 // Console: vrg.Web.Enable 0|1 (default 0), vrg.Web.Port (default 18080).
 // Rule 5: the integrated actor publishes a JSON copy on the game thread; request handlers only read that copy under a
 // lock and never touch actors, UObjects or solvers. The site only displays; it changes no physics input.
@@ -53,6 +57,16 @@ public:
 	// Records Inlet as the requested rack; returns its detail JSON, or empty while the next publish has not built it.
 	FString RequestRackDetailJson(int32 Inlet);
 	int32 GetRequestedRack() const;
+	// 2026-11-11 tabs (room air, facility/validation): built on the game thread only while the page asked within the last
+	// AskWindowS seconds. The request marks the time and returns the latest copy (empty before the first build -> 202).
+	static constexpr double AskWindowS = 3.0;
+	void PublishRoomAir(FVrgDashboardRoomAir&& InRoomAir);
+	FString RequestRoomAirJson();
+	bool WantsRoomAir() const;
+	// The status JSON is built by the actor (the report's own section builders), so it is published as text.
+	void PublishStatus(FString&& InJson);
+	FString RequestStatusJson();
+	bool WantsStatus() const;
 
 	// Stage 5: report save requests from the page (the only write the site makes). The game thread takes the request on
 	// its next publish and writes it with the same function as vrg.Eval.Report; the result is shown in the report list.
@@ -89,6 +103,11 @@ private:
 	FVrgDashboardLeaks LatestLeaks;
 	bool bHasLeaks = false;
 	int32 RequestedRack = INDEX_NONE;
+	FVrgDashboardRoomAir LatestRoomAir;
+	bool bHasRoomAir = false;
+	double RoomAirAskedS = -1.0e9;
+	FString LatestStatus;
+	double StatusAskedS = -1.0e9;
 	FString PendingReport;
 	FString LastSaveName, LastSaveMessage;
 	bool bHasLastSave = false, bLastSaveOk = false;

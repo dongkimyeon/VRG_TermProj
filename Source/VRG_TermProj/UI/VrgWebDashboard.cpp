@@ -107,6 +107,45 @@ FString FVrgWebDashboard::GetSensorsJson() const
 	return bHasSensors ? LatestSensors.ToJson() : FString();
 }
 
+void FVrgWebDashboard::PublishRoomAir(FVrgDashboardRoomAir&& InRoomAir)
+{
+	FScopeLock Guard(&Lock);
+	LatestRoomAir = MoveTemp(InRoomAir);
+	bHasRoomAir = true;
+}
+
+FString FVrgWebDashboard::RequestRoomAirJson()
+{
+	FScopeLock Guard(&Lock);
+	RoomAirAskedS = FPlatformTime::Seconds();
+	return bHasRoomAir ? LatestRoomAir.ToJson() : FString();
+}
+
+bool FVrgWebDashboard::WantsRoomAir() const
+{
+	FScopeLock Guard(&Lock);
+	return FPlatformTime::Seconds() - RoomAirAskedS < AskWindowS;
+}
+
+void FVrgWebDashboard::PublishStatus(FString&& InJson)
+{
+	FScopeLock Guard(&Lock);
+	LatestStatus = MoveTemp(InJson);
+}
+
+FString FVrgWebDashboard::RequestStatusJson()
+{
+	FScopeLock Guard(&Lock);
+	StatusAskedS = FPlatformTime::Seconds();
+	return LatestStatus;
+}
+
+bool FVrgWebDashboard::WantsStatus() const
+{
+	FScopeLock Guard(&Lock);
+	return FPlatformTime::Seconds() - StatusAskedS < AskWindowS;
+}
+
 void FVrgWebDashboard::PublishCooling(FVrgDashboardCooling&& InCooling)
 {
 	FScopeLock Guard(&Lock);
@@ -275,6 +314,11 @@ void FVrgWebDashboard::Stop()
 	LatestLeaks = FVrgDashboardLeaks();
 	bHasLeaks = false;
 	RequestedRack = INDEX_NONE;
+	LatestRoomAir = FVrgDashboardRoomAir();
+	bHasRoomAir = false;
+	RoomAirAskedS = -1.0e9;
+	LatestStatus.Reset();
+	StatusAskedS = -1.0e9;
 	PendingReport.Reset();
 	bHasLastSave = false;
 }
@@ -415,6 +459,41 @@ bool FVrgWebDashboard::ApplySettings()
 				: FHttpServerResponse::Create(Json, TEXT("application/json; charset=utf-8"))));
 			return true;
 		})));
+	// 2026-11-11 tabs: the request marks the time; the game thread builds the copy on its next publish (<= 0.5 s) while asked.
+	Routes.Add(Router->BindRoute(FHttpPath(TEXT("/api/roomair")), EHttpServerRequestVerbs::VERB_GET,
+		FHttpRequestHandler::CreateLambda([this](const FHttpServerRequest&, const FHttpResultCallback& OnComplete)
+		{
+			const FString Json = RequestRoomAirJson();
+			OnComplete(NoStore(Json.IsEmpty()
+				? FHttpServerResponse::Error(EHttpServerResponseCodes::Accepted, TEXT("pending"), TEXT("다음 발행 때 만든다"))
+				: FHttpServerResponse::Create(Json, TEXT("application/json; charset=utf-8"))));
+			return true;
+		})));
+	Routes.Add(Router->BindRoute(FHttpPath(TEXT("/api/status")), EHttpServerRequestVerbs::VERB_GET,
+		FHttpRequestHandler::CreateLambda([this](const FHttpServerRequest&, const FHttpResultCallback& OnComplete)
+		{
+			const FString Json = RequestStatusJson();
+			OnComplete(NoStore(Json.IsEmpty()
+				? FHttpServerResponse::Error(EHttpServerResponseCodes::Accepted, TEXT("pending"), TEXT("다음 발행 때 만든다"))
+				: FHttpServerResponse::Create(Json, TEXT("application/json; charset=utf-8"))));
+			return true;
+		})));
+	// Offline 3D (2026-11-11): three.js r128 copies in <Project>/Web/vendor (staged with the package by the module's
+	// RuntimeDependencies). Missing files answer 404 and the page falls back to the CDN.
+	for (const TCHAR* File : { TEXT("three.min.js"), TEXT("OrbitControls.js") })
+	{
+		const FString Name(File);
+		Routes.Add(Router->BindRoute(FHttpPath(TEXT("/vendor/") + Name), EHttpServerRequestVerbs::VERB_GET,
+			FHttpRequestHandler::CreateLambda([Name](const FHttpServerRequest&, const FHttpResultCallback& OnComplete)
+			{
+				FString Text;
+				const FString Path = FPaths::Combine(FPaths::ProjectDir(), TEXT("Web"), TEXT("vendor"), Name);
+				OnComplete(FFileHelper::LoadFileToString(Text, *Path)
+					? FHttpServerResponse::Create(Text, TEXT("text/javascript; charset=utf-8"))
+					: FHttpServerResponse::Error(EHttpServerResponseCodes::NotFound, TEXT("no_vendor"), Path));
+				return true;
+			})));
+	}
 	Routes.Add(Router->BindRoute(FHttpPath(TEXT("/dashboard")), EHttpServerRequestVerbs::VERB_GET,
 		FHttpRequestHandler::CreateLambda([](const FHttpServerRequest&, const FHttpResultCallback& OnComplete)
 		{

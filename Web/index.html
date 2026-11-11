@@ -126,10 +126,25 @@
   #leaktable .none { font-size:11.5px; color:var(--faint); margin-top:4px; }
   #leaktable svg { display:inline-block; width:120px; height:26px; vertical-align:middle; overflow:visible; }
   #leaktable td.iso { color:#c678dd; } #leaktable td.imp { color:#4fc1c9; } #leaktable td.bad { color:#f08a8d; }
+  /* 냉각 설비·전력 / 방 공기 / 센서·검증 탭 (2026-11-11) */
+  .h2 { font-size:13px; margin:0; font-weight:600; }
+  .sub2 { color:var(--faint); font-size:11px; margin:2px 0 6px; }
+  .note2 { color:var(--faint); font-size:11px; margin-top:8px; line-height:1.5; }
+  .mt { margin-top:12px; }
+  .stack { display:flex; gap:2px; height:22px; margin:8px 0 6px; }
+  .stack span { display:block; height:100%; min-width:2px; }
+  .stack span:first-child { border-radius:4px 0 0 4px; } .stack span:last-child { border-radius:0 4px 4px 0; }
+  .legend i.sq { width:10px; height:10px; border-radius:2px; }
+  .kv { display:grid; grid-template-columns:repeat(auto-fit, minmax(190px, 1fr)); gap:6px 14px; font:12px var(--mono); margin-top:6px; }
+  .kv div span { display:block; color:var(--muted); font:11px system-ui, sans-serif; }
+  .ok { color:var(--text); } .warn { color:#f0b43c; } .warn::before { content:'▲ '; }
 </style>
-<!-- 3D 보기: 데모와 같은 three.js 0.128 (전역 THREE + OrbitControls). 못 불러와도 나머지 화면은 동작한다. -->
-<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/build/three.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+<!-- 3D 보기: 데모와 같은 three.js 0.128 (전역 THREE + OrbitControls). 먼저 같은 서버의 사본(Web/vendor, 오프라인·패키지)을 읽고,
+     없으면 CDN에서 읽는다. 둘 다 못 불러와도 나머지 화면은 동작한다. -->
+<script src="/vendor/three.min.js"></script>
+<script>window.THREE || document.write('<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/build/three.min.js"><\/script>');</script>
+<script>window.THREE && document.write('<script src="/vendor/OrbitControls.js"><\/script>');</script>
+<script>(window.THREE && !THREE.OrbitControls) && document.write('<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"><\/script>');</script>
 </head>
 <body>
 <div class="wrap">
@@ -156,8 +171,60 @@
   <div class="tabs" role="tablist">
     <button type="button" role="tab" id="tab-btn-summary" aria-selected="true" data-tab="summary">요약</button>
     <button type="button" role="tab" id="tab-btn-racks" aria-selected="false" data-tab="racks">랙</button>
+    <button type="button" role="tab" id="tab-btn-cooling" aria-selected="false" data-tab="cooling">냉각 설비·전력</button>
+    <button type="button" role="tab" id="tab-btn-air" aria-selected="false" data-tab="air">방 공기</button>
+    <button type="button" role="tab" id="tab-btn-check" aria-selected="false" data-tab="check">센서·검증</button>
     <button type="button" role="tab" id="tab-btn-ab" aria-selected="false" data-tab="ab">A/B 비교</button>
   </div>
+
+  <section id="tab-cooling" hidden>
+    <div class="panel">
+      <h2 class="h2">전력 분해 <span class="tag">계산값</span></h2>
+      <div class="sub2" id="pwrsub">직전 스텝 · kW</div>
+      <div id="pwrbar" class="stack" role="img" aria-label="전력 분해 막대. 같은 값은 아래 표에 있다."></div>
+      <div class="legend" id="pwrlegend"></div>
+      <div class="scroll"><table id="pwrtable"></table></div>
+      <div class="note2">IT = 부품 + 서버 팬 + PSU 변환 손실. 부분 PUE = (IT + CRAH 팬 + CDU 펌프) / IT. UPS·배전 손실·조명·냉각탑은 모델에 없다(시설 PUE 아님, D8).</div>
+    </div>
+    <div class="panel mt"><h2 class="h2">CRAH <span class="tag">계산값</span></h2><div class="sub2" id="crahsub"></div><div class="scroll"><table id="crahtable"></table></div></div>
+    <div class="panel mt"><h2 class="h2">CDU <span class="tag">계산값</span></h2><div class="sub2">줄 단위 액-액 열교환기(ε-NTU). 부하 비율 = 부하 / 설계 부하</div><div class="scroll"><table id="cdutable"></table></div></div>
+    <div class="panel mt"><h2 class="h2">CDU 펌프·수력 <span class="tag">계산값</span></h2><div class="sub2" id="hydsub"></div><div class="scroll"><table id="pumptable"></table></div></div>
+    <div class="panel mt"><h2 class="h2">설비 냉각 (S8) <span class="tag">계산값</span></h2><div id="plantbox"></div></div>
+    <div class="panel mt"><h2 class="h2">결로 검사</h2><div id="dewbox"></div></div>
+  </section>
+
+  <section id="tab-air" hidden>
+    <div class="panel kpis" id="airkpis"></div>
+    <div class="panel">
+      <div class="head" style="display:flex;gap:16px;align-items:flex-end;flex-wrap:wrap">
+        <div style="flex:1;min-width:220px">
+          <h2 class="h2">높이별 수평 단면 온도 <span class="tag">계산값</span></h2>
+          <div class="sub2" id="slicesub">공기 격자 셀 그대로(셀 하나 = 칸 하나) · 회색 = 고체 셀(장비·벽)</div>
+        </div>
+        <div class="scale">
+          <div class="bar" id="sbar"></div>
+          <div class="ends" id="sends"></div>
+          <div class="note">파랑 단일 색조, 밝을수록 뜨겁다 · 범위 밖은 끝 색</div>
+        </div>
+      </div>
+      <div class="tablebar" style="flex-wrap:wrap">
+        <label style="font-size:12px;color:var(--muted)">높이 <select id="slicesel"></select></label>
+        <button id="srange" type="button" aria-pressed="false">색 범위: 고정 18~40 °C</button>
+        <span class="mode" id="slicehover"></span>
+      </div>
+      <canvas id="slicecv" style="display:block;width:100%;margin-top:8px;border-radius:6px;image-rendering:pixelated" aria-label="수평 단면 온도 지도. 핫스팟 좌표와 통계는 위 카드에 있다."></canvas>
+      <div class="note2">0.25 m 격자에서 랙별 흡기는 격자 수렴하지 않았다(방 평균은 거의 수렴, 랙별 RMS 1.5 K). 셀 값은 보정되지 않은 모델의 계산값이다.</div>
+    </div>
+  </section>
+
+  <section id="tab-check" hidden>
+    <div class="panel"><h2 class="h2">보존·수렴 <span class="tag">계산값</span></h2><div id="checkbox"></div></div>
+    <div class="panel mt"><h2 class="h2">흡기 센서 <span class="tag">모의 계측값 (D9)</span></h2><div class="sub2">판독값은 지연·주기·잡음·분해능을 넣은 모의 계측값이며 신뢰도 100%가 아니다. 실제 = 그 스텝의 흡기 공기값</div><div class="scroll"><table id="chksens"></table></div></div>
+    <div class="panel mt"><h2 class="h2">누수 감지·보호 (W5) <span class="tag">모의 계측값 (D9)</span></h2><div id="leakdetbox"></div></div>
+    <div class="panel mt"><h2 class="h2">침수 영향 (W4)</h2><div id="impactbox"></div></div>
+    <div class="panel mt"><h2 class="h2">새어 나온 물의 장부 (W6)</h2><div id="waterbox"></div></div>
+    <div class="panel mt"><h2 class="h2">스텝 비용</h2><div class="sub2">1초마다 본 직전 프레임 값 · 측정값이며 보장값이 아니다(D10)</div><div id="perfbox"></div></div>
+  </section>
 
   <section id="tab-ab" class="ab" hidden>
     <div class="panel">
@@ -1132,10 +1199,8 @@ const openSlots = new Set();                     // 1초마다 다시 그려도 
 function showTab(name) {
   tab = name;
   for (const b of document.querySelectorAll('.tabs button')) b.setAttribute('aria-selected', String(b.dataset.tab === name));
-  $('tab-summary').hidden = name !== 'summary';
-  $('tab-racks').hidden = name !== 'racks';
-  $('tab-ab').hidden = name !== 'ab';
-  history.replaceState(null, '', name === 'racks' ? (selected >= 0 ? '#rack=' + selected : '#racks') : name === 'ab' ? '#ab' : '#');
+  for (const t of TABS) $('tab-' + t).hidden = name !== t;
+  history.replaceState(null, '', name === 'racks' ? (selected >= 0 ? '#rack=' + selected : '#racks') : name === 'summary' ? '#' : '#' + name);
   tick();
 }
 for (const b of document.querySelectorAll('.tabs button')) b.addEventListener('click', () => showTab(b.dataset.tab));
@@ -1207,7 +1272,7 @@ function renderDetail() {
   el.innerHTML = html + '</div><div class="mode" style="margin-top:6px">부품 허용 온도는 모델에 없어 여유를 표시하지 않는다.</div>';
   for (const d of el.querySelectorAll('details.slot')) d.addEventListener('toggle', () => d.open ? openSlots.add(+d.dataset.s) : openSlots.delete(+d.dataset.s));
 }
-{ const m = location.hash.match(/^#rack=(\d+)$/); if (m) { selected = +m[1]; tab = 'racks'; } else if (location.hash === '#racks') tab = 'racks'; else if (location.hash === '#ab') tab = 'ab'; }
+{ const m = location.hash.match(/^#rack=(\d+)$/); if (m) { selected = +m[1]; tab = 'racks'; } else if (location.hash === '#racks') tab = 'racks'; else if (['cooling', 'air', 'check', 'ab'].includes(location.hash.slice(1))) tab = location.hash.slice(1); }
 
 // ---- 리포트 저장 (5단계): 사이트가 하는 유일한 쓰기. 게임 스레드가 다음 발행(0.5 s 안)에 vrg.Eval.Report와 같은 함수로 쓴다. ----
 const NAME_OK = /^[A-Za-z0-9_\-가-힣]{1,64}$/;
@@ -1360,12 +1425,234 @@ function drawAbPlan(A, B) {
       + `<td class="${Math.abs(r.d) < DIV_DEAD ? '' : r.d > 0 ? 'pos' : 'neg'}">${(r.d > 0 ? '+' : '') + r.d.toFixed(2)}${Math.abs(r.d) < DIV_DEAD ? ' (구분 불가)' : ''}</td></tr>`).join('') + '</tbody></table>';
 }
 
+// ---- 냉각 설비·전력 / 방 공기 / 센서·검증 탭 (2026-11-11) ----
+// 값은 전부 서버가 이미 계산된 값을 복사한 것이다(새 물리 없음). /api/status·/api/roomair는 페이지가 묻는 동안에만 게임 스레드가
+// 만든다(처음 요청은 202 = 다음 발행 때 만든다). 설비·검증 값은 리포트와 같은 함수로 만들어 같은 SimTime이면 리포트와 같다.
+const TABS = ['summary', 'racks', 'cooling', 'air', 'check', 'ab'];
+let cooling = null, statusJ = null, roomair = null, chkSensors = null;
+const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;' }[c]));
+const fx = (v, d) => (v === null || v === undefined || !isFinite(v)) ? '-' : (+v).toFixed(d);
+const cK = (k, d = 1) => (k === null || k === undefined || !isFinite(k)) ? '-' : (k - 273.15).toFixed(d);
+const kW = (w, d = 1) => fx(w === null || w === undefined ? null : w / 1000, d);
+// 레벨 액터 이름의 월드 파티션 꼬리(_UAID_...)는 화면에서 줄이고 전체 이름은 툴팁(title)에 둔다.
+const shortName = n => `<span title="${esc(n)}">${esc(String(n).replace(/_UAID_\w+$/, ''))}</span>`;
+async function getJson(url, name) {
+  const r = await fetch(url, { cache:'no-store' });
+  if (r.status === 202) return undefined;            // 기록됨: 다음 발행 때 만든다
+  if (!r.ok) throw new Error(name + ' HTTP ' + r.status);
+  return r.json();
+}
+function kvGrid(items) {
+  return '<div class="kv">' + items.map(([k, v, warn]) => `<div><span>${k}</span><b class="${warn ? 'warn' : 'ok'}" style="font-weight:500">${v}</b></div>`).join('') + '</div>';
+}
+function showTip(ev, html) { const t = $('tip'); t.innerHTML = html; t.style.display = 'block'; t.style.left = (ev.clientX + 14) + 'px'; t.style.top = (ev.clientY + 12) + 'px'; }
+function hideTip() { $('tip').style.display = 'none'; }
+
+// 전력 분해: 범주 색은 참조 팔레트의 다크 1~5번 슬롯을 고정 순서로(검증된 인접쌍 순서, 이 PC에 node가 없어 검증 스크립트는 못 돌렸다).
+// 색만으로 구분하지 않도록 범례 + 표 + 툴팁에 이름과 값을 함께 둔다. 막대 조각 사이 2 px 틈.
+const PWR = [['부품', '#3987e5'], ['서버 팬', '#d95926'], ['PSU 변환 손실', '#199e70'], ['CRAH 팬', '#c98500'], ['CDU 펌프', '#d55181']];
+function renderCooling() {
+  const c = cooling; if (!c) return;
+  const vals = [c.itW - c.serverFanW - c.psuLossW, c.serverFanW, c.psuLossW, c.crahFanW, c.pumpW];
+  const total = vals.reduce((a, b) => a + Math.max(0, b), 0);
+  $('pwrsub').textContent = c.mode !== 'simulation' || !c.coupled ? '배치 모드이거나 결합 전이라 값이 없다(Enter로 시뮬레이션)'
+    : `직전 스텝 · SimTime ${c.simTimeS.toFixed(2)} s · 합계 ${kW(total)} kW · 부분 PUE ${c.partialPue === null ? '-' : c.partialPue.toFixed(4)}`;
+  $('pwrbar').innerHTML = total > 0 ? vals.map((v, i) => `<span data-i="${i}" style="flex:${Math.max(0, v) / total};background:${PWR[i][1]}"></span>`).join('') : '';
+  for (const s of $('pwrbar').querySelectorAll('span')) {
+    const i = +s.dataset.i;
+    s.addEventListener('mousemove', ev => showTip(ev, `<div>${PWR[i][0]}</div><div>${kW(vals[i], 2)} kW · ${(vals[i] / total * 100).toFixed(2)} %</div>`));
+    s.addEventListener('mouseleave', hideTip);
+  }
+  $('pwrlegend').innerHTML = PWR.map(([n, col], i) => `<span><i class="sq" style="background:${col}"></i>${n} ${kW(vals[i])} kW</span>`).join('');
+  $('pwrtable').innerHTML = `<thead><tr><th class="l">항목</th><th>kW</th><th>합계 대비 %</th></tr></thead><tbody>`
+    + PWR.map(([n], i) => `<tr><td class="l">${n}</td><td>${kW(vals[i], 2)}</td><td>${total > 0 ? (vals[i] / total * 100).toFixed(2) : '-'}</td></tr>`).join('')
+    + `<tr><td class="l">IT (부품 + 서버 팬 + PSU)</td><td>${kW(c.itW, 2)}</td><td></td></tr>`
+    + `<tr><td class="l">냉각수 방출 / 공기 코일 / 랙 라디에이터</td><td>${kW(c.coolantRemovedW, 1)} / ${kW(c.crahCoilRemovedW, 1)} / ${kW(c.radiatorRemovedW, 1)}</td><td></td></tr></tbody>`;
+
+  $('crahsub').textContent = (c.crahMode === 'ceilingCoil' ? '천장 뭉친 코일(비교용)' : '유닛') + ` ${c.crahs.length}대 · 덕트 + 코일(ε-NTU) + 팬`
+    + (c.crahPerUnit ? '' : ' · 유닛별 공기 값은 CPU 균일 격자 경로에서만 기록된다(GPU·옥트리 경로는 "-")');
+  $('crahtable').innerHTML = `<thead><tr><th class="l">#</th><th class="l">종류</th><th>위치 m</th><th>풍량 m³/s</th><th>코일 UA kW/K</th><th>팬 kW</th>`
+    + `<th>냉수 공급 °C</th><th>흡입 혼합 °C</th><th>토출 °C</th><th>제거열 kW</th></tr></thead><tbody>`
+    + c.crahs.map((u, i) => `<tr><td class="l">${i + 1}</td><td class="l">${u.kind === 'perimeter' ? '벽면' : '인로우'}${u.placed ? '' : ' (자동)'}</td>`
+      + `<td>${u.xM.toFixed(2)}, ${u.yM.toFixed(2)}</td><td>${u.flowM3s.toFixed(3)}</td><td>${(u.uaWK / 1000).toFixed(2)}</td><td>${kW(u.fanW, 2)}</td>`
+      + `<td>${cK(u.waterSupplyK)}</td><td>${cK(u.intakeMixK, 2)}</td><td>${cK(u.supplyK, 2)}</td><td>${kW(u.removedW)}</td></tr>`).join('') + '</tbody>';
+
+  $('cdutable').innerHTML = `<thead><tr><th class="l">그룹</th><th class="l">CDU (CDU 그룹마다 열교환기 모델 하나)</th><th>랙</th><th>설계 kW</th><th>부하 kW</th><th>부하 비율 %</th><th>냉각수 회수→공급 °C</th>`
+    + `<th>냉각수 kg/s</th><th>설비수 입→출 °C</th><th>설비수 kg/s</th></tr></thead><tbody>`
+    + c.cdus.map((d, i) => { const ratio = d.designDutyW > 0 ? d.dutyW / d.designDutyW * 100 : null;
+      return `<tr><td class="l">${i + 1}</td><td class="l">${shortName(d.name)}</td><td>${d.numRacks}</td><td>${kW(d.designDutyW)}</td><td>${kW(d.dutyW)}</td>`
+        + `<td>${ratio === null ? '-' : ratio.toFixed(1) + (ratio > 100 ? ' ▲' : '')}</td><td>${cK(d.returnK, 2)} → ${cK(d.supplyK, 2)}</td><td>${fx(d.coolantKgs, 3)}</td>`
+        + `<td>${cK(d.facilitySupplyK, 2)} → ${cK(d.facilityReturnK, 2)}</td><td>${fx(d.facilityFlowKgs, 3)}</td></tr>`; }).join('') + '</tbody>';
+
+  $('hydsub').innerHTML = !c.hydraulics ? '수력망 없음' : (c.hydConverged ? '수력 Newton 수렴' : '<span class="warn">수력 Newton 수렴 실패 - 유량 값을 믿지 말 것(D5)</span>')
+    + ` · 반복 ${c.hydIterations} · 정규화 잔차 ${c.hydResidual.toExponential(2)} · ${c.hydSparse ? '희소 LU' : '밀행렬 LU'} · 전기 입력이면 효율로 다시 나누지 않는다(D8)`;
+  $('pumptable').innerHTML = `<thead><tr><th class="l">줄</th><th class="l">CDU</th><th>유량 L/s</th><th>양정 kPa</th><th>전기 kW</th><th>수력 kW</th>`
+    + `<th>분기</th><th>분기 최소/평균/최대 L/s</th></tr></thead><tbody>`
+    + c.pumps.map(p => `<tr><td class="l">${p.row + 1}</td><td class="l">${p.cdu ? shortName(p.cdu) : '가상 루프(라디에이터)'}</td><td>${fx(p.flowM3s * 1000, 3)}</td>`
+      + `<td>${fx(p.headPa / 1000, 1)}</td><td>${kW(p.electricW, 2)}</td><td>${kW(p.hydraulicW, 2)}</td><td>${p.branches}</td>`
+      + `<td>${fx(p.branchMinM3s * 1000, 3)} / ${fx(p.branchMeanM3s * 1000, 3)} / ${fx(p.branchMaxM3s * 1000, 3)}</td></tr>`).join('') + '</tbody>';
+  renderPlant();
+}
+function renderPlant() {
+  const s = statusJ;
+  if (!s) { $('plantbox').innerHTML = '<div class="sub2">불러오는 중(처음 요청 뒤 다음 발행에 만든다)</div>'; $('dewbox').innerHTML = ''; return; }
+  if (s.mode !== 'simulation' || !s.evalReady) { $('plantbox').innerHTML = '<div class="sub2">배치 모드이거나 시뮬레이션 스텝 전이라 값이 없다</div>'; $('dewbox').innerHTML = ''; return; }
+  if (!s.plantEnabled) {
+    $('plantbox').innerHTML = '<div class="sub2">설비 냉각 꺼짐(<code>vrg.Plant.Enable 0</code>, 기본): CDU 설비수 22 °C·CRAH 냉수 18 °C 고정 경계다. '
+      + '켜면 설비수(FWS)·냉수(CHW)·응축수(CW) 루프와 드라이쿨러·칠러·이코노마이저 값이 여기 나온다.</div>';
+  } else {
+    const L = s.plantLive || {}, P = s.plant || {}, pw = s.power || {};
+    const cop = L.chillerPowerW > 0 ? L.chillerLoadW / L.chillerPowerW : null;
+    let h = kvGrid([
+      ['구성', P.topology === 'shared' ? '공용 냉수' : P.topology === 'series' ? '직렬' : '분리'],
+      ['외기 (설계)', `${cK(P.ambientK)} °C (${cK(P.designAmbientK)} °C)`],
+      ['설비수 공급 → 회수', `${cK(L.fwsSupplyK, 2)} → ${cK(L.fwsReturnK, 2)} °C`, L.fwsSetpointNotMet],
+      ['드라이쿨러 팬 / 방열', `${fx(L.dryCoolerFanRatio * 100, 0)} % / ${kW(L.dryCoolerHeatW)} kW`],
+      ['CDU 부하 (설비 쪽)', `${kW(L.cduDutyW)} kW`],
+      ['냉수 공급 → 회수', L.chilledWater ? `${cK(L.chwSupplyK, 2)} → ${cK(L.chwReturnK, 2)} °C` : '냉수 루프 없음'],
+      ['칠러 운전 / 부하 / 전력', `${L.chillersRunning}대 / ${kW(L.chillerLoadW)} kW / ${kW(L.chillerPowerW)} kW`, L.chillerCapacityLimited],
+      ['칠러 COP (곡선 밖이면 카르노 외삽, 추정)', cop === null ? '-' : cop.toFixed(2) + (L.chillerOutsideCurves ? ' (곡선 밖)' : '')],
+      ['트림 칠러 / 이코노마이저', `${L.trimRunning}대 ${kW(L.trimLoadW)} kW / ${L.economizerOn ? '켜짐 ' + kW(L.economizerW) + ' kW' : '꺼짐'}`],
+      ['응축수 공급 → 회수', `${cK(L.cwSupplyK, 2)} → ${cK(L.cwReturnK, 2)} °C`],
+      ['설비 전력 (창 평균)', `${kW(pw.plantW)} kW`],
+      ['냉각 PUE (창 평균)', fx(pw.coolingPue, 4)],
+      ['외기까지 장부 잔차', P.siteLedgerResidual === undefined ? '-' : P.siteLedgerResidual.toExponential(2)],
+      ['설비 누수 누적', `${fx(P.leakMassKg, 2)} kg`, P.leakMassKg > 0],
+      ['고장난 칠러 / 트림', `${L.trippedChillers} / ${L.trippedTrimChillers}`, L.trippedChillers + L.trippedTrimChillers > 0],
+      ['설정 미달 누적 (FWS / 칠러 용량)', `${fx(P.fwsSupplyNotMetS, 1)} s / ${fx(P.chillerLimitedS, 1)} s`]]);
+    const faults = P.faults || [];
+    h += `<div class="sub2" style="margin-top:10px">설비 장애 기록 ${faults.length}건 (<code>vrg.Plant.Fault</code>, 이벤트 <code>plant</code>) · 영향 범위 = 망 재풀이 결과(D4)</div>`;
+    if (faults.length) h += `<div class="scroll"><table><thead><tr><th>t s</th><th class="l">내용</th><th class="l">루프</th><th>누수 L/s</th><th>영향 분기</th><th>펌프 포화</th></tr></thead><tbody>`
+      + faults.map(f => `<tr><td>${f.t.toFixed(1)}</td><td class="l">${esc(f.what)}</td><td class="l">${f.loop}</td><td>${fx(f.leakM3s * 1000, 3)}</td>`
+        + `<td>${f.affectedBranches} / ${f.branches}</td><td>${f.pumpsSaturated ? '▲ 예' : '아니오'}</td></tr>`).join('') + '</tbody></table></div>';
+    $('plantbox').innerHTML = h + '<div class="note2">칠러 운전점은 공개 곡선 범위 밖이라 카르노 외삽(추정)이다. 냉각탑·UPS·배전·조명이 없어 냉각 PUE이지 시설 PUE가 아니다.</div>';
+  }
+  const d = s.dewPoint;
+  $('dewbox').innerHTML = !d ? '' : kvGrid([['방 이슬점 (입력값 하나)', cK(d.roomDewPointK) + ' °C'], ['요구 여유', fx(d.marginK, 1) + ' K'],
+    ['CDU 공급 − 이슬점 최소', d.minSupplyAboveDewK === undefined ? '-' : fx(d.minSupplyAboveDewK, 2) + ' K', d.minSupplyAboveDewK !== undefined && d.minSupplyAboveDewK < d.marginK],
+    ['결로 위험 누적', fx(d.riskS, 1) + ' s', d.riskS > 0]]) + '<div class="note2">습도 물리는 없다: CDU 공급 온도를 방 이슬점 입력값 하나와 비교만 한다(ASHRAE S등급 2 K 여유).</div>';
+}
+
+// 방 공기: 단면 색은 평면도와 같은 파랑 단일 색조(SEQ), 고정 18~40 °C(실행끼리 비교 가능) 또는 지금 단면 최저~최고.
+const AIR_FIXED = [18, 40];
+let airAuto = false, airRange = AIR_FIXED.slice();
+function airColor2(c) {
+  const t = Math.max(0, Math.min(1, (c - airRange[0]) / (airRange[1] - airRange[0]))) * (SEQ.length - 1), i = Math.min(Math.floor(t), SEQ.length - 2), f = t - i;
+  const a = SEQ[i].match(/\w\w/g).map(h => parseInt(h, 16)), b = SEQ[i + 1].match(/\w\w/g).map(h => parseInt(h, 16));
+  return 'rgb(' + a.map((v, k) => Math.round(v + (b[k] - v) * f)).join(',') + ')';
+}
+$('sbar').style.background = 'linear-gradient(90deg,' + SEQ.join(',') + ')';
+$('srange').addEventListener('click', () => {
+  airAuto = !airAuto; $('srange').setAttribute('aria-pressed', String(airAuto));
+  $('srange').textContent = airAuto ? '색 범위: 지금 단면 (실행끼리 비교 불가)' : '색 범위: 고정 18~40 °C';
+  renderAir();
+});
+$('slicesel').addEventListener('change', renderAir);
+function renderAir() {
+  const a = roomair;
+  if (!a) { $('airkpis').innerHTML = '<div class="kpi"><div class="label">방 공기</div><div class="value">-</div><div class="note">불러오는 중</div></div>'; return; }
+  const kpi = (label, value, note) => `<div class="kpi"><div class="label">${label}</div><div class="value">${value}</div><div class="note">${note}</div></div>`;
+  if (a.octree || a.fluidCells === 0) {
+    $('airkpis').innerHTML = kpi('방 공기', '-', a.octree ? '옥트리 경로: 균일 격자 값이 풀이 결과가 아니라 보내지 않는다' : '격자 없음');
+    return;
+  }
+  $('airkpis').innerHTML = kpi('공기 평균', cK(a.meanK, 2) + ' °C', `유체 셀 ${a.fluidCells.toLocaleString()}개 평균`)
+    + kpi('공기 최저 / 최고', `${cK(a.minK, 1)} / ${cK(a.maxK, 1)} °C`, `최고 셀 (${a.hotspotM.map(v => v.toFixed(2)).join(', ')}) m`)
+    + kpi('최대 속력', fx(a.maxSpeedMs, 2) + ' m/s', '셀 중심(MAC 두 면 평균)')
+    + kpi('CFL', fx(a.courant, 3), '직전 스텝')
+    + kpi('난류 ν_t 최대 / 평균', `${a.turbulence ? a.nuTMaxM2s.toExponential(2) : '-'}`, a.turbulence ? `평균 ${a.nuTMeanM2s.toExponential(2)} m²/s (Chen-Xu)` : '난류 모델 꺼짐')
+    + kpi('압력 풀이', a.pressureConverged ? '수렴' : '<span class="warn">실패</span>', `반복 ${a.pressureIterations} · 잔차 ${a.pressureResidual.toExponential(2)} · 실패 누적 ${a.pressureFailures}/${a.pressureSolves}`)
+    + kpi('격자', `${a.numX}×${a.numY}×${a.numZ}`, `h ${a.cellM} m · ${a.gpuStep ? 'GPU' : 'CPU'} FP64`);
+  const sel = $('slicesel');
+  const want = a.sliceHeightsM.map((h, i) => `${i}:${h.toFixed(3)}`).join('|');
+  if (sel.dataset.key !== want) {
+    const keep = sel.value; sel.dataset.key = want;
+    sel.innerHTML = a.sliceHeightsM.map((h, i) => `<option value="${i}">${(h - a.originM[2]).toFixed(2)} m (바닥 위, 셀 중심)</option>`).join('');
+    if (keep && +keep < a.sliceHeightsM.length) sel.value = keep;
+  }
+  const si = +sel.value || 0, n = a.numX * a.numY, slice = a.sliceK.slice(si * n, (si + 1) * n);
+  airRange = AIR_FIXED.slice();
+  const cs = slice.filter(v => v !== null).map(toC);
+  if (airAuto && cs.length) { airRange = [Math.floor(Math.min(...cs) * 10) / 10, Math.ceil(Math.max(...cs) * 10) / 10]; if (airRange[1] - airRange[0] < 0.5) airRange[1] = airRange[0] + 0.5; }
+  $('sends').innerHTML = `<span style="left:0;transform:translateX(0)">${airRange[0].toFixed(1)} °C</span><span style="left:100%;transform:translateX(-100%)">${airRange[1].toFixed(1)} °C</span>`;
+  $('slicesub').textContent = `셀 ${a.numX}×${a.numY} (h ${a.cellM} m) · 높이 ${(a.sliceHeightsM[si] - a.originM[2]).toFixed(2)} m · 이 단면 ${cs.length ? Math.min(...cs).toFixed(1) + '~' + Math.max(...cs).toFixed(1) + ' °C' : '-'} · 회색 = 고체 셀 · SimTime ${a.simTimeS.toFixed(2)} s`;
+  // 화면 x = 세계 X, 화면 y = 세계 Y (위에서 본 UE 좌표, 평면도와 같은 방향).
+  const cv = $('slicecv'), W = cv.clientWidth || 800, px = Math.max(2, Math.floor(W / a.numX));
+  cv.width = a.numX * px; cv.height = a.numY * px; cv.style.height = (a.numY * px * (W / (a.numX * px))) + 'px';
+  const g = cv.getContext('2d');
+  for (let y = 0; y < a.numY; ++y) for (let x = 0; x < a.numX; ++x) {
+    const v = slice[y * a.numX + x];
+    g.fillStyle = v === null ? '#4a505c' : airColor2(toC(v));
+    g.fillRect(x * px, y * px, px, px);
+  }
+  cv.onmousemove = ev => {
+    const r = cv.getBoundingClientRect(), x = Math.floor((ev.clientX - r.left) / r.width * a.numX), y = Math.floor((ev.clientY - r.top) / r.height * a.numY);
+    if (x < 0 || y < 0 || x >= a.numX || y >= a.numY) return;
+    const v = slice[y * a.numX + x], wx = a.originM[0] + (x + .5) * a.cellM, wy = a.originM[1] + (y + .5) * a.cellM;
+    $('slicehover').textContent = `셀 (${x}, ${y}) · 세계 (${wx.toFixed(2)}, ${wy.toFixed(2)}) m · ${v === null ? '고체 셀' : toC(v).toFixed(2) + ' °C'}`;
+  };
+}
+
+// 센서·검증
+function renderCheck() {
+  const s = statusJ;
+  if (!s || s.mode !== 'simulation' || !s.evalReady || !s.checks) {
+    $('checkbox').innerHTML = `<div class="sub2">${!s ? '불러오는 중(처음 요청 뒤 다음 발행에 만든다)' : '배치 모드이거나 시뮬레이션 스텝 전이라 값이 없다'}</div>`;
+  } else {
+    const k = s.checks;
+    $('checkbox').innerHTML = kvGrid([
+      ['전역 열수지 정규화 잔차', k.globalNormalizedEnergyResidual.toExponential(3), Math.abs(k.globalNormalizedEnergyResidual) > 1e-9],
+      ['압력 풀이 실패 / 전체', `${k.pressureFailures ?? '-'} / ${k.pressureSolves ?? '-'}`, k.pressureFailures > 0],
+      ['수력 수렴', k.hydraulicsConverged ? '수렴' : '실패(D5)', !k.hydraulicsConverged],
+      ['SimTime', s.simTimeS.toFixed(2) + ' s']])
+      + `<div class="sub2" style="margin-top:8px">장부 분해(<code>DescribeEnergyLedger</code>)</div><pre style="font:11px var(--mono);white-space:pre-wrap;color:var(--muted);margin:0">${esc(k.ledger)}</pre>`
+      + '<div class="note2">보존 잔차가 작다는 것은 장부가 맞는다는 뜻이지 실제 온도가 맞는다는 뜻이 아니다(실측 보정 없음).</div>';
+  }
+  if (chkSensors) {
+    const sp = chkSensors.spec;
+    $('chksens').innerHTML = `<thead><tr><th class="l">흡기</th><th>판독 °C</th><th>실제 °C</th><th>판독 − 실제 K</th><th>경보</th><th>첫 감지 s</th><th>경보 횟수</th></tr></thead><tbody>`
+      + chkSensors.sensors.map(x => `<tr><td class="l">${x.inlet}</td><td>${cK(x.readingK, 2)}</td><td>${cK(x.airNowK, 2)}</td>`
+        + `<td>${x.readingK === null ? '-' : (x.readingK - x.airNowK).toFixed(2)}</td><td>${x.alarm ? '▲ 경보' : '정상'}</td><td>${fx(x.firstAlarmS, 1)}</td><td>${x.alarms}</td></tr>`).join('')
+      + `</tbody><caption style="caption-side:bottom;text-align:left;color:var(--faint);font:11px system-ui;padding-top:4px">τ ${sp.timeConstantS} s · 주기 ${sp.samplePeriodS} s · 잡음 σ ${sp.noiseStdK} K · 분해능 ${sp.resolutionK} K · 경보 ${cK(sp.alarmThresholdK)} °C (일반 서미스터 가정값, 제품 사양 아님)</caption>`;
+  }
+  if (!s || !s.instruments) { $('leakdetbox').innerHTML = $('impactbox').innerHTML = $('waterbox').innerHTML = ''; }
+  else {
+    const I = s.instruments;
+    let h = kvGrid([['계측 지점 / 누수 감지 케이블', `${I.points} / ${I.leakCables}`],
+      ['누수 경보 (오경보 포함)', `${I.leakAlarms.length} (${I.falseLeakAlarms})`, I.leakAlarms.length > 0],
+      ['고장 감지기', I.unhealthyDetectors, I.unhealthyDetectors > 0],
+      ['보호 차단 정책', I.leakProtectionPolicy ? '켜짐' : '꺼짐 (기본)'],
+      ['공정값 경보', I.processAlarms.length, I.processAlarms.length > 0]]);
+    h += '<div class="sub2" style="margin-top:8px">감지기 종류별 (수 / 경보)</div>' + kvGrid(I.leakDetectorSummary.map(t => [t.type, `${t.count} / ${t.alarms}`, t.alarms > 0]));
+    if (I.leakAlarms.length) h += `<div class="scroll"><table><thead><tr><th>t s</th><th class="l">감지기</th><th class="l">종류</th><th>물 mL</th><th>첫 접촉 s</th><th class="l">구분</th></tr></thead><tbody>`
+      + I.leakAlarms.slice(-30).reverse().map(a => `<tr><td>${a.timeS.toFixed(1)}</td><td class="l">${esc(a.sensorId)}</td><td class="l">${a.type}</td>`
+        + `<td>${a.contactWaterM3 === undefined ? '-' : (a.contactWaterM3 * 1e6).toFixed(2)}</td><td>${fx(a.firstContactS, 1)}</td><td class="l">${a.falseAlarm ? '오경보(모의)' : a.flowBased ? '유량 기반' : '실제 물'}</td></tr>`).join('') + '</tbody></table></div>';
+    if (I.leakProtection.length) h += `<div class="sub2" style="margin-top:8px">보호 동작 (W5, W4 고장과 원인 분리)</div><div class="scroll"><table><thead><tr><th>t s</th><th class="l">단계</th><th class="l">동작</th><th class="l">원인</th><th>랙</th><th>슬롯</th><th>줄</th></tr></thead><tbody>`
+      + I.leakProtection.map(e => `<tr><td>${e.timeS.toFixed(1)}</td><td class="l">${esc(e.level)}</td><td class="l">${esc(e.action)}</td><td class="l">${esc(e.trigger)}</td><td>${e.rack}</td><td>${e.slot}</td><td>${e.row}</td></tr>`).join('') + '</tbody></table></div>';
+    if (I.processAlarms.length) h += `<div class="sub2" style="margin-top:8px">공정값 경보 (탱크 수위·보충수·공급-회수 불일치·압력, 위치 미상 · 판독값만)</div><div class="scroll"><table><thead><tr><th>t s</th><th class="l">루프</th><th class="l">신호</th><th>값</th></tr></thead><tbody>`
+      + I.processAlarms.map(a => `<tr><td>${a.timeS.toFixed(1)}</td><td class="l">${esc(a.loop)}</td><td class="l">${esc(a.signal)}</td><td>${a.value.toPrecision(4)}</td></tr>`).join('') + '</tbody></table></div>';
+    $('leakdetbox').innerHTML = h + '<div class="note2">감지는 계산된 물이 감지기에 닿았는지로 판정한다(솔버 누수 유량 미사용). 문턱·지연은 추정값이다.</div>';
+    const W = s.waterImpact || {};
+    $('impactbox').innerHTML = kvGrid([['침수 영향', W.enabled ? '켜짐' : '꺼짐 (vrg.Water.Impact 0, 기본)'],
+      ['젖음 / 트립 / 손상', `${W.wetTargets ?? 0} / ${W.trippedTargets ?? 0} / ${W.damagedTargets ?? 0}`, (W.trippedTargets || 0) + (W.damagedTargets || 0) > 0],
+      ['전원 차단 (슬롯 / CDU / CRAH / 스파인)', `${W.rackSlotCuts ?? 0} / ${W.cduCuts ?? 0} / ${W.crahCuts ?? 0} / ${W.spineCuts ?? 0}`],
+      ['트립 / 손상 문턱 (추정)', `통전 접촉 ${W.tripPoweredContactS ?? '-'} s / +${W.damageContactAfterTripS ?? '-'} s 또는 ${W.damageCumulativeM3 === undefined ? '-' : (W.damageCumulativeM3 * 1000) + ' L'}`]])
+      + '<div class="note2">문턱은 공개 고장 자료가 없어 추정값이다(보정 안 됨). 트립·손상은 R 재시작까지 유지된다.</div>';
+    const D = s.waterDisplay || {};
+    const L = v => v === undefined ? '-' : (v * 1000).toFixed(3) + ' L';
+    $('waterbox').innerHTML = kvGrid([['바닥 물 (표시 / 계산)', `${L(D.floorShownM3)} / ${L(D.floorComputedM3)}`], ['트레이 (표시 / 계산)', `${L(D.trayShownM3)} / ${L(D.trayComputedM3)}`],
+      ['물막 (표시 / 계산)', `${L(D.filmShownM3)} / ${L(D.filmComputedM3)}`], ['공중 액적 (표시 / 계산)', `${L(D.airShownM3)} / ${L(D.airComputedM3)}`],
+      ['표시 장부 잔차', D.residual === undefined ? '-' : D.residual.toExponential(2)], ['설비 마당 땅 물', `${L(D.yardStoredM3)} (받은 양 ${L(D.yardReceivedM3)})`]]);
+  }
+  const p = s && s.perf;
+  $('perfbox').innerHTML = !p ? '' : kvGrid([['프레임', fx(p.frameMs, 2) + ' ms'], ['그 프레임의 스텝 수', p.solverSteps], ['공기 솔버 / 압력', `${fx(p.solverMs, 2)} / ${fx(p.pressureMs, 2)} ms`],
+    ['결합 (재고·수력 / 랙 / 물)', `${fx(p.couplingMs, 2)} (${fx(p.inventoryHydraulicsMs, 2)} / ${fx(p.rackModelsMs, 2)} / ${fx(p.waterMs, 2)}) ms`], ['대시보드 발행', fx(p.dashboardMs, 3) + ' ms']]);
+}
+
 async function tick() {
   try {
     await pollSnapshot();
-    $('tab-summary').hidden = tab !== 'summary';
-    $('tab-racks').hidden = tab !== 'racks';
-    $('tab-ab').hidden = tab !== 'ab';
+    for (const t of TABS) $('tab-' + t).hidden = tab !== t;
     for (const b of document.querySelectorAll('.tabs button')) b.setAttribute('aria-selected', String(b.dataset.tab === tab));
     if (tab === 'ab' || waitingSave) await pollReports(false);   // 저장 결과를 기다리는 동안은 어느 탭에서든
     await pollSeries();                          // 시계열은 탭과 무관하게 계속 쌓는다(돌아왔을 때 빈틈 없게)
@@ -1383,6 +1670,17 @@ async function tick() {
       await pollRacks();
       renderRacks();
       renderDetail();
+    } else if (tab === 'cooling') {
+      cooling = await getJson('/api/cooling', '냉각');
+      const st = await getJson('/api/status', '상태'); if (st !== undefined) statusJ = st;
+      renderCooling();
+    } else if (tab === 'air') {
+      const ra = await getJson('/api/roomair', '방 공기'); if (ra !== undefined) roomair = ra;
+      renderAir();
+    } else if (tab === 'check') {
+      const st = await getJson('/api/status', '상태'); if (st !== undefined) statusJ = st;
+      chkSensors = await getJson('/api/sensors', '센서');
+      renderCheck();
     } else {
       await renderAb();
     }

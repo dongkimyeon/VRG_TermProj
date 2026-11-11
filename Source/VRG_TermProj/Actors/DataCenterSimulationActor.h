@@ -629,6 +629,17 @@ public:
 	FVrgDashboardLeaks BuildDashboardLeaks() const;
 	// The fault judgement's input of this step (the dashboard shows the same values the judgement used).
 	FVrgFaultInput MakeFaultInput() const;
+	// 2026-11-11: report sections shared with the web dashboard (vrg.Eval.Report uses the same builders).
+	TSharedPtr<FJsonObject> MakeReportPlantJson(const FCouplingSnapshot& Snap) const;   // null without an active plant
+	TSharedRef<FJsonObject> MakeReportDewPointJson() const;
+	TSharedRef<FJsonObject> MakeReportChecksJson(const FCouplingSnapshot& Snap) const;
+	TSharedRef<FJsonObject> MakeReportWaterDisplayJson() const;
+	TSharedRef<FJsonObject> MakeReportInstrumentsJson() const;
+	// Web cooling and validation tabs (2026-11-11): plant live state, those report sections, W4 water impact, the fault
+	// monitor's first times and the last frame's step costs, as one JSON text (game thread, only while the page asks).
+	FString BuildDashboardStatusJson() const;
+	// Web room air tab (2026-11-11): fluid-cell statistics and horizontal temperature slices of the uniform grid.
+	FVrgDashboardRoomAir BuildDashboardRoomAir() const;
 	// Stage 5: handles a report save the page queued (same writer as vrg.Eval.Report) and records the result for the
 	// report list. Called from each dashboard publish on the game thread; returns true when it handled one.
 	bool ProcessDashboardRequests();

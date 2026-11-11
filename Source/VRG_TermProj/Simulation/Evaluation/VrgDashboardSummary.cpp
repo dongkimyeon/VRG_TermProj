@@ -6,6 +6,7 @@
 #include "Serialization/JsonSerializer.h"
 #include "Serialization/JsonWriter.h"
 #include <charconv>
+#include <limits>
 #include "Simulation/Air/AirSolver.h"
 
 FString FVrgDashboardSummary::ToJson() const
@@ -831,6 +832,136 @@ bool FVrgDashboardCooling::FromJson(const FString& Json, FVrgDashboardCooling& O
 		C.Pumps.Add(R);
 	}
 	Out = MoveTemp(C);
+	return true;
+}
+
+// ---- Room air tab (2026-11-11) ----
+
+namespace
+{
+	template <typename FVisit>
+	void VisitRoomAirNumbers(FVrgDashboardRoomAir& A, FVisit&& Visit)
+	{
+		Visit(TEXT("cellM"), A.CellM); Visit(TEXT("minK"), A.MinK); Visit(TEXT("maxK"), A.MaxK); Visit(TEXT("meanK"), A.MeanK);
+		Visit(TEXT("maxSpeedMs"), A.MaxSpeedMs); Visit(TEXT("courant"), A.Courant); Visit(TEXT("nuTMaxM2s"), A.NuTMaxM2s);
+		Visit(TEXT("nuTMeanM2s"), A.NuTMeanM2s); Visit(TEXT("pressureResidual"), A.PressureResidual);
+	}
+}
+
+FVrgDashboardRoomAir FVrgDashboardRoomAir::Build(const FAirSolver& Solver, const FVector& OriginM, const TArray<double>& HeightsM)
+{
+	FVrgDashboardRoomAir A;
+	A.bOctree = Solver.IsUsingOctree();
+	A.bGpuStep = Solver.DidLastStepRunOnGpu();
+	A.bTurbulence = Solver.GetTurbulenceSettings().bEnabled;
+	A.Courant = Solver.GetCourantNumber();
+	A.NuTMaxM2s = Solver.GetMaxTurbulentViscosityM2s();
+	A.NuTMeanM2s = Solver.GetMeanTurbulentViscosityM2s();
+	A.PressureSolves = Solver.GetNumPressureSolves();
+	A.PressureFailures = Solver.GetNumPressureFailures();
+	const FPoissonSolveResult& Pr = Solver.GetLastPressureResult();
+	A.bPressureConverged = Pr.bConverged; A.PressureIterations = Pr.IterationsUsed; A.PressureResidual = Pr.NormalizedResidual;
+	const FUniformAirGrid& G = Solver.GetGrid();
+	A.CellM = G.GetCellSizeM();
+	A.OriginM = OriginM;
+	if (A.bOctree || G.GetNumCells() == 0 || G.TemperatureK.Num() != G.GetNumCells() || G.VelocityXMs.Num() != G.GetNumFacesX()) return A;
+	A.NumX = G.GetNumCellsX(); A.NumY = G.GetNumCellsY(); A.NumZ = G.GetNumCellsZ();
+	double SumK = 0.0;
+	A.MinK = TNumericLimits<double>::Max(); A.MaxK = TNumericLimits<double>::Lowest();
+	for (int32 Z = 0; Z < A.NumZ; ++Z)
+		for (int32 Y = 0; Y < A.NumY; ++Y)
+			for (int32 X = 0; X < A.NumX; ++X)
+			{
+				if (!G.IsFluidCell(X, Y, Z)) continue;
+				const double K = G.TemperatureK[G.CellIndex(X, Y, Z)];
+				++A.FluidCells; SumK += K;
+				A.MinK = FMath::Min(A.MinK, K);
+				if (K > A.MaxK) { A.MaxK = K; A.HotspotM = OriginM + G.CellCenterM(X, Y, Z); }
+				A.MaxSpeedMs = FMath::Max(A.MaxSpeedMs, Solver.CellCenterVelocityMs(X, Y, Z).Size());
+			}
+	if (A.FluidCells == 0) { A.MinK = A.MaxK = 0.0; return A; }
+	A.MeanK = SumK / A.FluidCells;
+	for (const double H : HeightsM)
+	{
+		const int32 Z = FMath::FloorToInt32((H - OriginM.Z) / A.CellM);
+		if (Z >= 0 && Z < A.NumZ) A.SliceLayers.AddUnique(Z);
+	}
+	A.SliceLayers.Sort();
+	A.SliceK.Reserve(A.SliceLayers.Num() * A.NumX * A.NumY);
+	for (const int32 Z : A.SliceLayers)
+	{
+		A.SliceHeightsM.Add(OriginM.Z + G.CellCenterM(0, 0, Z).Z);
+		for (int32 Y = 0; Y < A.NumY; ++Y)
+			for (int32 X = 0; X < A.NumX; ++X)
+				A.SliceK.Add(G.IsFluidCell(X, Y, Z) ? G.TemperatureK[G.CellIndex(X, Y, Z)] : std::numeric_limits<double>::quiet_NaN());
+	}
+	return A;
+}
+
+FString FVrgDashboardRoomAir::ToJson() const
+{
+	FVrgDashboardRoomAir& A = const_cast<FVrgDashboardRoomAir&>(*this);   // the visitor only reads
+	FJsonText J;
+	J.S.Reserve(1024 + SliceK.Num() * 18);
+	J.Raw(TEXT("{")); J.Key(TEXT("schema")); J.Int(1);
+	J.Raw(TEXT(",")); J.Key(TEXT("simTimeS")); J.Num(SimTimeS);
+	J.Raw(TEXT(",")); J.Key(TEXT("mode")); J.Str(bSimulating ? TEXT("simulation") : TEXT("layout"));
+	J.Raw(TEXT(",")); J.Key(TEXT("octree")); J.Bool(bOctree);
+	J.Raw(TEXT(",")); J.Key(TEXT("gpuStep")); J.Bool(bGpuStep);
+	J.Raw(TEXT(",")); J.Key(TEXT("turbulence")); J.Bool(bTurbulence);
+	J.Raw(TEXT(",")); J.Key(TEXT("numX")); J.Int(NumX);
+	J.Raw(TEXT(",")); J.Key(TEXT("numY")); J.Int(NumY);
+	J.Raw(TEXT(",")); J.Key(TEXT("numZ")); J.Int(NumZ);
+	J.Raw(TEXT(",")); J.Key(TEXT("fluidCells")); J.Int(FluidCells);
+	J.Raw(TEXT(",")); J.Key(TEXT("pressureSolves")); J.Int(PressureSolves);
+	J.Raw(TEXT(",")); J.Key(TEXT("pressureFailures")); J.Int(PressureFailures);
+	J.Raw(TEXT(",")); J.Key(TEXT("pressureConverged")); J.Bool(bPressureConverged);
+	J.Raw(TEXT(",")); J.Key(TEXT("pressureIterations")); J.Int(PressureIterations);
+	VisitRoomAirNumbers(A, J.NumberFields());
+	auto Vec = [&J](const TCHAR* Name, const FVector& V)
+	{ J.Raw(TEXT(",")); J.Key(Name); J.Raw(TEXT("[")); J.Num(V.X); J.Raw(TEXT(",")); J.Num(V.Y); J.Raw(TEXT(",")); J.Num(V.Z); J.Raw(TEXT("]")); };
+	Vec(TEXT("originM"), OriginM);
+	Vec(TEXT("hotspotM"), HotspotM);
+	J.Raw(TEXT(",")); J.Key(TEXT("sliceHeightsM")); J.Raw(TEXT("["));
+	for (int32 I = 0; I < SliceHeightsM.Num(); ++I) { if (I) J.Raw(TEXT(",")); J.Num(SliceHeightsM[I]); }
+	J.Raw(TEXT("]")); J.Raw(TEXT(",")); J.Key(TEXT("sliceLayers")); J.Raw(TEXT("["));
+	for (int32 I = 0; I < SliceLayers.Num(); ++I) { if (I) J.Raw(TEXT(",")); J.Int(SliceLayers[I]); }
+	J.Raw(TEXT("]")); J.Raw(TEXT(",")); J.Key(TEXT("sliceK")); J.Raw(TEXT("["));
+	for (int32 I = 0; I < SliceK.Num(); ++I) { if (I) J.Raw(TEXT(",")); J.Num(SliceK[I]); }   // NaN (solid) -> null
+	J.Raw(TEXT("]}"));
+	return MoveTemp(J.S);
+}
+
+bool FVrgDashboardRoomAir::FromJson(const FString& Json, FVrgDashboardRoomAir& Out)
+{
+	TSharedPtr<FJsonObject> Root;
+	if (!FJsonSerializer::Deserialize(TJsonReaderFactory<>::Create(Json), Root) || !Root.IsValid()) return false;
+	FVrgDashboardRoomAir A;
+	FString Mode;
+	double NX = 0, NY = 0, NZ = 0, Fluid = 0, Solves = 0, Failures = 0, Iterations = 0;
+	const TArray<TSharedPtr<FJsonValue>>* Origin = nullptr, * Hot = nullptr, * Heights = nullptr, * Layers = nullptr, * Slices = nullptr;
+	bool bOk = Root->TryGetNumberField(TEXT("simTimeS"), A.SimTimeS) && Root->TryGetStringField(TEXT("mode"), Mode)
+		&& Root->TryGetBoolField(TEXT("octree"), A.bOctree) && Root->TryGetBoolField(TEXT("gpuStep"), A.bGpuStep)
+		&& Root->TryGetBoolField(TEXT("turbulence"), A.bTurbulence) && Root->TryGetNumberField(TEXT("numX"), NX)
+		&& Root->TryGetNumberField(TEXT("numY"), NY) && Root->TryGetNumberField(TEXT("numZ"), NZ)
+		&& Root->TryGetNumberField(TEXT("fluidCells"), Fluid) && Root->TryGetNumberField(TEXT("pressureSolves"), Solves)
+		&& Root->TryGetNumberField(TEXT("pressureFailures"), Failures) && Root->TryGetBoolField(TEXT("pressureConverged"), A.bPressureConverged)
+		&& Root->TryGetNumberField(TEXT("pressureIterations"), Iterations)
+		&& Root->TryGetArrayField(TEXT("originM"), Origin) && Origin->Num() == 3 && Root->TryGetArrayField(TEXT("hotspotM"), Hot) && Hot->Num() == 3
+		&& Root->TryGetArrayField(TEXT("sliceHeightsM"), Heights) && Root->TryGetArrayField(TEXT("sliceLayers"), Layers)
+		&& Root->TryGetArrayField(TEXT("sliceK"), Slices);
+	if (bOk) VisitRoomAirNumbers(A, [&](const TCHAR* Key, double& Value) { bOk = bOk && Root->TryGetNumberField(Key, Value); });
+	if (!bOk) return false;
+	A.bSimulating = Mode == TEXT("simulation");
+	A.NumX = int32(NX); A.NumY = int32(NY); A.NumZ = int32(NZ); A.FluidCells = int32(Fluid);
+	A.PressureSolves = int64(Solves); A.PressureFailures = int64(Failures); A.PressureIterations = int32(Iterations);
+	A.OriginM = FVector((*Origin)[0]->AsNumber(), (*Origin)[1]->AsNumber(), (*Origin)[2]->AsNumber());
+	A.HotspotM = FVector((*Hot)[0]->AsNumber(), (*Hot)[1]->AsNumber(), (*Hot)[2]->AsNumber());
+	for (const TSharedPtr<FJsonValue>& V : *Heights) A.SliceHeightsM.Add(V->AsNumber());
+	for (const TSharedPtr<FJsonValue>& V : *Layers) A.SliceLayers.Add(int32(V->AsNumber()));
+	for (const TSharedPtr<FJsonValue>& V : *Slices) A.SliceK.Add(V->IsNull() ? std::numeric_limits<double>::quiet_NaN() : V->AsNumber());
+	if (A.SliceK.Num() != A.SliceLayers.Num() * A.NumX * A.NumY || A.SliceHeightsM.Num() != A.SliceLayers.Num()) return false;
+	Out = MoveTemp(A);
 	return true;
 }
 

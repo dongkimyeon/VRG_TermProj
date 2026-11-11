@@ -206,6 +206,35 @@ struct VRG_TERMPROJ_API FVrgDashboardCooling
 	static bool FromJson(const FString& Json, FVrgDashboardCooling& Out);
 };
 
+// Web dashboard room air tab (2026-11-11): volume statistics over the fluid cells of the uniform grid and whole
+// horizontal temperature slices at a few display heights (a display choice, not a physics setting). Every value is one
+// the last step left in the solver; nothing new is modelled. SI (K, m, m/s, m^2/s). An octree run carries no cells
+// (its uniform grid is not the solution). Built on the game thread only while the page asks for it (rule 5).
+struct VRG_TERMPROJ_API FVrgDashboardRoomAir
+{
+	double SimTimeS = 0.0;
+	bool bSimulating = false, bOctree = false, bGpuStep = false, bTurbulence = false;
+	double CellM = 0.0;
+	int32 NumX = 0, NumY = 0, NumZ = 0, FluidCells = 0;
+	FVector OriginM = FVector::ZeroVector;       // world position of the grid's (0,0,0) corner [m]
+	double MinK = 0.0, MaxK = 0.0, MeanK = 0.0;   // over fluid cells (equal cell volumes: plain mean = volume mean)
+	FVector HotspotM = FVector::ZeroVector;      // centre of the hottest fluid cell, world [m]
+	double MaxSpeedMs = 0.0;                     // largest cell-centre speed (MAC face average) over fluid cells
+	double Courant = 0.0, NuTMaxM2s = 0.0, NuTMeanM2s = 0.0;
+	int64 PressureSolves = 0, PressureFailures = 0;
+	bool bPressureConverged = false;
+	int32 PressureIterations = 0;
+	double PressureResidual = 0.0;                // last solve's normalized residual (D5)
+	TArray<double> SliceHeightsM;                // cell-centre height of each slice, world [m]
+	TArray<int32> SliceLayers;                   // Z index of each slice
+	TArray<double> SliceK;                       // NumX*NumY per slice, X fastest; NaN = solid cell (JSON null)
+
+	// HeightsM are world heights; each picks the layer whose cells contain it (outside the grid dropped, duplicates merged).
+	static FVrgDashboardRoomAir Build(const FAirSolver& Solver, const FVector& OriginM, const TArray<double>& HeightsM);
+	FString ToJson() const;
+	static bool FromJson(const FString& Json, FVrgDashboardRoomAir& Out);
+};
+
 // S2b step 6 (2026-10-20, Tools/S2b_누수_계획.md): leak layer. Every value is one the hydraulic solution, the coolant
 // inventory, the coupling or the fault monitor already holds; nothing new is modelled. The two scopes stay apart (D4):
 // isolation = the rack node is cut off from its CDU (graph topology of the closed valves), hydraulic impact = a rack

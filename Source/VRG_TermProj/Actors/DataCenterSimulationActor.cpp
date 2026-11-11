@@ -7,6 +7,7 @@
 #include "Misc/Paths.h"
 #include "Serialization/JsonReader.h"
 #include "Serialization/JsonSerializer.h"
+#include "Misc/App.h"
 #include "Serialization/JsonWriter.h"
 #include "Simulation/Core/VrgHud.h"
 #include "Simulation/Core/VrgPerfCounters.h"
@@ -3575,6 +3576,9 @@ void ADataCenterSimulationActor::PublishDashboard()
 		Air.bSimulating = Mode == ESimMode::Simulation;
 		Web.PublishAirflow(MoveTemp(Air));
 	}
+	// 2026-11-11 tabs: built only while the page asked within the last few seconds (counted in the publish cost above).
+	if (Web.WantsRoomAir()) Web.PublishRoomAir(BuildDashboardRoomAir());
+	if (Web.WantsStatus()) Web.PublishStatus(BuildDashboardStatusJson());
 }
 
 void ADataCenterSimulationActor::DrawSummary() const
@@ -4161,52 +4165,8 @@ bool ADataCenterSimulationActor::WriteEvaluationReport(const FString& Name, FStr
 	double Pue = 0.0;
 	const bool bPue = Eval.GetPartialPue(Pue);
 	if (bPue) Power->SetNumberField(TEXT("partialPue"), Pue); else Power->SetField(TEXT("partialPue"), MakeShared<FJsonValueNull>());
-	// S8 F6: the plant topology and its design point, so an A/B comparison can show whether both runs were sized alike.
-	if (P.bPlant && bPlantActive)
-	{
-		TSharedRef<FJsonObject> PlantJ = MakeShared<FJsonObject>();
-		PlantJ->SetStringField(TEXT("topology"), FFacilityPlant::TopologyName(Plant.GetTopology()));
-		PlantJ->SetNumberField(TEXT("designAmbientK"), PlantThermalSpec.DesignAmbientK);
-		PlantJ->SetNumberField(TEXT("ambientK"), Plant.GetAmbientK());
-		PlantJ->SetNumberField(TEXT("designCduHeatW"), Plant.GetDesignHeatW());
-		PlantJ->SetNumberField(TEXT("designChwLoadW"), Plant.GetDesignChwLoadW());
-		PlantJ->SetNumberField(TEXT("designCondenserW"), Plant.GetDesignCondenserW());
-		PlantJ->SetNumberField(TEXT("chillerRefCapacityW"), Plant.GetChillerRefCapacityW());
-		PlantJ->SetNumberField(TEXT("trimRefCapacityW"), Plant.GetTrimRefCapacityW());
-		PlantJ->SetNumberField(TEXT("fwsDryCoolers"), Plant.GetNumDryCoolers());
-		PlantJ->SetNumberField(TEXT("cwDryCoolers"), Plant.GetNumCwDryCoolers());
-		PlantJ->SetNumberField(TEXT("economizerOnS"), Plant.GetState().EconomizerOnS);
-		PlantJ->SetNumberField(TEXT("compressorJ"), Plant.GetState().CompressorInJ);
-		PlantJ->SetNumberField(TEXT("siteLedgerResidual"), GetSiteEnergyResidual());
-		// S8 F6b: facility leaks and faults of this run (optional fields).
-		PlantJ->SetNumberField(TEXT("leakMassKg"), Plant.GetState().LeakMassKg);
-		PlantJ->SetNumberField(TEXT("leakOutJ"), Plant.GetState().LeakOutJ);
-		// F6 comparison items (plan): end-of-run CDU secondary supply (TCS, mean over CDUs), hottest component, and the
-		// time the plant missed a setpoint (FWS supply after the trim chiller, chiller capacity).
-		double TcsK = 0.0;
-		for (const double K : Snap.CduSupplyTempK) TcsK += K / FMath::Max(Snap.CduSupplyTempK.Num(), 1);
-		PlantJ->SetNumberField(TEXT("cduSecondarySupplyK"), TcsK);
-		double MaxCompK = 0.0;
-		for (const double K : MakeFaultInput().MaxComponentTempK) MaxCompK = FMath::Max(MaxCompK, K);
-		PlantJ->SetNumberField(TEXT("maxComponentK"), MaxCompK);
-		PlantJ->SetNumberField(TEXT("fwsSupplyNotMetS"), Plant.GetState().FwsSupplyNotMetS);
-		PlantJ->SetNumberField(TEXT("chillerLimitedS"), Plant.GetState().ChillerLimitedS);
-		TArray<TSharedPtr<FJsonValue>> Faults;
-		for (const FPlantFaultReport& F : Plant.GetFaultLog())
-		{
-			TSharedRef<FJsonObject> FJ = MakeShared<FJsonObject>();
-			FJ->SetNumberField(TEXT("t"), F.TimeS);
-			FJ->SetStringField(TEXT("what"), F.What);
-			FJ->SetStringField(TEXT("loop"), FFacilityPlant::LoopName(F.Loop));
-			FJ->SetNumberField(TEXT("leakM3s"), F.LeakM3s);
-			FJ->SetNumberField(TEXT("affectedBranches"), F.AffectedBranches);
-			FJ->SetNumberField(TEXT("branches"), F.BranchAfterM3s.Num());
-			FJ->SetBoolField(TEXT("pumpsSaturated"), F.bPumpsSaturated);
-			Faults.Add(MakeShared<FJsonValueObject>(FJ));
-		}
-		PlantJ->SetArrayField(TEXT("faults"), Faults);
-		Root->SetObjectField(TEXT("plant"), PlantJ);
-	}
+	// S8 F6: the plant topology and its design point (shared with the web dashboard's cooling tab, 2026-11-11).
+	if (const TSharedPtr<FJsonObject> PlantJ = MakeReportPlantJson(Snap)) Root->SetObjectField(TEXT("plant"), PlantJ.ToSharedRef());
 	// S8 F5 (optional fields; older reports and fixed-boundary runs lack them): plant electric input and cooling PUE.
 	double CoolingPue = 0.0;
 	if (P.bPlant) Power->SetNumberField(TEXT("plantW"), P.PlantW);
@@ -4215,15 +4175,7 @@ bool ADataCenterSimulationActor::WriteEvaluationReport(const FString& Name, FStr
 	if (P.bPlant) Power->SetStringField(TEXT("coolingPueScope"), TEXT("(IT + CRAH fans + CDU pumps + plant pumps + dry cooler fans + chiller compressors) / IT; UPS/distribution losses and lighting are not modelled, so not a facility PUE"));
 	Root->SetObjectField(TEXT("power"), Power);
 	// P6 (2026-11-03, optional fields): condensation check of the CDU coolant supply against the room dew point input.
-	{
-		TSharedRef<FJsonObject> Dew = MakeShared<FJsonObject>();
-		Dew->SetNumberField(TEXT("roomDewPointK"), RoomDewPointK);
-		Dew->SetNumberField(TEXT("marginK"), DewPointMarginK);
-		if (MinDewMarginK < TNumericLimits<double>::Max()) Dew->SetNumberField(TEXT("minSupplyAboveDewK"), MinDewMarginK);
-		Dew->SetNumberField(TEXT("riskS"), CondensationRiskS);
-		Dew->SetStringField(TEXT("scope"), TEXT("CDU coolant supply vs one room dew point input (ASHRAE S-class 2 K margin); no humidity model"));
-		Root->SetObjectField(TEXT("dewPoint"), Dew);
-	}
+	Root->SetObjectField(TEXT("dewPoint"), MakeReportDewPointJson());
 
 	TArray<TSharedPtr<FJsonValue>> InletItems;
 	int32 AboveRecommended = 0, AboveAllowable = 0, SensorAlarms = 0;
@@ -4264,16 +4216,7 @@ bool ADataCenterSimulationActor::WriteEvaluationReport(const FString& Name, FStr
 	Summary->SetNumberField(TEXT("firstSensorAlarmS"), FirstDetectionS);
 	Root->SetObjectField(TEXT("summary"), Summary);
 
-	TSharedRef<FJsonObject> Checks = MakeShared<FJsonObject>();
-	Checks->SetNumberField(TEXT("globalNormalizedEnergyResidual"), Snap.NormalizedEnergyResidual);
-	Checks->SetStringField(TEXT("ledger"), Bridge.DescribeEnergyLedger());
-	if (AirField != nullptr)
-	{
-		Checks->SetNumberField(TEXT("pressureSolves"), double(AirField->GetMutableSolver().GetNumPressureSolves()));
-		Checks->SetNumberField(TEXT("pressureFailures"), double(AirField->GetMutableSolver().GetNumPressureFailures()));
-	}
-	Checks->SetBoolField(TEXT("hydraulicsConverged"), Snap.bHydraulicsConverged);
-	Root->SetObjectField(TEXT("checks"), Checks);
+	Root->SetObjectField(TEXT("checks"), MakeReportChecksJson(Snap));
 
 	TArray<TSharedPtr<FJsonValue>> EventItems;
 	for (const FEvalEvent& E : EvalEvents)
@@ -4294,137 +4237,8 @@ bool ADataCenterSimulationActor::WriteEvaluationReport(const FString& Name, FStr
 	// S2b step 5 (optional field; older reports lack it): leaks, valves, tank history, first fault times.
 	Root->SetObjectField(TEXT("s2b"), FaultMonitor.ToJsonObject());
 	Root->SetObjectField(TEXT("waterImpact"), MakeWaterImpactReportJson());   // W4 (optional field): policy, state counts, power cuts
-	{
-		// W6 (optional field): the drawn water against the computed water, from a snapshot built now.
-		FWaterDisplaySnapshot Now;
-		WaterDisplay::Build(FloorWater, Spray, &WaterEverWet, WaterDisplaySettings, Now);
-		const FWaterDisplayTotals& T = Now.Totals;
-		TSharedRef<FJsonObject> W = MakeShared<FJsonObject>();
-		W->SetNumberField(TEXT("floorShownM3"), T.FloorShownM3); W->SetNumberField(TEXT("floorComputedM3"), T.FloorComputedM3); W->SetNumberField(TEXT("floorHiddenM3"), T.FloorHiddenM3);
-		W->SetNumberField(TEXT("trayShownM3"), T.TrayShownM3); W->SetNumberField(TEXT("trayComputedM3"), T.TrayComputedM3);
-		W->SetNumberField(TEXT("filmShownM3"), T.FilmShownM3); W->SetNumberField(TEXT("filmComputedM3"), T.FilmComputedM3);
-		W->SetNumberField(TEXT("airShownM3"), T.AirShownM3); W->SetNumberField(TEXT("airComputedM3"), T.AirComputedM3);
-		W->SetNumberField(TEXT("parcelsShown"), T.ParcelsShown); W->SetNumberField(TEXT("parcelsComputed"), T.ParcelsComputed);
-		W->SetNumberField(TEXT("surfaceCells"), T.SurfaceCells); W->SetNumberField(TEXT("wetMarkCells"), T.WetMarkCells); W->SetNumberField(TEXT("wetSkins"), T.WetSkins);
-		W->SetNumberField(TEXT("residual"), T.Residual);
-		// W4 follow-up: the plant yard ground water (spray "ground" = yard stored + off the yard grid).
-		W->SetNumberField(TEXT("yardStoredM3"), YardWater.GetTotals().StoredM3); W->SetNumberField(TEXT("yardReceivedM3"), YardWater.GetTotals().ReceivedM3);
-		W->SetNumberField(TEXT("yardOffGridM3"), YardOffGridM3); W->SetNumberField(TEXT("yardResidual"), YardWater.GetTotals().Residual);
-		Root->SetObjectField(TEXT("waterDisplay"), W);
-	}
-	// 2026-10-23 (optional field): the instrument points and the leak alarms of their detection cables (D9 / D4).
-	TSharedRef<FJsonObject> InstrumentsJson = MakeShared<FJsonObject>();
-	InstrumentsJson->SetNumberField(TEXT("points"), Instruments.Num());
-	InstrumentsJson->SetNumberField(TEXT("leakCables"), Instruments.GetNumLeakCables());
-	InstrumentsJson->SetBoolField(TEXT("simulatedMeasurement"), true);
-	TArray<TSharedPtr<FJsonValue>> RackWaterSensors;
-	auto ContactCoords = [](const FVector& V) -> TArray<TSharedPtr<FJsonValue>>
-	{ return {MakeShared<FJsonValueNumber>(V.X), MakeShared<FJsonValueNumber>(V.Y), MakeShared<FJsonValueNumber>(V.Z)}; };
-	// W5 (2026-11-03): every leak detector reads computed water; per type, how many and how many in alarm. The
-	// rackWaterSensors list below keeps its W3.5 meaning (rack drip tray and manifold rope only).
-	{
-		TMap<FString, FIntPoint> ByType;
-		for (int32 I = 0; I < Instruments.Num(); ++I)
-			if (Instruments.GetPoint(I).bWaterContact)
-			{
-				FIntPoint& C = ByType.FindOrAdd(InstrumentSpecs::SiteCode(Instruments.GetPoint(I).Site));
-				++C.X; C.Y += Instruments.IsLeakAlarm(I) ? 1 : 0;
-			}
-		TArray<TSharedPtr<FJsonValue>> TypeItems;
-		for (const auto& E : ByType)
-		{
-			auto Item = MakeShared<FJsonObject>();
-			Item->SetStringField(TEXT("type"), E.Key); Item->SetNumberField(TEXT("count"), E.Value.X); Item->SetNumberField(TEXT("alarms"), E.Value.Y);
-			TypeItems.Add(MakeShared<FJsonValueObject>(Item));
-		}
-		InstrumentsJson->SetArrayField(TEXT("leakDetectorSummary"), TypeItems);
-	}
-	for (int32 I = 0; I < Instruments.Num(); ++I)
-	{
-		const auto& Pt = Instruments.GetPoint(I);
-		if (!Pt.bWaterContact || (Pt.Site != EInstrumentSite::RackDripTray && Pt.Site != EInstrumentSite::RackManifoldRope)) continue;
-		auto Item = MakeShared<FJsonObject>();
-		Item->SetStringField(TEXT("sensorId"), Pt.Id); Item->SetStringField(TEXT("rackId"), Pt.RackId);
-		Item->SetStringField(TEXT("type"), InstrumentSpecs::SiteCode(Pt.Site)); Item->SetBoolField(TEXT("estimatedSpec"), true);
-		Item->SetArrayField(TEXT("positionM"), ContactCoords(Pt.PositionM));
-		Item->SetArrayField(TEXT("coverageStartM"), ContactCoords(Pt.CoverageStartM)); Item->SetArrayField(TEXT("coverageEndM"), ContactCoords(Pt.CoverageEndM));
-		Item->SetNumberField(TEXT("thresholdM3"), Pt.Contact.WettingVolumeM3); Item->SetNumberField(TEXT("samplePeriodS"), Pt.Contact.SamplePeriodS);
-		Item->SetNumberField(TEXT("responseDelayS"), Pt.Contact.ResponseDelayS); Item->SetNumberField(TEXT("contactWaterM3"), Instruments.GetContactWaterM3(I));
-		Item->SetBoolField(TEXT("alarm"), Instruments.IsLeakAlarm(I)); Item->SetNumberField(TEXT("alarmTimeS"), Instruments.GetLeakAlarmTimeS(I));
-		RackWaterSensors.Add(MakeShared<FJsonValueObject>(Item));
-	}
-	InstrumentsJson->SetArrayField(TEXT("rackWaterSensors"), RackWaterSensors);
-	// W5 follow-up (2026-11-10): detector health, fault alarms and false leak alarms (ESTIMATED fault/false-trigger model).
-	{
-		TArray<TSharedPtr<FJsonValue>> Items;
-		for (const FSensorFaultAlarm& F : Instruments.GetFaultLog())
-		{
-			auto Item = MakeShared<FJsonObject>();
-			Item->SetNumberField(TEXT("timeS"), F.TimeS); Item->SetNumberField(TEXT("point"), F.Point);
-			Item->SetStringField(TEXT("sensorId"), Instruments.GetPoint(F.Point).Id); Item->SetStringField(TEXT("health"), FInstrumentBank::HealthName(F.Health));
-			Items.Add(MakeShared<FJsonValueObject>(Item));
-		}
-		InstrumentsJson->SetArrayField(TEXT("sensorFaults"), Items);
-		int32 FalseAlarms = 0, Unhealthy = 0;
-		for (const FLeakAlarm& A : Instruments.GetAlarmLog()) FalseAlarms += A.bFalse ? 1 : 0;
-		for (int32 I = 0; I < Instruments.Num(); ++I) Unhealthy += Instruments.GetSensorHealth(I) != ESensorHealth::Ok ? 1 : 0;
-		InstrumentsJson->SetNumberField(TEXT("falseLeakAlarms"), FalseAlarms);
-		InstrumentsJson->SetNumberField(TEXT("unhealthyDetectors"), Unhealthy);
-		InstrumentsJson->SetNumberField(TEXT("falseTriggerPerDetectorHour"), Instruments.GetFalseTriggers().PerDetectorHour);
-		const auto& Pol = LeakProtectionPolicy;
-		auto Delays = MakeShared<FJsonObject>();
-		Delays->SetNumberField(TEXT("trayBmcS"), Pol.TrayBmcDelayS); Delays->SetNumberField(TEXT("computeShutdownS"), Pol.ComputeTrayShutdownDelayS);
-		Delays->SetNumberField(TEXT("bmsCycleS"), Pol.BmsPollS); Delays->SetNumberField(TEXT("shelfOffS"), Pol.ShelfOffDelayS);
-		Delays->SetNumberField(TEXT("valveStrokeS"), Pol.ValveStrokeS); Delays->SetNumberField(TEXT("cduStopS"), Pol.CduStopDelayS);
-		Delays->SetNumberField(TEXT("recoveryPowerOnS"), Pol.RecoveryPowerOnDelayS); Delays->SetBoolField(TEXT("estimated"), true);
-		InstrumentsJson->SetObjectField(TEXT("leakProtectionDelays"), Delays);
-	}
-	// W5-3 (2026-11-03): protective actions taken from the detectors (cause: protection, apart from W4 failures).
-	{
-		TArray<TSharedPtr<FJsonValue>> Items;
-		for (const FLeakProtectionEvent& E : LeakProtectionEvents)
-		{
-			auto Item = MakeShared<FJsonObject>();
-			Item->SetNumberField(TEXT("timeS"), E.TimeS); Item->SetStringField(TEXT("level"), E.Level); Item->SetStringField(TEXT("action"), E.Action);
-			Item->SetStringField(TEXT("trigger"), E.Trigger); Item->SetNumberField(TEXT("rack"), E.Rack); Item->SetNumberField(TEXT("slot"), E.Slot); Item->SetNumberField(TEXT("row"), E.Row);
-			Items.Add(MakeShared<FJsonValueObject>(Item));
-		}
-		InstrumentsJson->SetBoolField(TEXT("leakProtectionPolicy"), LeakProtectionPolicy.bEnabled);
-		InstrumentsJson->SetArrayField(TEXT("leakProtection"), Items);
-	}
-	// W5-2 (2026-11-03): process-value leak alarms (loop level, location unknown; readings only, thresholds ESTIMATES).
-	{
-		TArray<TSharedPtr<FJsonValue>> Items;
-		for (const FProcessLeakAlarm& A : ProcessMonitor.GetAlarmLog())
-		{
-			auto Item = MakeShared<FJsonObject>();
-			Item->SetNumberField(TEXT("timeS"), A.TimeS); Item->SetStringField(TEXT("loop"), ProcessMonitor.GetLoopName(A.Loop));
-			Item->SetStringField(TEXT("signal"), FProcessLeakMonitor::SignalName(A.Signal)); Item->SetNumberField(TEXT("value"), A.Value);
-			Items.Add(MakeShared<FJsonValueObject>(Item));
-		}
-		InstrumentsJson->SetArrayField(TEXT("processAlarms"), Items);
-	}
-	TArray<TSharedPtr<FJsonValue>> LeakAlarmItems;
-	for (const FLeakAlarm& A : Instruments.GetAlarmLog())
-	{
-		const FInstrumentPoint& Pt = Instruments.GetPoint(A.Point);
-		TSharedRef<FJsonObject> Item = MakeShared<FJsonObject>();
-		Item->SetNumberField(TEXT("timeS"), A.TimeS); Item->SetStringField(TEXT("label"), Pt.Label);
-		Item->SetNumberField(TEXT("x_m"), Pt.PositionM.X); Item->SetNumberField(TEXT("y_m"), Pt.PositionM.Y); Item->SetNumberField(TEXT("z_m"), Pt.PositionM.Z);
-		Item->SetNumberField(TEXT("coveredLeakLps"), A.FlowM3s * 1e3);
-		Item->SetStringField(TEXT("sensorId"), Pt.Id.IsEmpty() ? FString::Printf(TEXT("instrument:%d"), A.Point) : Pt.Id);
-		Item->SetStringField(TEXT("rackId"), Pt.RackId); Item->SetStringField(TEXT("type"), InstrumentSpecs::SiteCode(Pt.Site));
-		Item->SetBoolField(TEXT("flowBased"), !Pt.bWaterContact);
-		Item->SetBoolField(TEXT("falseAlarm"), A.bFalse);   // W5 follow-up: ground truth (no real water at the threshold), not known to the protection
-		if (Pt.bWaterContact)
-		{
-			Item->SetNumberField(TEXT("contactWaterM3"), A.WaterM3); Item->SetNumberField(TEXT("firstContactS"), A.FirstContactS);
-			Item->SetNumberField(TEXT("thresholdReachedS"), A.ThresholdS);
-		}
-		LeakAlarmItems.Add(MakeShared<FJsonValueObject>(Item));
-	}
-	InstrumentsJson->SetArrayField(TEXT("leakAlarms"), LeakAlarmItems);
-	Root->SetObjectField(TEXT("instruments"), InstrumentsJson);
+	Root->SetObjectField(TEXT("waterDisplay"), MakeReportWaterDisplayJson());
+	Root->SetObjectField(TEXT("instruments"), MakeReportInstrumentsJson());
 
 	FString Json;
 	FJsonSerializer::Serialize(Root, TJsonWriterFactory<>::Create(&Json));
@@ -4841,4 +4655,306 @@ void ADataCenterSimulationActor::RefreshCrahLayoutDisplay()
  if(Mode!=ESimMode::Layout) return;
  // Geometry only after a successful edit: remove virtual mesh duplicates, or show automatic boxes after Undo.
  FindTargetActors(); GroupCabinetRows(); PlanCrahUnits(); UpdateCrahMeshes();
+}
+
+// 2026-11-11 web dashboard tabs (cooling/power, sensors/validation): the report's sections, built by the same
+// functions vrg.Eval.Report uses, so the page and a saved report show the same values for the same SimTime.
+TSharedPtr<FJsonObject> ADataCenterSimulationActor::MakeReportPlantJson(const FCouplingSnapshot& Snap) const
+{
+	const FVrgEvaluationSample P = Eval.GetWindowPower();
+	if (!(P.bPlant && bPlantActive)) return nullptr;
+	TSharedRef<FJsonObject> PlantJ = MakeShared<FJsonObject>();
+	PlantJ->SetStringField(TEXT("topology"), FFacilityPlant::TopologyName(Plant.GetTopology()));
+	PlantJ->SetNumberField(TEXT("designAmbientK"), PlantThermalSpec.DesignAmbientK);
+	PlantJ->SetNumberField(TEXT("ambientK"), Plant.GetAmbientK());
+	PlantJ->SetNumberField(TEXT("designCduHeatW"), Plant.GetDesignHeatW());
+	PlantJ->SetNumberField(TEXT("designChwLoadW"), Plant.GetDesignChwLoadW());
+	PlantJ->SetNumberField(TEXT("designCondenserW"), Plant.GetDesignCondenserW());
+	PlantJ->SetNumberField(TEXT("chillerRefCapacityW"), Plant.GetChillerRefCapacityW());
+	PlantJ->SetNumberField(TEXT("trimRefCapacityW"), Plant.GetTrimRefCapacityW());
+	PlantJ->SetNumberField(TEXT("fwsDryCoolers"), Plant.GetNumDryCoolers());
+	PlantJ->SetNumberField(TEXT("cwDryCoolers"), Plant.GetNumCwDryCoolers());
+	PlantJ->SetNumberField(TEXT("economizerOnS"), Plant.GetState().EconomizerOnS);
+	PlantJ->SetNumberField(TEXT("compressorJ"), Plant.GetState().CompressorInJ);
+	PlantJ->SetNumberField(TEXT("siteLedgerResidual"), GetSiteEnergyResidual());
+	// S8 F6b: facility leaks and faults of this run (optional fields).
+	PlantJ->SetNumberField(TEXT("leakMassKg"), Plant.GetState().LeakMassKg);
+	PlantJ->SetNumberField(TEXT("leakOutJ"), Plant.GetState().LeakOutJ);
+	// F6 comparison items (plan): end-of-run CDU secondary supply (TCS, mean over CDUs), hottest component, and the
+	// time the plant missed a setpoint (FWS supply after the trim chiller, chiller capacity).
+	double TcsK = 0.0;
+	for (const double K : Snap.CduSupplyTempK) TcsK += K / FMath::Max(Snap.CduSupplyTempK.Num(), 1);
+	PlantJ->SetNumberField(TEXT("cduSecondarySupplyK"), TcsK);
+	double MaxCompK = 0.0;
+	for (const double K : MakeFaultInput().MaxComponentTempK) MaxCompK = FMath::Max(MaxCompK, K);
+	PlantJ->SetNumberField(TEXT("maxComponentK"), MaxCompK);
+	PlantJ->SetNumberField(TEXT("fwsSupplyNotMetS"), Plant.GetState().FwsSupplyNotMetS);
+	PlantJ->SetNumberField(TEXT("chillerLimitedS"), Plant.GetState().ChillerLimitedS);
+	TArray<TSharedPtr<FJsonValue>> Faults;
+	for (const FPlantFaultReport& F : Plant.GetFaultLog())
+	{
+		TSharedRef<FJsonObject> FJ = MakeShared<FJsonObject>();
+		FJ->SetNumberField(TEXT("t"), F.TimeS);
+		FJ->SetStringField(TEXT("what"), F.What);
+		FJ->SetStringField(TEXT("loop"), FFacilityPlant::LoopName(F.Loop));
+		FJ->SetNumberField(TEXT("leakM3s"), F.LeakM3s);
+		FJ->SetNumberField(TEXT("affectedBranches"), F.AffectedBranches);
+		FJ->SetNumberField(TEXT("branches"), F.BranchAfterM3s.Num());
+		FJ->SetBoolField(TEXT("pumpsSaturated"), F.bPumpsSaturated);
+		Faults.Add(MakeShared<FJsonValueObject>(FJ));
+	}
+	PlantJ->SetArrayField(TEXT("faults"), Faults);
+	return PlantJ;
+}
+
+TSharedRef<FJsonObject> ADataCenterSimulationActor::MakeReportDewPointJson() const
+{
+	TSharedRef<FJsonObject> Dew = MakeShared<FJsonObject>();
+	Dew->SetNumberField(TEXT("roomDewPointK"), RoomDewPointK);
+	Dew->SetNumberField(TEXT("marginK"), DewPointMarginK);
+	if (MinDewMarginK < TNumericLimits<double>::Max()) Dew->SetNumberField(TEXT("minSupplyAboveDewK"), MinDewMarginK);
+	Dew->SetNumberField(TEXT("riskS"), CondensationRiskS);
+	Dew->SetStringField(TEXT("scope"), TEXT("CDU coolant supply vs one room dew point input (ASHRAE S-class 2 K margin); no humidity model"));
+	return Dew;
+}
+
+TSharedRef<FJsonObject> ADataCenterSimulationActor::MakeReportChecksJson(const FCouplingSnapshot& Snap) const
+{
+	TSharedRef<FJsonObject> Checks = MakeShared<FJsonObject>();
+	Checks->SetNumberField(TEXT("globalNormalizedEnergyResidual"), Snap.NormalizedEnergyResidual);
+	Checks->SetStringField(TEXT("ledger"), Bridge.DescribeEnergyLedger());
+	if (AirField != nullptr)
+	{
+		Checks->SetNumberField(TEXT("pressureSolves"), double(AirField->GetMutableSolver().GetNumPressureSolves()));
+		Checks->SetNumberField(TEXT("pressureFailures"), double(AirField->GetMutableSolver().GetNumPressureFailures()));
+	}
+	Checks->SetBoolField(TEXT("hydraulicsConverged"), Snap.bHydraulicsConverged);
+	return Checks;
+}
+
+TSharedRef<FJsonObject> ADataCenterSimulationActor::MakeReportWaterDisplayJson() const
+{
+	{
+		// W6 (optional field): the drawn water against the computed water, from a snapshot built now.
+		FWaterDisplaySnapshot Now;
+		WaterDisplay::Build(FloorWater, Spray, &WaterEverWet, WaterDisplaySettings, Now);
+		const FWaterDisplayTotals& T = Now.Totals;
+		TSharedRef<FJsonObject> W = MakeShared<FJsonObject>();
+		W->SetNumberField(TEXT("floorShownM3"), T.FloorShownM3); W->SetNumberField(TEXT("floorComputedM3"), T.FloorComputedM3); W->SetNumberField(TEXT("floorHiddenM3"), T.FloorHiddenM3);
+		W->SetNumberField(TEXT("trayShownM3"), T.TrayShownM3); W->SetNumberField(TEXT("trayComputedM3"), T.TrayComputedM3);
+		W->SetNumberField(TEXT("filmShownM3"), T.FilmShownM3); W->SetNumberField(TEXT("filmComputedM3"), T.FilmComputedM3);
+		W->SetNumberField(TEXT("airShownM3"), T.AirShownM3); W->SetNumberField(TEXT("airComputedM3"), T.AirComputedM3);
+		W->SetNumberField(TEXT("parcelsShown"), T.ParcelsShown); W->SetNumberField(TEXT("parcelsComputed"), T.ParcelsComputed);
+		W->SetNumberField(TEXT("surfaceCells"), T.SurfaceCells); W->SetNumberField(TEXT("wetMarkCells"), T.WetMarkCells); W->SetNumberField(TEXT("wetSkins"), T.WetSkins);
+		W->SetNumberField(TEXT("residual"), T.Residual);
+		// W4 follow-up: the plant yard ground water (spray "ground" = yard stored + off the yard grid).
+		W->SetNumberField(TEXT("yardStoredM3"), YardWater.GetTotals().StoredM3); W->SetNumberField(TEXT("yardReceivedM3"), YardWater.GetTotals().ReceivedM3);
+		W->SetNumberField(TEXT("yardOffGridM3"), YardOffGridM3); W->SetNumberField(TEXT("yardResidual"), YardWater.GetTotals().Residual);
+		return W;
+	}
+}
+
+TSharedRef<FJsonObject> ADataCenterSimulationActor::MakeReportInstrumentsJson() const
+{
+	// 2026-10-23 (optional field): the instrument points and the leak alarms of their detection cables (D9 / D4).
+	TSharedRef<FJsonObject> InstrumentsJson = MakeShared<FJsonObject>();
+	InstrumentsJson->SetNumberField(TEXT("points"), Instruments.Num());
+	InstrumentsJson->SetNumberField(TEXT("leakCables"), Instruments.GetNumLeakCables());
+	InstrumentsJson->SetBoolField(TEXT("simulatedMeasurement"), true);
+	TArray<TSharedPtr<FJsonValue>> RackWaterSensors;
+	auto ContactCoords = [](const FVector& V) -> TArray<TSharedPtr<FJsonValue>>
+	{ return {MakeShared<FJsonValueNumber>(V.X), MakeShared<FJsonValueNumber>(V.Y), MakeShared<FJsonValueNumber>(V.Z)}; };
+	// W5 (2026-11-03): every leak detector reads computed water; per type, how many and how many in alarm. The
+	// rackWaterSensors list below keeps its W3.5 meaning (rack drip tray and manifold rope only).
+	{
+		TMap<FString, FIntPoint> ByType;
+		for (int32 I = 0; I < Instruments.Num(); ++I)
+			if (Instruments.GetPoint(I).bWaterContact)
+			{
+				FIntPoint& C = ByType.FindOrAdd(InstrumentSpecs::SiteCode(Instruments.GetPoint(I).Site));
+				++C.X; C.Y += Instruments.IsLeakAlarm(I) ? 1 : 0;
+			}
+		TArray<TSharedPtr<FJsonValue>> TypeItems;
+		for (const auto& E : ByType)
+		{
+			auto Item = MakeShared<FJsonObject>();
+			Item->SetStringField(TEXT("type"), E.Key); Item->SetNumberField(TEXT("count"), E.Value.X); Item->SetNumberField(TEXT("alarms"), E.Value.Y);
+			TypeItems.Add(MakeShared<FJsonValueObject>(Item));
+		}
+		InstrumentsJson->SetArrayField(TEXT("leakDetectorSummary"), TypeItems);
+	}
+	for (int32 I = 0; I < Instruments.Num(); ++I)
+	{
+		const auto& Pt = Instruments.GetPoint(I);
+		if (!Pt.bWaterContact || (Pt.Site != EInstrumentSite::RackDripTray && Pt.Site != EInstrumentSite::RackManifoldRope)) continue;
+		auto Item = MakeShared<FJsonObject>();
+		Item->SetStringField(TEXT("sensorId"), Pt.Id); Item->SetStringField(TEXT("rackId"), Pt.RackId);
+		Item->SetStringField(TEXT("type"), InstrumentSpecs::SiteCode(Pt.Site)); Item->SetBoolField(TEXT("estimatedSpec"), true);
+		Item->SetArrayField(TEXT("positionM"), ContactCoords(Pt.PositionM));
+		Item->SetArrayField(TEXT("coverageStartM"), ContactCoords(Pt.CoverageStartM)); Item->SetArrayField(TEXT("coverageEndM"), ContactCoords(Pt.CoverageEndM));
+		Item->SetNumberField(TEXT("thresholdM3"), Pt.Contact.WettingVolumeM3); Item->SetNumberField(TEXT("samplePeriodS"), Pt.Contact.SamplePeriodS);
+		Item->SetNumberField(TEXT("responseDelayS"), Pt.Contact.ResponseDelayS); Item->SetNumberField(TEXT("contactWaterM3"), Instruments.GetContactWaterM3(I));
+		Item->SetBoolField(TEXT("alarm"), Instruments.IsLeakAlarm(I)); Item->SetNumberField(TEXT("alarmTimeS"), Instruments.GetLeakAlarmTimeS(I));
+		RackWaterSensors.Add(MakeShared<FJsonValueObject>(Item));
+	}
+	InstrumentsJson->SetArrayField(TEXT("rackWaterSensors"), RackWaterSensors);
+	// W5 follow-up (2026-11-10): detector health, fault alarms and false leak alarms (ESTIMATED fault/false-trigger model).
+	{
+		TArray<TSharedPtr<FJsonValue>> Items;
+		for (const FSensorFaultAlarm& F : Instruments.GetFaultLog())
+		{
+			auto Item = MakeShared<FJsonObject>();
+			Item->SetNumberField(TEXT("timeS"), F.TimeS); Item->SetNumberField(TEXT("point"), F.Point);
+			Item->SetStringField(TEXT("sensorId"), Instruments.GetPoint(F.Point).Id); Item->SetStringField(TEXT("health"), FInstrumentBank::HealthName(F.Health));
+			Items.Add(MakeShared<FJsonValueObject>(Item));
+		}
+		InstrumentsJson->SetArrayField(TEXT("sensorFaults"), Items);
+		int32 FalseAlarms = 0, Unhealthy = 0;
+		for (const FLeakAlarm& A : Instruments.GetAlarmLog()) FalseAlarms += A.bFalse ? 1 : 0;
+		for (int32 I = 0; I < Instruments.Num(); ++I) Unhealthy += Instruments.GetSensorHealth(I) != ESensorHealth::Ok ? 1 : 0;
+		InstrumentsJson->SetNumberField(TEXT("falseLeakAlarms"), FalseAlarms);
+		InstrumentsJson->SetNumberField(TEXT("unhealthyDetectors"), Unhealthy);
+		InstrumentsJson->SetNumberField(TEXT("falseTriggerPerDetectorHour"), Instruments.GetFalseTriggers().PerDetectorHour);
+		const auto& Pol = LeakProtectionPolicy;
+		auto Delays = MakeShared<FJsonObject>();
+		Delays->SetNumberField(TEXT("trayBmcS"), Pol.TrayBmcDelayS); Delays->SetNumberField(TEXT("computeShutdownS"), Pol.ComputeTrayShutdownDelayS);
+		Delays->SetNumberField(TEXT("bmsCycleS"), Pol.BmsPollS); Delays->SetNumberField(TEXT("shelfOffS"), Pol.ShelfOffDelayS);
+		Delays->SetNumberField(TEXT("valveStrokeS"), Pol.ValveStrokeS); Delays->SetNumberField(TEXT("cduStopS"), Pol.CduStopDelayS);
+		Delays->SetNumberField(TEXT("recoveryPowerOnS"), Pol.RecoveryPowerOnDelayS); Delays->SetBoolField(TEXT("estimated"), true);
+		InstrumentsJson->SetObjectField(TEXT("leakProtectionDelays"), Delays);
+	}
+	// W5-3 (2026-11-03): protective actions taken from the detectors (cause: protection, apart from W4 failures).
+	{
+		TArray<TSharedPtr<FJsonValue>> Items;
+		for (const FLeakProtectionEvent& E : LeakProtectionEvents)
+		{
+			auto Item = MakeShared<FJsonObject>();
+			Item->SetNumberField(TEXT("timeS"), E.TimeS); Item->SetStringField(TEXT("level"), E.Level); Item->SetStringField(TEXT("action"), E.Action);
+			Item->SetStringField(TEXT("trigger"), E.Trigger); Item->SetNumberField(TEXT("rack"), E.Rack); Item->SetNumberField(TEXT("slot"), E.Slot); Item->SetNumberField(TEXT("row"), E.Row);
+			Items.Add(MakeShared<FJsonValueObject>(Item));
+		}
+		InstrumentsJson->SetBoolField(TEXT("leakProtectionPolicy"), LeakProtectionPolicy.bEnabled);
+		InstrumentsJson->SetArrayField(TEXT("leakProtection"), Items);
+	}
+	// W5-2 (2026-11-03): process-value leak alarms (loop level, location unknown; readings only, thresholds ESTIMATES).
+	{
+		TArray<TSharedPtr<FJsonValue>> Items;
+		for (const FProcessLeakAlarm& A : ProcessMonitor.GetAlarmLog())
+		{
+			auto Item = MakeShared<FJsonObject>();
+			Item->SetNumberField(TEXT("timeS"), A.TimeS); Item->SetStringField(TEXT("loop"), ProcessMonitor.GetLoopName(A.Loop));
+			Item->SetStringField(TEXT("signal"), FProcessLeakMonitor::SignalName(A.Signal)); Item->SetNumberField(TEXT("value"), A.Value);
+			Items.Add(MakeShared<FJsonValueObject>(Item));
+		}
+		InstrumentsJson->SetArrayField(TEXT("processAlarms"), Items);
+	}
+	TArray<TSharedPtr<FJsonValue>> LeakAlarmItems;
+	for (const FLeakAlarm& A : Instruments.GetAlarmLog())
+	{
+		const FInstrumentPoint& Pt = Instruments.GetPoint(A.Point);
+		TSharedRef<FJsonObject> Item = MakeShared<FJsonObject>();
+		Item->SetNumberField(TEXT("timeS"), A.TimeS); Item->SetStringField(TEXT("label"), Pt.Label);
+		Item->SetNumberField(TEXT("x_m"), Pt.PositionM.X); Item->SetNumberField(TEXT("y_m"), Pt.PositionM.Y); Item->SetNumberField(TEXT("z_m"), Pt.PositionM.Z);
+		Item->SetNumberField(TEXT("coveredLeakLps"), A.FlowM3s * 1e3);
+		Item->SetStringField(TEXT("sensorId"), Pt.Id.IsEmpty() ? FString::Printf(TEXT("instrument:%d"), A.Point) : Pt.Id);
+		Item->SetStringField(TEXT("rackId"), Pt.RackId); Item->SetStringField(TEXT("type"), InstrumentSpecs::SiteCode(Pt.Site));
+		Item->SetBoolField(TEXT("flowBased"), !Pt.bWaterContact);
+		Item->SetBoolField(TEXT("falseAlarm"), A.bFalse);   // W5 follow-up: ground truth (no real water at the threshold), not known to the protection
+		if (Pt.bWaterContact)
+		{
+			Item->SetNumberField(TEXT("contactWaterM3"), A.WaterM3); Item->SetNumberField(TEXT("firstContactS"), A.FirstContactS);
+			Item->SetNumberField(TEXT("thresholdReachedS"), A.ThresholdS);
+		}
+		LeakAlarmItems.Add(MakeShared<FJsonValueObject>(Item));
+	}
+	InstrumentsJson->SetArrayField(TEXT("leakAlarms"), LeakAlarmItems);
+	return InstrumentsJson;
+}
+
+FString ADataCenterSimulationActor::BuildDashboardStatusJson() const
+{
+	TSharedRef<FJsonObject> Root = MakeShared<FJsonObject>();
+	Root->SetNumberField(TEXT("schema"), 1);
+	Root->SetNumberField(TEXT("simTimeS"), Clock.GetSimTimeS());
+	const bool bSim = Mode == ESimMode::Simulation;
+	Root->SetStringField(TEXT("mode"), bSim ? TEXT("simulation") : TEXT("layout"));
+	Root->SetBoolField(TEXT("evalReady"), bEvalReady);
+	Root->SetBoolField(TEXT("plantEnabled"), bPlantActive);
+	if (bSim && bEvalReady)
+	{
+		const FCouplingSnapshot& Snap = GetCachedDisplaySnapshot();
+		// Window power: the report's own values (same evaluation window).
+		const FVrgEvaluationSample P = Eval.GetWindowPower();
+		TSharedRef<FJsonObject> Power = MakeShared<FJsonObject>();
+		Power->SetNumberField(TEXT("windowS"), Eval.GetWindowCoveredS());
+		Power->SetNumberField(TEXT("itW"), P.ItW); Power->SetNumberField(TEXT("serverFanW"), P.ServerFanW);
+		Power->SetNumberField(TEXT("crahFanW"), P.CrahFanW); Power->SetNumberField(TEXT("pumpW"), P.PumpW);
+		Power->SetNumberField(TEXT("coolantRemovedW"), P.CoolantRemovedW); Power->SetNumberField(TEXT("airRemovedW"), P.AirRemovedW);
+		double Pue = 0.0, CoolingPue = 0.0;
+		if (Eval.GetPartialPue(Pue)) Power->SetNumberField(TEXT("partialPue"), Pue); else Power->SetField(TEXT("partialPue"), MakeShared<FJsonValueNull>());
+		if (P.bPlant) Power->SetNumberField(TEXT("plantW"), P.PlantW);
+		if (Eval.GetCoolingPue(CoolingPue)) Power->SetNumberField(TEXT("coolingPue"), CoolingPue);
+		Root->SetObjectField(TEXT("power"), Power);
+		if (const TSharedPtr<FJsonObject> PlantJ = MakeReportPlantJson(Snap)) Root->SetObjectField(TEXT("plant"), PlantJ.ToSharedRef());
+		else Root->SetField(TEXT("plant"), MakeShared<FJsonValueNull>());
+		if (bPlantActive && Plant.IsBuilt())
+		{
+			// Live plant state of the last step (values the plant model holds; nothing recomputed here).
+			const FFacilityPlantState& S = Plant.GetState();
+			TSharedRef<FJsonObject> L = MakeShared<FJsonObject>();
+			L->SetNumberField(TEXT("fwsSupplyK"), S.SupplyK); L->SetNumberField(TEXT("fwsReturnK"), S.ReturnK);
+			L->SetNumberField(TEXT("dryCoolerFanRatio"), S.FanRatio); L->SetNumberField(TEXT("dryCoolerHeatW"), S.DryCoolerHeatW);
+			L->SetNumberField(TEXT("cduDutyW"), S.DutyW); L->SetBoolField(TEXT("fwsSetpointNotMet"), S.bSetpointNotMet || S.bFwsSupplyNotMet);
+			L->SetBoolField(TEXT("overCooling"), S.bOverCooling);
+			L->SetBoolField(TEXT("chilledWater"), Plant.IsChilledWaterActive());
+			L->SetNumberField(TEXT("chwSupplyK"), S.ChwSupplyK); L->SetNumberField(TEXT("chwReturnK"), S.ChwReturnK);
+			L->SetNumberField(TEXT("cwSupplyK"), S.CwSupplyK); L->SetNumberField(TEXT("cwReturnK"), S.CwReturnK);
+			L->SetNumberField(TEXT("crahDutyW"), S.CrahDutyW);
+			L->SetNumberField(TEXT("chillersRunning"), S.ChillersRunning); L->SetNumberField(TEXT("chillerLoadW"), S.ChillerLoadW);
+			L->SetNumberField(TEXT("chillerPowerW"), S.ChillerPowerW); L->SetBoolField(TEXT("chillerCapacityLimited"), S.bChillerCapacityLimited);
+			L->SetBoolField(TEXT("chillerOutsideCurves"), S.bChillerOutsideCurves);
+			L->SetNumberField(TEXT("cwDryCoolerHeatW"), S.CwDryCoolerHeatW);
+			L->SetNumberField(TEXT("trimRunning"), S.TrimRunning); L->SetNumberField(TEXT("trimLoadW"), S.TrimLoadW); L->SetNumberField(TEXT("trimPowerW"), S.TrimPowerW);
+			L->SetBoolField(TEXT("economizerOn"), S.bEconomizerOn); L->SetNumberField(TEXT("economizerW"), S.EconomizerW);
+			L->SetNumberField(TEXT("plantPumpHydraulicW"), S.PumpHydraulicW);
+			L->SetNumberField(TEXT("leakKgs"), S.LeakKgs);
+			L->SetNumberField(TEXT("trippedChillers"), S.TrippedChillers); L->SetNumberField(TEXT("trippedTrimChillers"), S.TrippedTrimChillers);
+			Root->SetObjectField(TEXT("plantLive"), L);
+		}
+		Root->SetObjectField(TEXT("dewPoint"), MakeReportDewPointJson());
+		Root->SetObjectField(TEXT("checks"), MakeReportChecksJson(Snap));
+		Root->SetObjectField(TEXT("waterImpact"), MakeWaterImpactReportJson());
+		Root->SetObjectField(TEXT("waterDisplay"), MakeReportWaterDisplayJson());
+		Root->SetObjectField(TEXT("instruments"), MakeReportInstrumentsJson());
+	}
+	// Step costs of the last frame (VrgPerf, measured, not guaranteed: D10). Several steps can fall into one frame.
+	const VrgPerf::FFrameCosts& C = VrgPerf::LastFrame();
+	TSharedRef<FJsonObject> Perf = MakeShared<FJsonObject>();
+	Perf->SetNumberField(TEXT("frameMs"), FApp::GetDeltaTime() * 1000.0);
+	Perf->SetNumberField(TEXT("solverSteps"), C.SolverSteps); Perf->SetNumberField(TEXT("solverMs"), C.SolverMs);
+	Perf->SetNumberField(TEXT("pressureMs"), C.PressureMs); Perf->SetNumberField(TEXT("couplingMs"), C.CouplingMs);
+	Perf->SetNumberField(TEXT("inventoryHydraulicsMs"), C.InventoryHydraulicsMs); Perf->SetNumberField(TEXT("rackModelsMs"), C.RackModelsMs);
+	Perf->SetNumberField(TEXT("waterMs"), C.WaterMs); Perf->SetNumberField(TEXT("dashboardMs"), C.DashboardMs);
+	Perf->SetNumberField(TEXT("pressureIterations"), C.PressureIterations);
+	Root->SetObjectField(TEXT("perf"), Perf);
+	FString Json;
+	FJsonSerializer::Serialize(Root, TJsonWriterFactory<TCHAR, TCondensedJsonPrintPolicy<TCHAR>>::Create(&Json));
+	return Json;
+}
+
+FVrgDashboardRoomAir ADataCenterSimulationActor::BuildDashboardRoomAir() const
+{
+	FVrgDashboardRoomAir A;
+	if (AirField != nullptr)
+	{
+		// Slice heights above the grid floor (display choice, not a physics setting): the airflow layer's four.
+		static const TArray<double> HeightsM = { 0.4, 1.1, 1.9, 2.75 };
+		const FVector OriginM = AirField->GetDomainBoundsM().Min;
+		TArray<double> World;
+		for (const double H : HeightsM) World.Add(OriginM.Z + H);
+		A = FVrgDashboardRoomAir::Build(AirField->GetSolver(), OriginM, World);
+	}
+	A.SimTimeS = Clock.GetSimTimeS();
+	A.bSimulating = Mode == ESimMode::Simulation;
+	return A;
 }
