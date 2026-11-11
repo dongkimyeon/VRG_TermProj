@@ -24,7 +24,8 @@ class IHttpRouter;
 //   GET /api/status    -> plant live state, the report's plant / dew point / checks / water / instrument sections, step
 //                         costs (2026-11-11, 202 until built)
 //   GET /vendor/three.min.js, /vendor/OrbitControls.js -> <Project>/Web/vendor (offline 3D; the page falls back to the CDN)
-// Console: vrg.Web.Enable 0|1 (default 0), vrg.Web.Port (default 18080).
+// Console: vrg.Web.Enable 0|1 (default 0), vrg.Web.Port (default 18080), vrg.Web.AutoOpen 0|1 (default 1: the first entry
+// into simulation mode turns the server on and opens the default browser; not in tests, commandlets or -unattended runs).
 // Rule 5: the integrated actor publishes a JSON copy on the game thread; request handlers only read that copy under a
 // lock and never touch actors, UObjects or solvers. The site only displays; it changes no physics input.
 class VRG_TERMPROJ_API FVrgWebDashboard
@@ -80,6 +81,11 @@ public:
 	FString GetReportFileJson(const FString& Name) const;
 	// Re-reads the console variables and starts/stops/moves the server; returns false and logs on failure.
 	bool ApplySettings();
+	// vrg.Web.AutoOpen (default 1) and not an automation test, commandlet or -unattended run.
+	static bool ShouldAutoOpen();
+	// Called when simulation mode starts: the first time in this process (and only when ShouldAutoOpen), turns the server
+	// on and opens http://127.0.0.1:<port>/dashboard in the default browser. Returns true when it opened the browser.
+	bool AutoOpenOnSimulationStart();
 	void Stop();
 
 private:

@@ -126,6 +126,9 @@ bool FWebDashboardStatusTest::RunTest(const FString& Parameters)
 	Room->RebuildRoomNow();
 	Sim->EnterSimulationMode();
 	for (int32 F = 0; F < 10; ++F) Sim->Tick(.1f);   // 1 s
+	// vrg.Web.AutoOpen (default 1) must not start the server or open a browser inside automation tests.
+	TestFalse(TEXT("no auto-open in automation: guard"), FVrgWebDashboard::ShouldAutoOpen());
+	TestFalse(TEXT("no auto-open in automation: server stays off after entering simulation"), FVrgWebDashboard::Get().IsRunning());
 
 	// Same SimTime: the status sections against a report written now.
 	const TSharedPtr<FJsonObject> S = ParseJsonForTabsTest(Sim->BuildDashboardStatusJson());

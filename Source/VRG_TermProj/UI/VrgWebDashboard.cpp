@@ -12,6 +12,9 @@
 #include "Serialization/JsonReader.h"
 #include "Serialization/JsonSerializer.h"
 #include "Misc/Paths.h"
+#include "Misc/App.h"
+#include "Misc/CoreMisc.h"
+#include "HAL/PlatformProcess.h"
 
 namespace
 {
@@ -22,6 +25,9 @@ namespace
 		FConsoleVariableDelegate::CreateStatic(&OnWebSettingsChanged));
 	TAutoConsoleVariable<int32> CVarWebPort(TEXT("vrg.Web.Port"), 18080,
 		TEXT("Web dashboard port (127.0.0.1 only)."), FConsoleVariableDelegate::CreateStatic(&OnWebSettingsChanged));
+	TAutoConsoleVariable<int32> CVarWebAutoOpen(TEXT("vrg.Web.AutoOpen"), 1,
+		TEXT("1 (default): the first time simulation mode starts, turn the dashboard on and open it in the default browser ")
+		TEXT("(once per run; never in automation tests, commandlets or -unattended runs). 0: off."));
 
 	TUniquePtr<FHttpServerResponse> NoStore(TUniquePtr<FHttpServerResponse> Response)
 	{
@@ -321,6 +327,33 @@ void FVrgWebDashboard::Stop()
 	StatusAskedS = -1.0e9;
 	PendingReport.Reset();
 	bHasLastSave = false;
+}
+
+bool FVrgWebDashboard::ShouldAutoOpen()
+{
+	return CVarWebAutoOpen.GetValueOnGameThread() != 0 && !GIsAutomationTesting && !IsRunningCommandlet() && !FApp::IsUnattended();
+}
+
+bool FVrgWebDashboard::AutoOpenOnSimulationStart()
+{
+	// 2026-11-11 (user request): entering simulation mode turns the dashboard on and opens it in the default browser,
+	// once per process. Automation tests, commandlets and -unattended runs (measurements) keep their conditions.
+	static bool bOpened = false;
+	if (bOpened || !ShouldAutoOpen()) return false;
+	bOpened = true;
+	if (IConsoleVariable* Enable = IConsoleManager::Get().FindConsoleVariable(TEXT("vrg.Web.Enable")))
+		if (Enable->GetInt() == 0) Enable->Set(1, ECVF_SetByCode);   // an explicit higher-priority 0 (ini/console) still wins
+	if (!IsRunning())
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[VrgWeb] 대시보드가 켜지지 않아 브라우저를 열지 않았다(vrg.Web.Enable 0 지정 또는 포트 사용 중)."));
+		return false;
+	}
+	const FString Url = FString::Printf(TEXT("http://127.0.0.1:%d/dashboard"), BoundPort);
+	FString Error;
+	FPlatformProcess::LaunchURL(*Url, nullptr, &Error);
+	if (Error.IsEmpty()) { UE_LOG(LogTemp, Display, TEXT("[VrgWeb] 기본 브라우저로 대시보드를 열었다: %s (끄기: vrg.Web.AutoOpen 0)"), *Url); }
+	else { UE_LOG(LogTemp, Warning, TEXT("[VrgWeb] 브라우저를 열지 못했다(%s). 직접 %s 로 접속한다."), *Error, *Url); }
+	return Error.IsEmpty();
 }
 
 bool FVrgWebDashboard::ApplySettings()

@@ -113,7 +113,7 @@ F0(근거 수집)·F1(FWS 수력망)·F2(드라이쿨러·설비수 열)·F3(냉
   누수 감지(W5, 2026-11-04)는 계산된 물(W2/W3/W3.5)이 감지기에 닿았는지로 판정하고(솔버 누수 유량 미사용), 공정값 감시·보호 차단 정책(기본 끔)이 있다. 경보 유지, `vrg.Sensors.ResetLeak`로 해제. 리포트에 경보 표(웹에는 아직 없음).
 - **표시:** 온도 볼륨 레이마칭 + 기류 무늬(드로우 1개), 배관 유량/온도, GJ 랙·배관·케이블 메시, 패치 평면도, CRAH·CDU 외형 모델.
   공기 보기(`V`, 2026-10-27 교수님 streamtrace 그림): 최근 30 s 평균 흐름의 스트림튜브(속도 0~2 m/s 또는 온도 18~40 °C 색, CRAH 토출·랙 배기에서 출발), 유선+볼륨, 평면 보기(1.1 m 단면 온도 + 수평 유선, 방 위에 띄워 그림), 화살표, HUD 범례(`Simulation/Air/AirStreamlines`·`AirFlowAverager`, `docs/기록/03`).
-- **웹 대시보드:** 127.0.0.1 전용(`vrg.Web.Enable 1`, 포트 18080, `/dashboard`). 요약·시계열·평면도·랙·리포트 A/B·3D(장비·배관·기류·센서·누수/밸브), 냉각 설비·전력·방 공기(셀 단면)·센서·검증 탭(2026-11-11, 리포트와 같은 함수의 값). three.js는 `Web/vendor` 사본(r128)을 먼저 읽고 없으면 CDN.
+- **웹 대시보드:** 127.0.0.1 전용(`vrg.Web.Enable 1`, 포트 18080, `/dashboard`). 2026-11-11부터 처음 시뮬레이션 모드에 들어가면 자동으로 켜고 기본 브라우저로 연다(`vrg.Web.AutoOpen 1` 기본, 테스트·`-unattended` 실행 제외). 요약·시계열·평면도·랙·리포트 A/B·3D(장비·배관·기류·센서·누수/밸브), 냉각 설비·전력·방 공기(셀 단면)·센서·검증 탭(2026-11-11, 리포트와 같은 함수의 값). three.js는 `Web/vendor` 사본(r128)을 먼저 읽고 없으면 CDN.
 
 ### 모델에 없는 것 (알려진 한계)
 
@@ -153,7 +153,7 @@ L_Test32랙·스파인2·CRAH8·33210셀/h0.25m/dt0.02s,200스텝 예열/20s cap
   `9/0` 부하율, `E` 바라보는 유닛 하나 뽑기/꽂기, `R` 현재 배치로 t=0 재시작, `L` 누수 도구(외부5/30mm·내부1/3mm → 파단 → 수리 → 끔, `B` 내부 종류 순환, 클릭 적용, 도구 중 `E` 탈착 차단·`Esc` 끔), `V` 공기 보기 순환(온도 볼륨 → 유선 속도 → 유선 온도 → 유선+볼륨 → 평면 → 화살표). 발열 손잡이는 각 부품 기본값에 배율로 적용한다.
 - **주요 콘솔:** `vrg.Air.RunSteps <N>`, `vrg.Air.CellSize <h> 0.25`, `vrg.Air.Gpu -1|0|1`, `vrg.Air.Turbulence`, `vrg.Sim.CrahLayout 0|1|2`,
   `vrg.Sim.Containment 0|1|2`, `vrg.Sim.CoolantRejection 0|1`, `vrg.Eval.Event/Report/ReportWhenDone/Compare`, `vrg.Layout.Save/Load`,
-  `vrg.Perf.Capture <초> [라벨] [quit]`, `vrg.Leak.Add/Size/Clear/Status/Sites/At/Repair/Direction/Recover`, `vrg.Sensors.Fault/FalseRate/ResetLeak`, `vrg.Water.Status/Show/CellM/Gpu/Impact`, `vrg.Leak.AutoIsolate`, `vrg.Air.View/PlanHeight`, `vrg.Valve`(이벤트 `valve`·`leak`·`leakat`), `vrg.Cdu.PumpFault/PumpRepair <줄>`, `vrg.Plant.Enable/Topology/Ambient/Fault/Show`(이벤트 `ambient`·`plant`), `vrg.Pipes.Temperature`, `vrg.Sensors.PipeIntervalM`, `vrg.Hud.Temps/TempsRange`, `vrg.Cam <x y z m> <피치> <요>`, `vrg.Room.Shell`, `vrg.Patch.Map`, `vrg.Web.Enable`, `vrg.Hud.Debug`.
+  `vrg.Perf.Capture <초> [라벨] [quit]`, `vrg.Leak.Add/Size/Clear/Status/Sites/At/Repair/Direction/Recover`, `vrg.Sensors.Fault/FalseRate/ResetLeak`, `vrg.Water.Status/Show/CellM/Gpu/Impact`, `vrg.Web.Enable/Port/AutoOpen`, `vrg.Leak.AutoIsolate`, `vrg.Air.View/PlanHeight`, `vrg.Valve`(이벤트 `valve`·`leak`·`leakat`), `vrg.Cdu.PumpFault/PumpRepair <줄>`, `vrg.Plant.Enable/Topology/Ambient/Fault/Show`(이벤트 `ambient`·`plant`), `vrg.Pipes.Temperature`, `vrg.Sensors.PipeIntervalM`, `vrg.Hud.Temps/TempsRange`, `vrg.Cam <x y z m> <피치> <요>`, `vrg.Room.Shell`, `vrg.Patch.Map`, `vrg.Web.Enable`, `vrg.Hud.Debug`.
   `-ExecCmds`로 여러 명령을 줄 때는 **쉼표**로 나눈다.
 
 화면에는 단축키 안내와 시뮬레이션 모드 계측 라벨(캐비닛 최고 부품, 흡기 센서·냉각수, 배관 지점 유량·수온, 설비 장비 값, 누수 경보; `vrg.Hud.Temps 0|1`·`vrg.Hud.TempsRange <m>`, 2026-10-22 사용자 요청)만 둔다.

@@ -366,6 +366,9 @@ void ADataCenterSimulationActor::EnterSimulationMode()
 	BuildCoupling();
 	bNeedsRebuild = HasUnroutedRacks();
 	bSimRunning = true;
+	// 2026-11-11 (user request): the first simulation start of a normal run turns the web dashboard on and opens it in the
+	// browser (vrg.Web.AutoOpen; display only, no physics input; skipped in tests and -unattended measurement runs).
+	if (GetWorld() != nullptr && GetWorld()->IsGameWorld()) FVrgWebDashboard::Get().AutoOpenOnSimulationStart();
 	RebuildLiveLeakSites();   // W1: room sites are built closed with the rows; the plant nodes exist once BuildCoupling built it
 	// W2: no water anywhere at t = 0; the tanks start full (their leaked volume is the spray's starting point).
 	Spray.Reset(BuildSprayGeometry(&WaterSourceTargets), Spray.GetSettings(), Spray.GetFluid(), Spray.GetCoolantFluid());
