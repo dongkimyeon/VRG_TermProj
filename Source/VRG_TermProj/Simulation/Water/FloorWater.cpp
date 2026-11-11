@@ -134,10 +134,39 @@ bool FFloorWater::ResetForRoom(const FSprayGeometry& Geometry, const FFloorWater
 	const FBox& R = Geometry.RoomM;
 	if (!R.IsValid || InSettings.CellM <= 0.0) { Reset(FVector2D::ZeroVector, 1, 1, 0.0, InSettings); return false; }
 	Reset(FVector2D(R.Min.X, R.Min.Y), FMath::CeilToInt32((R.Max.X - R.Min.X) / InSettings.CellM), FMath::CeilToInt32((R.Max.Y - R.Min.Y) / InSettings.CellM), R.Min.Z, InSettings);
+	AddObstacleFootprints(Geometry, false);
+	return true;
+}
+
+bool FFloorWater::ResetForYard(const FSprayGeometry& Geometry, const FBox2D& YardM, const FFloorWaterSettings& InSettings)
+{
+	if (!YardM.bIsValid || InSettings.CellM <= 0.0 || YardM.GetSize().GetMin() <= 0.0) { Reset(FVector2D::ZeroVector, 1, 1, 0.0, InSettings); return false; }
+	const FVector2D Size = YardM.GetSize();
+	Reset(YardM.Min, FMath::CeilToInt32(Size.X / InSettings.CellM), FMath::CeilToInt32(Size.Y / InSettings.CellM), Geometry.GroundZM, InSettings);
+	// The building: no yard water inside its walls (its outer wall is a wall for the ground water too).
+	if (Geometry.RoomM.IsValid)
+		for (int32 J = 0; J < Ny; ++J)
+			for (int32 I = 0; I < Nx; ++I)
+			{
+				const double X = Origin.X + (I + .5) * Settings.CellM, Y = Origin.Y + (J + .5) * Settings.CellM;
+				if (X >= Geometry.RoomM.Min.X && X <= Geometry.RoomM.Max.X && Y >= Geometry.RoomM.Min.Y && Y <= Geometry.RoomM.Max.Y) Solid[Index(I, J)] = 1;
+			}
+	AddObstacleFootprints(Geometry, true);
+	return true;
+}
+
+void FFloorWater::AddObstacleFootprints(const FSprayGeometry& Geometry, bool bYard)
+{
 	for (int32 Obstacle = 0; Obstacle < Geometry.Obstacles.Num(); ++Obstacle)
 	{
 		const FSprayObstacle& O = Geometry.Obstacles[Obstacle];
 		if (O.Kind == ESprayObstacleKind::Ceiling) continue;
+		// The yard takes only what stands outside the building; the room floor only what stands inside it.
+		if (Geometry.RoomM.IsValid)
+		{
+			const bool bInside = O.CenterM.X >= Geometry.RoomM.Min.X && O.CenterM.X <= Geometry.RoomM.Max.X && O.CenterM.Y >= Geometry.RoomM.Min.Y && O.CenterM.Y <= Geometry.RoomM.Max.Y;
+			if (bYard == bInside) continue;
+		}
 		// Footprint cells: cell centre inside the box seen from above, box reaching down to the floor.
 		double Down = 0.0;
 		for (int32 K = 0; K < 3; ++K) Down += FMath::Abs(O.Rotation.RotateVector(K == 0 ? FVector(1, 0, 0) : K == 1 ? FVector(0, 1, 0) : FVector(0, 0, 1)).Z) * O.HalfM[K];
@@ -166,7 +195,6 @@ bool FFloorWater::ResetForRoom(const FSprayGeometry& Geometry, const FFloorWater
 		if (O.Kind == ESprayObstacleKind::Barrier) { for (const int32 C : Cells) Solid[C] = 1; }
 		else { AddFlood(O.Name, Cells); Floods.Last().SourceObstacle = Obstacle; }
 	}
-	return true;
 }
 
 void FFloorWater::SetSolid(int32 I, int32 J, bool bSolid)

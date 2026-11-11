@@ -27,7 +27,12 @@ bool FWaterExposureRoomMapping::RunTest(const FString& Parameters)
  int32 Slots=0;double MaxHeightError=0;
  for(const auto& B:Bindings) {
   TestEqual(TEXT("Existing source label preserved"),B.SourceName,Geometry.Obstacles[B.SprayObstacle].Name);
-  if(B.FloorFlood!=INDEX_NONE) TestEqual(TEXT("Footprint maps by obstacle, not display-name guess"),Sim->GetFloorWater().GetFloods()[B.FloorFlood].SourceObstacle,B.SprayObstacle);
+  if(B.FloorFlood!=INDEX_NONE) {
+   // 2026-11-11: boxes outside the building map to the plant yard's records (index past the room floor's).
+   const auto& RoomFloods=Sim->GetFloorWater().GetFloods();
+   const auto& F=B.FloorFlood<RoomFloods.Num()?RoomFloods[B.FloorFlood]:Sim->GetYardWater().GetFloods()[B.FloorFlood-RoomFloods.Num()];
+   TestEqual(TEXT("Footprint maps by obstacle, not display-name guess"),F.SourceObstacle,B.SprayObstacle);
+  }
   if(B.EquipmentId==TEXT("rack/map-rack") && B.Slot!=INDEX_NONE) {
    ++Slots;double Bottom,Height;Rack->GetSlotHeightRangeM(B.Slot,Bottom,Height);
    const double Expected=FMath::Max(0.0,Rack->GetActorLocation().Z*.01+Bottom*1.2-Sim->GetFloorWater().GetFloorZM());

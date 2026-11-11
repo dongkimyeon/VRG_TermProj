@@ -84,6 +84,7 @@ struct VRG_TERMPROJ_API FWaterDisplayTotals
 	double TrayShownM3 = 0.0, TrayComputedM3 = 0.0;
 	double FilmShownM3 = 0.0, FilmComputedM3 = 0.0;
 	double AirShownM3 = 0.0, AirComputedM3 = 0.0;
+	double YardShownM3 = 0.0, YardComputedM3 = 0.0, YardHiddenM3 = 0.0;   // not in Residual (the caller adds the yard)
 	int32 ParcelsShown = 0, ParcelsComputed = 0, StreaksShown = 0, TrailsComputed = 0;
 	int32 SurfaceCells = 0, WetMarkCells = 0, WetSkins = 0;
 	// max(|shown + hidden - computed|) / computed over floor, trays, films and air (0 when nothing is computed)
@@ -94,6 +95,7 @@ struct VRG_TERMPROJ_API FWaterDisplaySnapshot
 {
 	FWaterSurfaceMesh Surface;
 	FWaterSurfaceMesh WetFloor;
+	FWaterSurfaceMesh YardSurface;       // plant yard ground water (W4 follow-up), filled by the caller with BuildSurface
 	TArray<FWaterSheet> Sheets;          // films and drip trays
 	TArray<FWaterDropShape> Drops;
 	TArray<FWaterStreakShape> Streaks;
@@ -106,6 +108,12 @@ namespace WaterDisplay
 	// Remembers the floor cells that have been wet (display memory only; sized to the floor grid, cleared when it changes).
 	VRG_TERMPROJ_API void UpdateEverWet(const FFloorWater& Floor, TArray<uint8>& EverWet, double MinDepthM);
 	VRG_TERMPROJ_API void Build(const FFloorWater& Floor, const FLeakSpray& Spray, const TArray<uint8>* EverWet,
+		const FWaterDisplaySettings& Settings, FWaterDisplaySnapshot& Out);
+	// The water prisms of one floor model (the room floor, or the plant yard ground). Returns the drawn cells; HiddenM3 =
+	// water in cells not drawn (too thin, solid, over the cap).
+	VRG_TERMPROJ_API int32 BuildSurface(const FFloorWater& Floor, const FWaterDisplaySettings& Settings, FWaterSurfaceMesh& Mesh, double& HiddenM3);
+	// Build's part after the floor surface: wet marks, trays, films, air, skins and the residual (Build calls it).
+	VRG_TERMPROJ_API void BuildRest(const FFloorWater& Floor, const FLeakSpray& Spray, const TArray<uint8>* EverWet,
 		const FWaterDisplaySettings& Settings, FWaterDisplaySnapshot& Out);
 	// Volume read back from the drawn floor surface: every upward triangle's plan area times its height above the bed
 	// under it (minus the display lift). Skirts are vertical and add nothing.

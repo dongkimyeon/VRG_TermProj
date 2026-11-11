@@ -124,7 +124,12 @@ bool FWaterExposureRoomLifecycle::RunTest(const FString& Parameters)
     if(E.SprayTouchedM3[I]>0) ++LocalizedSlots;
     else TestTrue(TEXT("Spray-only policy cannot trip a slot the water missed"),Sim->GetWaterImpactObservation().GetState().Phase[I]==EWaterImpactPhase::Normal);
    }
-   if(B.FloorFlood!=INDEX_NONE) TestEqual(TEXT("Live W3 immersion from the exact footprint"),E.FloodImmersionM[I],FMath::Max(0.0,Sim->GetFloorWater().GetFloods()[B.FloorFlood].MeanDepthM-B.FloorContactDepthM));
+   if(B.FloorFlood!=INDEX_NONE) {
+    // 2026-11-11: a box standing outside the building reads the plant yard's record (index past the room floor's).
+    const auto& RoomFloods=Sim->GetFloorWater().GetFloods();
+    const auto& F=B.FloorFlood<RoomFloods.Num()?RoomFloods[B.FloorFlood]:Sim->GetYardWater().GetFloods()[B.FloorFlood-RoomFloods.Num()];
+    TestEqual(TEXT("Live W3 immersion from the exact footprint"),E.FloodImmersionM[I],FMath::Max(0.0,F.MeanDepthM-B.FloorContactDepthM));
+   }
   }
   TestTrue(TEXT("Live spray reached equipment and its slots"),RootContact && LocalizedSlots>0);
   TestTrue(TEXT("Existing W2/W3 conservation"),Sim->GetLeakSpray().GetTotals().Residual<1e-12 && Sim->GetFloorWater().GetTotals().Residual<1e-12);

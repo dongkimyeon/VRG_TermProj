@@ -39,6 +39,6 @@ private:
 	UPROPERTY(Transient) TObjectPtr<UMaterialInterface> WetMaterial;
 	bool bWaterMaterial = false;
 	int32 NumInstances = 0;
-	bool bSurfaceShown = false, bWetShown = false;
+	bool bSurfaceShown = false, bWetShown = false, bYardShown = false;
 	void EnsureComponents();
 };

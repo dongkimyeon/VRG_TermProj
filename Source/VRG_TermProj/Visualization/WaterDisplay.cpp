@@ -101,16 +101,26 @@ void WaterDisplay::UpdateEverWet(const FFloorWater& Floor, TArray<uint8>& EverWe
 
 void WaterDisplay::Build(const FFloorWater& Floor, const FLeakSpray& Spray, const TArray<uint8>* EverWet, const FWaterDisplaySettings& S, FWaterDisplaySnapshot& Out)
 {
-	Out.Surface.Reset(); Out.WetFloor.Reset();
+	Out.Surface.Reset(); Out.WetFloor.Reset(); Out.YardSurface.Reset();
 	Out.Sheets.Reset(); Out.Drops.Reset(); Out.Streaks.Reset(); Out.Skins.Reset();
 	FWaterDisplayTotals& T = Out.Totals;
 	T = FWaterDisplayTotals();
 
 	// ---- floor: one prism per wet cell ----
+	T.FloorComputedM3 = Floor.GetTotals().StoredM3;
+	T.SurfaceCells = BuildSurface(Floor, S, Out.Surface, T.FloorHiddenM3);
+	T.FloorShownM3 = SurfaceVolumeM3(Out.Surface, Floor, S.LiftM);
+	BuildRest(Floor, Spray, EverWet, S, Out);
+}
+
+int32 WaterDisplay::BuildSurface(const FFloorWater& Floor, const FWaterDisplaySettings& S, FWaterSurfaceMesh& Mesh, double& HiddenM3)
+{
+	Mesh.Reset();
+	HiddenM3 = 0.0;
+	int32 Cells = 0;
 	const int32 Nx = Floor.GetNx(), Ny = Floor.GetNy();
 	const double Cell = Floor.GetCellM();
 	const FVector2D O = Floor.GetOriginM();
-	T.FloorComputedM3 = Floor.GetTotals().StoredM3;
 	const FIntRect Box = Floor.GetWetBox();
 	if (Nx > 0 && Ny > 0)
 		for (int32 J = Box.Min.Y; J <= Box.Max.Y; ++J)
@@ -119,8 +129,8 @@ void WaterDisplay::Build(const FFloorWater& Floor, const FLeakSpray& Spray, cons
 				const int32 C = Floor.Index(I, J);
 				const double H = Floor.GetDepthM()[C];
 				if (H <= 0.0) continue;
-				if (Floor.GetSolid()[C] || H < S.MinDepthM || T.SurfaceCells >= S.MaxSurfaceCells) { T.FloorHiddenM3 += H * Cell * Cell; continue; }
-				++T.SurfaceCells;
+				if (Floor.GetSolid()[C] || H < S.MinDepthM || Cells >= S.MaxSurfaceCells) { HiddenM3 += H * Cell * Cell; continue; }
+				++Cells;
 				const double Bed = Floor.GetFloorZM() + Floor.GetBedM()[C];
 				const double Top = Bed + H;
 				const double X0 = O.X + I * Cell, X1 = X0 + Cell, Y0 = O.Y + J * Cell, Y1 = Y0 + Cell;
@@ -128,7 +138,7 @@ void WaterDisplay::Build(const FFloorWater& Floor, const FLeakSpray& Spray, cons
 				const FLinearColor Col(float(FMath::Clamp(H / S.DepthColorRangeM, 0.0, 1.0)),
 					float(FMath::Clamp(.5 + .5 * U / S.SpeedColorRangeMs, 0.0, 1.0)), float(FMath::Clamp(.5 + .5 * V / S.SpeedColorRangeMs, 0.0, 1.0)), 1.f);
 				const double Zt = Top + S.LiftM;
-				AddQuad(Out.Surface, FVector(X0, Y0, Zt), FVector(X0, Y1, Zt), FVector(X1, Y1, Zt), FVector(X1, Y0, Zt), FVector::UpVector, Col);
+				AddQuad(Mesh, FVector(X0, Y0, Zt), FVector(X0, Y1, Zt), FVector(X1, Y1, Zt), FVector(X1, Y0, Zt), FVector::UpVector, Col);
 				// Skirts down to whatever stands next to it (its water top, or the own bed when it is dry / a wall).
 				const int32 DI[4] = { -1, 1, 0, 0 }, DJ[4] = { 0, 0, -1, 1 };
 				for (int32 Side = 0; Side < 4; ++Side)
@@ -147,11 +157,19 @@ void WaterDisplay::Build(const FFloorWater& Floor, const FLeakSpray& Spray, cons
 					default: A = FVector(X1, Y1, 0); B = FVector(X0, Y1, 0); break;
 					}
 					const FVector N(DI[Side], DJ[Side], 0);
-					AddQuad(Out.Surface, FVector(A.X, A.Y, Zb), FVector(A.X, A.Y, Zt), FVector(B.X, B.Y, Zt), FVector(B.X, B.Y, Zb), N, Col);
+					AddQuad(Mesh, FVector(A.X, A.Y, Zb), FVector(A.X, A.Y, Zt), FVector(B.X, B.Y, Zt), FVector(B.X, B.Y, Zb), N, Col);
 				}
 			}
-	Out.Surface.Cells = T.SurfaceCells;
-	T.FloorShownM3 = SurfaceVolumeM3(Out.Surface, Floor, S.LiftM);
+	Mesh.Cells = Cells;
+	return Cells;
+}
+
+void WaterDisplay::BuildRest(const FFloorWater& Floor, const FLeakSpray& Spray, const TArray<uint8>* EverWet, const FWaterDisplaySettings& S, FWaterDisplaySnapshot& Out)
+{
+	FWaterDisplayTotals& T = Out.Totals;
+	const int32 Nx = Floor.GetNx(), Ny = Floor.GetNy();
+	const double Cell = Floor.GetCellM();
+	const FVector2D O = Floor.GetOriginM();
 
 	// Wet marks: wet once, dry now.
 	if (EverWet != nullptr && EverWet->Num() == Nx * Ny)

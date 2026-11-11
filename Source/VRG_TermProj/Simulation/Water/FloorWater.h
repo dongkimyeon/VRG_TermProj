@@ -111,6 +111,10 @@ public:
 	void Reset(const FVector2D& OriginM, int32 Nx, int32 Ny, double FloorZM, const FFloorWaterSettings& InSettings);
 	// The room floor from the spray geometry: walls / barriers become solid cells, equipment footprints are recorded.
 	bool ResetForRoom(const FSprayGeometry& Geometry, const FFloorWaterSettings& InSettings);
+	// W4 follow-up (2026-11-11): the outdoor plant yard [world m, XY] at the ground height. The building footprint
+	// (Geometry.RoomM) is solid; boxes standing outside it get their footprint flood records (pump motors, W4).
+	// The ground surface uses the same settings (Manning, contact angle): ESTIMATES for a concrete pad.
+	bool ResetForYard(const FSprayGeometry& Geometry, const FBox2D& YardM, const FFloorWaterSettings& InSettings);
 
 	// ---- set-up (tests, scenarios) ----
 	void SetSolid(int32 I, int32 J, bool bSolid);
@@ -164,6 +168,8 @@ private:
 	TArray<FFloorDrain> Drains;
 	TArray<FFloorTray> Trays;
 	void ApplyDrains(double DtS);
+	// Footprint flood records / barrier cells of the boxes inside (room) or outside (yard) Geometry.RoomM.
+	void AddObstacleFootprints(const FSprayGeometry& Geometry, bool bYard);
 	FFloorWaterTotals Totals;
 	int32 WetI0 = 1, WetJ0 = 1, WetI1 = 0, WetJ1 = 0;
 	// GPU twin: configured for this grid / holding this state? Cells changed by deposits since its last step.

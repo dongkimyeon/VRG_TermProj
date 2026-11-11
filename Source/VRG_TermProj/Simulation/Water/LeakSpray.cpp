@@ -1,4 +1,4 @@
-// Fill out your copyright notice in the Description page of Project Settings.
+﻿// Fill out your copyright notice in the Description page of Project Settings.
 
 #include "Simulation/Water/LeakSpray.h"
 #include "Math/RandomStream.h"
@@ -103,7 +103,7 @@ void FLeakSpray::Reset(const FSprayGeometry& InGeometry, const FSpraySettings& I
 	for (int32 I = 0; I < Wetting.Num(); ++I) Wetting[I].ZoneWaterM3.Init(0.0, Geometry.Obstacles[I].ZoneBottomZM.Num());
 	FirstImpacts.Reset(); FirstBreakups.Reset();
 	Totals = FSprayTotals();
-	StepFloorDeposits.Reset();
+	StepFloorDeposits.Reset(); StepGroundDeposits.Reset();
 }
 
 int32 FLeakSpray::FindObstacleContaining(const FVector& PointM) const
@@ -188,7 +188,7 @@ void FLeakSpray::AddFloor(const FVector& PointM, double Volume, bool bOutdoors)
 	if (Volume <= 0.0) return;
 	const FIntPoint Bin(FMath::FloorToInt32(PointM.X / Settings.FloorBinM), FMath::FloorToInt32(PointM.Y / Settings.FloorBinM));
 	(bOutdoors ? GroundBins : FloorBins).FindOrAdd(Bin) += Volume;
-	if (!bOutdoors) StepFloorDeposits.Add({ PointM, Volume });   // W3: the floor model takes these each step
+	(bOutdoors ? StepGroundDeposits : StepFloorDeposits).Add({ PointM, Volume });   // W3: the floor / yard models take these each step
 }
 
 void FLeakSpray::Touch(int32 Obstacle, const FVector& PointM, double Volume, double NowS)
@@ -304,7 +304,7 @@ void FLeakSpray::StepFilms(double DtS)
 void FLeakSpray::Step(const TArray<FSpraySource>& Sources, double DtS, double NowS)
 {
 	if (DtS <= 0.0) return;
-	StepFloorDeposits.Reset();
+	StepFloorDeposits.Reset(); StepGroundDeposits.Reset();
 	const FVector G(0, 0, -Fluid.GravityMs2);
 
 	// 1. What left the holes this step. A hole inside a box (pipe inside a cabinet) wets that box from the hole down

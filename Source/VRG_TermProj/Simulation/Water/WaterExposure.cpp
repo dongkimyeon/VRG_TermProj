@@ -23,7 +23,8 @@ bool FWaterExposureSnapshot::IsValid(FString& Error) const
 
 bool WaterExposure::Collect(const TArray<FWaterExposureBinding>& Bindings,double Now,
  const FSprayGeometry& Geometry,const TArray<FSprayWetting>& Spray,const TArray<FFloorFlood>& Flood,
- const FRackInteriorWater& Interior,const TArray<FString>& RackIds,FWaterExposureSnapshot& Out,FString& Error)
+ const FRackInteriorWater& Interior,const TArray<FString>& RackIds,FWaterExposureSnapshot& Out,FString& Error,
+ const TArray<FFloorFlood>* YardFlood)
 {
  FWaterExposureSnapshot Next;Next.SimTimeS=Now;const int32 N=Bindings.Num();
  Next.Available.Init(0,N);
@@ -46,8 +47,10 @@ bool WaterExposure::Collect(const TArray<FWaterExposureBinding>& Bindings,double
    } else {Next.SprayTouchedM3[I]=W.WaterM3;Next.Available[I]|=uint8(EWaterEvidence::Spray);}
   }
   if(B.FloorFlood!=INDEX_NONE) {
-   if(!Flood.IsValidIndex(B.FloorFlood) || Flood[B.FloorFlood].Name!=SourceName) return Fail(TEXT("Flood equipment identity mismatch"));
-   const auto& F=Flood[B.FloorFlood];
+   const bool bYard=B.FloorFlood>=Flood.Num();const int32 FI=bYard?B.FloorFlood-Flood.Num():B.FloorFlood;
+   const TArray<FFloorFlood>* List=bYard?YardFlood:&Flood;
+   if(!List || !List->IsValidIndex(FI) || (*List)[FI].Name!=SourceName) return Fail(TEXT("Flood equipment identity mismatch"));
+   const auto& F=(*List)[FI];
    if(F.SourceObstacle!=INDEX_NONE && B.SprayObstacle!=INDEX_NONE && F.SourceObstacle!=B.SprayObstacle) return Fail(TEXT("Flood/spray source obstacle mismatch"));
    if(!FMath::IsFinite(B.FloorContactDepthM) || B.FloorContactDepthM<0 || !FMath::IsFinite(F.MeanDepthM) || F.MeanDepthM<0) return Fail(TEXT("Invalid explicit flood contact height/depth"));
    Next.FloodImmersionM[I]=FMath::Max(0.0,F.MeanDepthM-B.FloorContactDepthM);Next.Available[I]|=uint8(EWaterEvidence::Flood);

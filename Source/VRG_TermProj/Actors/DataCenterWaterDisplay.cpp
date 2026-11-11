@@ -12,11 +12,19 @@ void ADataCenterSimulationActor::BuildWaterDisplay(bool bUpdateMarks)
 {
 	if (bUpdateMarks) WaterDisplay::UpdateEverWet(FloorWater, WaterEverWet, WaterDisplaySettings.MinDepthM);
 	WaterDisplay::Build(FloorWater, Spray, &WaterEverWet, WaterDisplaySettings, WaterDisplaySnapshot);
+	// The plant yard ground water (W4 follow-up), drawn the same way.
+	FWaterDisplayTotals& T = WaterDisplaySnapshot.Totals;
+	T.YardComputedM3 = YardWater.GetTotals().StoredM3;
+	if (YardWater.HasWater())
+	{
+		WaterDisplay::BuildSurface(YardWater, WaterDisplaySettings, WaterDisplaySnapshot.YardSurface, T.YardHiddenM3);
+		T.YardShownM3 = WaterDisplay::SurfaceVolumeM3(WaterDisplaySnapshot.YardSurface, YardWater, WaterDisplaySettings.LiftM);
+	}
 }
 
 void ADataCenterSimulationActor::UpdateWaterDisplay()
 {
-	const bool bAnyWater = Spray.HasWater() || FloorWater.HasWater();
+	const bool bAnyWater = Spray.HasWater() || FloorWater.HasWater() || YardWater.HasWater();
 	const bool bWant = bShowSpray && WaterShowStyle == 1 && Mode == ESimMode::Simulation && GetWorld() != nullptr;
 	if (!bAnyWater)
 	{

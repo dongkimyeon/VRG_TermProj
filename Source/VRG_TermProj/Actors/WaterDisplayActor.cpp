@@ -123,6 +123,14 @@ void AWaterDisplayActor::Show(const FWaterDisplaySnapshot& S, bool bFloor)
 			Surface->SetMaterial(1, WetMaterial);
 			bWetShown = true;
 		}
+		if (S.YardSurface.Triangles.IsEmpty()) { if (bYardShown) Surface->ClearMeshSection(2); bYardShown = false; }
+		else
+		{
+			ToCm(S.YardSurface, V, N, UV, Tan);
+			Surface->CreateMeshSection_LinearColor(2, V, S.YardSurface.Triangles, N, UV, S.YardSurface.Colors, Tan, false);
+			Surface->SetMaterial(2, WaterMaterial);
+			bYardShown = true;
+		}
 		TArray<FTransform> T;
 		for (const FWaterSheet& Sh : S.Sheets) T.Add(BoxCm(Sh.CenterM, Sh.Rotation, Sh.SizeM));
 		SetInstances(Sheets, T);
@@ -145,7 +153,7 @@ void AWaterDisplayActor::Clear()
 {
 	if (Surface == nullptr) return;
 	Surface->ClearAllMeshSections();
-	bSurfaceShown = bWetShown = false;
+	bSurfaceShown = bWetShown = bYardShown = false;
 	for (UInstancedStaticMeshComponent* C : { Drops.Get(), Streaks.Get(), Sheets.Get(), Skins.Get() }) if (C) C->ClearInstances();
 	NumInstances = 0;
 }

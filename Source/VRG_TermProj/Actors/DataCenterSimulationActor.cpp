@@ -392,6 +392,7 @@ void ADataCenterSimulationActor::EnterSimulationMode()
 		}
 	}
 	FloorOffGridM3 = 0.0;
+	ResetYardWater();   // W4 follow-up: the plant yard ground (after the live leak sites exist)
 	CondensationRiskS = 0.0; MinDewMarginK = TNumericLimits<double>::Max(); bCondensationLogged = false;
 	FlowAverager.Reset(); bFlowGridValid = false;   // the air view averages this run only
 	SetAirView(AirView);
@@ -2651,15 +2652,19 @@ void ADataCenterSimulationActor::SprayAfterStep(double DtS)
 		Spray.Step(Sources, DtS, Clock.GetSimTimeS());
 		for (const TPair<FVector, double>& D : Spray.GetLastStepFloorDepositsM3())
 			if (!FloorWater.AddWater(D.Key, D.Value)) FloorOffGridM3 += D.Value;
+		// W4 follow-up: the outdoor ground water spreads over the yard (the spray ledger keeps it as "ground").
+		for (const TPair<FVector, double>& D : Spray.GetLastStepGroundDepositsM3())
+			if (!YardWater.AddWater(D.Key, D.Value)) YardOffGridM3 += D.Value;
 	}
 	// W3 advances ONCE over the shared interval, including residual water after repair.
 	if (FloorWater.HasWater()) FloorWater.Step(DtS, Clock.GetSimTimeS());
+	if (YardWater.HasWater()) YardWater.Step(DtS, Clock.GetSimTimeS());
 	{
 		const uint64 ObserveStart = FPlatformTime::Cycles64();
 		ObserveWaterExposure(Clock.GetSimTimeS()+DtS); // Once, after all W2/W3/W3.5 water; also runs when dry.
 		if (bWarmupMeasuring) WarmupObserveMs += FPlatformTime::ToMilliseconds64(FPlatformTime::Cycles64() - ObserveStart);
 	}
-	if (!bStepSpray && !FloorWater.HasWater() && RackInterior.GetWater().ReceivedM3 == 0.0) return;
+	if (!bStepSpray && !FloorWater.HasWater() && !YardWater.HasWater() && RackInterior.GetWater().ReceivedM3 == 0.0) return;
 	const int32 Second = FMath::FloorToInt32((Clock.GetSimTimeS() + DtS) / 2.0);
 	if (Second != LastSprayLogSecond) { LastSprayLogSecond = Second; LogSprayStatus(); }
 }
@@ -2682,6 +2687,14 @@ void ADataCenterSimulationActor::LogSprayStatus() const
 	UE_LOG(LogTemp, Display, TEXT("[Water] t=%.2f s 바닥 물 %.3f L (받음 %.3f L, 격자 밖 %.3f L, 배수 %.3f L, 드립 트레이 %.3f L), 젖은 칸 %d, 최대 수심 %.2f mm, 최대 속도 %.3f m/s, 이번 스텝 부분 스텝 %d(%s, GPU 스텝 누적 %d), 물 밑 장비 %d | 잔차 %.2e, 음수 수심 보정 %.2e L"),
 		Clock.GetSimTimeS(), F.StoredM3 * 1e3, F.ReceivedM3 * 1e3, FloorOffGridM3 * 1e3, F.DrainedM3 * 1e3, F.TrayM3 * 1e3, F.WetCells, F.MaxDepthM * 1e3, F.MaxSpeedMs, F.LastSubsteps,
 		F.bLastStepGpu ? TEXT("GPU") : TEXT("CPU"), F.GpuSteps, Flooded, F.Residual, F.ClippedM3 * 1e3);
+	if (YardWater.HasWater() || YardOffGridM3 > 0.0)
+	{
+		const FFloorWaterTotals& Y = YardWater.GetTotals();
+		int32 YardFlooded = 0;
+		for (const FFloorFlood& Fl : YardWater.GetFloods()) YardFlooded += Fl.FirstWetS >= 0.0 ? 1 : 0;
+		UE_LOG(LogTemp, Display, TEXT("[Water] t=%.2f s 마당 땅 물 %.3f L (받음 %.3f L, 격자 밖 %.3f L), 젖은 칸 %d, 최대 수심 %.2f mm, 물 밑 마당 장비 %d | 잔차 %.2e"),
+			Clock.GetSimTimeS(), Y.StoredM3 * 1e3, Y.ReceivedM3 * 1e3, YardOffGridM3 * 1e3, Y.WetCells, Y.MaxDepthM * 1e3, YardFlooded, Y.Residual);
+	}
 }
 
 static TAutoConsoleVariable<float> GVrgWaterDemoEyeM(TEXT("vrg.Water.DemoEyeM"), 3.0f, TEXT("vrg.Water.Demo 시점: 누수 지점에서 줄을 따라 떨어진 거리 [m] (표시 전용)"));
@@ -4294,6 +4307,9 @@ bool ADataCenterSimulationActor::WriteEvaluationReport(const FString& Name, FStr
 		W->SetNumberField(TEXT("parcelsShown"), T.ParcelsShown); W->SetNumberField(TEXT("parcelsComputed"), T.ParcelsComputed);
 		W->SetNumberField(TEXT("surfaceCells"), T.SurfaceCells); W->SetNumberField(TEXT("wetMarkCells"), T.WetMarkCells); W->SetNumberField(TEXT("wetSkins"), T.WetSkins);
 		W->SetNumberField(TEXT("residual"), T.Residual);
+		// W4 follow-up: the plant yard ground water (spray "ground" = yard stored + off the yard grid).
+		W->SetNumberField(TEXT("yardStoredM3"), YardWater.GetTotals().StoredM3); W->SetNumberField(TEXT("yardReceivedM3"), YardWater.GetTotals().ReceivedM3);
+		W->SetNumberField(TEXT("yardOffGridM3"), YardOffGridM3); W->SetNumberField(TEXT("yardResidual"), YardWater.GetTotals().Residual);
 		Root->SetObjectField(TEXT("waterDisplay"), W);
 	}
 	// 2026-10-23 (optional field): the instrument points and the leak alarms of their detection cables (D9 / D4).

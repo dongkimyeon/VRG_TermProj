@@ -469,6 +469,15 @@ public:
 	double GetCondensationRiskS() const { return CondensationRiskS; }
 	double GetMinDewMarginK() const { return MinDewMarginK; }
 	double GetFloorOffGridM3() const { return FloorOffGridM3; }
+	// W4 follow-up (2026-11-11): the plant yard ground water (FFloorWater over the yard, building solid). Built at simulation
+	// entry around the placed plant units and the plant leak sites (YardMarginM, cell YardCellM; empty when neither exists).
+	const FFloorWater& GetYardWater() const { return YardWater; }
+	double GetYardOffGridM3() const { return YardOffGridM3; }
+	UPROPERTY(EditAnywhere, Category = "Leak") double YardMarginM = 3.0;   // display/extent choice, not physics
+	UPROPERTY(EditAnywhere, Category = "Leak") double YardCellM = 0.05;    // ESTIMATE: coarser than the room's 2.5 cm (a larger area)
+	// Placed yard pumps whose motor the water reached: the plant pump each one stands for was tripped (W4, vrg.Water.Impact).
+	struct FWaterPlantPumpCut { FString EquipmentId; EPlantLoopId Loop = EPlantLoopId::Fws; int32 Pump = INDEX_NONE; double TripTimeS = 0, ObservedTimeS = 0, AppliedTimeS = 0; };
+	const TArray<FWaterPlantPumpCut>& GetWaterPlantPumpCuts() const { return WaterPlantPumpCuts; }
 	// Sets the jet direction of a site (normalised; a zero vector restores the default cone direction).
 	bool SetLiveLeakDirection(int32 Site, const FVector& DirectionM);
 	// The default jet direction of a site: in the downward cone, seeded by its position (same in every run).
@@ -811,6 +820,13 @@ private:
 	void AirFlowAfterStep(double DtS);
 	void UpdateAirFlowView();
 	double FloorOffGridM3 = 0.0;   // floor deposits that missed the floor grid (kept here, reported)
+	FFloorWater YardWater;
+	double YardOffGridM3 = 0.0;    // ground deposits outside the yard grid (stay on the ground ledger only)
+	void ResetYardWater();
+	bool bPlantWaterTripResponse = false;
+	TArray<FWaterPlantPumpCut> WaterPlantPumpCuts;
+	// The plant loop and pump a binding stands for (a placed FWS/CHW/CW pump unit, K-th of its kind = pump K).
+	bool WaterBindingPlantPump(int32 Index, EPlantLoopId& OutLoop, int32& OutPump) const;
 	TArray<double> SprayTankLeakedM3;   // each tank's cumulative leaked volume at the last spray step
 	TMap<int32, double> InternalLeakedM3;
 	FRackInteriorCoupling RackInterior;

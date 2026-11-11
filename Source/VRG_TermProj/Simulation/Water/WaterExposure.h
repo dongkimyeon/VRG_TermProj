@@ -41,5 +41,8 @@ namespace WaterExposure
  // Pure read: no UObject, hydraulic flow integration, source mutation or hidden cumulative baseline.
  bool Collect(const TArray<FWaterExposureBinding>& Bindings,double SimTimeS,
   const FSprayGeometry& Geometry,const TArray<FSprayWetting>& Spray,const TArray<FFloorFlood>& Flood,
-  const FRackInteriorWater& Interior,const TArray<FString>& RackIds,FWaterExposureSnapshot& Out,FString& Error);
+  const FRackInteriorWater& Interior,const TArray<FString>& RackIds,FWaterExposureSnapshot& Out,FString& Error,
+  // W4 follow-up (2026-11-11): the plant yard's flood records. A binding's FloorFlood >= Flood.Num() indexes these
+  // (FloorFlood - Flood.Num()); the room floor stays first so existing indices do not move.
+  const TArray<FFloorFlood>* YardFlood=nullptr);
 }

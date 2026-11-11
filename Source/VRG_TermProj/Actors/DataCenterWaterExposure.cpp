@@ -70,7 +70,7 @@ void ADataCenterSimulationActor::ClearWaterObservation()
 {
  WaterImpactEventCursor=0;WaterImpactTargetRecord.Reset();WaterCutsAwaitingIt.Reset();WaterImpactNoActuator.Reset();
  WaterImpactObservation=FWaterImpactModel();WaterImpactPowered.Reset();bWaterImpactConfigured=false;
- WaterSpinePowerCuts.Reset();
+ WaterSpinePowerCuts.Reset();WaterPlantPumpCuts.Reset();bPlantWaterTripResponse=false;
  bSpineWaterTripResponse=bRackWaterTripResponse=bCduWaterTripResponse=bCrahWaterTripResponse=false;WaterRackPowerCuts.Reset();WaterCduPowerCuts.Reset();WaterCrahPowerCuts.Reset();
  WaterSourceTargets.Reset();WaterExposureBindings.Reset();WaterRackIds.Reset();WaterMappingDiagnostics.Reset();
  WaterExposureSnapshot=FWaterExposureSnapshot();WaterObservationCount=0;bWaterExposureCurrent=false;bWaterRegistryReady=false;
@@ -82,7 +82,7 @@ void ADataCenterSimulationActor::InitializeWaterObservation()
  if(!bWaterExposureObservation) {ClearWaterObservation();WaterObservationDiagnostic=TEXT("Water observation disabled");return;}
  WaterImpactEventCursor=0;WaterImpactTargetRecord.Reset();WaterCutsAwaitingIt.Reset();WaterImpactNoActuator.Reset();
  WaterImpactObservation=FWaterImpactModel();WaterImpactPowered.Reset();bWaterImpactConfigured=false;
- WaterSpinePowerCuts.Reset();
+ WaterSpinePowerCuts.Reset();WaterPlantPumpCuts.Reset();bPlantWaterTripResponse=false;
  bSpineWaterTripResponse=bRackWaterTripResponse=bCduWaterTripResponse=bCrahWaterTripResponse=false;WaterRackPowerCuts.Reset();WaterCduPowerCuts.Reset();WaterCrahPowerCuts.Reset();
  WaterExposureBindings.Reset();WaterMappingDiagnostics.Reset();WaterExposureSnapshot=FWaterExposureSnapshot();
  WaterObservationCount=0;bWaterExposureCurrent=false;WaterRackIds.SetNum(Racks.Num());
@@ -91,10 +91,16 @@ void ADataCenterSimulationActor::InitializeWaterObservation()
  for(auto& Target:WaterSourceTargets) {
   if(!Geometry.Obstacles.IsValidIndex(Target.Obstacle)) continue;
   const auto& Box=Geometry.Obstacles[Target.Obstacle];
-  const int32 Flood=Floods.IndexOfByPredicate([&](const FFloorFlood& F){return F.SourceObstacle==Target.Obstacle;});
-  const bool HasFloor=Flood!=INDEX_NONE && !Floods[Flood].Cells.IsEmpty();
-  double BedWorldM=FloorWater.GetFloorZM();
-  if(HasFloor) {double Sum=0;for(int32 Cell:Floods[Flood].Cells) Sum+=FloorWater.GetBedM()[Cell];BedWorldM+=Sum/Floods[Flood].Cells.Num();}
+  int32 Flood=Floods.IndexOfByPredicate([&](const FFloorFlood& F){return F.SourceObstacle==Target.Obstacle;});
+  const FFloorWater* Ground=&FloorWater;const FFloorFlood* Record=Flood!=INDEX_NONE?&Floods[Flood]:nullptr;
+  if(!Record || Record->Cells.IsEmpty()) {
+   // W4 follow-up (2026-11-11): a box outside the building stands on the plant yard ground (Collect: index past the room's).
+   const int32 Yard=YardWater.GetFloods().IndexOfByPredicate([&](const FFloorFlood& F){return F.SourceObstacle==Target.Obstacle;});
+   if(Yard!=INDEX_NONE) {Flood=Floods.Num()+Yard;Ground=&YardWater;Record=&YardWater.GetFloods()[Yard];}
+  }
+  const bool HasFloor=Record!=nullptr && !Record->Cells.IsEmpty();
+  double BedWorldM=Ground->GetFloorZM();
+  if(HasFloor) {double Sum=0;for(int32 Cell:Record->Cells) Sum+=Ground->GetBedM()[Cell];BedWorldM+=Sum/Record->Cells.Num();}
   auto Add=[&](int32 Slot,double BottomM) {
    auto& B=WaterExposureBindings.AddDefaulted_GetRef();B.EquipmentId=Target.Id;B.SourceName=Box.Name;B.Slot=Slot;B.SprayObstacle=Target.Obstacle;
    if(HasFloor) {B.FloorFlood=Flood;B.FloorContactDepthM=FMath::Max(0.0,BottomM-BedWorldM);}
@@ -126,7 +132,8 @@ bool ADataCenterSimulationActor::ApplyWaterImpactRequest(FString& Reason)
  TArray<FString> NoActuator;Policy.ExemptTargets.Init(0,WaterExposureBindings.Num());
  for(int32 I=0;I<WaterExposureBindings.Num();++I) {
   const auto& B=WaterExposureBindings[I];
-  const bool bActuator=B.Slot!=INDEX_NONE?B.InteriorRack!=INDEX_NONE:(WaterBindingCdu(I)!=nullptr || WaterBindingSpine(I)!=nullptr || (bCrah && WaterBindingCrah(I)!=nullptr));
+  EPlantLoopId PumpLoop;int32 PumpIndex;
+  const bool bActuator=B.Slot!=INDEX_NONE?B.InteriorRack!=INDEX_NONE:(WaterBindingCdu(I)!=nullptr || WaterBindingSpine(I)!=nullptr || (bCrah && WaterBindingCrah(I)!=nullptr) || WaterBindingPlantPump(I,PumpLoop,PumpIndex));
   if(bActuator) continue;
   Policy.ExemptTargets[I]=1;
   if(!B.EquipmentId.StartsWith(TEXT("rack/"))) NoActuator.AddUnique(B.EquipmentId);
@@ -134,6 +141,7 @@ bool ADataCenterSimulationActor::ApplyWaterImpactRequest(FString& Reason)
  TArray<bool> Power;Power.Init(true,WaterExposureBindings.Num());
  if(!ConfigureSpineWaterTripResponse(Policy,Power,Reason,true,true,bCrah)) return false;
  WaterImpactPolicyInUse=MoveTemp(Policy);WaterImpactNoActuator=MoveTemp(NoActuator);
+ bPlantWaterTripResponse=true;   // W4 follow-up: placed yard pumps of a live plant trip through the plant's pump fault path
  WaterImpactEventCursor=0;WaterImpactTargetRecord.Reset();WaterCutsAwaitingIt.Reset();
  WaterObservationDiagnostic=TEXT("vrg.Water.Impact: estimated policy, every available power response enabled");
  UE_LOG(LogTemp,Display,TEXT("[WaterImpact] 침수 영향 켬(문턱 추정): 트립 %.1f s, 손상 %.1f s, 대상 %d개, 차단 수단 없어 제외 %d개"),WaterImpactRequest.TripS,WaterImpactRequest.DamageS,WaterExposureBindings.Num(),WaterImpactNoActuator.Num());
@@ -147,7 +155,7 @@ bool ADataCenterSimulationActor::SetWaterImpactRequest(const FWaterImpactRequest
  if(Mode!=ESimMode::Simulation || !bWaterRegistryReady) return true; // applied at the next simulation entry
  if(Request.bEnabled) return ApplyWaterImpactRequest(Reason);
  // Off stops new judgements only: what is already cut stays cut until the R restart, and its records stay.
- bWaterImpactConfigured=bRackWaterTripResponse=bCduWaterTripResponse=bCrahWaterTripResponse=bSpineWaterTripResponse=false;
+ bWaterImpactConfigured=bRackWaterTripResponse=bCduWaterTripResponse=bCrahWaterTripResponse=bSpineWaterTripResponse=bPlantWaterTripResponse=false;
  WaterCutsAwaitingIt.Reset();WaterObservationDiagnostic=TEXT("vrg.Water.Impact off");
  return true;
 }
@@ -208,6 +216,7 @@ TSharedRef<FJsonObject> ADataCenterSimulationActor::MakeWaterImpactReportJson() 
  Root->SetNumberField(TEXT("wetTargets"),Counts[1]);Root->SetNumberField(TEXT("trippedTargets"),Counts[2]);Root->SetNumberField(TEXT("damagedTargets"),Counts[3]);
  Root->SetNumberField(TEXT("rackSlotCuts"),WaterRackPowerCuts.Num());Root->SetNumberField(TEXT("cduCuts"),WaterCduPowerCuts.Num());
  Root->SetNumberField(TEXT("crahCuts"),WaterCrahPowerCuts.Num());Root->SetNumberField(TEXT("spineCuts"),WaterSpinePowerCuts.Num());
+ Root->SetNumberField(TEXT("plantPumpCuts"),WaterPlantPumpCuts.Num());
  TArray<TSharedPtr<FJsonValue>> NoActuator;for(const FString& Id:WaterImpactNoActuator) NoActuator.Add(MakeShared<FJsonValueString>(Id));
  Root->SetArrayField(TEXT("noActuatorEquipment"),NoActuator);
  return Root;
@@ -238,7 +247,7 @@ bool ADataCenterSimulationActor::ObserveWaterExposure(double EndTimeS,bool bBase
  FString MappingError;if(!ValidateWaterObservationTargets(MappingError)) return Fail(MappingError);
 
  FWaterExposureSnapshot Next;FString Error;
- if(!WaterExposure::Collect(WaterExposureBindings,EndTimeS,Spray.GetGeometry(),Spray.GetWetting(),FloorWater.GetFloods(),RackInterior.GetWater(),WaterRackIds,Next,Error)) return Fail(Error);
+ if(!WaterExposure::Collect(WaterExposureBindings,EndTimeS,Spray.GetGeometry(),Spray.GetWetting(),FloorWater.GetFloods(),RackInterior.GetWater(),WaterRackIds,Next,Error,&YardWater.GetFloods())) return Fail(Error);
  Next.Diagnostics.Append(WaterMappingDiagnostics);
  // Publish exposure and impact together. A rejected state sample cannot advance either ledger: Step changes nothing when it
  // fails and is the last check, so it runs on the model itself (copying the model copied two 1227-target snapshots per step).
@@ -286,6 +295,7 @@ bool ADataCenterSimulationActor::ActualWaterPower(const TArray<bool>& OtherPower
   if(bCdu) if(const auto* Cdu=WaterBindingCdu(I)) Next[I]=Cdu->IsPumpPowered();
   if(bCrah) if(const auto* Crah=WaterBindingCrah(I)) Next[I]=Crah->IsPowered();
   if(bSpine) if(const auto* Spine=WaterBindingSpine(I)) Next[I]=Spine->IsPowered();
+  if(bPlantWaterTripResponse) {EPlantLoopId Loop;int32 Pump;if(WaterBindingPlantPump(I,Loop,Pump)) Next[I]=!Plant.GetLoopFor(Loop)->IsPumpTripped(Pump);}
   if(!bRack || B.InteriorRack==INDEX_NONE || B.Slot==INDEX_NONE) continue;
   if(!Racks.IsValidIndex(B.InteriorRack) || !IsValid(Racks[B.InteriorRack])) {Reason=TEXT("Stale rack power mapping");return false;}
   const auto* Rack=Racks[B.InteriorRack].Get();const int32 Count=FRackThermalModel::NumSlotsOf(Rack->Params);
@@ -358,17 +368,18 @@ bool ADataCenterSimulationActor::ConfigureSpineWaterTripResponse(const FWaterImp
 
 void ADataCenterSimulationActor::WaterPowerBeforeStep()
 {
- if((!bRackWaterTripResponse && !bCduWaterTripResponse && !bCrahWaterTripResponse && !bSpineWaterTripResponse) || !bWaterImpactConfigured) return;
+ if((!bRackWaterTripResponse && !bCduWaterTripResponse && !bCrahWaterTripResponse && !bSpineWaterTripResponse && !bPlantWaterTripResponse) || !bWaterImpactConfigured) return;
  auto Reject=[&](const FString& Reason) {bWaterExposureCurrent=false;WaterObservationDiagnostic=Reason;};
  if(!bWaterExposureObservation || !bWaterExposureCurrent || !bWaterRegistryReady || WaterExposureSnapshot.SimTimeS!=Clock.GetSimTimeS()) {Reject(TEXT("No fresh water state for power application"));return;}
  TArray<bool> Actual;FString Error;if(!ActualWaterPower(WaterImpactPowered,Actual,Error,bRackWaterTripResponse,bCduWaterTripResponse,bCrahWaterTripResponse,bSpineWaterTripResponse)) {Reject(Error);return;}
- const auto& State=WaterImpactObservation.GetState();TArray<int32> PendingRack,PendingCdu,PendingCrah,PendingSpine;
+ const auto& State=WaterImpactObservation.GetState();TArray<int32> PendingRack,PendingCdu,PendingCrah,PendingSpine,PendingPlant;
  for(int32 I=0;I<WaterExposureBindings.Num();++I) {
   if(State.Phase[I]!=EWaterImpactPhase::Tripped && State.Phase[I]!=EWaterImpactPhase::Damaged) continue;
   const auto& B=WaterExposureBindings[I];
   if(bCduWaterTripResponse) if(const auto* Cdu=WaterBindingCdu(I)) if(Cdu->IsPumpPowered()) {PendingCdu.Add(I);Actual[I]=false;}
   if(bCrahWaterTripResponse) if(const auto* Crah=WaterBindingCrah(I)) if(Crah->IsPowered()) {PendingCrah.Add(I);Actual[I]=false;}
   if(bSpineWaterTripResponse) if(const auto* Spine=WaterBindingSpine(I)) if(Spine->IsPowered()) {PendingSpine.Add(I);Actual[I]=false;}
+  if(bPlantWaterTripResponse) {EPlantLoopId Loop;int32 Pump;if(WaterBindingPlantPump(I,Loop,Pump) && !Plant.GetLoopFor(Loop)->IsPumpTripped(Pump)) {PendingPlant.Add(I);Actual[I]=false;}}
   if(!bRackWaterTripResponse || B.InteriorRack==INDEX_NONE || B.Slot==INDEX_NONE) continue;
   const auto* Rack=Racks[B.InteriorRack].Get();
   if(FRackThermalModel::SlotPoweredOf(Rack->GetInput(),B.Slot,FRackThermalModel::NumSlotsOf(Rack->Params))) {PendingRack.Add(I);Actual[I]=false;}
@@ -376,10 +387,10 @@ void ADataCenterSimulationActor::WaterPowerBeforeStep()
  // Preflight both actuator types together before changing anything. No event replay or water mutation.
  FWaterImpactModel Next=WaterImpactObservation;
  if(!Next.SetPowerAtCurrentTime(Clock.GetSimTimeS(),Actual,Error)) {Reject(Error);return;}
- if(!PendingRack.IsEmpty() || !PendingCdu.IsEmpty() || !PendingCrah.IsEmpty() || !PendingSpine.IsEmpty()) {
+ if(!PendingRack.IsEmpty() || !PendingCdu.IsEmpty() || !PendingCrah.IsEmpty() || !PendingSpine.IsEmpty() || !PendingPlant.IsEmpty()) {
   // Report: which state record caused each cut, and the IT heat just before it (read by WaterImpactAfterStep).
   WaterCutItBeforeW=GetSnapshot().TotalItHeatW;WaterCutAppliedS=Clock.GetSimTimeS();
-  for(const TArray<int32>* List:{&PendingRack,&PendingCdu,&PendingCrah,&PendingSpine}) for(int32 I:*List) if(const int32* Record=WaterImpactTargetRecord.Find(I)) WaterCutsAwaitingIt.AddUnique(*Record);
+  for(const TArray<int32>* List:{&PendingRack,&PendingCdu,&PendingCrah,&PendingSpine,&PendingPlant}) for(int32 I:*List) if(const int32* Record=WaterImpactTargetRecord.Find(I)) WaterCutsAwaitingIt.AddUnique(*Record);
  }
  for(int32 I:PendingRack) {
   const auto& B=WaterExposureBindings[I];auto* Rack=Racks[B.InteriorRack].Get();auto& Input=Rack->GetMutableInput();
@@ -399,6 +410,13 @@ void ADataCenterSimulationActor::WaterPowerBeforeStep()
  for(int32 I:PendingCrah) {
   WaterBindingCrah(I)->SetPowered(false);
   WaterCrahPowerCuts.Add({WaterExposureBindings[I].EquipmentId,State.TripS[I]>=0?State.TripS[I]:State.DamageS[I],WaterExposureSnapshot.SimTimeS,Clock.GetSimTimeS()});
+ }
+ for(int32 I:PendingPlant) {
+  // The plant's own fault path: the pump stops, a standby starts when the loop has one, the network is re-solved (D4).
+  EPlantLoopId Loop;int32 Pump;if(!WaterBindingPlantPump(I,Loop,Pump)) continue;
+  Plant.TripPump(Loop,Pump,Clock.GetSimTimeS());
+  WaterPlantPumpCuts.Add({WaterExposureBindings[I].EquipmentId,Loop,Pump,State.TripS[I]>=0?State.TripS[I]:State.DamageS[I],WaterExposureSnapshot.SimTimeS,Clock.GetSimTimeS()});
+  UE_LOG(LogTemp,Warning,TEXT("[WaterImpact] t=%.2f s 설비 마당 펌프 %s 침수 → 설비 펌프 트립(루프 %d, 펌프 %d)"),Clock.GetSimTimeS(),*WaterExposureBindings[I].EquipmentId,int32(Loop),Pump);
  }
  WaterImpactObservation=MoveTemp(Next);WaterImpactPowered=MoveTemp(Actual);
 }
