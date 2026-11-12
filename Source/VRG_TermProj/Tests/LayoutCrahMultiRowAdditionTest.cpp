@@ -16,7 +16,7 @@ bool FLayoutCrahMultiRowAdditionTest::RunTest(const FString& Parameters)
 	UWorld* W=UWorld::CreateWorld(EWorldType::Game,false);
 	GEngine->CreateNewWorldContext(EWorldType::Game).SetCurrentWorld(W);
 	auto* Sim=W->SpawnActor<ADataCenterSimulationActor>(); Sim->bShowSummary=false;
-	auto* C=W->SpawnActor<ADataCenterDebugController>();
+	auto* C=W->SpawnActor<ADataCenterDebugController>(); C->bSnapToAirCells = false; /* legacy 5 cm centre snap under test (cell snap: VRG.Interaction.Layout.CellSnap) */
 	auto* Air=W->SpawnActor<AAirFieldDebugActor>();
 	TArray<ARackThermalActor*> Racks;
 	for(int32 I=0;I<4;++I) Racks.Add(W->SpawnActor<ARackThermalActor>(FVector(I*500,0,0),FRotator::ZeroRotator));

@@ -226,7 +226,10 @@ bool FChwCoupledRoomTest::RunTest(const FString& Parameters)
 	AddInfo(FString::Printf(TEXT("CRAH %d대, 등가 UA 최대 차 %.3e | 20 s: CRAH 열 %.1f kW, CHW 공급 %.3f C, 칠러 %d대 COP %.2f, CW 공급 %.3f C, 설비 장부 %.3e, 전역 %.3e, 펌프 %.2f kW"),
 		Units.Num(), WorstUA, S.CrahDutyW * 1e-3, S.ChwSupplyK - 273.15, S.ChillersRunning, Cop, S.CwSupplyK - 273.15, Plant.GetLedgerResidual(), Global, Plant.GetPumpElectricW() * 1e-3));
 	TestTrue(TEXT("CRAH coil heat reaches the plant, chillers run"), S.CrahDutyW > 0.0 && S.ChillersRunning > 0);
-	TestTrue(TEXT("plant ledger (rel < 1e-12), global ledger (< 1e-9)"), FMath::Abs(Plant.GetLedgerResidual()) < 1e-12 && FMath::Abs(Global) < 1e-9);
+	// 2026-11-12: 1e-12 -> 1e-11. The volumes store absolute temperatures (~300 K), so the storage term carries
+	// cap x 300 K x 2.2e-16 of round-off per volume against a 20 s inflow of only ~4e5 J. Measured -3.5e-14 with the old
+	// padded-bounds air grid and 1.343e-12 with the world-aligned grid (same physics, slightly different room box).
+	TestTrue(TEXT("plant ledger (rel < 1e-11), global ledger (< 1e-9)"), FMath::Abs(Plant.GetLedgerResidual()) < 1e-11 && FMath::Abs(Global) < 1e-9);
 	TestTrue(TEXT("plausibility: CHW supply within 3 K of the setpoint, COP between 2 and the cap times the part-load gain"), FMath::Abs(S.ChwSupplyK - Plant.GetChwSetpointK()) < 3.0
 		&& Cop > 2.0 && Cop <= Plant.GetChillerMaxCop() * PartLoadGain());
 	Sim->EnterLayoutMode();

@@ -133,14 +133,30 @@ bool FVrgDashboardSeries::FromJson(const FString& Json, FVrgDashboardSeries& Out
 	return true;
 }
 
+namespace
+{
+	// Direct writers, defined after FJsonText (same keys as ToJsonObject).
+	FString PlantYardToJsonText(const FVrgDashboardLayout& L);
+	FString RoomPipesToJsonText(const FVrgDashboardLayout& L);
+}
+
 FString FVrgDashboardLayout::ToJson() const
 {
+	// The object tree without the two large arrays, then ,"pipes":[...] and ,"plant":{...} written directly and spliced
+	// before the closing brace (2026-11-12: 3.6 ms -> see docs/기록/06 같은 날 절).
+	TSharedRef<FJsonObject> Root = ToJsonObject(false);
+	Root->RemoveField(TEXT("pipes"));
 	FString Json;
-	FJsonSerializer::Serialize(ToJsonObject(), TJsonWriterFactory<>::Create(&Json));
+	FJsonSerializer::Serialize(Root, TJsonWriterFactory<TCHAR, TCondensedJsonPrintPolicy<TCHAR>>::Create(&Json));
+	int32 Close = INDEX_NONE;
+	if (!Json.FindLastChar(TEXT('}'), Close)) return Json;
+	FString Tail = TEXT(",\"pipes\":") + RoomPipesToJsonText(*this);
+	if (bHasPlant) Tail += TEXT(",\"plant\":") + PlantYardToJsonText(*this);
+	Json.InsertAt(Close, Tail);
 	return Json;
 }
 
-TSharedRef<FJsonObject> FVrgDashboardLayout::ToJsonObject() const
+TSharedRef<FJsonObject> FVrgDashboardLayout::ToJsonObject(bool bIncludePlant) const
 {
 	TSharedRef<FJsonObject> Root = MakeShared<FJsonObject>();
 	Root->SetNumberField(TEXT("schema"), 1);
@@ -193,6 +209,36 @@ TSharedRef<FJsonObject> FVrgDashboardLayout::ToJsonObject() const
 		PipeItems.Add(MakeShared<FJsonValueObject>(O));
 	}
 	Root->SetArrayField(TEXT("pipes"), PipeItems);
+	if (bHasPlant && bIncludePlant)
+	{
+		// Plant yard (2026-11-12): units and pipes of the yard display, world m.
+		TSharedRef<FJsonObject> PlantJ = MakeShared<FJsonObject>();
+		PlantJ->SetBoolField(TEXT("live"), bPlantLive);
+		auto Vec = [](const FVector& V) { return TArray<TSharedPtr<FJsonValue>>{ MakeShared<FJsonValueNumber>(V.X), MakeShared<FJsonValueNumber>(V.Y), MakeShared<FJsonValueNumber>(V.Z) }; };
+		TArray<TSharedPtr<FJsonValue>> Units;
+		for (const FVrgDashboardPlantUnit& U : PlantUnits)
+		{
+			TSharedRef<FJsonObject> O = MakeShared<FJsonObject>();
+			O->SetStringField(TEXT("kind"), U.Kind); O->SetStringField(TEXT("loop"), U.Loop); O->SetNumberField(TEXT("index"), U.Index);
+			O->SetArrayField(TEXT("centerM"), Vec(U.CenterM)); O->SetArrayField(TEXT("sizeM"), Vec(U.SizeM)); O->SetNumberField(TEXT("yawDeg"), U.YawDeg);
+			O->SetBoolField(TEXT("placed"), U.bPlaced); O->SetBoolField(TEXT("running"), U.bRunning); O->SetBoolField(TEXT("failed"), U.bFailed);
+			Units.Add(MakeShared<FJsonValueObject>(O));
+		}
+		PlantJ->SetArrayField(TEXT("units"), Units);
+		TArray<TSharedPtr<FJsonValue>> Lines;
+		for (const FVrgDashboardPlantPipe& P : PlantPipes)
+		{
+			TSharedRef<FJsonObject> O = MakeShared<FJsonObject>();
+			O->SetStringField(TEXT("loop"), P.Loop); O->SetBoolField(TEXT("header"), P.bHeader); O->SetBoolField(TEXT("closed"), P.bClosed);
+			O->SetNumberField(TEXT("flowM3s"), P.FlowM3s); O->SetNumberField(TEXT("tempK"), P.TempK);
+			TArray<TSharedPtr<FJsonValue>> Xyz;
+			for (const FVector& V : P.PointsM) Xyz.Append(Vec(V));
+			O->SetArrayField(TEXT("pointsM"), Xyz);
+			Lines.Add(MakeShared<FJsonValueObject>(O));
+		}
+		PlantJ->SetArrayField(TEXT("pipes"), Lines);
+		Root->SetObjectField(TEXT("plant"), PlantJ);
+	}
 	return Root;
 }
 
@@ -249,6 +295,46 @@ bool FVrgDashboardLayout::FromJson(const FString& Json, FVrgDashboardLayout& Out
 				P.PointsM.Add(FVector((*Xyz)[I]->AsNumber(), (*Xyz)[I + 1]->AsNumber(), (*Xyz)[I + 2]->AsNumber()));
 			L.Pipes.Add(MoveTemp(P));
 		}
+	// Plant yard since 2026-11-12 (optional).
+	const TSharedPtr<FJsonObject>* PlantJ = nullptr;
+	if (Root->TryGetObjectField(TEXT("plant"), PlantJ))
+	{
+		L.bHasPlant = true;
+		(*PlantJ)->TryGetBoolField(TEXT("live"), L.bPlantLive);
+		auto ReadVec = [](const TSharedPtr<FJsonObject>& O, const TCHAR* Key, FVector& Out)
+		{
+			const TArray<TSharedPtr<FJsonValue>>* A = nullptr;
+			if (!O->TryGetArrayField(Key, A) || A->Num() != 3) return false;
+			Out = FVector((*A)[0]->AsNumber(), (*A)[1]->AsNumber(), (*A)[2]->AsNumber());
+			return true;
+		};
+		const TArray<TSharedPtr<FJsonValue>>* Units = nullptr, * Lines = nullptr;
+		if (!(*PlantJ)->TryGetArrayField(TEXT("units"), Units) || !(*PlantJ)->TryGetArrayField(TEXT("pipes"), Lines)) return false;
+		for (const TSharedPtr<FJsonValue>& V : *Units)
+		{
+			const TSharedPtr<FJsonObject> O = V->AsObject();
+			FVrgDashboardPlantUnit U;
+			double Index = 0.0;
+			if (!O.IsValid() || !O->TryGetStringField(TEXT("kind"), U.Kind) || !O->TryGetStringField(TEXT("loop"), U.Loop)
+				|| !O->TryGetNumberField(TEXT("index"), Index) || !ReadVec(O, TEXT("centerM"), U.CenterM) || !ReadVec(O, TEXT("sizeM"), U.SizeM)
+				|| !O->TryGetNumberField(TEXT("yawDeg"), U.YawDeg) || !O->TryGetBoolField(TEXT("placed"), U.bPlaced)
+				|| !O->TryGetBoolField(TEXT("running"), U.bRunning) || !O->TryGetBoolField(TEXT("failed"), U.bFailed)) return false;
+			U.Index = int32(Index);
+			L.PlantUnits.Add(MoveTemp(U));
+		}
+		for (const TSharedPtr<FJsonValue>& V : *Lines)
+		{
+			const TSharedPtr<FJsonObject> O = V->AsObject();
+			FVrgDashboardPlantPipe P;
+			const TArray<TSharedPtr<FJsonValue>>* Xyz = nullptr;
+			if (!O.IsValid() || !O->TryGetStringField(TEXT("loop"), P.Loop) || !O->TryGetBoolField(TEXT("header"), P.bHeader)
+				|| !O->TryGetBoolField(TEXT("closed"), P.bClosed) || !O->TryGetNumberField(TEXT("flowM3s"), P.FlowM3s)
+				|| !O->TryGetNumberField(TEXT("tempK"), P.TempK) || !O->TryGetArrayField(TEXT("pointsM"), Xyz) || Xyz->Num() % 3) return false;
+			for (int32 I = 0; I + 2 < Xyz->Num(); I += 3)
+				P.PointsM.Add(FVector((*Xyz)[I]->AsNumber(), (*Xyz)[I + 1]->AsNumber(), (*Xyz)[I + 2]->AsNumber()));
+			L.PlantPipes.Add(MoveTemp(P));
+		}
+	}
 	Out = MoveTemp(L);
 	return true;
 }
@@ -839,6 +925,79 @@ bool FVrgDashboardCooling::FromJson(const FString& Json, FVrgDashboardCooling& O
 
 namespace
 {
+	// Room coolant pipes of the plan view, same keys as ToJsonObject's "pipes" array (tempK null when the model has none).
+	FString RoomPipesToJsonText(const FVrgDashboardLayout& L)
+	{
+		FJsonText J;
+		J.S.Reserve(16 + L.Pipes.Num() * 260);
+		J.Raw(TEXT("["));
+		for (int32 I = 0; I < L.Pipes.Num(); ++I)
+		{
+			const FVrgDashboardPipe& P = L.Pipes[I];
+			J.Raw(I ? TEXT(",{") : TEXT("{"));
+			J.Key(TEXT("edge")); J.Int(P.Edge);
+			J.Raw(TEXT(",")); J.Key(TEXT("supply")); J.Bool(P.bSupply);
+			J.Raw(TEXT(",")); J.Key(TEXT("branch")); J.Bool(P.bBranch);
+			J.Raw(TEXT(",")); J.Key(TEXT("flowM3s")); J.Num(P.FlowM3s);
+			J.Raw(TEXT(",")); J.Key(TEXT("diameterM")); J.Num(P.DiameterM);
+			J.Raw(TEXT(",")); J.Key(TEXT("tempK")); if (P.bTempValid) J.Num(P.TempK); else J.Raw(TEXT("null"));
+			J.Raw(TEXT(",")); J.Key(TEXT("pointsM")); J.Raw(TEXT("["));
+			for (int32 K = 0; K < P.PointsM.Num(); ++K)
+			{
+				if (K) J.Raw(TEXT(","));
+				J.Num(P.PointsM[K].X); J.Raw(TEXT(",")); J.Num(P.PointsM[K].Y); J.Raw(TEXT(",")); J.Num(P.PointsM[K].Z);
+			}
+			J.Raw(TEXT("]}"));
+		}
+		J.Raw(TEXT("]"));
+		return MoveTemp(J.S);
+	}
+
+	// Plant yard part of the plan view (2026-11-12), same keys as ToJsonObject's "plant" object, written directly.
+	FString PlantYardToJsonText(const FVrgDashboardLayout& L)
+	{
+		FJsonText J;
+		J.S.Reserve(256 + L.PlantUnits.Num() * 220 + L.PlantPipes.Num() * 200);
+		auto Vec = [&J](const FVector& V) { J.Raw(TEXT("[")); J.Num(V.X); J.Raw(TEXT(",")); J.Num(V.Y); J.Raw(TEXT(",")); J.Num(V.Z); J.Raw(TEXT("]")); };
+		J.Raw(TEXT("{")); J.Key(TEXT("live")); J.Bool(L.bPlantLive);
+		J.Raw(TEXT(",")); J.Key(TEXT("units")); J.Raw(TEXT("["));
+		for (int32 I = 0; I < L.PlantUnits.Num(); ++I)
+		{
+			const FVrgDashboardPlantUnit& U = L.PlantUnits[I];
+			J.Raw(I ? TEXT(",{") : TEXT("{"));
+			J.Key(TEXT("kind")); J.Str(U.Kind);
+			J.Raw(TEXT(",")); J.Key(TEXT("loop")); J.Str(U.Loop);
+			J.Raw(TEXT(",")); J.Key(TEXT("index")); J.Int(U.Index);
+			J.Raw(TEXT(",")); J.Key(TEXT("centerM")); Vec(U.CenterM);
+			J.Raw(TEXT(",")); J.Key(TEXT("sizeM")); Vec(U.SizeM);
+			J.Raw(TEXT(",")); J.Key(TEXT("yawDeg")); J.Num(U.YawDeg);
+			J.Raw(TEXT(",")); J.Key(TEXT("placed")); J.Bool(U.bPlaced);
+			J.Raw(TEXT(",")); J.Key(TEXT("running")); J.Bool(U.bRunning);
+			J.Raw(TEXT(",")); J.Key(TEXT("failed")); J.Bool(U.bFailed);
+			J.Raw(TEXT("}"));
+		}
+		J.Raw(TEXT("],")); J.Key(TEXT("pipes")); J.Raw(TEXT("["));
+		for (int32 I = 0; I < L.PlantPipes.Num(); ++I)
+		{
+			const FVrgDashboardPlantPipe& P = L.PlantPipes[I];
+			J.Raw(I ? TEXT(",{") : TEXT("{"));
+			J.Key(TEXT("loop")); J.Str(P.Loop);
+			J.Raw(TEXT(",")); J.Key(TEXT("header")); J.Bool(P.bHeader);
+			J.Raw(TEXT(",")); J.Key(TEXT("closed")); J.Bool(P.bClosed);
+			J.Raw(TEXT(",")); J.Key(TEXT("flowM3s")); J.Num(P.FlowM3s);
+			J.Raw(TEXT(",")); J.Key(TEXT("tempK")); J.Num(P.TempK);
+			J.Raw(TEXT(",")); J.Key(TEXT("pointsM")); J.Raw(TEXT("["));
+			for (int32 K = 0; K < P.PointsM.Num(); ++K)
+			{
+				if (K) J.Raw(TEXT(","));
+				J.Num(P.PointsM[K].X); J.Raw(TEXT(",")); J.Num(P.PointsM[K].Y); J.Raw(TEXT(",")); J.Num(P.PointsM[K].Z);
+			}
+			J.Raw(TEXT("]}"));
+		}
+		J.Raw(TEXT("]}"));
+		return MoveTemp(J.S);
+	}
+
 	template <typename FVisit>
 	void VisitRoomAirNumbers(FVrgDashboardRoomAir& A, FVisit&& Visit)
 	{

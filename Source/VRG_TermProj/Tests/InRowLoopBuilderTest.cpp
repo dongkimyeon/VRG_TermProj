@@ -63,14 +63,17 @@ bool FInRowLoopSingleRowTest::RunTest(const FString& Parameters)
 
 	TestTrue(TEXT("수렴해야 한다"), Result.bConverged);
 
-	// CLAUDE.md에 기록된 NVL72 행 참고값: 펌프 18.53 L/s, 양정 193.9 kPa, 전기 입력 5.13 kW.
+	// 기록된 NVL72 행 참고값(고정 회전수 기본 사양). 2026-11-12 랙 저항 정정(분기 1.7e10 -> 7.5e9, Lenovo GB300 NVL72 표)과
+	// 펌프 곡선 0.485배로 다시 쟀다: 펌프 18.637 L/s, 양정 92.9 kPa, 전기 입력 2.47 kW(이전 18.53 / 193.9 / 5.13).
 	// 기준은 기록값(유효숫자 4자리) 대비 0.5% 이내로 둔다. 위상이 같으면 해가 같아야 한다.
-	TestTrue(TEXT("펌프 유량이 기록된 18.53 L/s와 일치해야 한다"),
-		FMath::Abs(PumpFlowM3s * 1000.0 - 18.53) / 18.53 < 5.0e-3);
-	TestTrue(TEXT("양정이 기록된 193.9 kPa와 일치해야 한다"),
-		FMath::Abs(PumpHeadPa / 1000.0 - 193.9) / 193.9 < 5.0e-3);
-	TestTrue(TEXT("전기 입력이 기록된 5.13 kW와 일치해야 한다"),
-		FMath::Abs(PumpElectricalW / 1000.0 - 5.13) / 5.13 < 5.0e-3);
+	TestTrue(TEXT("펌프 유량이 기록된 18.64 L/s와 일치해야 한다"),
+		FMath::Abs(PumpFlowM3s * 1000.0 - 18.64) / 18.64 < 5.0e-3);
+	TestTrue(TEXT("양정이 기록된 92.9 kPa와 일치해야 한다"),
+		FMath::Abs(PumpHeadPa / 1000.0 - 92.9) / 92.9 < 5.0e-3);
+	TestTrue(TEXT("전기 입력이 기록된 2.47 kW와 일치해야 한다"),
+		FMath::Abs(PumpElectricalW / 1000.0 - 2.47) / 2.47 < 5.0e-3);
+	// 타당성(공개 자료): 랙 분기 평균 유량에서 랙 ΔP = 2 R Q² 가 Lenovo 표의 범위(1.5 bar 미만)에 든다.
+	TestTrue(TEXT("랙 ΔP at 2.3 L/s < 150 kPa (public NVL72 range)"), 2.0 * MakeDefaultSpec(8).RackBranchResistancePaS2M6 * FMath::Square(2.3e-3) < 1.5e5);
 
 	return true;
 }

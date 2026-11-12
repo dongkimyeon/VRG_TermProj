@@ -250,9 +250,24 @@ public:
 	int32 GetLayoutUndoCount() const { return LayoutUndo.Num(); }
 	int32 GetLayoutRedoCount() const { return LayoutRedo.Num(); }
 
-	// Grid step of layout moves [m].
+	// Grid step of layout moves [m] (used when cell snap is off or no air grid exists).
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Debug", meta = (ClampMin = "0.0"))
 	double PlaceSnapM = 0.05;
+
+	// 2026-11-12 (user request "셀에 맞춰서 딱딱"): layout moves and additions put the equipment footprint's lower X/Y
+	// corner on the air grid's cell lines (step = cell size, lines through the grid origin), and layout mode draws those
+	// lines on the floor. Rack row attach still wins near a row. Off: the old PlaceSnapM centre grid. Console
+	// vrg.Layout.CellSnap 0|1 and vrg.Layout.Grid 0|1 (floor lines) switch both for the whole run.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Debug")
+	bool bSnapToAirCells = true;
+	// The cell lattice in world cm: step and one line crossing (the air grid origin). False without an air grid.
+	bool GetAirCellLatticeCm(double& StepCm, FVector2D& OriginCm) const;
+	bool UseCellSnap() const;
+	// LocationCm of a bottom-centred box of SizeM rotated by Rotation, moved so its axis-aligned footprint's min X / Y
+	// corner sits on the nearest cell lines (Z unchanged). Returns LocationCm unchanged when cell snap is not in use.
+	FVector SnapFootprintToCellsCm(const FVector& LocationCm, const FQuat& Rotation, const FVector& SizeM) const;
+	// Layout mode floor grid (cell lines over the air domain plus a margin), drawn every frame while in layout mode.
+	void DrawLayoutCellGrid() const;
 
 	// Start view (2026-09-27): the level's PlayerStart is inside the racks, so on the first frame with a pawn the view
 	// is moved to see every rack / spine / CDU / CRAH box, from the same oblique direction as vrg.Air.FrameDomain.

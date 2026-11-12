@@ -42,7 +42,7 @@ struct FInRowLoopSpec
 	// 슬롯이 전부 찼을 때의 분기 저항. 2차 손실 병렬 합성이라 꽂힌 수가 n이면
 	// 유효 저항은 이 값 * (SledsPerRack / n)^2 이다.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hydraulics")
-	double RackBranchResistancePaS2M6 = 1.7e10;
+	double RackBranchResistancePaS2M6 = 7.5e9;   // 2026-11-12: Lenovo GB300 NVL72 table (rack total 1.5e10), see ADataCenterRoomActor
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hydraulics")
 	double ReturnToCduResistancePaS2M6 = 1.5e7;
@@ -51,10 +51,10 @@ struct FInRowLoopSpec
 	double CduReferencePressurePa = 2.0e5;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hydraulics")
-	double PumpShutoffHeadPa = 4.0e5;
+	double PumpShutoffHeadPa = 1.94e5;   // 2026-11-12: x 0.485 with the rack resistance correction
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hydraulics")
-	double PumpCurveCoeffPaS2M6 = 6.0e8;
+	double PumpCurveCoeffPaS2M6 = 2.91e8;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hydraulics", meta = (ClampMin = "0.01", ClampMax = "1.0"))
 	double PumpEfficiency = 0.7;

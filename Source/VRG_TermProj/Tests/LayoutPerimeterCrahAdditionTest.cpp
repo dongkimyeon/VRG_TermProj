@@ -16,7 +16,7 @@ bool FLayoutPerimeterCrahAdditionTest::RunTest(const FString& Parameters)
 {
  auto* W=UWorld::CreateWorld(EWorldType::Game,false); GEngine->CreateNewWorldContext(EWorldType::Game).SetCurrentWorld(W);
  auto* Sim=W->SpawnActor<ADataCenterSimulationActor>(); Sim->bShowSummary=false;
- auto* C=W->SpawnActor<ADataCenterDebugController>();
+ auto* C=W->SpawnActor<ADataCenterDebugController>(); C->bSnapToAirCells = false; /* legacy 5 cm centre snap under test (cell snap: VRG.Interaction.Layout.CellSnap) */
  auto ExpectedSettings=GetDefault<ACrahUnitActor>()->CaptureLayoutSettings(); ExpectedSettings.Kind=ECrahUnitKind::Perimeter; auto* Room=W->SpawnActor<ADataCenterRoomActor>();
  auto* Air=W->SpawnActor<AAirFieldDebugActor>(); auto* Rack=W->SpawnActor<ARackThermalActor>();
  Rack->ApplyGb200Nvl72Preset(); Rack->bShowReadout=false;

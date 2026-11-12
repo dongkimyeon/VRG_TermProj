@@ -281,6 +281,17 @@
     </div>
     <div id="pipetable" hidden></div>
     <div class="tablebar" style="align-items:center;flex-wrap:wrap">
+      <button id="plantbtn" type="button" aria-pressed="true">주변 설비: 켜짐</button>
+      <button id="planttbtn" type="button">주변 설비 표 보기</button>
+      <span style="display:inline-flex;align-items:center;gap:10px;font-size:11px;color:var(--faint)">
+        <span><span style="display:inline-block;width:16px;height:0;border-top:3px solid #199e70;vertical-align:middle"></span> 설비수(FWS)</span>
+        <span><span style="display:inline-block;width:16px;height:0;border-top:3px solid #3987e5;vertical-align:middle"></span> 냉수(CHW)</span>
+        <span><span style="display:inline-block;width:16px;height:0;border-top:3px solid #d95926;vertical-align:middle"></span> 응축수(CW)</span>
+        <span>✕ = 고장 · 점선 = 정지</span></span>
+    </div>
+    <div id="plantnote" style="font-size:11px;color:var(--faint);margin-top:4px"></div>
+    <div id="planttable" hidden></div>
+    <div class="tablebar" style="align-items:center;flex-wrap:wrap">
       <button id="airbtn" type="button" aria-pressed="false">기류: 꺼짐</button>
       <label style="font-size:11px;color:var(--faint)">높이 <select id="airlayer" disabled><option value="all">모든 층</option></select></label>
       <label style="font-size:11px;color:var(--faint)">길이 기준 <select id="airscale" disabled>
@@ -561,12 +572,18 @@ function drawPlan() {
   const grow = (x, y) => { x0 = Math.min(x0, x); x1 = Math.max(x1, x); y0 = Math.min(y0, y); y1 = Math.max(y1, y); };
   if (layout.domain) { grow(layout.domain.minXM, layout.domain.minYM); grow(layout.domain.maxXM, layout.domain.maxYM); }
   for (const e of layout.equipment) { const r = Math.hypot(e.depthM, e.widthM) / 2; grow(e.xM - r, e.yM - r); grow(e.xM + r, e.yM + r); }
+  const plant = plantOn() && layout.plant ? layout.plant : null;
+  if (plant) {
+    for (const u of plant.units) { const r = Math.hypot(u.sizeM[0], u.sizeM[1]) / 2; grow(u.centerM[0] - r, u.centerM[1] - r); grow(u.centerM[0] + r, u.centerM[1] + r); }
+    for (const p of plant.pipes) for (let i = 0; i + 2 < p.pointsM.length; i += 3) grow(p.pointsM[i], p.pointsM[i + 1]);
+  }
   const pad = 0.6; x0 -= pad; y0 -= pad; x1 += pad; y1 += pad;
   const W = 1000, H = Math.max(200, Math.round(W * (y1 - y0) / (x1 - x0)));
   svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
   const s = W / (x1 - x0), X = x => (x - x0) * s, Y = y => (y - y0) * s;
   if (layout.domain) mk('rect', { class:'domain', x:X(layout.domain.minXM), y:Y(layout.domain.minYM),
     width:(layout.domain.maxXM - layout.domain.minXM) * s, height:(layout.domain.maxYM - layout.domain.minYM) * s }, svg);
+  if (plant) drawPlantPlan(plant, svg, X, Y, s);
   const order = { barrier:0, cdu:1, crah:2, spine:3, rack:3 };
   const items = layout.equipment.slice().sort((a, b) => order[a.kind] - order[b.kind]);
   let hot = 0, colored = 0;
@@ -589,7 +606,8 @@ function drawPlan() {
     rect.addEventListener('mouseleave', () => { tip.style.display = 'none'; svg.querySelectorAll('.hover').forEach(n => n.remove()); });
   }
   $('plansub').textContent = `위에서 본 장비 발자국 · 랙·스파인 색 = 흡기 창 평균 (${colored}곳` + (hot ? `, 27 °C 초과 ${hot}곳` : '') + ')'
-    + (colored === 0 ? ' · 시뮬레이션 스텝 전이라 흡기 값 없음' : '');
+    + (colored === 0 ? ' · 시뮬레이션 스텝 전이라 흡기 값 없음' : '')
+    + (plant ? ` · 주변 설비 ${plant.units.length}대(마당 위치는 도식, ${plant.live ? '설비 계산 중' : '구조만: vrg.Plant.Enable 0'})` : '');
   renderPlanTable();
 }
 function planTip(e, c, ev, g) {
@@ -634,6 +652,7 @@ function init3D() {
   V3.room = new THREE.Group(); V3.items = new THREE.Group(); V3.pipes = new THREE.Group(); V3.scene.add(V3.room, V3.items, V3.pipes);
   V3.pipePickables = []; V3.pipeMats = []; V3.pipeArrows = []; V3.pipeKey = '';
   V3.air = new THREE.Group(); V3.air.visible = false; V3.scene.add(V3.air);
+  V3.plant = new THREE.Group(); V3.scene.add(V3.plant); V3.plantPickables = []; V3.plantKey = '';
   V3.sens = new THREE.Group(); V3.sens.visible = false; V3.scene.add(V3.sens); V3.sensPickables = []; V3.sensKey = '';
   V3.leak = new THREE.Group(); V3.scene.add(V3.leak); V3.leakPickables = []; V3.leakKey = ''; V3.leakRacks = []; V3.leakLabels = []; V3.tankLabels = [];
   // ▲ 경고 표식(27 °C 권장 상한 초과): 색만으로 상태를 알리지 않도록 기호를 띄운다.
@@ -643,7 +662,8 @@ function init3D() {
   const ray = new THREE.Raycaster(), ndc = new THREE.Vector2();
   const hit = ev => { const r = canvas.getBoundingClientRect(); ndc.set((ev.clientX - r.left) / r.width * 2 - 1, -(ev.clientY - r.top) / r.height * 2 + 1);
     ray.setFromCamera(ndc, V3.cam);
-    const targets = (V3.leak.visible ? V3.leakPickables : []).concat(V3.sens.visible ? V3.sensPickables : [], V3.pipes.visible ? V3.pipePickables : [], V3.pickables);
+    const targets = (V3.leak.visible ? V3.leakPickables : []).concat(V3.sens.visible ? V3.sensPickables : [], V3.pipes.visible ? V3.pipePickables : [], V3.pickables,
+      V3.plant.visible ? V3.plantPickables : []);
     const h = ray.intersectObjects(targets, false)[0]; return h ? h.object.userData : null; };
   let down = null;
   canvas.addEventListener('pointerdown', ev => { down = { x:ev.clientX, y:ev.clientY }; });
@@ -658,6 +678,7 @@ function init3D() {
     if (u.leak !== undefined) tip.innerHTML = leakTip(u.leak);
     else if (u.sensor !== undefined) tip.innerHTML = sensorTip(u.sensor);
     else if (u.pipe !== undefined) tip.innerHTML = pipeTip(layout.pipes[u.pipe]);
+    else if (u.plant !== undefined) tip.innerHTML = plantTip(u.plant, layout.plant && layout.plant.live);
     else { const cv = inletC(e);
     tip.innerHTML = `<div class="k">${KIND[e.kind]}${e.auto ? ' (자동 배치)' : ''}</div><div>${e.name}</div><div><span class="k">위치</span> (${e.xM.toFixed(2)}, ${e.yM.toFixed(2)}) m · 높이 ${(e.heightM || 0).toFixed(2)} m</div>`
       + (cv === null ? '' : `<div><span class="k">흡기 창 평균</span> ${cv.toFixed(2)} °C${cv > 27 ? ' ▲' : ''}</div>`) + leakRackTip(e); }
@@ -729,19 +750,26 @@ function build3D(L) {
     }
   }
   // 처음과 방 범위가 바뀌었을 때만 카메라를 맞춘다(사용자가 돌린 시점은 유지).
-  const fitKey = [d.minXM, d.minYM, d.maxXM, d.maxYM].map(v => v.toFixed(2)).join();
+  // 주변 설비가 켜져 있으면 마당까지 한 화면에 담는다.
+  let fx0 = d.minXM, fy0 = d.minYM, fx1 = d.maxXM, fy1 = d.maxYM;
+  if (plantOn() && L.plant) for (const u of L.plant.units) {
+    fx0 = Math.min(fx0, u.centerM[0] - u.sizeM[0]); fx1 = Math.max(fx1, u.centerM[0] + u.sizeM[0]);
+    fy0 = Math.min(fy0, u.centerM[1] - u.sizeM[1]); fy1 = Math.max(fy1, u.centerM[1] + u.sizeM[1]);
+  }
+  const fitKey = [fx0, fy0, fx1, fy1].map(v => v.toFixed(2)).join();
   if (fitKey !== V3.fitKey) {
     V3.fitKey = fitKey;
-    const R = Math.max(W, D);
-    V3.cam.position.copy(P3(cx - 0.55 * R, cy - 0.75 * R, 0.85 * R));
-    V3.ctl.target.copy(P3(cx, cy, 0.4));
+    const R = Math.max(fx1 - fx0, fy1 - fy0), fcx = (fx0 + fx1) / 2, fcy = (fy0 + fy1) / 2;
+    V3.cam.position.copy(P3(fcx - 0.55 * R, fcy - 0.75 * R, 0.85 * R));
+    V3.ctl.target.copy(P3(fcx, fcy, 0.4));
     V3.ctl.minDistance = 0.3 * R; V3.ctl.maxDistance = 3 * R;
     V3.ctl.update();
   }
 }
 function update3D() {
   if (!V3.ok || !layout) return;
-  const key = JSON.stringify([layout.domain, layout.equipment.map(e => [e.name, e.xM, e.yM, e.yawDeg, e.depthM, e.widthM, e.heightM, e.baseZM, e.inlet])]);
+  const key = JSON.stringify([layout.domain, layout.equipment.map(e => [e.name, e.xM, e.yM, e.yawDeg, e.depthM, e.widthM, e.heightM, e.baseZM, e.inlet]),
+    layout.plant ? layout.plant.units.length : 0]);
   if (key !== V3.key) { V3.key = key; build3D(layout); }
   let hot = 0, colored = 0;
   for (const c of V3.cabinets) {
@@ -753,7 +781,88 @@ function update3D() {
   $('sub3d').textContent = `장비 ${layout.equipment.length}개 · 랙·스파인 색 = 흡기 창 평균 (${colored}곳, 아래 평면도와 같은 색 범위)` + (hot ? ` · ▲ 27 °C 초과 ${hot}곳` : '')
     + ' · 벽 = 공기 격자 경계(가까운 두 면은 낮게 잘랐다)';
   updatePipes3D();
+  updatePlant3D();
 }
+
+// ---- 주변 설비(설비 마당, 2026-11-12) ----
+// 게임 안 설비 마당 표시의 스냅샷을 그대로 받는다. 위치는 도식(설비에 배관 기하가 없어 방 +X 옆에 마당을 둔 것), 직접 배치한 장비만 실제 놓은 자리다.
+// 색 = 루프(범주 색 1~3번 고정), 상태는 색만으로 알리지 않고 ✕(고장)·점선(정지)·표로 함께 보인다. 유량·온도는 vrg.Plant.Enable 1일 때만 있다.
+const PLANT_LOOP = { fws:['설비수(FWS)', '#199e70', 0x199e70], chw:['냉수(CHW)', '#3987e5', 0x3987e5], cw:['응축수(CW)', '#d95926', 0xd95926] };
+const PLANT_KIND = { drycooler:'드라이쿨러', chiller:'칠러', trim:'트림 칠러', pump:'펌프', economizer:'이코노마이저' };
+const plantOn = () => $('plantbtn').getAttribute('aria-pressed') === 'true';
+const plantName = u => `${PLANT_KIND[u.kind] || u.kind} ${PLANT_LOOP[u.loop] ? PLANT_LOOP[u.loop][0] : u.loop} #${u.index + 1}`;
+const plantState = (u, live) => u.failed ? '고장' : !live ? '구조만' : u.running ? '운전' : '정지';
+function plantTip(u, live) {
+  return `<div class="k">${plantName(u)}${u.placed ? ' (직접 배치)' : ' (도식 위치)'}</div><div><span class="k">상태</span> ${plantState(u, live)}</div>`
+    + `<div><span class="k">위치</span> (${u.centerM[0].toFixed(1)}, ${u.centerM[1].toFixed(1)}) m · ${u.sizeM[0].toFixed(1)}×${u.sizeM[1].toFixed(1)}×${u.sizeM[2].toFixed(1)} m</div>`;
+}
+function drawPlantPlan(plant, svg, X, Y, s) {
+  for (const p of plant.pipes) {
+    let d = '';
+    for (let i = 0; i + 2 < p.pointsM.length; i += 3) d += (i ? ' L ' : 'M ') + X(p.pointsM[i]).toFixed(1) + ' ' + Y(p.pointsM[i + 1]).toFixed(1);
+    const lp = PLANT_LOOP[p.loop];
+    mk('path', { d, fill:'none', stroke:lp ? lp[1] : '#8a93a3', 'stroke-width':p.header ? 2.2 : 1.2, 'stroke-opacity':p.closed ? .35 : .8,
+      'stroke-dasharray':p.closed ? '3 3' : null, 'stroke-linejoin':'round' }, svg);
+  }
+  for (const u of plant.units) {
+    const g = mk('g', { transform:`translate(${X(u.centerM[0]).toFixed(1)} ${Y(u.centerM[1]).toFixed(1)}) rotate(${u.yawDeg.toFixed(1)})` }, svg);
+    const w = u.sizeM[0] * s, h = u.sizeM[1] * s, lp = PLANT_LOOP[u.loop];
+    const r = mk('rect', { class:'unit', x:-w / 2, y:-h / 2, width:w, height:h, rx:1.5, stroke:lp ? lp[1] : null,
+      'stroke-dasharray':plant.live && !u.running && !u.failed ? '3 2' : null }, g);
+    if (u.failed) mk('text', { class:'warn', x:0, y:4 }, g).textContent = '✕';
+    r.addEventListener('mousemove', ev => { tip.innerHTML = plantTip(u, plant.live); tip.style.display = 'block';
+      tip.style.left = Math.min(ev.clientX + 14, window.innerWidth - tip.offsetWidth - 8) + 'px'; tip.style.top = (ev.clientY + 14) + 'px'; });
+    r.addEventListener('mouseleave', () => { tip.style.display = 'none'; });
+  }
+}
+function renderPlantTable() {
+  const plant = layout && layout.plant;
+  $('plantnote').textContent = !plant ? '설비 마당 표시가 없다' : `주변 설비 ${plant.units.length}대 · 배관 ${plant.pipes.length}개 · 위치는 도식(직접 배치한 장비만 실제 자리)`
+    + (plant.live ? ' · 설비 계산 중(vrg.Plant.Enable 1): 상태·유량은 설비 모델 값' : ' · 설비 꺼짐(vrg.Plant.Enable 0): 구조만, CDU·CRAH는 고정 경계')
+    + ' · 운전 값은 냉각 설비·전력 탭';
+  if ($('planttable').hidden || !plant) return;
+  const rows = plant.units.slice().sort((a, b) => (a.loop + a.kind).localeCompare(b.loop + b.kind) || a.index - b.index)
+    .map(u => `<tr><td class="l">${plantName(u)}</td><td class="l">${plantState(u, plant.live)}</td><td class="l">${u.placed ? '직접 배치' : '도식'}</td>`
+      + `<td>${u.centerM[0].toFixed(1)}, ${u.centerM[1].toFixed(1)}</td><td>${u.sizeM.map(v => v.toFixed(1)).join('×')}</td></tr>`).join('');
+  $('planttable').innerHTML = `<table><thead><tr><th class="l">장비</th><th class="l">상태</th><th class="l">위치</th><th>X, Y m</th><th>크기 m</th></tr></thead><tbody>${rows}</tbody></table>`;
+}
+function buildPlant3D() {
+  clear3D(V3.plant); V3.plantPickables = [];
+  const plant = layout && layout.plant;
+  if (!plant) return;
+  const edgeM = new THREE.LineBasicMaterial({ color:0x14171d, transparent:true, opacity:.55 });
+  for (const u of plant.units) {
+    const lp = PLANT_LOOP[u.loop];
+    const mat = new THREE.MeshStandardMaterial({ color:u.failed ? 0xd03b3b : 0x59606e, roughness:.7, transparent:plant.live && !u.running && !u.failed, opacity:.55 });
+    const box = new THREE.Mesh(new THREE.BoxGeometry(u.sizeM[0], u.sizeM[2], u.sizeM[1]), mat);
+    box.position.copy(P3(u.centerM[0], u.centerM[1], u.centerM[2]));
+    box.rotation.y = -u.yawDeg * Math.PI / 180;
+    box.add(new THREE.LineSegments(new THREE.EdgesGeometry(box.geometry), lp ? new THREE.LineBasicMaterial({ color:lp[2] }) : edgeM));
+    box.userData.plant = u;
+    V3.plant.add(box); V3.plantPickables.push(box);
+  }
+  for (const p of plant.pipes) {
+    const pts = [];
+    for (let i = 0; i + 2 < p.pointsM.length; i += 3) pts.push(P3(p.pointsM[i], p.pointsM[i + 1], p.pointsM[i + 2]));
+    if (pts.length < 2) continue;
+    const lp = PLANT_LOOP[p.loop];
+    V3.plant.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts),
+      new THREE.LineBasicMaterial({ color:lp ? lp[2] : 0x8a93a3, transparent:true, opacity:p.closed ? .3 : p.header ? 1 : .8 })));
+  }
+}
+function updatePlant3D() {
+  if (!V3.ok) return;
+  V3.plant.visible = plantOn();
+  const plant = layout && layout.plant;
+  const key = plant ? JSON.stringify([plant.live, plant.units.map(u => [u.kind, u.loop, u.index, u.centerM, u.yawDeg, u.running, u.failed]), plant.pipes.length]) : '';
+  if (key !== V3.plantKey) { V3.plantKey = key; buildPlant3D(); }
+  renderPlantTable();
+}
+$('plantbtn').addEventListener('click', () => {
+  const on = !plantOn(); $('plantbtn').setAttribute('aria-pressed', on); $('plantbtn').textContent = '주변 설비: ' + (on ? '켜짐' : '꺼짐');
+  V3.fitKey = ''; drawPlan(); if (V3.ok && layout) { build3D(layout); updatePlant3D(); }
+});
+$('planttbtn').addEventListener('click', () => { $('planttable').hidden = !$('planttable').hidden; $('planttbtn').textContent = $('planttable').hidden ? '주변 설비 표 보기' : '주변 설비 표 닫기'; renderPlantTable(); });
 
 // ---- 3D 2단계: 냉각수 배관 레이어 (2026-10-14) ----
 // 경로 = 방 액터가 배관 메시를 만든 경로(수력망이 푸는 배관 그대로, 도식 아님). 굵기 = 배관 지름(실제 m).

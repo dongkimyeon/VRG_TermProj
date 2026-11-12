@@ -86,13 +86,15 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hydraulics")
 	FExpansionTankParams ExpansionTank;
 
-	// GB200 NVL72 한 줄(랙 8대, 18.4 L/s)을 약 195 kPa로 미는 운전점에서 역산한 값이다.
-	// 다른 랙을 쓰면 여기부터 다시 역산해야 한다.
+	// 한 줄(랙 8대, 18.4 L/s)을 회전수비 1에서 여유 없이 미는 운전점에서 역산한 곡선이다(체절 - 계수 Q²).
+	// 2026-11-12: 랙 저항 정정(ADataCenterRoomActor::RackBranchResistancePaS2M6, 랙 ΔP 179.9 -> 79.4 kPa)으로 설계 루프
+	// 강하가 약 195 -> 94.5 kPa(헤더 약 15 kPa는 그대로)라, 같은 곡선 모양을 0.485배로 줄였다: 4e5 -> 1.94e5, 6e8 -> 2.91e8.
+	// 설계점 양정 = 1.94e5 - 2.91e8 x 0.0184² = 95.5 kPa. 다른 랙을 쓰면 여기부터 다시 역산해야 한다.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hydraulics")
-	double PumpShutoffHeadPa = 4.0e5;
+	double PumpShutoffHeadPa = 1.94e5;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hydraulics")
-	double PumpCurveCoeffPaS2M6 = 6.0e8;
+	double PumpCurveCoeffPaS2M6 = 2.91e8;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hydraulics", meta = (ClampMin = "0.01", ClampMax = "1.0"))
 	double PumpEfficiency = 0.7;
@@ -140,8 +142,9 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Control")
 	bool bPumpDpControl = true;
 
-	// Rack branch design flow [m^3/s]: GB200 NVL72 2.3 L/s (the branch resistance was derived from it; OCP
-	// 1.25-2.0 L/min/kW range).
+	// Rack branch design flow [m^3/s]: GB200 NVL72 2.3 L/s = 138 L/min. Per kW: 138 / 104 kW liquid-cooled heat =
+	// 1.33 L/min/kW (OCP 1.25-2.0 L/min/kW range); per total rack 119 kW it is 1.16. Above Lenovo's GB300 NVL72 minimum
+	// of 89 L/min at a 35 C supply (2026-11-12 check).
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Control", meta = (ClampMin = "0.0"))
 	double RackDesignFlowM3s = 2.3e-3;
 

@@ -22,7 +22,7 @@ bool FLayoutCduBatchDuplicationCouplingTest::RunTest(const FString& Parameters)
  auto Count=[](UWorld* World) { int32 N=0; for(TActorIterator<ACoolingDistributionUnitActor> It(World);It;++It) ++N; return N; };
  double MaxIt=0,MaxGlobal=0,MaxCoolant=0,MaxDiv=0,MaxHydraulic=0,MinPump=DBL_MAX,MaxPump=0,MinFlow=DBL_MAX,MaxFlow=0;
  UWorld* W=NewWorld(); auto* Sim=W->SpawnActor<ADataCenterSimulationActor>(); Sim->bShowSummary=false; Sim->EnterLayoutMode();
- auto* C=W->SpawnActor<ADataCenterDebugController>(); auto* Room=W->SpawnActor<ADataCenterRoomActor>(); Room->bUseGjConnections=true;
+ auto* C=W->SpawnActor<ADataCenterDebugController>(); C->bSnapToAirCells = false; /* legacy 5 cm centre snap under test (cell snap: VRG.Interaction.Layout.CellSnap) */ auto* Room=W->SpawnActor<ADataCenterRoomActor>(); Room->bUseGjConnections=true;
  auto* Air=W->SpawnActor<AAirFieldDebugActor>(); auto* Rack=W->SpawnActor<ARackThermalActor>();
  Rack->ApplyGb200Nvl72Preset(); Rack->bUseGjModels=true; Rack->bShowReadout=false;
  Rack->RackSizeM=FVector(GjRackLayout::FrameDepthM,GjRackLayout::FrameWidthM,GjRackLayout::FrameHeightM);
@@ -128,7 +128,7 @@ bool FLayoutCduBatchDuplicationCouplingTest::RunTest(const FString& Parameters)
  TestTrue(TEXT("Unrelated placed deletion survives all group edits"),W->GetSubsystem<UVrgCduLayoutState>()->DeletedPlaced.Num()==1
   && W->GetSubsystem<UVrgCduLayoutState>()->DeletedPlaced.Contains(DeletedId));
  UWorld* Fresh=NewWorld(); auto* FS=Fresh->SpawnActor<ADataCenterSimulationActor>(); FS->bShowSummary=false; FS->EnterLayoutMode();
- auto* FC=Fresh->SpawnActor<ADataCenterDebugController>();
+ auto* FC=Fresh->SpawnActor<ADataCenterDebugController>(); FC->bSnapToAirCells = false; /* legacy 5 cm centre snap under test (cell snap: VRG.Interaction.Layout.CellSnap) */
  FActorSpawnParameters P; P.Name=Rack->GetFName(); Fresh->SpawnActor<ARackThermalActor>(P);
  P.Name=SourceNames[1]; Fresh->SpawnActor<ACoolingDistributionUnitActor>(ACoolingDistributionUnitActor::StaticClass(),Originals[1],P);
  P.Name=DeletedName; Fresh->SpawnActor<ACoolingDistributionUnitActor>(ACoolingDistributionUnitActor::StaticClass(),FTransform(FVector(1000,1000,0)),P);

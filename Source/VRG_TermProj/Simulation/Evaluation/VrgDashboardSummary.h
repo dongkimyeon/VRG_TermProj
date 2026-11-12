@@ -82,6 +82,29 @@ struct FVrgDashboardPipe
 	TArray<FVector> PointsM;          // world metres
 };
 
+// Web dashboard plant yard (2026-11-12, user request "웹 페이지에서 주변 설비까지"): the units and pipes of the yard
+// display (AFacilityPlantDisplayActor's snapshot). Positions are that display's SCHEMATIC yard beside the room (placed
+// units where the user put them; the plant has no piping geometry), world metres. State and flow are the plant model's
+// when it is coupled (bLive, vrg.Plant.Enable 1); otherwise the structure only. Nothing is recomputed for the page.
+struct FVrgDashboardPlantUnit
+{
+	FString Kind;                            // pump, drycooler, chiller, trim, economizer
+	FString Loop;                            // fws, chw, cw
+	int32 Index = 0;                         // unit index within its kind and loop (the model's order)
+	FVector CenterM = FVector::ZeroVector, SizeM = FVector::ZeroVector;
+	double YawDeg = 0.0;
+	bool bPlaced = false, bRunning = false, bFailed = false;
+};
+
+struct FVrgDashboardPlantPipe
+{
+	FString Loop;
+	bool bHeader = false, bClosed = false;   // header: mains / bypass / header nodes (drawn thicker)
+	double FlowM3s = 0.0;                    // solved flow along PointsM (0 for header nodes and structure-only views)
+	double TempK = 0.0;                      // the loop volume's temperature (0 when not live)
+	TArray<FVector> PointsM;
+};
+
 struct VRG_TERMPROJ_API FVrgDashboardLayout
 {
 	double SimTimeS = 0.0;
@@ -93,10 +116,16 @@ struct VRG_TERMPROJ_API FVrgDashboardLayout
 	double RecommendedInletK = 0.0;          // ASHRAE recommended inlet limit used by the evaluation
 	TArray<FVrgDashboardPipe> Pipes;         // empty without a room actor (optional in JSON: older reports lack it)
 	bool bHydraulicsConverged = false;
+	// Plant yard (2026-11-12, optional in JSON): empty without a yard display actor.
+	bool bHasPlant = false, bPlantLive = false;
+	TArray<FVrgDashboardPlantUnit> PlantUnits;
+	TArray<FVrgDashboardPlantPipe> PlantPipes;
 
+	// Per request: the plant yard part is written straight into the text (it was 3.6 ms of FJsonObject work on the
+	// game thread for 47 units / 144 pipes, 2026-11-12); the rest keeps the object tree.
 	FString ToJson() const;
 	// The same object, for embedding (stage 5: a report stores the plan view at its SimTime).
-	TSharedRef<FJsonObject> ToJsonObject() const;
+	TSharedRef<FJsonObject> ToJsonObject(bool bIncludePlant = true) const;
 	static bool FromJson(const FString& Json, FVrgDashboardLayout& Out);
 };
 

@@ -12,6 +12,8 @@
 #include "Engine/World.h"
 #include "EngineUtils.h"
 #include "HAL/FileManager.h"
+#include "HAL/IConsoleManager.h"
+#include "Misc/ScopeExit.h"
 
 #if WITH_DEV_AUTOMATION_TESTS
 
@@ -173,6 +175,13 @@ bool FBarrierAirTest::RunTest(const FString& Parameters)
 	UWorld* W = UWorld::CreateWorld(EWorldType::Game, false);
 	if (!TestNotNull(TEXT("World"), W)) return false;
 	GEngine->CreateNewWorldContext(EWorldType::Game).SetCurrentWorld(W);  // actor destruction needs a world context
+	// The synthetic walls below sit at fixed offsets from the rack that were tuned against the padded-bounds grid origin
+	// (the sealed pocket needs its side walls one cell clear of the rack and still closed). The 2026-11-12 world-aligned
+	// fit moves the grid by < 1 cell and opens a one-cell gap there, so this fixture keeps the old origin.
+	IConsoleVariable* Aligned = IConsoleManager::Get().FindConsoleVariable(TEXT("vrg.Air.FitWorldAligned"));
+	const int32 OldAligned = Aligned ? Aligned->GetInt() : 1;
+	if (Aligned) Aligned->Set(0, ECVF_SetByCode);
+	ON_SCOPE_EXIT { if (Aligned) Aligned->Set(OldAligned, ECVF_SetByCode); };
 	auto* Rack = W->SpawnActor<ARackThermalActor>(FVector::ZeroVector, FRotator::ZeroRotator);  // front (intake) faces +X
 	Rack->Params = FRackThermalModel::MakeGb200Nvl72Params();
 	Rack->Input = FRackThermalInput();

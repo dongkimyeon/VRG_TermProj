@@ -162,7 +162,7 @@ bool FPlantLayoutEditTest::RunTest(const FString& Parameters)
 	UWorld* W = UWorld::CreateWorld(EWorldType::Game, false);
 	GEngine->CreateNewWorldContext(EWorldType::Game).SetCurrentWorld(W);
 	auto* Sim = W->SpawnActor<ADataCenterSimulationActor>(); Sim->bShowSummary = false;
-	auto* C = W->SpawnActor<ADataCenterDebugController>();
+	auto* C = W->SpawnActor<ADataCenterDebugController>(); C->bSnapToAirCells = false; /* legacy 5 cm centre snap under test (cell snap: VRG.Interaction.Layout.CellSnap) */
 	W->SpawnActor<ARackThermalActor>(FVector(300, 300, 0), FRotator::ZeroRotator);
 	// Air domain 10 x 8 x 3 m at the origin (automatic room: the grid actor's domain is the footprint).
 	auto* Air = W->SpawnActor<AAirFieldDebugActor>(FVector::ZeroVector, FRotator::ZeroRotator);
@@ -366,7 +366,7 @@ bool FPlantLayoutAddDeleteTest::RunTest(const FString& Parameters)
 	Sim->MaxStepsPerFrame = 16;
 	Sim->bFacilityPlant = true;
 	Sim->PlantThermalSpec.AmbientK = 298.15;
-	auto* C = World->SpawnActor<ADataCenterDebugController>();
+	auto* C = World->SpawnActor<ADataCenterDebugController>(); C->bSnapToAirCells = false; /* legacy 5 cm centre snap under test (cell snap: VRG.Interaction.Layout.CellSnap) */
 	ADataCenterRoomActor* Room = World->SpawnActor<ADataCenterRoomActor>();
 	World->SpawnActor<AAirFieldDebugActor>()->bShowSummary = false;
 	for (const double Y : { 0.0, 66.0 })
@@ -470,7 +470,7 @@ bool FPlantLayoutDuplicateMultiTest::RunTest(const FString& Parameters)
 	UWorld* W = UWorld::CreateWorld(EWorldType::Game, false);
 	GEngine->CreateNewWorldContext(EWorldType::Game).SetCurrentWorld(W);
 	auto* Sim = W->SpawnActor<ADataCenterSimulationActor>(); Sim->bShowSummary = false;
-	auto* C = W->SpawnActor<ADataCenterDebugController>();
+	auto* C = W->SpawnActor<ADataCenterDebugController>(); C->bSnapToAirCells = false; /* legacy 5 cm centre snap under test (cell snap: VRG.Interaction.Layout.CellSnap) */
 	ARackThermalActor* Rack = W->SpawnActor<ARackThermalActor>(FVector(300, 300, 0), FRotator::ZeroRotator);
 	// Air domain 10 x 8 x 3 m at the origin, as in MoveRotateUndoSave.
 	auto* Air = W->SpawnActor<AAirFieldDebugActor>(FVector::ZeroVector, FRotator::ZeroRotator);
@@ -620,7 +620,7 @@ bool FPlantLayoutAutomaticMovableTest::RunTest(const FString& Parameters)
 	Sim->MaxStepsPerFrame = 16;
 	Sim->bFacilityPlant = true;
 	Sim->PlantThermalSpec.AmbientK = 298.15;
-	auto* C = World->SpawnActor<ADataCenterDebugController>();
+	auto* C = World->SpawnActor<ADataCenterDebugController>(); C->bSnapToAirCells = false; /* legacy 5 cm centre snap under test (cell snap: VRG.Interaction.Layout.CellSnap) */
 	ADataCenterRoomActor* Room = World->SpawnActor<ADataCenterRoomActor>();
 	World->SpawnActor<AAirFieldDebugActor>()->bShowSummary = false;
 	for (const double Y : { 0.0, 66.0 })

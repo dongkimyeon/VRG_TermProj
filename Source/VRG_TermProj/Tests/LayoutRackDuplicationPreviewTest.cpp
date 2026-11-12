@@ -18,7 +18,7 @@ bool FLayoutRackDuplicationPreviewTest::RunTest(const FString& Parameters)
 	if (!TestNotNull(TEXT("World"), World)) return false;
 	GEngine->CreateNewWorldContext(EWorldType::Game).SetCurrentWorld(World);
 	auto* Sim = World->SpawnActor<ADataCenterSimulationActor>();
-	auto* Controller = World->SpawnActor<ADataCenterDebugController>();
+	auto* Controller = World->SpawnActor<ADataCenterDebugController>(); Controller->bSnapToAirCells = false; /* legacy 5 cm centre snap under test (cell snap: VRG.Interaction.Layout.CellSnap) */
 	auto* Room = World->SpawnActor<ADataCenterRoomActor>();
 	auto* Cdu = World->SpawnActor<ACoolingDistributionUnitActor>(FVector(-400, -200, 0), FRotator::ZeroRotator);
 	World->SpawnActor<AAirFieldDebugActor>();

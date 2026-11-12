@@ -3159,6 +3159,37 @@ FVrgDashboardLayout ADataCenterSimulationActor::BuildDashboardLayout() const
 			else if (R.Edge < 0 && -1 - R.Edge < Net.GetNumPumps()) P.FlowM3s = Net.GetPumpFlowM3s(-1 - R.Edge);
 		}
 	}
+	// Plant yard (2026-11-12): copy the yard display's last snapshot (schematic positions, plant state when live).
+	if (UWorld* World = GetWorld())
+		for (TActorIterator<AFacilityPlantDisplayActor> It(World); It; ++It)
+		{
+			const FPlantDisplaySnapshot& S = It->GetSnapshot();
+			if (S.Equipment.Num() == 0 && S.Pipes.Num() == 0) continue;
+			L.bHasPlant = true;
+			L.bPlantLive = S.bLive;
+			auto Loop = [](EPlantLoopId Id) { return Id == EPlantLoopId::Chw ? TEXT("chw") : Id == EPlantLoopId::Cw ? TEXT("cw") : TEXT("fws"); };
+			for (const FPlantDisplayEquipment& E : S.Equipment)
+			{
+				FVrgDashboardPlantUnit& U = L.PlantUnits.AddDefaulted_GetRef();
+				U.Kind = E.Kind == EPlantEquipmentKind::DryCooler ? TEXT("drycooler") : E.Kind == EPlantEquipmentKind::Chiller ? TEXT("chiller")
+					: E.Kind == EPlantEquipmentKind::TrimChiller ? TEXT("trim") : E.Kind == EPlantEquipmentKind::Economizer ? TEXT("economizer") : TEXT("pump");
+				U.Loop = Loop(E.Loop); U.Index = E.Index;
+				U.CenterM = E.CenterM; U.SizeM = E.SizeM; U.YawDeg = E.Rotation.Rotator().Yaw;
+				U.bPlaced = E.bPlaced; U.bRunning = E.bRunning; U.bFailed = E.bFailed;
+			}
+			for (const FPlantDisplayPipe& P : S.Pipes)
+			{
+				FVrgDashboardPlantPipe& D = L.PlantPipes.AddDefaulted_GetRef();
+				D.Loop = Loop(P.Loop); D.bHeader = P.bHeader; D.bClosed = P.bClosed;
+				D.FlowM3s = S.bLive ? P.FlowM3s : 0.0; D.TempK = S.bLive ? P.TempK : 0.0; D.PointsM = P.PointsM;
+			}
+			for (const FPlantDisplayHeader& H : S.Headers)
+			{
+				FVrgDashboardPlantPipe& D = L.PlantPipes.AddDefaulted_GetRef();
+				D.Loop = Loop(H.Loop); D.bHeader = true; D.TempK = S.bLive ? H.TempK : 0.0; D.PointsM = H.PointsM;
+			}
+			break;   // one yard display per world
+		}
 	return L;
 }
 

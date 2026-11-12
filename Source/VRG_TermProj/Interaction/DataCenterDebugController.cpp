@@ -47,6 +47,88 @@
 
 static TAutoConsoleVariable<int32> CVarLayoutInputDiagnostics(TEXT("vrg.Layout.InputDiagnostics"), 0,
 	TEXT("Log placement input gates at duplicate/confirm/patch/capture events; 0 disables diagnostics."));
+// 2026-11-12 (user request): snap layout moves / additions to the air grid's cell lines and draw them on the floor.
+static TAutoConsoleVariable<int32> CVarLayoutCellSnap(TEXT("vrg.Layout.CellSnap"), 1,
+	TEXT("1 (default): equipment footprints snap to the air grid's cell lines in layout mode. 0: the old 5 cm centre grid."));
+static TAutoConsoleVariable<int32> CVarLayoutGrid(TEXT("vrg.Layout.Grid"), 1,
+	TEXT("1 (default): draw the air cell lines on the floor in layout mode (brighter every 1 m). 0: off."));
+
+bool ADataCenterDebugController::GetAirCellLatticeCm(double& StepCm, FVector2D& OriginCm) const
+{
+	UWorld* World = GetWorld();
+	if (!World) return false;
+	for (TActorIterator<AAirFieldDebugActor> It(World); It; ++It)
+	{
+		const double StepM = It->GridParams.CellSizeM;
+		if (!FMath::IsFinite(StepM) || StepM <= 0.0) continue;
+		StepCm = StepM * 100.0;
+		const FVector O = It->GetActorLocation();   // grid (0,0,0) corner = a line crossing (actor <-> solver boundary, cm)
+		OriginCm = FVector2D(O.X, O.Y);
+		return true;
+	}
+	return false;
+}
+
+bool ADataCenterDebugController::UseCellSnap() const
+{
+	double StepCm = 0.0; FVector2D OriginCm;
+	return bSnapToAirCells && CVarLayoutCellSnap.GetValueOnGameThread() != 0 && GetAirCellLatticeCm(StepCm, OriginCm);
+}
+
+FVector ADataCenterDebugController::SnapFootprintToCellsCm(const FVector& LocationCm, const FQuat& Rotation, const FVector& SizeM) const
+{
+	double StepCm = 0.0; FVector2D OriginCm;
+	if (!bSnapToAirCells || CVarLayoutCellSnap.GetValueOnGameThread() == 0 || !GetAirCellLatticeCm(StepCm, OriginCm)
+		|| LocationCm.ContainsNaN() || SizeM.ContainsNaN()) return LocationCm;
+	// Half extents of the rotated footprint's axis-aligned box (any yaw; layout rotations are 90° steps).
+	const FVector X = Rotation.GetAxisX(), Y = Rotation.GetAxisY();
+	const double HalfXCm = 50.0 * (FMath::Abs(X.X) * SizeM.X + FMath::Abs(Y.X) * SizeM.Y);
+	const double HalfYCm = 50.0 * (FMath::Abs(X.Y) * SizeM.X + FMath::Abs(Y.Y) * SizeM.Y);
+	auto Snap = [StepCm](double MinCm, double LineCm) { return LineCm + FMath::RoundToDouble((MinCm - LineCm) / StepCm) * StepCm; };
+	FVector Out = LocationCm;
+	Out.X = Snap(LocationCm.X - HalfXCm, OriginCm.X) + HalfXCm;
+	Out.Y = Snap(LocationCm.Y - HalfYCm, OriginCm.Y) + HalfYCm;
+	return Out;
+}
+
+void ADataCenterDebugController::DrawLayoutCellGrid() const
+{
+	UWorld* World = GetWorld();
+	if (!World || CVarLayoutGrid.GetValueOnGameThread() == 0) return;
+	for (TActorIterator<AAirFieldDebugActor> It(World); It; ++It)
+	{
+		const double StepM = It->GridParams.CellSizeM;
+		if (!FMath::IsFinite(StepM) || StepM <= 0.0) continue;
+		const FBox D = It->GetDomainBoundsM();
+		// The domain plus 2 m (room to place equipment just outside it; the next fit grows the grid around it).
+		const double MarginM = 2.0;
+		const int32 I0 = FMath::FloorToInt32(-MarginM / StepM), I1 = FMath::CeilToInt32((D.Max.X - D.Min.X + MarginM) / StepM);
+		const int32 J0 = FMath::FloorToInt32(-MarginM / StepM), J1 = FMath::CeilToInt32((D.Max.Y - D.Min.Y + MarginM) / StepM);
+		if ((I1 - I0) + (J1 - J0) > 4000) return;   // a very fine grid: skip rather than flood the line batcher
+		const int32 Major = FMath::Max(1, FMath::RoundToInt32(1.0 / StepM));   // every 1 m when the step divides it
+		const double ZCm = SimUnits::MetersToCentimeters(D.Min.Z) + 0.5;
+		const double X0 = D.Min.X + I0 * StepM, X1 = D.Min.X + I1 * StepM, Y0 = D.Min.Y + J0 * StepM, Y1 = D.Min.Y + J1 * StepM;
+		// Light floor: thin mid-grey cell lines, darker and thicker every whole metre (checked on L_Test, 2026-11-12).
+		const FColor Minor(150, 156, 168), MajorC(70, 80, 96);
+		// Major = the line lies on a whole metre of the world (index counted from the world origin, not the domain corner).
+		auto IsMajor = [StepM, Major](double LineM) { const int64 G = FMath::RoundToInt64(LineM / StepM); return ((G % Major) + Major) % Major == 0; };
+		for (int32 I = I0; I <= I1; ++I)
+		{
+			const double LineM = D.Min.X + I * StepM, XCm = SimUnits::MetersToCentimeters(LineM);
+			const bool bMajor = IsMajor(LineM);
+			DrawDebugLine(World, FVector(XCm, SimUnits::MetersToCentimeters(Y0), ZCm), FVector(XCm, SimUnits::MetersToCentimeters(Y1), ZCm),
+				bMajor ? MajorC : Minor, false, 0.0f, 0, bMajor ? 2.0f : 0.0f);
+		}
+		for (int32 J = J0; J <= J1; ++J)
+		{
+			const double LineM = D.Min.Y + J * StepM, YCm = SimUnits::MetersToCentimeters(LineM);
+			const bool bMajor = IsMajor(LineM);
+			DrawDebugLine(World, FVector(SimUnits::MetersToCentimeters(X0), YCm, ZCm), FVector(SimUnits::MetersToCentimeters(X1), YCm, ZCm),
+				bMajor ? MajorC : Minor, false, 0.0f, 0, bMajor ? 2.0f : 0.0f);
+		}
+		return;
+	}
+}
 
 ADataCenterDebugController::ADataCenterDebugController()
 {
@@ -1085,9 +1167,17 @@ void ADataCenterDebugController::UpdateRackAdditionAlongRay(const FVector& EyeCm
 {
 	if (!bAddingRack) return;
 	FVector FloorCm;
+	const bool bCells = UseCellSnap();
 	bRackAdditionHasFloor = IsLayoutMode() && IsEquipmentInputAvailable()
-		&& FloorPointSnapped(EyeCm, Direction, HasDuplicationMembers() ? RackAdditionTransform.GetLocation().Z : 0.0, PlaceSnapM, FloorCm);
-	if (bRackAdditionHasFloor) RackAdditionTransform.SetLocation(FloorCm);
+		&& FloorPointSnapped(EyeCm, Direction, HasDuplicationMembers() ? RackAdditionTransform.GetLocation().Z : 0.0, bCells ? 0.0 : PlaceSnapM, FloorCm);
+	if (bRackAdditionHasFloor)
+	{
+		RackAdditionTransform.SetLocation(FloorCm);
+		// 2026-11-12: the first preview's footprint corner on the air cell lines (members keep their offsets from it).
+		FTransform First; FVector SizeM;
+		if (bCells && GetRackAdditionPreview(First, SizeM, 0))
+			RackAdditionTransform.SetLocation(SnapFootprintToCellsCm(FloorCm, First.GetRotation(), SizeM * First.GetScale3D().GetAbs()));
+	}
 }
 
 void ADataCenterDebugController::UpdateRackAdditionFromCursor()
@@ -2643,8 +2733,15 @@ void ADataCenterDebugController::RefreshLayoutRowSnap()
 	DragPreviewCm = DragRawPreviewCm;
 	DragPreviewRotation = DragStartTransform.GetRotation();
 	bDragRowSnapped = false;
+	// 2026-11-12: the anchor's footprint corner snaps to the air cell lines; the group follows by the same translation.
+	FVector AnchorSizeM;
+	if (UseCellSnap() && DragAnchor.IsValid() && PlaceableBoxM(DragAnchor.Get(), AnchorSizeM))
+	{
+		if (DragAnchor->IsA<ALayoutBarrierActor>()) AnchorSizeM *= DragAnchor->GetActorScale3D().GetAbs();
+		DragPreviewCm = SnapFootprintToCellsCm(DragRawPreviewCm, DragStartTransform.GetRotation(), AnchorSizeM);
+	}
 	// User-selected placement grid, not a measured physical constant. Convert m only at the actor boundary.
-	if (FMath::IsFinite(PlaceSnapM) && PlaceSnapM > 0.0)
+	else if (FMath::IsFinite(PlaceSnapM) && PlaceSnapM > 0.0)
 	{
 		const double StepCm = PlaceSnapM * 100.0;
 		DragPreviewCm.X = FMath::RoundToDouble(DragPreviewCm.X / StepCm) * StepCm;
@@ -3234,10 +3331,15 @@ void ADataCenterDebugController::Tick(float DeltaTime)
 		if (AActor* Held = Grabbed.Get())
 		{
 			FVector FloorCm;
-			if (FloorPointSnapped(EyeCm, ViewRotation.Vector(), Held->GetActorLocation().Z, PlaceSnapM, FloorCm))
+			const bool bCells = UseCellSnap();
+			if (FloorPointSnapped(EyeCm, ViewRotation.Vector(), Held->GetActorLocation().Z, bCells ? 0.0 : PlaceSnapM, FloorCm))
 			{
 				FVector Target = FloorCm + GrabOffsetCm;
-				if (PlaceSnapM > 0.0)
+				FVector HeldSizeM;
+				if (bCells && PlaceableBoxM(Held, HeldSizeM))
+					Target = SnapFootprintToCellsCm(Target, Held->GetActorQuat(),
+						HeldSizeM * (Held->IsA<ALayoutBarrierActor>() ? Held->GetActorScale3D().GetAbs() : FVector::OneVector));
+				else if (PlaceSnapM > 0.0)
 				{
 					const double S = PlaceSnapM * 100.0;
 					Target.X = FMath::RoundToDouble(Target.X / S) * S;
@@ -3247,6 +3349,7 @@ void ADataCenterDebugController::Tick(float DeltaTime)
 				TryLayoutMove(Held, Target);
 			}
 		}
+		DrawLayoutCellGrid();   // 2026-11-12: air cell lines on the floor (vrg.Layout.Grid)
 		HoveredPlaceable = Grabbed.IsValid() ? Grabbed : TWeakObjectPtr<AActor>(PickPlaceableAlongRay(GetWorld(), EyeCm, ViewRotation.Vector(), MaxSelectDistanceM * 100.0));
 		FVector SizeM;
 		if (const AActor* H = HoveredPlaceable.Get(); H != nullptr && PlaceableBoxM(H, SizeM))

@@ -6,7 +6,9 @@ UE 5.8 / C++ / 가상현실게임 텀프로젝트. 이 파일은 팀이 합의�
 날짜별 상세 작업 기록은 2026-10-15에 `docs/기록/`으로 옮겼다(아래 "문서 지도"). 이 파일에는 새 절을 길게 쌓지 말고,
 작업 기록은 해당 주제 파일에, 오차 기준은 `docs/오차기준.md`에, 이 파일에는 상태 요약과 규칙만 갱신한다.
 
-## 현재 상태 (2026-11-11)
+## 현재 상태 (2026-11-12)
+
+2026-11-12 (사용자: 배치 셀 스냅·바닥 격자, 웹 주변 설비, 실제 데이터센터 대조 후 판단해 수정): 배치 모드에서 장비 발자국 모서리를 공기 셀 선에 맞추고(`vrg.Layout.CellSnap`, 랙 줄 붙이기 우선), 바닥에 셀 격자(1 m 굵은 선, `vrg.Layout.Grid`)를 그린다. 자동 맞춤 공기 격자 원점을 세계 셀 배수로 맞춰(`vrg.Air.FitWorldAligned`) 격자 선 = 셀 면이다(도메인이 한 셀 미만 움직여 계산값이 조금 바뀐다). 웹 3D·평면도에 설비 마당 장비·배관(도식 위치), 평면도 JSON 직접 쓰기(3.6 → 1.0 ms). 대조 결과 진짜 수치 오류 하나: 랙 수력 저항을 Lenovo GB300 NVL72 표로 정정(분기 1.7e10 → 7.5e9, 랙 ΔP 179.9 → 79.4 kPa, 펌프 곡선 0.485배); 나머지는 "모델에 없는 것"에 기록(`docs/기록/09` 8절). 화면: 배치 모드 바닥 격자·웹 마당은 AI 화면 확인, 격자 색 조정 뒤 모습은 미확인. 검증: 전체 `VRG` 398건 성공/실패 0(신규 3건, 5 cm 스냅 검사 7개 파일은 예전 스냅 유지·밀폐 공간 벽 테스트 1건은 예전 원점·`Plant.Chw.CoupledRoom` 장부 허용치 1e-11, 근거 `docs/오차기준.md`), `VRG.Gpu` 7건(-RenderOffscreen), Editor·Game 빌드 성공(RTX 4080 데스크톱).
 
 2026-11-11 (사용자: "장애 시나리오는 기록만, 나머지 남은 작업 진행"): 장애 시나리오 후보(정전·UPS, 서서히 나빠지는 고장, 제어기 고장, 칩 스로틀링, CRAH·스파인·셸프 입구 등)는 `남은작업.md`에 기록만. 성능 묶음 FPS를 **RTX 4080 데스크톱**에서 측정: 정상 170.0 / 누수 66.0 / 누수 + W4 59.8 / 병렬 끔 53.1 FPS, 실시간 유지, 병렬 켬·끔 결과 차 0(`docs/기록/확인절차/W35_계산비용_FPS확인_2026-11-06.md`). **RTX 4060 Laptop은 미측정**이라 D10·W3.5 성능 완료로 판정하지 않는다. 웹 대시보드 냉각 설비·전력 / 방 공기 / 센서·검증 탭(`/api/status`·`/api/roomair`, 리포트 절 함수 공유, 페이지가 물을 때만 생성), `/vendor` 경로와 three.js r128 사본(`Web/vendor`, 사용자 승인 뒤), `Web/` 패키지 스테이징 설정(패키지 확인은 미실행). 상세 `Tools/웹대시보드_계획.md` 같은 날 절. 이 변경 뒤 전체 `VRG` 396건 성공/실패 0(NullRHI 7분, `VRG.Gpu.*`는 여기서 건너뜀 처리) + `VRG.Gpu` 7건 성공(-RenderOffscreen), Editor·Game 빌드 성공(RTX 4080 데스크톱). 사용자 화면 확인·패키징은 미실행.
 
@@ -89,7 +91,7 @@ F0(근거 수집)·F1(FWS 수력망)·F2(드라이쿨러·설비수 열)·F3(냉
 - **바닥 물(W3):** 분사가 내려놓은 물을 2차원 얕은 물(1차 HLL + 정수압 재구성, Manning, 접촉선 고정 h_eq 3.1 mm, 2.5 cm 칸)로 퍼뜨림. 벽은 막고 장비 발판 밑은 흐르며 장비별 수심 기록(W4 입력). 에폭시·경사 0(추정·사용자 결정). 2026-11-03: CDU마다 드립 트레이(50 mm)·앞 0.5 m 바닥 배수구(100 mm, 오리피스) - 크기·위치 추정, 배수구가 있으면 CPU 경로. GPU 경로(`VrgFloorWater.usf`, FP64)는 CPU와 같은 결과지만 이 노트북에서 빠르지 않아 기본은 CPU(`vrg.Water.Gpu`).
 - **랙 내부 물(W3.5):** 실제 누수 장부의 델타를37슬롯 보유/이동/뒤쪽 노출로 전달하고 바닥 도착분만 W3에 주입. 전달 실패는 대기하며 W2와 중복하지 않는다. 드립/뒤 로프 모의 센서·리포트와 L 도구/B 지점 순환·읽기 전용 상태 표시 연결, 사용자 화면/입력 정상 확인. 침수 영향(W4, `vrg.Water.Impact`, 기본 끔, 문턱 추정)을 켜면 젖은 슬롯·CDU·CRAH·스파인의 전원이 끊긴다.
 - **CDU:** 줄 단위 액-액 열교환기(대향류 ε-NTU). 줄 첫 랙에서 가장 가까운 CDU가 담당. CDU가 없으면 랙별 라디에이터 + 가상 루프.
-  2026-11-03: 펌프 VFD가 먼 랙 차압을 2 R Q_d²(179.9 kPa)로 유지(하한 0.3·상한 1.0·램프 0.1/s 추정), 1차 밸브가 2차 공급을 설계 공급(설비수 + 접근 온도)으로 유지(공용 냉수·직렬 구성 제외), 펌프 1+1(전환 2 s 추정, 망 요소는 하나). CDU 계측에 2차 유량·차압·계통 압력·회전.
+  2026-11-03: 펌프 VFD가 먼 랙 차압을 2 R Q_d²(2026-11-12부터 79.4 kPa, 랙 저항을 Lenovo GB300 NVL72 공개 표로 정정; 이전 179.9 kPa)로 유지(하한 0.3·상한 1.0·램프 0.1/s 추정), 1차 밸브가 2차 공급을 설계 공급(설비수 + 접근 온도)으로 유지(공용 냉수·직렬 구성 제외), 펌프 1+1(전환 2 s 추정, 망 요소는 하나). CDU 계측에 2차 유량·차압·계통 압력·회전.
 - **설비수(FWS, S8 F1·F2):** CDU 1차측 수력망(펌프 N+1·체크밸브, 차압 제어, 동일 퍼센트 2방 밸브)과 드라이쿨러(교차류 ε-NTU, Liebert 정격 역산, 팬 r³),
   공급·회수 두 물 체적, 팬으로 공급 32 °C 제어(미달·과냉 표시). `vrg.Plant.Enable 1`일 때만 CDU가 이 유량·온도를 받는다. 외기 `vrg.Plant.Ambient`·이벤트 `ambient`.
   F3: 냉수(CHW) 루프와 칠러(DOE-2 곡선, 범위 밖 카르노 외삽·전부하 COP 상한, N+1 단계), 응축수(CW) + 드라이쿨러, CRAH 코일은 유한 냉수(공기 솔버에 등가 UA).
@@ -121,6 +123,7 @@ F0(근거 수집)·F1(FWS 수력망)·F2(드라이쿨러·설비수 열)·F3(냉
   냉각탑·UPS·배전·조명이 없어 냉각 PUE이지 시설 PUE가 아니다. 칠러 운전점은 늘 공개 곡선 범위 밖(카르노 외삽, 추정), 설비 물 체적·밸브 행정·보충수 온도는 추정,
   직렬의 바이패스는 고정 저항, 역류 분기는 열에서 유량 0, 보충수 공급 무제한, 이코노마이저는 꺼져도 물이 지난다(바이패스 밸브 없음).
   설비 장비는 설계일 정확 용량(임의 여유율 없음), 드라이쿨러는 공기가 물보다 차갑지 않으면 팬 정지(자연대류 무시). 설비 마당 표시는 도식 위치(헤더 + 직교 차선, Enable 0·배치 모드에서는 구조만, L_Test 표시 겹침 0쌍)이고 사용자 화면 확인 전이다.
+- 2026-11-12 실제 데이터센터 대조(`docs/기록/09` 같은 날 절)에서 남긴 단순화: TCS 헤더가 바닥 위 0.25 m(실제는 이중 바닥 아래나 천장 위 트레이), 네트워크 패브릭 스위치 열 대부분 없음(32랙이면 약 100대·약 80 kW 추정, 모델은 스파인 8대), CDU 2차 여과기(25~50 µm) 없음, 배관 3 m마다 유량·수온 계측(실제는 CDU·랙 BMC, 배관은 감지 로프만), CDU 외형(0.9×0.8×1.9 m)이 업체 제품(약 0.9×1.24×2.12 m)보다 작음, 방 높이 약 3.6 m·콜드 통로 2.4 m(AI 홀 4~6 m·통로 1.2~1.8 m, 추정), 자동 생성 랙 기본 치수 1.2×0.6×2.0 m(L_Test는 실제 1.068×0.6×2.236 m).
 - CDU 펌프 손실열의 냉각수/공기 분배, CDU·헤더 냉각수 체적의 열 지연. CDU 두 펌프 동시 운전·이중 전원, CDU 새 제어 설정의 배치 저장 없음.
 - 습도·결로 물리 없음: 방 이슬점은 입력값 하나(15 °C)로 CDU 공급 + 2 K 검사만 한다. PG25 물성은 온도 상수, 바닥 물은 물 물성.
 - S2b: 과열 판정 문턱 85 °C는 추정값(공개 Tj 최대 미확인). 재고 고갈은 "냉각수 유량 0"까지만(2상 거동·루프 열용량 감소 없음), 탱크 열용량 없음.
@@ -146,14 +149,14 @@ L_Test32랙·스파인2·CRAH8·33210셀/h0.25m/dt0.02s,200스텝 예열/20s cap
 (에셋으로 빼면 물리 파라미터 기본값이 두 곳으로 흩어진다). 값의 범위·증분은 `FDebugKnob`이 들고 있어 월드 없이 테스트한다.
 
 - **공통:** `Enter` 배치 ↔ 시뮬레이션, `H` 단축키 목록, 우클릭 + 마우스 회전·`WASD`·`Q/E` 카메라, 휠 전후 이동(우클릭+휠은 속도).
-- **배치 모드:** 클릭 선택, `Shift`+클릭 추가/제거, 빈 곳 드래그 사각형 선택, 드래그 이동(5 cm 스냅, `Alt` 해제, 줄 붙이기),
+- **배치 모드:** 클릭 선택, `Shift`+클릭 추가/제거, 빈 곳 드래그 사각형 선택, 드래그 이동(공기 셀 선 스냅·바닥 격자 표시, 2026-11-12; `vrg.Layout.CellSnap 0`이면 5 cm, `Alt` 해제, 줄 붙이기),
   `R` 90° 회전(벽 하나 선택 시 크기 기즈모), `W/E/R/Space` 벽 기즈모, `F` 선택 보기, `Delete`, `Ctrl+D` 복제,
   `Ctrl+Z/Y`, `G/T` 시선 잡기·회전(보조), `C` 컨테인먼트 순환, `Esc` 취소. 팔레트 버튼으로 장비·방 설정·천장 편집.
 - **시뮬레이션 모드:** `1/2` CPU 발열, `3/4` GPU 발열, `5/6` CDU 펌프 차압 설정 배율(회전수비 r에 해당, 설정 × r²), `7/8` 라디에이터 UA(랙별 라디에이터 모드에서만),
   `9/0` 부하율, `E` 바라보는 유닛 하나 뽑기/꽂기, `R` 현재 배치로 t=0 재시작, `L` 누수 도구(외부5/30mm·내부1/3mm → 파단 → 수리 → 끔, `B` 내부 종류 순환, 클릭 적용, 도구 중 `E` 탈착 차단·`Esc` 끔), `V` 공기 보기 순환(온도 볼륨 → 유선 속도 → 유선 온도 → 유선+볼륨 → 평면 → 화살표). 발열 손잡이는 각 부품 기본값에 배율로 적용한다.
 - **주요 콘솔:** `vrg.Air.RunSteps <N>`, `vrg.Air.CellSize <h> 0.25`, `vrg.Air.Gpu -1|0|1`, `vrg.Air.Turbulence`, `vrg.Sim.CrahLayout 0|1|2`,
   `vrg.Sim.Containment 0|1|2`, `vrg.Sim.CoolantRejection 0|1`, `vrg.Eval.Event/Report/ReportWhenDone/Compare`, `vrg.Layout.Save/Load`,
-  `vrg.Perf.Capture <초> [라벨] [quit]`, `vrg.Leak.Add/Size/Clear/Status/Sites/At/Repair/Direction/Recover`, `vrg.Sensors.Fault/FalseRate/ResetLeak`, `vrg.Water.Status/Show/CellM/Gpu/Impact`, `vrg.Web.Enable/Port/AutoOpen`, `vrg.Leak.AutoIsolate`, `vrg.Air.View/PlanHeight`, `vrg.Valve`(이벤트 `valve`·`leak`·`leakat`), `vrg.Cdu.PumpFault/PumpRepair <줄>`, `vrg.Plant.Enable/Topology/Ambient/Fault/Show`(이벤트 `ambient`·`plant`), `vrg.Pipes.Temperature`, `vrg.Sensors.PipeIntervalM`, `vrg.Hud.Temps/TempsRange`, `vrg.Cam <x y z m> <피치> <요>`, `vrg.Room.Shell`, `vrg.Patch.Map`, `vrg.Web.Enable`, `vrg.Hud.Debug`.
+  `vrg.Perf.Capture <초> [라벨] [quit]`, `vrg.Leak.Add/Size/Clear/Status/Sites/At/Repair/Direction/Recover`, `vrg.Sensors.Fault/FalseRate/ResetLeak`, `vrg.Water.Status/Show/CellM/Gpu/Impact`, `vrg.Web.Enable/Port/AutoOpen`, `vrg.Layout.CellSnap/Grid`, `vrg.Air.FitWorldAligned`, `vrg.Leak.AutoIsolate`, `vrg.Air.View/PlanHeight`, `vrg.Valve`(이벤트 `valve`·`leak`·`leakat`), `vrg.Cdu.PumpFault/PumpRepair <줄>`, `vrg.Plant.Enable/Topology/Ambient/Fault/Show`(이벤트 `ambient`·`plant`), `vrg.Pipes.Temperature`, `vrg.Sensors.PipeIntervalM`, `vrg.Hud.Temps/TempsRange`, `vrg.Cam <x y z m> <피치> <요>`, `vrg.Room.Shell`, `vrg.Patch.Map`, `vrg.Web.Enable`, `vrg.Hud.Debug`.
   `-ExecCmds`로 여러 명령을 줄 때는 **쉼표**로 나눈다.
 
 화면에는 단축키 안내와 시뮬레이션 모드 계측 라벨(캐비닛 최고 부품, 흡기 센서·냉각수, 배관 지점 유량·수온, 설비 장비 값, 누수 경보; `vrg.Hud.Temps 0|1`·`vrg.Hud.TempsRange <m>`, 2026-10-22 사용자 요청)만 둔다.

@@ -247,6 +247,11 @@ static FAutoConsoleCommand GVrgAirResizeCommand(
 // The optional quantum rounds the fitted span up to a multiple of it, so grids of h and h/2 cover the same room
 // (plain ceil(span / h) gives a different ceiling height at each h).
 static double GVrgFitSpanQuantumM = 0.0;
+// 2026-11-12 (layout cell snap): the auto-fitted grid's XY origin sits on the world lattice of the cell size (or of the
+// span quantum when one is set), so the layout floor grid, the snapped equipment edges and the air cells coincide.
+// Display/placement choice, not physics: it moves the domain by less than one cell. 0 = the old free origin.
+static TAutoConsoleVariable<int32> CVarVrgFitWorldAligned(TEXT("vrg.Air.FitWorldAligned"), 1,
+	TEXT("1 (default): auto-fitted air grid origin on the world cell lattice (X, Y). 0: origin at the padded equipment bounds."));
 static FAutoConsoleCommand GVrgAirCellSizeCommand(
 	TEXT("vrg.Air.CellSize"),
 	TEXT("셀 폭 [m]을 정한다. 다음 시뮬레이션 진입(격자 맞춤) 때 적용된다. vrg.Air.CellSize <m> [도메인 올림 단위 m]"),
@@ -564,6 +569,13 @@ bool AAirFieldDebugActor::PlanFitToRacks(FAirGridParams& OutParams, FVector& Out
 
 	const double CellSizeM = FMath::Max(GridParams.CellSizeM, VrgRoomAirDomain::MinFitCellSizeM);
 	OutParams = GridParams;
+	if (CVarVrgFitWorldAligned.GetValueOnAnyThread() != 0)
+	{
+		// Floor the XY origin onto the world lattice (the max side keeps covering the bounds through the span below).
+		const double Step = GVrgFitSpanQuantumM > 0.0 ? GVrgFitSpanQuantumM : CellSizeM;
+		BoundsM.Min.X = FMath::FloorToDouble(BoundsM.Min.X / Step + 1e-9) * Step;
+		BoundsM.Min.Y = FMath::FloorToDouble(BoundsM.Min.Y / Step + 1e-9) * Step;
+	}
 
 	FVector SpanM = BoundsM.GetSize();
 	if (GVrgFitSpanQuantumM > 0.0)

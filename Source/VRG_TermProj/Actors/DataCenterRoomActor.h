@@ -200,16 +200,17 @@ public:
 	bool bShowSummary = true;
 
 	// ---- 수력 파라미터 ----
-	// GB200 NVL72 운전점에서 역산했다.
-	//   랙 1대 105 kW 중 액랭 97 kW를 냉각수 ΔT 약 10 K로 빼려면 랙당 2.3 L/s가 필요하다.
-	//   줄에 8대면 18.4 L/s이고, 그 유량에서 루프 전체 압력 강하가 약 195 kPa이 되도록 잡았다.
-	// 감으로 넣은 값이 아니다. 다른 랙을 쓰면 여기부터 다시 역산해야 한다.
+	// 운전점: 랙 2.3 L/s(랙 119 kW, 액랭 약 87 %를 냉각수 ΔT 약 10 K로), 줄 8대 = 18.4 L/s.
+	// 2026-11-12 랙 저항 정정: 공급·회수 분기 합(랙 전체) R = 2 x 7.5e9 = 1.5e10 Pa·s²/m⁶. 출처 = Lenovo GB300 NVL72
+	//   사용자 가이드 표(공급 25~45 °C에서 59/71/89/119/177 LPM, 랙 ΔP 2.3/3.2/4.9/8.5/18.4 psi -> R 1.46~1.64e10).
+	//   GB200 NVL72 값은 공개 자료로 확인하지 못해 같은 랙 구조의 GB300 값을 쓴다(추정). 2.3 L/s에서 랙 ΔP 79.4 kPa.
+	//   이전 값 1.7e10(분기당, 랙 179.9 kPa)은 "루프 전체 약 195 kPa"로 잡은 출처 없는 값이었다(docs/기록/09 2026-11-12 절).
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hydraulics")
 	double HeaderSegmentResistancePaS2M6 = 6.0e6;
 
-	// 슬롯이 전부 찼을 때의 랙 분기 저항. 유닛을 뽑으면 R*(N/n)^2로 올라간다.
+	// 슬롯이 전부 찼을 때의 랙 분기 저항(공급·회수 각각). 유닛을 뽑으면 R*(N/n)^2로 올라간다.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hydraulics")
-	double RackBranchResistancePaS2M6 = 1.7e10;
+	double RackBranchResistancePaS2M6 = 7.5e9;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hydraulics")
 	double ReturnToCduResistancePaS2M6 = 1.5e7;
@@ -222,10 +223,10 @@ public:
 	double FallbackCduReferencePressurePa = 2.0e5;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hydraulics")
-	double FallbackPumpShutoffHeadPa = 4.0e5;
+	double FallbackPumpShutoffHeadPa = 1.94e5;   // 2026-11-12: 4e5 x 0.485 (rack resistance correction, see RackBranchResistancePaS2M6)
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hydraulics")
-	double FallbackPumpCurveCoeffPaS2M6 = 6.0e8;
+	double FallbackPumpCurveCoeffPaS2M6 = 2.91e8;   // 2026-11-12: 6e8 x 0.485
 
 	// 디버그 키용. 레벨의 모든 CDU에 같은 회전수비를 준다.
 	UFUNCTION(BlueprintCallable, Category = "Hydraulics")
