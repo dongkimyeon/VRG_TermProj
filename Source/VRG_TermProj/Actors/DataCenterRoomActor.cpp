@@ -438,6 +438,15 @@ bool ADataCenterRoomActor::ControlCduPumps(double DtS)
 	return bChanged;
 }
 
+void ADataCenterRoomActor::SetCoolantMakeup(bool bOn)
+{
+	Inventory.SetMakeupWater(bOn);
+	FallbackExpansionTank.bMakeupWater = bOn;
+	if (UWorld* World = GetWorld())
+		for (TActorIterator<ACoolingDistributionUnitActor> It(World); It; ++It) It->ExpansionTank.bMakeupWater = bOn;
+	UE_LOG(LogTemp, Display, TEXT("[Leak] 냉각수 자동 보충 %s (CDU 탱크 %d개, 보충 유량·온도는 추정값)"), bOn ? TEXT("켬") : TEXT("끔"), Inventory.GetTanks().Num());
+}
+
 bool ADataCenterRoomActor::FailRowCduPump(int32 RowIndex)
 {
 	if (!Rows.IsValidIndex(RowIndex) || !Rows[RowIndex].Cdu || !Rows[RowIndex].Cdu->FailRunningPump()) return false;

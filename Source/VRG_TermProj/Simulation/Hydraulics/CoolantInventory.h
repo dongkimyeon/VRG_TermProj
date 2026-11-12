@@ -110,6 +110,9 @@ public:
 	// 2026-11-03 (CDU pump VFD control): the speed the controller settled at build is the tank's "as built" speed
 	// (Restart returns to it). The controller is the only caller.
 	void SetBuiltPumpSpeed(int32 TankIndex, double SpeedRatio) { if (Tanks.IsValidIndex(TankIndex)) Tanks[TankIndex].PumpSpeedRatio = SpeedRatio; }
+	// 2026-11-12 (presentation scenario): switch every loop's automatic make-up on or off from the next step (the tank keeps
+	// its water; a depleted loop stays depleted until Restart). Marks the hydraulics dirty.
+	void SetMakeupWater(bool bOn) { for (FTank& T : Tanks) T.Params.bMakeupWater = bOn; bDirty = true; }
 	const TArray<FTank>& GetTanks() const { return Tanks; }
 	double GetTankGaugePressurePa(int32 Tank) const;
 	int32 GetNumSolves() const { return NumSolves; }

@@ -25,6 +25,9 @@ struct VRG_TERMPROJ_API FVrgDashboardSummary
 	int32 InletCount = 0;
 	double InletWindowMeanMaxK = 0.0;
 	double InletWindowMeanAvgK = 0.0;
+	// 2026-11-12 (presentation): requested time scale (vrg.Sim.Speed) and the simulated seconds per real second achieved
+	// over the last second (lower than requested when the steps cannot keep up). Optional in JSON.
+	double SimSpeed = 1.0, AchievedSimSpeed = 0.0;
 
 	FString ToJson() const;
 	static bool FromJson(const FString& Json, FVrgDashboardSummary& Out);

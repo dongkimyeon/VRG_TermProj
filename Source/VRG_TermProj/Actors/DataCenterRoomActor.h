@@ -292,6 +292,9 @@ public:
 	// N+1 pump fault of a row's CDU (runtime, D4: the loop's response comes from the network solve). Returns false if
 	// the row has no CDU or no healthy pump left. Console: vrg.Cdu.PumpFault <row>, vrg.Cdu.PumpRepair <row>.
 	bool FailRowCduPump(int32 RowIndex);
+	// 2026-11-12: automatic coolant make-up of every CDU tank (also the CDU settings, so R restarts with it; the fallback
+	// tank too). Real CDUs refill from a reservoir; the model's make-up rate and temperature are ESTIMATES (FExpansionTankParams).
+	void SetCoolantMakeup(bool bOn);
 	bool RepairRowCduPumps(int32 RowIndex);
 
 	// 배관을 다시 이었는지. 통합 액터가 이번 스텝에 유량이 바뀌었는지 알아야 한다.

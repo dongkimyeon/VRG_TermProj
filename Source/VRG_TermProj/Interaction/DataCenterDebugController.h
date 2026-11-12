@@ -501,6 +501,9 @@ private:
 	void OnCycleLeakSiteKind();
 	// Air display modes (V). Plan view moves the camera above the room and the next mode puts it back.
 	void OnCycleAirView();
+	// 2026-11-12: time scale steps 0.5 / 1 / 2 / 4 (keys [ and ], vrg.Sim.Speed).
+	void OnSimSpeedDown();
+	void OnSimSpeedUp();
 	FVector PlanSavedEyeCm = FVector::ZeroVector;
 	FRotator PlanSavedLook = FRotator::ZeroRotator;
 	bool bPlanViewSaved = false;

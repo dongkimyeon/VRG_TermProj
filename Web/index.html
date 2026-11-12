@@ -379,7 +379,9 @@ async function pollSnapshot() {
   if (!r.ok) throw new Error(r.status === 503 ? '시뮬레이션 액터가 아직 값을 내지 않았다' : 'HTTP ' + r.status);
   const s = await r.json();
   $('t').textContent = s.simTimeS.toFixed(2) + ' s';
-  $('mode').textContent = s.mode === 'simulation' ? '시뮬레이션 모드' : '배치 모드 (물리 정지)';
+  // 2026-11-12: 배속(요청 / 최근 1 s 실제). 실제가 요청보다 낮으면 스텝 계산이 따라가지 못하는 것이다.
+  const speed = s.simSpeed === undefined ? '' : ` · 배속 x${s.simSpeed}` + (s.mode === 'simulation' && s.achievedSimSpeed > 0 ? ` (실제 x${s.achievedSimSpeed.toFixed(1)})` : '');
+  $('mode').textContent = (s.mode === 'simulation' ? '시뮬레이션 모드' : '배치 모드 (물리 정지)') + speed;
   if (s.evalReady) {
     $('it').textContent = kw(s.itWindowW);
     $('itnote').textContent = '창 평균 ' + s.windowS.toFixed(0) + ' s · 현재 ' + kw(s.itNowW);

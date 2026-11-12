@@ -368,7 +368,7 @@ void ADataCenterSimulationActor::EnterSimulationMode()
 	bSimRunning = true;
 	// 2026-11-11 (user request): the first simulation start of a normal run turns the web dashboard on and opens it in the
 	// browser (vrg.Web.AutoOpen; display only, no physics input; skipped in tests and -unattended measurement runs).
-	if (GetWorld() != nullptr && GetWorld()->IsGameWorld()) FVrgWebDashboard::Get().AutoOpenOnSimulationStart();
+	if (!bPlantPreviewEntry && GetWorld() != nullptr && GetWorld()->IsGameWorld()) FVrgWebDashboard::Get().AutoOpenOnSimulationStart();
 	RebuildLiveLeakSites();   // W1: room sites are built closed with the rows; the plant nodes exist once BuildCoupling built it
 	// W2: no water anywhere at t = 0; the tanks start full (their leaked volume is the spray's starting point).
 	Spray.Reset(BuildSprayGeometry(&WaterSourceTargets), Spray.GetSettings(), Spray.GetFluid(), Spray.GetCoolantFluid());
@@ -2171,7 +2171,9 @@ void ADataCenterSimulationActor::Tick(float DeltaTime)
 			if (!bPlantBuilt && bShowPlant)
 			{
 				UE_LOG(LogTemp, Display, TEXT("[Plant] 배치 모드 시작: 설비 계통을 그리려고 한 번 구성한다(물리 시간은 진행하지 않음)."));
+				bPlantPreviewEntry = true;   // not a user start: no web auto-open here
 				EnterSimulationMode();
+				bPlantPreviewEntry = false;
 				if (Mode == ESimMode::Simulation) EnterLayoutMode();
 			}
 		}
@@ -2210,8 +2212,24 @@ void ADataCenterSimulationActor::Tick(float DeltaTime)
 	{
 		// 규약 4: 시계가 남은 시간을 버리지 않고 다음 프레임으로 넘긴다.
 		// 다만 공기 압력 풀이가 무거워 프레임당 스텝 수는 따로 제한한다.
-		const int32 RequestedSteps = Clock.BeginFrame(DeltaTime);
-		const int32 NumSteps = FMath::Min(RequestedSteps, MaxStepsPerFrame);
+		// 2026-11-12: time scale (vrg.Sim.Speed). Same fixed steps, more of them per frame; the cap grows with the scale.
+		const double Speed = GetRequestedSimSpeed();
+		const int32 RequestedSteps = Clock.BeginFrame(DeltaTime * Speed);
+		int32 NumSteps = FMath::Min(RequestedSteps, MaxStepsPerFrame * FMath::Max(1, FMath::CeilToInt32(Speed)));
+		// Above x1 the steps of one frame also stay within a wall-time budget (from the measured step cost), so the picture
+		// stays smooth and the achieved scale is whatever fits; the clock keeps the rest and drops only beyond its own cap
+		// (it never skips simulated time: SimTime only moves in whole steps). Measured 2026-11-12 on L_Test: without it x2
+		// with a leak fell to 10 FPS. x1 keeps the old per-frame cap exactly (FPS records unchanged).
+		if (Speed > 1.0 + 1e-9 && AvgStepWallMs > 0.0)
+			NumSteps = FMath::Clamp(FMath::RoundToInt32(SpeedStepBudgetMs / AvgStepWallMs), 1, NumSteps);
+		const double StepsWallStartS = FPlatformTime::Seconds();
+		SpeedWindowWallS += DeltaTime;
+		SpeedWindowSimS += NumSteps * Clock.GetFixedStepS();
+		if (SpeedWindowWallS >= 1.0)
+		{
+			AchievedSimSpeed = SpeedWindowSimS / SpeedWindowWallS;
+			SpeedWindowWallS = SpeedWindowSimS = 0.0;
+		}
 
 		// 배관을 다시 이었으면 유량이 바뀐 것이다. 다리에 알려 준다.
 		const bool bHydraulicsResolved = (Room != nullptr) && Room->ConsumeRebuiltFlag();
@@ -2248,6 +2266,12 @@ void ADataCenterSimulationActor::Tick(float DeltaTime)
 			}
 		}
 
+		if (NumSteps > 0)
+		{
+			// Step cost seen by this frame [ms per step], smoothed (feeds the x>1 budget above).
+			const double PerStepMs = (FPlatformTime::Seconds() - StepsWallStartS) * 1000.0 / NumSteps;
+			AvgStepWallMs = AvgStepWallMs > 0.0 ? .8 * AvgStepWallMs + .2 * PerStepMs : PerStepMs;
+		}
 		// 표시용 시각을 맞춰 준다. 이 액터의 시계가 유일한 시계다.
 		for (ARackThermalActor* Rack : Racks)
 		{
@@ -2376,6 +2400,9 @@ void ADataCenterSimulationActor::RebuildLiveLeakSites()
 			const int32 RackIndex = Routed.IndexOfByKey(Room->GetLeakSpecRack(S));
 			Site.Label = FString::Printf(TEXT("랙 %d %s"), RackIndex,
 				Room->IsLeakSpecHeader(S) ? TEXT("공급 헤더") : Room->IsLeakSpecReturnBranch(S) ? TEXT("회수 분기") : TEXT("공급 분기"));
+			// 2026-11-12: a space-free key for scripts and -ExecCmds (room:<routed rack>:header|return|supply).
+			Site.Key = FString::Printf(TEXT("room:%d:%s"), RackIndex,
+				Room->IsLeakSpecHeader(S) ? TEXT("header") : Room->IsLeakSpecReturnBranch(S) ? TEXT("return") : TEXT("supply"));
 		}
 	}
 	if (bPlantActive && Plant.IsThermalActive())
@@ -3056,6 +3083,8 @@ FVrgDashboardSummary ADataCenterSimulationActor::BuildDashboardSummary() const
 	FVrgDashboardSummary S;
 	S.SimTimeS = Clock.GetSimTimeS();
 	S.bSimulating = Mode == ESimMode::Simulation;
+	S.SimSpeed = GetRequestedSimSpeed();
+	S.AchievedSimSpeed = S.bSimulating ? AchievedSimSpeed : 0.0;
 	S.bEvalReady = bEvalReady && Eval.GetNumInlets() > 0;
 	if (S.bEvalReady)
 	{
@@ -3977,6 +4006,12 @@ void ADataCenterSimulationActor::EvalBeforeStep()
 			// S8 F6b: facility leak / trip at this step's start (rule 4), before PlantBeforeStep hands the flows over.
 			ApplyPlantFault(E.Args);
 		}
+		else if (E.Kind == TEXT("cdupump") && Room != nullptr)
+		{
+			// 2026-11-12: the running pump of row Index's CDU fails at this step's start (same as vrg.Cdu.PumpFault; the
+			// standby takes over after its switch time, a second event fails that one too).
+			if (!Room->FailRowCduPump(E.Index)) UE_LOG(LogTemp, Warning, TEXT("[VrgEval] t=%.2f s cdupump: 줄 %d에 CDU가 없거나 남은 정상 펌프가 없다"), NowS, E.Index);
+		}
 		else if (E.Kind == TEXT("sensor") && E.Args.Num() >= 1)
 		{
 			ESensorHealth Health;
@@ -4442,7 +4477,7 @@ static FAutoConsoleCommand GVrgEvalReportCommand(
 
 static FAutoConsoleCommand GVrgEvalEventCommand(
 	TEXT("vrg.Eval.Event"),
-	TEXT("시각 이벤트를 넣는다(시뮬레이션 진입마다 다시 적용). vrg.Eval.Event <t s> util <0~1> | <t s> rackutil <랙 번호> <0~1> | <t s> valve <랙 번호> close|open | <t s> leak <랙 번호> <supply|return> <mm> | <t s> ambient <외기 C> | <t s> plant <vrg.Plant.Fault 인자> | <t s> leakat <x m> <y m> <z m> <mm>(실시간 누수, 가장 가까운 지점, 0 = 수리) | <t s> sensor <감지기 번호|rack:<랙>:slot:<슬롯>:cold|manifold> ok|open|stuckwet|stuckdry | <t s> resetleak <번호|all> | <t s> recover all|rack <번호>|row <번호> | clear"),
+	TEXT("시각 이벤트를 넣는다(시뮬레이션 진입마다 다시 적용). vrg.Eval.Event <t s> util <0~1> | <t s> rackutil <랙 번호> <0~1> | <t s> valve <랙 번호> close|open | <t s> leak <랙 번호> <supply|return> <mm> | <t s> ambient <외기 C> | <t s> plant <vrg.Plant.Fault 인자> | <t s> leakat <x m> <y m> <z m> <mm>(실시간 누수, 가장 가까운 지점, 0 = 수리) | <t s> sensor <감지기 번호|rack:<랙>:slot:<슬롯>:cold|manifold> ok|open|stuckwet|stuckdry | <t s> resetleak <번호|all> | <t s> recover all|rack <번호>|row <번호> | <t s> cdupump <줄 번호> | clear"),
 	FConsoleCommandWithArgsDelegate::CreateLambda([](const TArray<FString>& Args)
 	{
 		for (ADataCenterSimulationActor* Sim : EvalSimActors())
@@ -4463,6 +4498,7 @@ static FAutoConsoleCommand GVrgEvalEventCommand(
 			else if (E.Kind == TEXT("sensor") && Args.Num() >= 4) { E.Args = { Args[3], Args[2] }; }   // W5 follow-up: detector health, then its selector
 			else if (E.Kind == TEXT("resetleak")) { E.Index = Args[2].Equals(TEXT("all"), ESearchCase::IgnoreCase) ? INDEX_NONE : FCString::Atoi(*Args[2]); }
 			else if (E.Kind == TEXT("recover")) { for (int32 I = 2; I < Args.Num(); ++I) E.Args.Add(Args[I]); }   // all | rack N | row N
+			else if (E.Kind == TEXT("cdupump")) { E.Index = FCString::Atoi(*Args[2]); }   // 2026-11-12: row of the CDU whose running pump fails
 			else { UE_LOG(LogTemp, Warning, TEXT("[VrgEval] 모르는 이벤트: %s"), *E.Kind); continue; }
 			Sim->EvalEvents.Add(E);
 			Sim->EvalEvents.StableSort([](const ADataCenterSimulationActor::FEvalEvent& L, const ADataCenterSimulationActor::FEvalEvent& R) { return L.TimeS < R.TimeS; });

@@ -376,6 +376,8 @@ void ADataCenterDebugController::SetupInputComponent()
 		{ TEXT("LeakTool"), EKeys::L, &ADataCenterDebugController::OnCycleLeakTool },   // W1 live leak (simulation mode)
 		{ TEXT("LeakSiteKind"), EKeys::B, &ADataCenterDebugController::OnCycleLeakSiteKind }, // W3.5, only while L tool is active
 		{ TEXT("AirView"), EKeys::V, &ADataCenterDebugController::OnCycleAirView },     // air display modes (simulation mode)
+		{ TEXT("SimSpeedDown"), EKeys::LeftBracket, &ADataCenterDebugController::OnSimSpeedDown },   // 2026-11-12 time scale
+		{ TEXT("SimSpeedUp"), EKeys::RightBracket, &ADataCenterDebugController::OnSimSpeedUp },
 	};
 
 	for (const FBinding& Binding : Bindings)
@@ -3696,6 +3698,13 @@ void ADataCenterDebugController::GetHelpLines(TArray<FString>& Out) const
 	if (!bShowHelp)
 	{
 		FString Line = bLayout ? TEXT("H 단축키 보기 | Enter 시뮬레이션") : TEXT("H 단축키 보기 | Enter 배치 모드");
+		if (!bLayout)
+		{
+			// 2026-11-12: time scale, requested and achieved (the steps may not keep up), and the simulated clock.
+			const ADataCenterSimulationActor* Sim = FindSimActor();
+			const double Req = ADataCenterSimulationActor::GetRequestedSimSpeed();
+			if (Sim) Line += FString::Printf(TEXT(" | [ ] 배속 x%g (실제 x%.1f) | t = %.1f s"), Req, Sim->GetAchievedSimSpeed(), Sim->GetSimClockTimeS());
+		}
 		if (bLayout && GetLayoutGizmoTarget())
 		{
 			Line += FString::Printf(TEXT(" | 벽 기즈모: %s (W 이동 · E 회전 · R 크기 · Space 전환 · Alt 스냅 끔)"),
@@ -3718,6 +3727,7 @@ void ADataCenterDebugController::GetHelpLines(TArray<FString>& Out) const
 		TEXT("[장비] E 바라보는 유닛 뽑기/꽂기"),
 		TEXT("[누수] L 누수 도구(5 mm → 30 mm → 파단 → 수리 → 끔) · 지점 클릭 적용(회색 닫힘·빨강 열림·노랑 조준) · Esc 끄기"),
 		TEXT("[보기] V 공기 표시: 온도 볼륨 → 유선(속도) → 유선(온도) → 유선+볼륨 → 평면(위에서) → 화살표"),
+		TEXT("[시간·시연] [ / ] 배속 0.5·1·2·4배 · 콘솔 vrg.Demo leak | leakprotect | pump | flood | valve | heatwave | clear"),
 	};
 	if (bLayout) for (const TCHAR* Text : LayoutLines) Out.Add(Text);
 	else for (const TCHAR* Text : SimLines) Out.Add(Text);
@@ -3730,6 +3740,24 @@ namespace
 		return Mode == 1 ? TEXT("5 mm") : Mode == 2 ? TEXT("30 mm") : Mode == 3 ? TEXT("파단(관 안지름)") : Mode == 4 ? TEXT("수리") : TEXT("끔");
 	}
 }
+
+namespace
+{
+	// 2026-11-12: presenter steps of the time scale (vrg.Sim.Speed); any other value set in the console snaps to the next step.
+	const double SimSpeedSteps[] = { 0.5, 1.0, 2.0, 4.0 };
+	void StepSimSpeed(int32 Dir)
+	{
+		const double Now = ADataCenterSimulationActor::GetRequestedSimSpeed();
+		double Next = Now;
+		if (Dir > 0) { Next = SimSpeedSteps[UE_ARRAY_COUNT(SimSpeedSteps) - 1]; for (const double S : SimSpeedSteps) if (S > Now + 1e-6) { Next = S; break; } }
+		else { Next = SimSpeedSteps[0]; for (int32 I = UE_ARRAY_COUNT(SimSpeedSteps) - 1; I >= 0; --I) if (SimSpeedSteps[I] < Now - 1e-6) { Next = SimSpeedSteps[I]; break; } }
+		ADataCenterSimulationActor::SetRequestedSimSpeed(Next);
+		UE_LOG(LogTemp, Display, TEXT("[VrgSim] 배속 x%.2f"), Next);
+	}
+}
+
+void ADataCenterDebugController::OnSimSpeedDown() { if (!bRoomSettingsOpen) StepSimSpeed(-1); }
+void ADataCenterDebugController::OnSimSpeedUp() { if (!bRoomSettingsOpen) StepSimSpeed(+1); }
 
 void ADataCenterDebugController::OnCycleAirView()
 {

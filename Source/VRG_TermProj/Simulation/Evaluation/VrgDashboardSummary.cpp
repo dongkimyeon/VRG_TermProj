@@ -28,6 +28,8 @@ FString FVrgDashboardSummary::ToJson() const
 	Root->SetNumberField(TEXT("inletCount"), InletCount);
 	Root->SetNumberField(TEXT("inletWindowMeanMaxK"), InletWindowMeanMaxK);
 	Root->SetNumberField(TEXT("inletWindowMeanAvgK"), InletWindowMeanAvgK);
+	Root->SetNumberField(TEXT("simSpeed"), SimSpeed);
+	Root->SetNumberField(TEXT("achievedSimSpeed"), AchievedSimSpeed);
 	FString Json;
 	FJsonSerializer::Serialize(Root, TJsonWriterFactory<>::Create(&Json));
 	return Json;
@@ -50,6 +52,8 @@ bool FVrgDashboardSummary::FromJson(const FString& Json, FVrgDashboardSummary& O
 	S.bSimulating = Mode == TEXT("simulation");
 	S.InletCount = int32(Count);
 	S.bPartialPueValid = Root->TryGetNumberField(TEXT("partialPueWindow"), S.PartialPueWindow);
+	Root->TryGetNumberField(TEXT("simSpeed"), S.SimSpeed);                 // optional (2026-11-12)
+	Root->TryGetNumberField(TEXT("achievedSimSpeed"), S.AchievedSimSpeed);
 	Out = S;
 	return true;
 }

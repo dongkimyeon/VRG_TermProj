@@ -162,9 +162,24 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Simulation")
 	double FixedStepS = 0.02;
 
-	// 한 프레임에 돌릴 스텝 수 상한. 공기 압력 풀이가 무거워서 필요하다.
+	// 한 프레임에 돌릴 스텝 수 상한. 공기 압력 풀이가 무거워서 필요하다. 배속 s일 때는 이 값 × ceil(s)까지 허용한다.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Simulation", meta = (ClampMin = "1", ClampMax = "16"))
 	int32 MaxStepsPerFrame = 4;
+
+	// 2026-11-12 (발표 시연): 실제 1초에 시뮬레이션 몇 초를 진행할지(vrg.Sim.Speed, 키 [ ]). 물리 스텝(FixedStepS)은 그대로이고
+	// 프레임마다 더 많은 스텝을 돌릴 뿐이다(규약 4: 시간을 건너뛰지 않는다). 스텝 비용이 따라가지 못하면 실제 배속은 요청보다 낮다.
+	static double GetRequestedSimSpeed();
+	static void SetRequestedSimSpeed(double Speed);
+	// 최근 약 1 s 동안 진행한 시뮬레이션 시간 / 실제 시간(시뮬레이션 모드에서만, 아니면 0).
+	double GetAchievedSimSpeed() const { return AchievedSimSpeed; }
+	// Above x1, the steps of one frame stay within this wall-time budget [ms] (display choice, about 30 FPS left for
+	// rendering on the 2026-11-12 desktop; not physics). Tests that need the exact scale raise it.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Simulation")
+	double SpeedStepBudgetMs = 22.0;
+	double GetSimClockTimeS() const { return Clock.GetSimTimeS(); }
+	// 2026-11-12 (발표 시연): 지금 SimTime + 2 s부터 미리 정한 장애 시나리오를 이벤트로 예약한다(vrg.Demo). 결과는 기존 모델이
+	// 계산한다(누수 → 분사·바닥 물·감지·재고 고갈, 펌프 고장 → 유량, 밸브 → 격리 등, D4). 반환 = 화면·로그용 설명(실패면 이유).
+	FString StartDemoScenario(const FString& Name, bool& bOk);
 
 	// 랙 냉각수(TCS) 밀도 [kg/m^3]. 방 수력의 체적유량을 질량유량으로 바꾸고 정수압·누수 오리피스에 쓴다.
 	// 2026-11-03: PG25(TcsCoolant.h). 설비수(FWS·CHW·CW)는 FacilityWater::DensityKgM3로 따로 둔다.
@@ -744,6 +759,10 @@ private:
 	// Game-thread copy for the web dashboard (rule 5), every DashboardPublishPeriodS of real time while it runs.
 	void PublishDashboard();
 	double LastDashboardPublishS = -1.0e9;
+	// Achieved time scale over about one real second (see GetAchievedSimSpeed).
+	double SpeedWindowWallS = 0.0, SpeedWindowSimS = 0.0, AchievedSimSpeed = 0.0;
+	double AvgStepWallMs = 0.0;   // smoothed wall cost of one step [ms] (feeds SpeedStepBudgetMs)
+	bool bPlantPreviewEntry = false;   // the layout-start plant preview's brief entry (not a user start)
 	static constexpr double DashboardPublishPeriodS = 0.5;
 	FSimClock Clock;
 	FCouplingBridge Bridge;
