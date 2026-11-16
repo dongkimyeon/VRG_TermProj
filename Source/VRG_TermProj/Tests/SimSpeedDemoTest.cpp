@@ -61,6 +61,8 @@ bool FSimSpeedDemoTest::RunTest(const FString& Parameters)
 	bool bOk = true;
 	Sim->StartDemoScenario(TEXT("nosuch"), bOk);
 	TestFalse(TEXT("unknown scenario rejected"), bOk);
+	Sim->StartDemoScenario(TEXT("heatwave"), bOk);
+	TestTrue(TEXT("heatwave needs the plant model (rejected while vrg.Plant.Enable 0)"), !bOk && Sim->EvalEvents.Num() == 0);
 	const FHydraulicNetwork& Net = Room->GetNetwork();
 	const int32 Pump = Room->GetRowPumpIndex(0);
 	const double FlowBefore = Net.GetPumpFlowM3s(Pump);

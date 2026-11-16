@@ -27,8 +27,9 @@ namespace
 			TEXT("보충수가 재고를 채워 물이 계속 샌다 → 물줄기·바닥으로 퍼짐 → 물에 닿은 장비 젖음 → 15 s 통전 접촉 뒤 트립(전원 차단) → 장비 테두리 색·사건 목록 (보충 없는 leak 시나리오와 비교)") },
 		{ TEXT("valve"), TEXT("운전자 실수: 랙 3 분기 밸브를 잘못 닫음"),
 			TEXT("그 랙만 냉각수 유량 0, 나머지 줄은 펌프 차압 제어로 유지(격리 범위 ≠ 수력 영향 범위, D4) → 그 랙 칩 온도 상승") },
-		{ TEXT("heatwave"), TEXT("폭염 외기 45 °C + FWS 드라이쿨러 팬 8개 고장(전체 24개 중, 설비 냉각 켬 필요)"),
-			TEXT("외기가 설비수보다 뜨거워 드라이쿨러 0 kW → 트림 칠러만으로 부족 → 설비수 공급 온도가 서서히 상승(2026-11-16 측정 3분에 32 → 36 °C) → CDU 공급·칩 온도, 냉각 PUE(vrg.Plant.Enable 1 후 R 재시작 상태에서)") },
+		// 2026-11-16 사용자 결정: 외기 45 °C에서는 드라이쿨러 팬이 원래 멈춰 고장 이벤트가 무효였다. 설계 외기 35 °C에서 팬 24개 전부 고장으로 바꿨다.
+		{ TEXT("heatwave"), TEXT("한여름 외기 35 °C(설계 외기) + FWS 드라이쿨러 팬 전부 고장(L_Test 24개, 설비 냉각 켬 필요)"),
+			TEXT("드라이쿨러 0 kW → 트림 칠러만으로 부족(용량 부족) → 설비수 공급 온도가 분당 약 2.7 K 상승(2026-11-16 측정: 고장 뒤 1분 33.4 °C, 3분 38.7 °C) → CDU 공급·칩 온도, 냉각 PUE(vrg.Plant.Enable 1 후 R 재시작, 설비 예열 약 1분 뒤 실행 권장)") },
 	};
 }
 
@@ -101,8 +102,9 @@ FString ADataCenterSimulationActor::StartDemoScenario(const FString& InName, boo
 	}
 	else if (Name == TEXT("heatwave"))
 	{
-		Add(T0, TEXT("ambient"), INDEX_NONE, 45.0 + 273.15);
-		Add(T0 + 5.0, TEXT("plant"), INDEX_NONE, 0.0, { TEXT("drycooler"), TEXT("fws"), TEXT("8") });
+		Add(T0, TEXT("ambient"), INDEX_NONE, 35.0 + 273.15);
+		// All FWS dry cooler fans (L_Test: 24). The count is read from the plant so another layout also loses all of them.
+		Add(T0 + 5.0, TEXT("plant"), INDEX_NONE, 0.0, { TEXT("drycooler"), TEXT("fws"), FString::FromInt(Plant.GetNumDryCoolers()) });
 	}
 	EvalEvents.StableSort([](const FEvalEvent& L, const FEvalEvent& R) { return L.TimeS < R.TimeS; });
 	bOk = true;
