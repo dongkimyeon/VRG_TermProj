@@ -3192,11 +3192,11 @@ void ADataCenterDebugController::OnCycleContainment()
 
 void ADataCenterDebugController::OnRotatePlaceable()
 {
+	if (!IsLayoutMode()) { ToggleLookedAtSled(); return; }   // simulation mode: T pulls/pushes the unit being looked at
 	if (bRoomSettingsOpen || bRoomBoundsEditing || bRoomCeilingEditing) return;
 	if (bAddingRack || bMarqueeActive) return;
 	if (GetSelectedLayoutActors().Num() > 1) return;
 	if (IsLayoutDragging()) return;
-	if (!IsLayoutMode()) return;
 	AActor* Target = Grabbed.IsValid() ? Grabbed.Get() : HoveredPlaceable.Get();
 	if (Target == nullptr) return;
 	FRotator R = Target->GetActorRotation();
@@ -3224,13 +3224,19 @@ void ADataCenterDebugController::DrawTargetHighlight() const
 void ADataCenterDebugController::OnToggleSelectedSled()
 {
 	if (bRoomSettingsOpen) return;
-	if (!IsLayoutMode() && (LeakToolMode != 0 || !IsCameraInputAvailable())) return; // E never detaches hardware while aiming a leak
+	// 2026-11-17 (user request): E is also the camera's "up" key, so pressing it to fly up pulled units out in
+	// simulation mode. Units are now pulled/pushed with T (OnRotatePlaceable); E keeps only the layout gizmo role.
 	if (IsLayoutMode())
 	{
 		// E flies up with RMB held; without it, E is the barrier gizmo's rotate mode (Unreal W/E/R).
 		if (OpenPatchMaps == 0 && IsEquipmentInputAvailable() && !IsInputKeyDown(EKeys::RightMouseButton)) SetLayoutGizmoMode(ELayoutGizmoMode::Rotate);
-		return; // never undocks hardware in layout
 	}
+}
+
+void ADataCenterDebugController::ToggleLookedAtSled()
+{
+	if (bRoomSettingsOpen) return;
+	if (LeakToolMode != 0 || !IsCameraInputAvailable()) return; // never detaches hardware while aiming a leak
 	if (OpenPatchMaps > 0) return;
 	// Only the unit being looked at. Nothing happens when the view ray hits no rack or no unit (blank, frame).
 	ARackThermalActor* Rack = TargetRack.Get();
@@ -3724,7 +3730,7 @@ void ADataCenterDebugController::GetHelpLines(TArray<FString>& Out) const
 	const TCHAR* SimLines[] = {
 		TEXT("[시뮬레이션] Enter 배치 모드 · R 처음부터 다시 · H 닫기"),
 		TEXT("[조절] 1/2 CPU 발열 · 3/4 GPU 발열 · 5/6 펌프 회전수 · 7/8 라디에이터 UA · 9/0 부하율"),
-		TEXT("[장비] E 바라보는 유닛 뽑기/꽂기"),
+		TEXT("[장비] T 바라보는 유닛 뽑기/꽂기"),
 		TEXT("[누수] L 누수 도구(5 mm → 30 mm → 파단 → 수리 → 끔) · 지점 클릭 적용(회색 닫힘·빨강 열림·노랑 조준) · Esc 끄기"),
 		TEXT("[보기] V 공기 표시: 온도 볼륨 → 유선(속도) → 유선(온도) → 유선+볼륨 → 평면(위에서) → 화살표"),
 		TEXT("[시간·시연] [ / ] 배속 0.5·1·2·4배 · 콘솔 vrg.Demo leak | leakprotect | pump | flood | valve | heatwave | clear"),

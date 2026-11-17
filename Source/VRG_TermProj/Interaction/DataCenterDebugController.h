@@ -567,6 +567,8 @@ private:
 	void OnUtilizationDown();
 	void OnUtilizationUp();
 	void OnToggleSelectedSled();
+	// Simulation mode, T (2026-11-17): pull or push the unit being looked at (was E, which is also the camera's up key).
+	void ToggleLookedAtSled();
 	void OnToggleSimMode();
 	void OnGrabOrDrop();
 	void OnRotatePlaceable();

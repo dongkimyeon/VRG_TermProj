@@ -1,4 +1,4 @@
-#include "Interaction/DataCenterLayoutHud.h"
+﻿#include "Interaction/DataCenterLayoutHud.h"
 #include "Interaction/DataCenterDebugController.h"
 #include "Engine/Canvas.h"
 #include "Engine/Engine.h"
@@ -44,15 +44,40 @@ void ADataCenterLayoutHud::DrawTemperatureLabels()
 	TMap<FString, AActor*> Cabinets;
 	for (TActorIterator<ARackThermalActor> It(GetWorld()); It; ++It) Cabinets.Add(It->GetName(), *It);
 	for (TActorIterator<ASpineCabinetActor> It(GetWorld()); It; ++It) Cabinets.Add(It->GetName(), *It);
+	// 2026-11-17 (user report): labels were drawn through other cabinets, so a rack hidden behind a row showed its
+	// numbers over an empty spot and the number at one screen place changed with the viewpoint. A label is now hidden
+	// when another cabinet's box lies between the eye and the label. Analytic boxes: most display meshes have no
+	// collision, so no physics trace. Display only.
+	struct FOccluder { const AActor* Actor; FTransform T; FBox LocalCm; };
+	TArray<FOccluder> Occluders;
+	for (const TPair<FString, AActor*>& C : Cabinets)
+	{
+		FVector SizeM;
+		if (!ADataCenterDebugController::PlaceableBoxM(C.Value, SizeM)) continue;
+		Occluders.Add({ C.Value, C.Value->GetActorTransform(),
+			FBox(FVector(-SizeM.X * 50.0, -SizeM.Y * 50.0, 0.0), FVector(SizeM.X * 50.0, SizeM.Y * 50.0, SizeM.Z * 100.0)) });
+	}
+	auto Occluded = [&](const FVector& WorldCm, const AActor* LabelOwner)
+	{
+		for (const FOccluder& O : Occluders)
+		{
+			if (O.Actor == LabelOwner) continue;
+			const FVector A = O.T.InverseTransformPosition(EyeCm), B = O.T.InverseTransformPosition(WorldCm);
+			if (O.LocalCm.IsInside(A)) continue;   // camera inside a cabinet: do not hide everything
+			if (FMath::LineBoxIntersection(O.LocalCm, A, B, B - A)) return true;
+		}
+		return false;
+	};
 	// Collected first, then drawn nearest first; a label that would overlap one already drawn is skipped, so the
 	// overview stays readable and moving closer reveals the rest.
 	// Priority first (0 leak alarm, 1 cabinet, 2 inlet sensor / unit, 3 pipe point), then distance.
 	struct FLabel { float X, Y, W, H; int32 Priority; double DistCm; FString Text; FLinearColor Color; };
 	TArray<FLabel> Labels;
-	auto Label = [&](const FVector& WorldCm, const FString& Text, const FLinearColor& Color, int32 Priority = 1)
+	auto Label = [&](const FVector& WorldCm, const FString& Text, const FLinearColor& Color, int32 Priority = 1, const AActor* LabelOwner = nullptr)
 	{
 		const double Dist = FVector::DotProduct(WorldCm - EyeCm, ViewDir);
 		if (Dist <= 0.0) return;
+		if (Priority > 0 && Occluded(WorldCm, LabelOwner)) return;   // leak alarms (priority 0) always show
 		const FVector Screen = Canvas->Project(WorldCm);
 		float W = 0.f, H = 0.f;
 		Canvas->TextSize(Font, Text, W, H);
@@ -70,7 +95,7 @@ void ADataCenterLayoutHud::DrawTemperatureLabels()
 		const FTransform T = (*Found)->GetActorTransform();
 		// Rule 2: K -> C only here. The cabinet's "current temperature" is its hottest part (the limit that matters).
 		const double PartC = SimUnits::KelvinToCelsius(R.HottestPartK);
-		Label(T.TransformPosition(FVector(0, 0, SizeM.Z * 100.0 + 25.0)), FString::Printf(TEXT("%.1f °C"), PartC), PartColor(PartC), 1);
+		Label(T.TransformPosition(FVector(0, 0, SizeM.Z * 100.0 + 25.0)), FString::Printf(TEXT("%.1f °C"), PartC), PartColor(PartC), 1, *Found);
 		// The inlet sensor sits on the front face (+X, the side the cabinet takes its air from), mid height.
 		const FVector SensorCm = T.TransformPosition(FVector(SizeM.X * 50.0 + 15.0, 0, SizeM.Z * 50.0));
 		if (FVector::Dist(SensorCm, EyeCm) > SensorLabelRangeCm) continue;
@@ -79,7 +104,7 @@ void ADataCenterLayoutHud::DrawTemperatureLabels()
 		const FString Coolant = R.Kind == TEXT("rack")
 			? FString::Printf(TEXT("수냉 %.1f -> %.1f °C"), SimUnits::KelvinToCelsius(R.CoolantInK), SimUnits::KelvinToCelsius(R.CoolantOutK))
 			: FString(TEXT("공랭 전용"));
-		Label(SensorCm, FString::Printf(TEXT("흡기 %.1f °C | %s"), AirC, *Coolant), InletColor(AirC), 2);
+		Label(SensorCm, FString::Printf(TEXT("흡기 %.1f °C | %s"), AirC, *Coolant), InletColor(AirC), 2, *Found);
 	}
 	// 2026-10-22 instruments: units / CDUs and pipe points within the range (a dot marks every pipe point there), leak
 	// alarms everywhere.
