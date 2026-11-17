@@ -35,6 +35,7 @@ public:
 	ASpineCabinetActor();
 
 	virtual void OnConstruction(const FTransform& Transform) override;
+	virtual void BeginPlay() override;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Spine", meta = (ClampMin = "1", ClampMax = "8"))
 	int32 NumSwitches = 4;

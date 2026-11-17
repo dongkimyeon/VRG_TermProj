@@ -19,6 +19,17 @@ void ASpineCabinetActor::OnConstruction(const FTransform& Transform)
 	RefreshVisuals();
 }
 
+void ASpineCabinetActor::BeginPlay()
+{
+	Super::BeginPlay();
+	// 2026-11-17 (user report: spine had no model in the package): a cooked game does not run OnConstruction for actors
+	// already placed in the level, and the meshes are runtime components that are not saved, so the cabinet showed as
+	// an empty box. Build them here when none exist (the editor and runtime spawns already have them).
+	TArray<UStaticMeshComponent*> Existing;
+	GetComponents(Existing);
+	if (Existing.IsEmpty()) RefreshVisuals();
+}
+
 void ASpineCabinetActor::EnsureThermalModel()
 {
 	if (ThermalSwitchCount == NumSwitches && ThermalFirstSlot == FirstSwitchSlot) return;

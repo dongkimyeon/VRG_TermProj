@@ -3877,10 +3877,10 @@ void ADataCenterDebugController::DrawHelp() const
 	const uint64 BaseKey = static_cast<uint64>(GetUniqueID());
 
 	const ARackThermalActor* Rack = TargetRack.Get();
-	FString Selection = TEXT("바라보는 유닛 없음 - 유닛을 조준하고 E");
+	FString Selection = TEXT("바라보는 유닛 없음 - 유닛을 조준하고 T");
 	if (Rack != nullptr && SelectedSledIndex == INDEX_NONE)
 	{
-		Selection = TEXT("랙의 빈 칸·프레임을 보고 있음 - 유닛을 조준하고 E");
+		Selection = TEXT("랙의 빈 칸·프레임을 보고 있음 - 유닛을 조준하고 T");
 	}
 	else if (Rack != nullptr)
 	{
