@@ -219,6 +219,46 @@ TSharedRef<FJsonObject> ADataCenterSimulationActor::MakeWaterImpactReportJson() 
  Root->SetNumberField(TEXT("plantPumpCuts"),WaterPlantPumpCuts.Num());
  TArray<TSharedPtr<FJsonValue>> NoActuator;for(const FString& Id:WaterImpactNoActuator) NoActuator.Add(MakeShared<FJsonValueString>(Id));
  Root->SetArrayField(TEXT("noActuatorEquipment"),NoActuator);
+ // 2026-11-24 (web dashboard): which targets are not Normal and the latest state changes. Copies of what the state model
+ // and the fault monitor already hold (nothing recomputed); the full change list stays in s2b.waterImpacts.
+ auto SlotDevice=[this](int32 Binding)->FString {
+  if(!WaterExposureBindings.IsValidIndex(Binding)) return FString();
+  const auto& B=WaterExposureBindings[Binding];
+  if(B.Slot==INDEX_NONE || !Racks.IsValidIndex(B.InteriorRack) || !IsValid(Racks[B.InteriorRack])) return FString();
+  const auto& P=Racks[B.InteriorRack]->Params;
+  if(!P.Slots.IsValidIndex(B.Slot) || !P.DeviceTypes.IsValidIndex(P.Slots[B.Slot].DeviceType)) return FString();
+  return P.DeviceTypes[P.Slots[B.Slot].DeviceType].Name.ToString();
+ };
+ TArray<TSharedPtr<FJsonValue>> Targets;
+ const auto& St=WaterImpactObservation.GetState();
+ if(WaterImpactObservation.IsInitialized())
+  for(int32 I=0;I<St.Phase.Num() && I<WaterExposureSnapshot.EquipmentId.Num();++I) {
+   if(St.Phase[I]==EWaterImpactPhase::Normal) continue;
+   const FString& Id=WaterExposureSnapshot.EquipmentId[I];const int32 Slot=WaterExposureSnapshot.Slot[I];
+   const bool bCut=WaterRackPowerCuts.ContainsByPredicate([&](const FWaterRackPowerCut& C){return C.EquipmentId==Id && C.Slot==Slot;})
+    || WaterCduPowerCuts.ContainsByPredicate([&](const FWaterCduPowerCut& C){return C.EquipmentId==Id;})
+    || WaterCrahPowerCuts.ContainsByPredicate([&](const FWaterCrahPowerCut& C){return C.EquipmentId==Id;})
+    || WaterSpinePowerCuts.ContainsByPredicate([&](const FWaterSpinePowerCut& C){return C.EquipmentId==Id;})
+    || WaterPlantPumpCuts.ContainsByPredicate([&](const FWaterPlantPumpCut& C){return C.EquipmentId==Id;});
+   auto T=MakeShared<FJsonObject>();
+   T->SetStringField(TEXT("equipmentId"),Id);T->SetNumberField(TEXT("slot"),Slot);T->SetStringField(TEXT("device"),SlotDevice(I));
+   T->SetStringField(TEXT("phase"),WaterImpactPhaseName(St.Phase[I]));
+   T->SetNumberField(TEXT("firstWetS"),St.FirstWetS[I]);T->SetNumberField(TEXT("tripS"),St.TripS[I]);T->SetNumberField(TEXT("damageS"),St.DamageS[I]);
+   T->SetBoolField(TEXT("powerCut"),bCut);
+   Targets.Add(MakeShared<FJsonValueObject>(T));
+  }
+ Root->SetArrayField(TEXT("targets"),Targets);
+ TArray<TSharedPtr<FJsonValue>> Events;
+ const auto& All=FaultMonitor.GetWaterImpacts();
+ for(int32 I=FMath::Max(0,All.Num()-50);I<All.Num();++I) {
+  const FVrgWaterImpactRecord& E=All[I];auto O=MakeShared<FJsonObject>();
+  O->SetNumberField(TEXT("timeS"),E.TimeS);O->SetStringField(TEXT("equipmentId"),E.EquipmentId);O->SetNumberField(TEXT("slot"),E.Slot);O->SetStringField(TEXT("device"),E.Device);
+  O->SetStringField(TEXT("from"),E.From);O->SetStringField(TEXT("to"),E.To);O->SetStringField(TEXT("cause"),E.Cause);
+  O->SetNumberField(TEXT("immersionM"),E.ImmersionM);O->SetNumberField(TEXT("sprayM3"),E.SprayM3);O->SetNumberField(TEXT("interiorM3"),E.InteriorM3);
+  O->SetNumberField(TEXT("cutAppliedS"),E.CutAppliedS);O->SetNumberField(TEXT("itBeforeW"),E.ItBeforeW);O->SetNumberField(TEXT("itAfterW"),E.ItAfterW);
+  Events.Add(MakeShared<FJsonValueObject>(O));
+ }
+ Root->SetArrayField(TEXT("recentEvents"),Events);Root->SetNumberField(TEXT("eventCount"),All.Num());
  return Root;
 }
 

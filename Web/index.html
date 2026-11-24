@@ -1705,6 +1705,26 @@ function renderAir() {
 }
 
 // 센서·검증
+const HEALTH_NAME = { open: '단선(고장 알림)', stuckwet: '젖은 채 고착(오경보)', stuckdry: '마른 채 고착(놓침)', ok: '정상' };
+const PHASE_NAME = { wet: '젖음', tripped: '트립(전원 차단)', damaged: '손상', normal: '정상' };
+const CAUSE_NAME = { spray: '분사', flood: '침수', interior: '랙 안 물', rear: '뒤쪽' };
+// W4 tables (2026-11-24): targets that are not normal now, and the latest state changes (copies of the state model / fault monitor).
+function impactTables(W) {
+  const who = x => esc(shortId(x.equipmentId)) + (x.slot >= 0 ? ` 슬롯 ${x.slot}` : '') + (x.device ? ` <span class="sub2">${esc(x.device)}</span>` : '');
+  const tS = v => v >= 0 ? v.toFixed(1) : '-';
+  let h = '';
+  const T = W.targets || [];
+  if (T.length) h += `<div class="sub2" style="margin-top:8px">지금 정상이 아닌 대상 ${T.length}개</div><div class="scroll"><table><thead><tr><th class="l">대상</th><th class="l">상태</th><th>첫 젖음 s</th><th>트립 s</th><th>손상 s</th><th class="l">전원</th></tr></thead><tbody>`
+    + T.map(x => `<tr><td class="l">${who(x)}</td><td class="l">${PHASE_NAME[x.phase] || esc(x.phase)}</td><td>${tS(x.firstWetS)}</td><td>${tS(x.tripS)}</td><td>${tS(x.damageS)}</td><td class="l">${x.powerCut ? '차단됨' : '-'}</td></tr>`).join('') + '</tbody></table></div>';
+  const E = W.recentEvents || [];
+  if (E.length) h += `<div class="sub2" style="margin-top:8px">침수 사건 (최근 ${E.length} / 전체 ${W.eventCount})</div><div class="scroll"><table><thead><tr><th>t s</th><th class="l">대상</th><th class="l">변화</th><th class="l">원인</th><th>침수 mm</th><th>분사 mL</th><th>랙 안 mL</th><th>IT 변화 kW</th></tr></thead><tbody>`
+    + E.slice().reverse().map(e => `<tr><td>${e.timeS.toFixed(2)}</td><td class="l">${who(e)}</td><td class="l">${PHASE_NAME[e.from] || e.from} → ${PHASE_NAME[e.to] || e.to}</td>`
+      + `<td class="l">${(e.cause || '').split('+').filter(Boolean).map(c => CAUSE_NAME[c] || c).join(' + ') || '-'}</td><td>${(e.immersionM * 1e3).toFixed(1)}</td><td>${(e.sprayM3 * 1e6).toFixed(1)}</td><td>${(e.interiorM3 * 1e6).toFixed(1)}</td>`
+      + `<td>${e.cutAppliedS >= 0 ? ((e.itAfterW - e.itBeforeW) / 1e3).toFixed(1) : '-'}</td></tr>`).join('') + '</tbody></table></div>';
+  return h;
+}
+function shortId(id) { const s = String(id || ''); const i = s.indexOf('_UAID_'); return i > 0 ? s.slice(0, i) : s; }
+
 function renderCheck() {
   const s = statusJ;
   if (!s || s.mode !== 'simulation' || !s.evalReady || !s.checks) {
@@ -1742,12 +1762,21 @@ function renderCheck() {
       + I.leakProtection.map(e => `<tr><td>${e.timeS.toFixed(1)}</td><td class="l">${esc(e.level)}</td><td class="l">${esc(e.action)}</td><td class="l">${esc(e.trigger)}</td><td>${e.rack}</td><td>${e.slot}</td><td>${e.row}</td></tr>`).join('') + '</tbody></table></div>';
     if (I.processAlarms.length) h += `<div class="sub2" style="margin-top:8px">공정값 경보 (탱크 수위·보충수·공급-회수 불일치·압력, 위치 미상 · 판독값만)</div><div class="scroll"><table><thead><tr><th>t s</th><th class="l">루프</th><th class="l">신호</th><th>값</th></tr></thead><tbody>`
       + I.processAlarms.map(a => `<tr><td>${a.timeS.toFixed(1)}</td><td class="l">${esc(a.loop)}</td><td class="l">${esc(a.signal)}</td><td>${a.value.toPrecision(4)}</td></tr>`).join('') + '</tbody></table></div>';
-    $('leakdetbox').innerHTML = h + '<div class="note2">감지는 계산된 물이 감지기에 닿았는지로 판정한다(솔버 누수 유량 미사용). 문턱·지연은 추정값이다.</div>';
+    // 2026-11-24: detector faults (W5 follow-up) and who acts how fast (protection delays, estimates but the BMS cycle).
+    if ((I.sensorFaults || []).length) h += `<div class="sub2" style="margin-top:8px">감지기 고장 알림 (단선 = 감시 회로가 잡은 고장, 자동 차단 없음 · 현장 점검)</div><div class="scroll"><table><thead><tr><th>t s</th><th class="l">감지기</th><th class="l">상태</th></tr></thead><tbody>`
+      + I.sensorFaults.map(f => `<tr><td>${f.timeS.toFixed(1)}</td><td class="l">${esc(f.sensorId)}</td><td class="l">${HEALTH_NAME[f.health] || esc(f.health)}</td></tr>`).join('') + '</tbody></table></div>';
+    const PD = I.leakProtectionDelays;
+    if (PD) h += '<div class="sub2" style="margin-top:8px">보호 동작 주체별 지연 (BMS 주기만 NVIDIA 문서값, 나머지 추정)</div>' + kvGrid([
+      ['트레이 BMC → 차단·타이머 시작', PD.trayBmcS + ' s'], ['컴퓨트 트레이 셧다운 타이머', PD.computeShutdownS + ' s'], ['BMS 판정 주기', PD.bmsCycleS + ' s'],
+      ['전원 셸프 출력 차단', '+' + PD.shelfOffS + ' s'], ['밸브 행정(닫힘 완료)', '+' + PD.valveStrokeS + ' s'], ['줄 CDU 정지', '+' + PD.cduStopS + ' s'], ['복구: 밸브 열림 뒤 전원', '+' + PD.recoveryPowerOnS + ' s']]);
+    if (I.falseTriggerPerDetectorHour > 0) h += `<div class="note2">오경보 펄스 켜짐: 감지기당 ${I.falseTriggerPerDetectorHour} 회/시간 (추정 시험값, vrg.Sensors.FalseRate)</div>`;
+    $('leakdetbox').innerHTML = h + '<div class="note2">감지는 계산된 물이 감지기에 닿았는지로 판정한다(솔버 누수 유량 미사용). 문턱·지연은 추정값이다. "오경보(모의)"는 모의 참값 표시이며 보호 동작은 이를 모른다.</div>';
     const W = s.waterImpact || {};
     $('impactbox').innerHTML = kvGrid([['침수 영향', W.enabled ? '켜짐' : '꺼짐 (vrg.Water.Impact 0, 기본)'],
       ['젖음 / 트립 / 손상', `${W.wetTargets ?? 0} / ${W.trippedTargets ?? 0} / ${W.damagedTargets ?? 0}`, (W.trippedTargets || 0) + (W.damagedTargets || 0) > 0],
       ['전원 차단 (슬롯 / CDU / CRAH / 스파인)', `${W.rackSlotCuts ?? 0} / ${W.cduCuts ?? 0} / ${W.crahCuts ?? 0} / ${W.spineCuts ?? 0}`],
       ['트립 / 손상 문턱 (추정)', `통전 접촉 ${W.tripPoweredContactS ?? '-'} s / +${W.damageContactAfterTripS ?? '-'} s 또는 ${W.damageCumulativeM3 === undefined ? '-' : (W.damageCumulativeM3 * 1000) + ' L'}`]])
+      + impactTables(W)
       + '<div class="note2">문턱은 공개 고장 자료가 없어 추정값이다(보정 안 됨). 트립·손상은 R 재시작까지 유지된다.</div>';
     const D = s.waterDisplay || {};
     const L = v => v === undefined ? '-' : (v * 1000).toFixed(3) + ' L';
