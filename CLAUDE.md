@@ -8,6 +8,8 @@ UE 5.8 / C++ / 가상현실게임 텀프로젝트. 이 파일은 팀이 합의�
 
 ## 현재 상태 (2026-11-24)
 
+2026-11-24 UI 데모(사용자: 기존 화면 유지, 데모로): `vrg.Ui.Style 1`/`F2`로 새 HUD(상단 상태 바, 왼쪽 탭 팔레트, 선택 속성 패널, 지표 카드 + 추이선, 사건 기록, 도구 막대, 단축키 오버레이). 기본은 기존 UI, 계산·입력 경로 불변. 실행 `Tools/UI데모_실행.ps1`. 신규 `VRG.Interaction.UiStyleModel`, Interaction·Editor·Game 빌드, AI 화면 확인 일부(`docs/기록/03` 같은 날 절, 절차 `docs/기록/확인절차/UI데모_확인_2026-11-24.md`).
+
 **2026-11-24 사용자 결정: D10 성능 판정 기준 PC = RTX 4080 데스크톱.** 노트북(RTX 4060)은 시연에 쓰지 않는다. 4080 측정(2026-11-11)으로 네 경우 모두 최저 30 FPS 통과(정상 170.0 / 누수 66.0 / 누수 + W4 59.8 / 병렬 끔 53.1)라 **W3.5 성능 조건 통과, 성능 개선은 더 진행하지 않는다.** 노트북 값(누수 + W4 26.8 FPS, 누수 중 x2 배속이 실제 x0.82)은 한계로 기록만 한다.
 
 2026-11-24 웹 센서·검증 탭(사용자: 성능은 뒤로, 웹 먼저): W5 감지기 고장 알림·보호 동작 주체별 지연 표, W4 지금 정상이 아닌 대상·침수 사건 표. 서버는 리포트와 같은 `MakeWaterImpactReportJson`에 `targets`·`recentEvents`(마지막 50건)·`eventCount`를 더했다(새 물리 없음). 신규 `VRG.Web.StatusWaterAndDetectorTables`, 전체 `VRG` 400건 성공/실패 0(`VRG.Sim` 영역 포함, GPU 7), 페이지 스크립트는 headless Edge 문법 검사만. 화면·패키지 확인은 미검증(`docs/기록/확인절차/웹_W4W5표_확인_2026-11-24.md`). 성능 묶음 남은 2건(배속 상한, 누수 + W4 FPS)은 같은 날 D10 기준 PC = 4080 결정으로 진행하지 않는다.
@@ -158,7 +160,7 @@ L_Test32랙·스파인2·CRAH8·33210셀/h0.25m/dt0.02s,200스텝 예열/20s cap
 키 배치 (`ADataCenterDebugController`, GameMode가 고정). InputAction·MappingContext는 에셋이 아니라 코드에서 만든다
 (에셋으로 빼면 물리 파라미터 기본값이 두 곳으로 흩어진다). 값의 범위·증분은 `FDebugKnob`이 들고 있어 월드 없이 테스트한다.
 
-- **공통:** `Enter` 배치 ↔ 시뮬레이션, `H` 단축키 목록, 우클릭 + 마우스 회전·`WASD`·`Q/E` 카메라, 휠 전후 이동(우클릭+휠은 속도).
+- **공통:** `Enter` 배치 ↔ 시뮬레이션, `H` 단축키 목록, `F2` 새 UI 데모 ↔ 기존 UI(2026-11-24, `vrg.Ui.Style`), 우클릭 + 마우스 회전·`WASD`·`Q/E` 카메라, 휠 전후 이동(우클릭+휠은 속도).
 - **배치 모드:** 클릭 선택, `Shift`+클릭 추가/제거, 빈 곳 드래그 사각형 선택, 드래그 이동(공기 셀 선 스냅·바닥 격자 표시, 2026-11-12; `vrg.Layout.CellSnap 0`이면 5 cm, `Alt` 해제, 줄 붙이기),
   `R` 90° 회전(벽 하나 선택 시 크기 기즈모), `W/E/R/Space` 벽 기즈모, `F` 선택 보기, `Delete`, `Ctrl+D` 복제,
   `Ctrl+Z/Y`, `G/T` 시선 잡기·회전(보조), `C` 컨테인먼트 순환, `Esc` 취소. 팔레트 버튼으로 장비·방 설정·천장 편집.
@@ -166,7 +168,7 @@ L_Test32랙·스파인2·CRAH8·33210셀/h0.25m/dt0.02s,200스텝 예열/20s cap
   `9/0` 부하율, `T` 바라보는 유닛 하나 뽑기/꽂기(2026-11-17 E에서 변경: E는 카메라 상승 키와 겹침), `R` 현재 배치로 t=0 재시작, `L` 누수 도구(외부5/30mm·내부1/3mm → 파단 → 수리 → 끔, `B` 내부 종류 순환, 클릭 적용, 도구 중 `T` 탈착 차단·`Esc` 끔), `V` 공기 보기 순환(온도 볼륨 → 유선 속도 → 유선 온도 → 유선+볼륨 → 평면 → 화살표), `[` `]` 배속 0.5·1·2·4배(2026-11-12). 발열 손잡이는 각 부품 기본값에 배율로 적용한다.
 - **주요 콘솔:** `vrg.Air.RunSteps <N>`, `vrg.Air.CellSize <h> 0.25`, `vrg.Air.Gpu -1|0|1`, `vrg.Air.Turbulence`, `vrg.Sim.CrahLayout 0|1|2`,
   `vrg.Sim.Containment 0|1|2`, `vrg.Sim.CoolantRejection 0|1`, `vrg.Eval.Event/Report/ReportWhenDone/Compare`, `vrg.Layout.Save/Load`,
-  `vrg.Perf.Capture <초> [라벨] [quit]`, `vrg.Leak.Add/Size/Clear/Status/Sites/At/Repair/Direction/Recover`, `vrg.Sensors.Fault/FalseRate/ResetLeak`, `vrg.Water.Status/Show/CellM/Gpu/Impact`, `vrg.Web.Enable/Port/AutoOpen`, `vrg.Layout.CellSnap/Grid`, `vrg.Air.FitWorldAligned`, `vrg.Sim.Speed`, `vrg.Demo`, `vrg.Leak.Makeup`, `vrg.Leak.AutoIsolate`, `vrg.Air.View/PlanHeight`, `vrg.Valve`(이벤트 `valve`·`leak`·`leakat`), `vrg.Cdu.PumpFault/PumpRepair <줄>`, `vrg.Plant.Enable/Topology/Ambient/Fault/Show`(이벤트 `ambient`·`plant`), `vrg.Pipes.Temperature`, `vrg.Sensors.PipeIntervalM`, `vrg.Hud.Temps/TempsRange`, `vrg.Cam <x y z m> <피치> <요>`, `vrg.Room.Shell`, `vrg.Patch.Map`, `vrg.Web.Enable`, `vrg.Hud.Debug`.
+  `vrg.Perf.Capture <초> [라벨] [quit]`, `vrg.Leak.Add/Size/Clear/Status/Sites/At/Repair/Direction/Recover`, `vrg.Sensors.Fault/FalseRate/ResetLeak`, `vrg.Water.Status/Show/CellM/Gpu/Impact`, `vrg.Web.Enable/Port/AutoOpen`, `vrg.Layout.CellSnap/Grid`, `vrg.Air.FitWorldAligned`, `vrg.Sim.Speed`, `vrg.Demo`, `vrg.Ui.Style`, `vrg.Leak.Makeup`, `vrg.Leak.AutoIsolate`, `vrg.Air.View/PlanHeight`, `vrg.Valve`(이벤트 `valve`·`leak`·`leakat`), `vrg.Cdu.PumpFault/PumpRepair <줄>`, `vrg.Plant.Enable/Topology/Ambient/Fault/Show`(이벤트 `ambient`·`plant`), `vrg.Pipes.Temperature`, `vrg.Sensors.PipeIntervalM`, `vrg.Hud.Temps/TempsRange`, `vrg.Cam <x y z m> <피치> <요>`, `vrg.Room.Shell`, `vrg.Patch.Map`, `vrg.Web.Enable`, `vrg.Hud.Debug`.
   `-ExecCmds`로 여러 명령을 줄 때는 **쉼표**로 나눈다.
 
 화면에는 단축키 안내와 시뮬레이션 모드 계측 라벨(캐비닛 최고 부품, 흡기 센서·냉각수, 배관 지점 유량·수온, 설비 장비 값, 누수 경보; `vrg.Hud.Temps 0|1`·`vrg.Hud.TempsRange <m>`, 2026-10-22 사용자 요청)만 둔다.

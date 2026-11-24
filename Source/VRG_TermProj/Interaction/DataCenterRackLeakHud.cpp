@@ -6,7 +6,7 @@
 #include "Engine/Engine.h"
 #include "EngineUtils.h"
 
-void ADataCenterLayoutHud::DrawRackLeakTool()
+void ADataCenterLayoutHud::DrawRackLeakTool(float Left, float Top, float MaxWidth)
 {
 	const auto* PC = Cast<ADataCenterDebugController>(GetOwningPlayerController());
 	if (!PC || !Canvas || !GEngine) return;
@@ -27,13 +27,13 @@ void ADataCenterLayoutHud::DrawRackLeakTool()
 			FString::Printf(TEXT("드립: %s | 뒤 매니폴드 로프: %s"), *Alarm(S.bDripReady, S.bDripAlarm, S.DripTimeS), *Alarm(S.bRopeReady, S.bRopeAlarm, S.RopeTimeS)),
 			TEXT("D9 모의 계측값 · 설치/문턱/지연 추정 · 청록=보유, 보라=뒤 누적 노출 · 실제 수막 아님")
 		};
-		UFont* Font = GEngine->GetSmallFont(); const float Top = 90.f;
-		DrawRect(FLinearColor(0, 0, 0, .8f), 10.f, Top - 5.f, FMath::Max(0.f, FMath::Min(Canvas->ClipX - 20.f, 1100.f)), Lines.Num() * 20.f + 10.f);
+		UFont* Font = GEngine->GetSmallFont();
+		DrawRect(FLinearColor(0, 0, 0, .8f), Left, Top - 5.f, FMath::Max(0.f, FMath::Min(Canvas->ClipX - Left - 10.f, MaxWidth)), Lines.Num() * 20.f + 10.f);
 		for (int32 I = 0; I < Lines.Num(); ++I)
 		{
 			float Width = 0, Height = 0; Canvas->TextSize(Font, Lines[I], Width, Height);
-			const float Scale = FMath::Min(1.f, FMath::Max(Canvas->ClipX - 40.f, 1.f) / FMath::Max(Width, 1.f));
-			DrawText(Lines[I], I == 6 && (S.bDripAlarm || S.bRopeAlarm) ? FLinearColor(1, .35f, .3f) : FLinearColor::White, 18.f, Top + I * 20.f, Font, Scale);
+			const float Scale = FMath::Min(1.f, FMath::Max(FMath::Min(Canvas->ClipX - Left - 30.f, MaxWidth - 20.f), 1.f) / FMath::Max(Width, 1.f));
+			DrawText(Lines[I], I == 6 && (S.bDripAlarm || S.bRopeAlarm) ? FLinearColor(1, .35f, .3f) : FLinearColor::White, Left + 8.f, Top + I * 20.f, Font, Scale);
 		}
 		return;
 	}

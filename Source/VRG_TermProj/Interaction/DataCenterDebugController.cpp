@@ -8,6 +8,8 @@
 #include "Interaction/VrgCrahLayoutState.h"
 #include "Interaction/VrgSpineLayoutState.h"
 #include "Interaction/LayoutRackPalette.h"
+#include "Interaction/VrgPaletteV2.h"
+#include "Interaction/VrgUiStyle.h"
 #include "Interaction/RoomSettingsWidget.h"
 #include "Simulation/Core/VrgHud.h"
 
@@ -378,6 +380,7 @@ void ADataCenterDebugController::SetupInputComponent()
 		{ TEXT("AirView"), EKeys::V, &ADataCenterDebugController::OnCycleAirView },     // air display modes (simulation mode)
 		{ TEXT("SimSpeedDown"), EKeys::LeftBracket, &ADataCenterDebugController::OnSimSpeedDown },   // 2026-11-12 time scale
 		{ TEXT("SimSpeedUp"), EKeys::RightBracket, &ADataCenterDebugController::OnSimSpeedUp },
+		{ TEXT("ToggleUiStyle"), EKeys::F2, &ADataCenterDebugController::OnToggleUiStyle },   // 2026-11-24 UI demo
 	};
 
 	for (const FBinding& Binding : Bindings)
@@ -3475,9 +3478,38 @@ bool ADataCenterDebugController::IsCameraInputAvailable() const
 	return !Viewport || !Viewport->ViewportConsole || Viewport->ViewportConsole->ConsoleState == NAME_None;
 }
 
+void ADataCenterDebugController::OnToggleUiStyle()
+{
+	VrgUi::SetNewStyle(!VrgUi::IsNewStyle());
+	UE_LOG(LogTemp, Display, TEXT("[VrgUi] UI 스타일: %s"), VrgUi::IsNewStyle() ? TEXT("새 UI (vrg.Ui.Style 1)") : TEXT("기존 UI (vrg.Ui.Style 0)"));
+}
+
+// 2026-11-24 UI demo: which palette is on screen. Runs after RefreshInteractionInputMode so the existing palette keeps
+// its own rules in the default style; switching back re-runs that refresh once.
+void ADataCenterDebugController::UpdateUiStyleWidgets()
+{
+	const bool bNew = VrgUi::IsNewStyle();
+	if (bNew != bLastUiNewStyle) { bLastUiNewStyle = bNew; bInputModeInitialized = false; }
+	if (!bNew)
+	{
+		if (PaletteV2) PaletteV2->SetVisibility(ESlateVisibility::Collapsed);
+		return;
+	}
+	if (GetLocalPlayer() == nullptr) return;   // automation worlds have no viewport
+	const bool bShow = IsLayoutMode() && !bRoomSettingsOpen && OpenPatchMaps == 0;
+	if (!PaletteV2 && bShow)
+	{
+		PaletteV2 = CreateWidget<UVrgPaletteV2>(this);
+		if (PaletteV2) PaletteV2->AddToViewport();
+	}
+	if (PaletteV2) PaletteV2->SetVisibility(bShow ? ESlateVisibility::SelfHitTestInvisible : ESlateVisibility::Collapsed);
+	if (RackPalette) RackPalette->SetVisibility(ESlateVisibility::Collapsed);
+}
+
 void ADataCenterDebugController::PlayerTick(float DeltaTime)
 {
 	RefreshInteractionInputMode();
+	UpdateUiStyleWidgets();
 	Super::PlayerTick(DeltaTime);
 	// A focus/input-mode change can flush pressed keys without routing their release events here.
 	if (!IsInputKeyDown(EKeys::LeftControl)) bLayoutLeftControl = false;

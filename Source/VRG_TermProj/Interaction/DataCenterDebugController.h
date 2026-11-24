@@ -19,6 +19,7 @@ class ADataCenterRoomActor;
 class UInputAction;
 class UInputMappingContext;
 class ULayoutRackPalette;
+class UVrgPaletteV2;
 class URoomSettingsWidget;
 class ADataCenterSimulationActor;
 
@@ -61,6 +62,8 @@ class VRG_TERMPROJ_API ADataCenterDebugController : public APlayerController
 public:
 	int32 GetAimedInternalLeakSite() const { return LeakToolMode != 0 && IsCameraInputAvailable() && !IsInputKeyDown(EKeys::RightMouseButton) ? LeakToolAimed : INDEX_NONE; }
 	ADataCenterDebugController();
+	// 2026-11-24 UI demo: current leak tool step for the new HUD (0 off).
+	int32 GetLeakToolMode() const { return LeakToolMode; }
 
 	virtual void Tick(float DeltaTime) override;
 	virtual void UpdateRotation(float DeltaTime) override;
@@ -400,6 +403,11 @@ private:
 	void RebindLayoutRack(ARackThermalActor* Rack, ARackThermalActor* Previous = nullptr);
 	UPROPERTY(Transient)
 	TObjectPtr<ULayoutRackPalette> RackPalette;
+	// 2026-11-24 UI demo (vrg.Ui.Style 1): side palette shown instead of RackPalette; F2 toggles the style.
+	UPROPERTY(Transient) TObjectPtr<UVrgPaletteV2> PaletteV2;
+	bool bLastUiNewStyle = false;
+	void UpdateUiStyleWidgets();
+	void OnToggleUiStyle();
 	UPROPERTY(Transient) TObjectPtr<URoomSettingsWidget> RoomSettingsWidget;
 	bool bRoomSettingsOpen = false;
 	bool bRoomCeilingOpen = false;

@@ -11,6 +11,7 @@
 #include "Simulation/Core/SimUnits.h"
 #include "EngineUtils.h"
 #include "HAL/IConsoleManager.h"
+#include "Interaction/VrgUiStyle.h"
 
 namespace
 {
@@ -141,6 +142,22 @@ void ADataCenterLayoutHud::DrawTemperatureLabels()
 			Label(SimUnits::MetersToUnreal(V.CenterM + FVector(0, 0, V.HalfM.Z)), Text, C, V.Phase >= 2 ? 0 : 1);
 		}
 	}
+	if (VrgUi::IsNewStyle())
+	{
+		// 2026-11-24 UI demo: short rack names in the labels (same numbering as the new HUD's event log). Display only.
+		TArray<TPair<FString, FString>> Names;
+		int32 RackNo = 0, SpineNo = 0;
+		for (const FVrgDashboardRackRow& R : Racks.Rows)
+			Names.Add({ R.Name, R.Kind == TEXT("rack") ? FString::Printf(TEXT("랙 #%d"), ++RackNo) : FString::Printf(TEXT("스파인 #%d"), ++SpineNo) });
+		for (FLabel& L : Labels)
+		{
+			const FString Short = VrgUi::ShortenNames(L.Text, Names);
+			if (Short == L.Text) continue;
+			float W = 0.f, Hh = 0.f;
+			Canvas->TextSize(Font, Short, W, Hh);
+			L.X += .5f * (L.W - W); L.W = W; L.Text = Short;
+		}
+	}
 	Labels.Sort([](const FLabel& A, const FLabel& B) { return A.Priority != B.Priority ? A.Priority < B.Priority : A.DistCm < B.DistCm; });
 	TArray<FBox2f> Drawn;
 	for (const FLabel& L : Labels)
@@ -156,7 +173,7 @@ void ADataCenterLayoutHud::DrawTemperatureLabels()
 }
 
 // The air view's colour bar (bottom right): mode, average window, gradient with five values.
-void ADataCenterLayoutHud::DrawAirLegend()
+void ADataCenterLayoutHud::DrawAirLegend(float BottomMargin)
 {
 	if (!Canvas || !GetWorld()) return;
 	ADataCenterSimulationActor* Sim = nullptr;
@@ -173,7 +190,7 @@ void ADataCenterLayoutHud::DrawAirLegend()
 	Canvas->TextSize(Font, Note, TextW, TextH);
 	for (const FAirFlowLegend& L : Legends) { float W = 0.f; Canvas->TextSize(Font, FString::Printf(TEXT("%s [%s]"), *L.Title, *L.Unit), W, TextH); TextW = FMath::Max(TextW, W); }
 	const float BoxW = FMath::Max(BarW, TextW) + 2.f * Pad, BoxH = Pad + LineH + Legends.Num() * (LineH + BarH + LineH + 4.f) + Pad;
-	const float X0 = Canvas->ClipX - BoxW - 20.f, Y0 = Canvas->ClipY - BoxH - 20.f;
+	const float X0 = Canvas->ClipX - BoxW - 20.f, Y0 = Canvas->ClipY - BoxH - BottomMargin;
 	DrawRect(FLinearColor(0, 0, 0, .6f), X0, Y0, BoxW, BoxH);
 	float Y = Y0 + Pad;
 	DrawText(Note, FLinearColor(.85f, .9f, 1.f), X0 + Pad, Y, Font);
@@ -202,6 +219,17 @@ void ADataCenterLayoutHud::DrawHUD()
 	Super::DrawHUD();
 	const auto* Controller = Cast<ADataCenterDebugController>(GetOwningPlayerController());
 	if (!Canvas || !Controller) return;
+	if (VrgUi::IsNewStyle())
+	{
+		// 2026-11-24 UI demo: same world labels and tools, new panels (DataCenterHudV2.cpp). Scale = UMG DPI curve.
+		const float S = FMath::Max(.5f, Canvas->ClipY / 1080.f);
+		DrawTemperatureLabels();
+		DrawRackLeakTool(16.f * S + 300.f * S, 60.f * S + 46.f * S - 32.f * S, FMath::Max(Canvas->ClipX - 316.f * S - 412.f * S, 200.f));
+		DrawAirLegendV2(16.f * S + 48.f * S + 14.f * S);
+		DrawHudV2();
+		DrawMarquee();
+		return;
+	}
 	DrawTemperatureLabels();   // under the key hint
 	DrawRackLeakTool();
 	DrawAirLegend();
@@ -258,11 +286,5 @@ void ADataCenterLayoutHud::DrawHUD()
 		}
 	}
 
-	FBox2D Rect;
-	if (!Controller->GetLayoutMarqueeRect(Rect)) return;
-	const FLinearColor Color(.2f, .8f, 1.f);
-	DrawLine(Rect.Min.X, Rect.Min.Y, Rect.Max.X, Rect.Min.Y, Color, 2.f);
-	DrawLine(Rect.Max.X, Rect.Min.Y, Rect.Max.X, Rect.Max.Y, Color, 2.f);
-	DrawLine(Rect.Max.X, Rect.Max.Y, Rect.Min.X, Rect.Max.Y, Color, 2.f);
-	DrawLine(Rect.Min.X, Rect.Max.Y, Rect.Min.X, Rect.Min.Y, Color, 2.f);
+	DrawMarquee();
 }
