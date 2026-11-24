@@ -25,6 +25,7 @@
 #include "Interaction/VrgCrahLifecycle.h"
 #include "Simulation/Air/RoomAirDomain.h"
 #include "Interaction/VrgLayoutFile.h"
+#include "Simulation/Acoustics/NoiseOutdoor.h"
 #include "DataCenterSimulationActor.generated.h"
 
 class AAirFieldDebugActor;
@@ -333,6 +334,21 @@ public:
 	// False (with a warning) when the plant thermal model is not running or the arguments do not apply.
 	bool ApplyPlantFault(const TArray<FString>& Args);
 	bool IsFacilityPlantActive() const { return bPlantActive; }
+
+	struct FOutdoorNoiseSource
+	{
+		FString Id;
+		EPlantLoopId Loop = EPlantLoopId::Fws;
+		int32 UnitIndex = INDEX_NONE;
+		FVector CenterM = FVector::ZeroVector;
+		double MinDistanceM = 0.0;
+		bool bPlaced = false;
+		TOptional<double> TransferDb;
+	};
+	bool SetOutdoorNoiseReceiver(const VrgNoise::FOutdoorReceiver& Receiver);
+	void ClearOutdoorNoiseReceiver();
+	TArray<VrgNoise::FOutdoorSample> GetOutdoorNoiseHistory() const;
+	const TArray<FOutdoorNoiseSource>& GetOutdoorNoiseSources() const { return OutdoorNoiseSources; }
 
 	// ---- W1 live leaks (Tools/누수_실시간_계획.md L1, 2026-10-23) ----
 	// Every place a leak can start during a run: the room's closed sites (three per rack, ADataCenterRoomActor) and,
@@ -935,6 +951,15 @@ private:
 	TObjectPtr<class AFacilityPlantDisplayActor> PlantDisplay;
 	double LastPlantDisplayWallS = -1.0;
 	struct FPlantDisplayInput MakePlantDisplayInput() const;
+	void ResetOutdoorNoiseRun();
+	void BuildOutdoorNoiseSources();
+	void OutdoorNoiseAfterStep();
+	TOptional<VrgNoise::FOutdoorReceiver> OutdoorNoiseReceiver;
+	TArray<FOutdoorNoiseSource> OutdoorNoiseSources;
+	TArray<VrgNoise::FOutdoorSample> OutdoorNoiseHistory;
+	int32 OutdoorNoiseNextSample = 0;
+	bool bOutdoorNoiseSourcesReady = false;
+
 	TArray<int32> CduGroupRows;   // S8 F5: room row of every CDU group (its pump feeds the group's coolant)
 	// CDU secondary supply temperature control (2026-11-03, Tools/실사양정합_계획.md P3), one entry per CDU group:
 	// setpoint [K], design facility flow [kg/s] (fixed boundary), valve opening (fixed boundary; the plant keeps its own),
