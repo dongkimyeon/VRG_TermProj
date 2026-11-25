@@ -175,6 +175,29 @@ static FAutoConsoleCommand GVrgPlantEnableCommand(
 		}
 	}));
 
+static FAutoConsoleCommand GVrgSizeRatedCommand(
+	TEXT("vrg.Size.Rated"),
+	TEXT("실제 제품 정격으로 장비 크기 고정(2026-11-25). 0 = 설계점에 맞춘 자동 크기(기본), 1 = CDU 액터 1대 = 정격 1대(기본 Vertiv CoolChip CDU 2300: 2300 kW, 접근 4 K, 2차 3400 L/min, 맡은 줄들이 나눠 씀)·칠러 = 곡선 기준 용량(Carrier 19XR 1557.8 kW). 다음 시뮬레이션 진입 때 적용. vrg.Size.Rated <0|1> [CDU kW] [접근 K] [2차 L/min]"),
+	FConsoleCommandWithArgsDelegate::CreateLambda([](const TArray<FString>& Args)
+	{
+		if (Args.Num() == 0 || GEngine == nullptr) return;
+		for (const FWorldContext& Context : GEngine->GetWorldContexts())
+		{
+			UWorld* World = Context.World();
+			if (World == nullptr || !World->IsGameWorld()) continue;
+			for (TActorIterator<ADataCenterSimulationActor> It(World); It; ++It)
+			{
+				It->bRatedEquipment = FCString::Atoi(*Args[0]) != 0;
+				if (Args.Num() > 1 && FCString::Atod(*Args[1]) > 0.0) It->CduRatedCapacityW = FCString::Atod(*Args[1]) * 1e3;
+				if (Args.Num() > 2 && FCString::Atod(*Args[2]) > 0.0) It->CduRatedApproachK = FCString::Atod(*Args[2]);
+				if (Args.Num() > 3 && FCString::Atod(*Args[3]) > 0.0) It->CduRatedSecondaryFlowM3s = FCString::Atod(*Args[3]) / 60000.0;
+				It->RebuildCoupling();
+				UE_LOG(LogTemp, Display, TEXT("[Size] 제품 정격 %s: CDU %.0f kW @ %.1f K, 2차 %.0f L/min, 칠러 곡선 기준 용량 (다음 진입 때 적용)"),
+					It->bRatedEquipment ? TEXT("켬") : TEXT("끔"), It->CduRatedCapacityW * 1e-3, It->CduRatedApproachK, It->CduRatedSecondaryFlowM3s * 60000.0);
+			}
+		}
+	}));
+
 static FAutoConsoleCommand GVrgPlantTopologyCommand(
 	TEXT("vrg.Plant.Topology"),
 	TEXT("S8 설비 구성. 0 = 분리(FWS 온수 + 냉수, 기본), 1 = 공용 냉수(CDU가 냉수 루프에 CRAH와 병렬), 2 = 직렬(CRAH 회수가 CDU로). 다음 시뮬레이션 진입 때 적용. vrg.Plant.Topology <0|1|2>"),
@@ -1315,6 +1338,20 @@ void ADataCenterSimulationActor::BuildCduGroups()
 			HotWK[G] += DesignKgs * Rack->Params.CoolantCpJKgK;
 		}
 
+		// Rated mode (vrg.Size.Rated): totals per CDU actor over the rows it serves, to share one product's rating.
+		CduRatedLoadFraction.Reset();
+		TMap<const ACoolingDistributionUnitActor*, double> ActorDutyW;
+		if (bRatedEquipment)
+			for (int32 G = 0; G < Groups.Num(); ++G)
+				ActorDutyW.FindOrAdd(Room->GetRowCdu(RackRows[Groups[G].RackIndices[0]])) += CduSummaries[G].DesignDutyW;
+		for (const auto& Pair : ActorDutyW)
+		{
+			const double Fraction = CduRatedCapacityW > 0.0 ? Pair.Value / CduRatedCapacityW : 0.0;
+			CduRatedLoadFraction.Add(Pair.Key->GetName(), Fraction);
+			UE_LOG(LogTemp, Display, TEXT("[CDU 정격] %s: 설계 부하 %.3f MW / 정격 %.3f MW (%.0f %%), 접근 %.1f K, 2차 정격 %.0f L/min"),
+				*Pair.Key->GetName(), Pair.Value * 1e-6, CduRatedCapacityW * 1e-6, Fraction * 100.0, CduRatedApproachK, CduRatedSecondaryFlowM3s * 60000.0);
+		}
+
 		// Size every exchanger at its row's design point (assumptions on the CDU actor, not a product rating):
 		// facility flow carries the design duty at FacilityDesignRiseK, and UA brings the supply to
 		// HxDesignApproachK above the facility water with the racks' design coolant flow.
@@ -1326,7 +1363,21 @@ void ADataCenterSimulationActor::BuildCduGroups()
 			Hx.FacilitySupplyTempK = Cdu->FacilitySupplyTempK;
 			Hx.FacilityMassFlowKgs = Cdu->FacilityMassFlowKgs > 0.0 ? Cdu->FacilityMassFlowKgs
 				: S.DesignDutyW / (Hx.FacilityCpJKgK * Cdu->FacilityDesignRiseK);
-			if (Cdu->HxUAWK > 0.0)
+			const double* ActorDuty = ActorDutyW.Find(Cdu);
+			if (bRatedEquipment && ActorDuty && *ActorDuty > 0.0 && CduRatedCapacityW > 0.0)
+			{
+				// One product per actor: the exchanger at its rating point (rated duty, rated approach, rated secondary
+				// flow, primary flow at FacilityDesignRiseK), split among the rows in proportion to their design duty
+				// (parallel slices of one exchanger with proportional flows perform like the whole).
+				const double Share = S.DesignDutyW / *ActorDuty;
+				const ARackThermalActor* FirstRack = Racks[Groups[G].RackIndices[0]].Get();
+				const double SecondaryCp = FirstRack ? FirstRack->Params.CoolantCpJKgK : Hx.FacilityCpJKgK;
+				const double RatedHotWK = CduRatedSecondaryFlowM3s * CoolantDensityKgM3 * SecondaryCp;
+				const double RatedFacilityKgs = CduRatedCapacityW / (Hx.FacilityCpJKgK * Cdu->FacilityDesignRiseK);
+				Hx.UAWK = Share * CduHeatExchanger::RatedUAWK(CduRatedCapacityW, CduRatedApproachK, RatedHotWK, RatedFacilityKgs * Hx.FacilityCpJKgK);
+				Hx.FacilityMassFlowKgs = Share * RatedFacilityKgs;
+			}
+			else if (Cdu->HxUAWK > 0.0)
 			{
 				Hx.UAWK = Cdu->HxUAWK;
 			}
@@ -1398,6 +1449,7 @@ void ADataCenterSimulationActor::BuildFacilityLoop(TArray<FCduCouplingGroup>& Gr
 	}
 	// S8 F8: units placed in layout mode set the count of their kind; kinds with none keep the automatic sizing rule.
 	// F8-2: the automatic plant (no placed units) is built too; its units become actors on the first direct addition.
+	PlantThermalSpec.bRatedChillers = bRatedEquipment;   // vrg.Size.Rated: chillers at their product rating too
 	AutomaticPlant = MakeUnique<FFacilityPlant>();
 	if (Groups.Num() == 0 || !AutomaticPlant->Build(Spec, PlantThermalSpec, DesignHeatW, FacilityWater::DensityKgM3, WaterCp, FHydraulicSolveSettings(), Coils, CoilSupplyTempK))
 		AutomaticPlant.Reset();
@@ -3869,6 +3921,8 @@ void ADataCenterSimulationActor::DrainWarmupSteps()
 		const bool bOk = WriteEvaluationReport(PendingReportName, Summary);
 		UE_LOG(LogTemp, Display, TEXT("[VrgEval] 리포트 %s: %s"), bOk ? TEXT("성공") : TEXT("실패"), *Summary);
 		PendingReportName.Reset();
+		// 2026-11-25: unattended sweeps end the process after the report (vrg.Eval.ReportWhenDone <이름> quit).
+		if (bQuitAfterPendingReport) { bQuitAfterPendingReport = false; FPlatformMisc::RequestExit(false, TEXT("vrg.Eval.ReportWhenDone quit")); }
 	}
 	if (PendingWarmupSteps == 0 && PendingProfileRepeats > 0)
 	{
@@ -4285,6 +4339,58 @@ bool ADataCenterSimulationActor::WriteEvaluationReport(const FString& Name, FStr
 	Summary->SetNumberField(TEXT("firstSensorAlarmS"), FirstDetectionS);
 	Root->SetObjectField(TEXT("summary"), Summary);
 
+	// 2026-11-25 (optional field): equipment sizing comparison. Values at the report's SimTime (not window means):
+	// per CDU actor the racks it serves, its rated load (vrg.Size.Rated), their coolant supply (rack inlet) and hottest
+	// component; the CRAH units' total airflow and coil heat. Temperatures in C here only (rule 2).
+	{
+		TSharedRef<FJsonObject> Sizing = MakeShared<FJsonObject>();
+		Sizing->SetBoolField(TEXT("rated"), bRatedEquipment);
+		Sizing->SetNumberField(TEXT("cduRatedKw"), CduRatedCapacityW * 1e-3);
+		Sizing->SetNumberField(TEXT("cduRatedApproachK"), CduRatedApproachK);
+		struct FAcc { int32 Racks = 0; double DutyW = 0, SumInK = 0, MaxInK = 0, MaxCompK = 0; TSet<int32> Rows; };
+		TMap<FString, FAcc> ByCdu;
+		double AllMaxCompK = 0, AllSumInK = 0, AllMaxInK = 0; int32 AllN = 0;
+		const TArray<int32> RackRows = Room ? Room->GetRoutedRackRows() : TArray<int32>();
+		for (int32 R = 0; R < Racks.Num(); ++R)
+		{
+			ARackThermalActor* Rack = Racks[R].Get();
+			if (Rack == nullptr) continue;
+			double MaxK = 0.0;
+			for (const double K : Rack->GetMutableModel().GetState().ComponentTempK) MaxK = FMath::Max(MaxK, K);
+			const double InK = Rack->Input.CoolantInletTempK;
+			AllMaxCompK = FMath::Max(AllMaxCompK, MaxK); AllSumInK += InK; AllMaxInK = FMath::Max(AllMaxInK, InK); ++AllN;
+			const ACoolingDistributionUnitActor* Cdu = Room && RackRows.IsValidIndex(R) ? Room->GetRowCdu(RackRows[R]) : nullptr;
+			FAcc& A = ByCdu.FindOrAdd(Cdu ? Cdu->GetName() : FString(TEXT("none")));
+			++A.Racks; A.SumInK += InK; A.MaxInK = FMath::Max(A.MaxInK, InK); A.MaxCompK = FMath::Max(A.MaxCompK, MaxK);
+			A.DutyW += FRackThermalModel::DesignHeatToCoolantW(Rack->Params, Rack->Input);
+			if (RackRows.IsValidIndex(R)) A.Rows.Add(RackRows[R]);
+		}
+		TArray<TSharedPtr<FJsonValue>> CduItems;
+		for (const auto& Pair : ByCdu)
+		{
+			TSharedRef<FJsonObject> O = MakeShared<FJsonObject>();
+			O->SetStringField(TEXT("name"), Pair.Key);
+			O->SetNumberField(TEXT("rows"), Pair.Value.Rows.Num());
+			O->SetNumberField(TEXT("racks"), Pair.Value.Racks);
+			O->SetNumberField(TEXT("designDutyKw"), Pair.Value.DutyW * 1e-3);
+			if (const double* F = CduRatedLoadFraction.Find(Pair.Key)) O->SetNumberField(TEXT("ratedLoad"), *F);
+			O->SetNumberField(TEXT("coolantSupplyMeanC"), Pair.Value.Racks ? Pair.Value.SumInK / Pair.Value.Racks - 273.15 : 0.0);
+			O->SetNumberField(TEXT("coolantSupplyMaxC"), Pair.Value.MaxInK - 273.15);
+			O->SetNumberField(TEXT("componentMaxC"), Pair.Value.MaxCompK - 273.15);
+			CduItems.Add(MakeShared<FJsonValueObject>(O));
+		}
+		Sizing->SetArrayField(TEXT("cdus"), CduItems);
+		Sizing->SetNumberField(TEXT("cduCount"), ByCdu.Num());
+		Sizing->SetNumberField(TEXT("componentMaxC"), AllMaxCompK - 273.15);
+		Sizing->SetNumberField(TEXT("coolantSupplyMeanC"), AllN ? AllSumInK / AllN - 273.15 : 0.0);
+		Sizing->SetNumberField(TEXT("coolantSupplyMaxC"), AllMaxInK - 273.15);
+		Sizing->SetNumberField(TEXT("crahUnits"), CrahUnits.Num());
+		Sizing->SetNumberField(TEXT("crahTotalFlowM3s"), GetCrahTotalFlowM3s());
+		Sizing->SetNumberField(TEXT("crahCoilRemovedKw"), Snap.CrahCoilRemovedW * 1e-3);
+		Sizing->SetNumberField(TEXT("designAirLoadKw"), DesignAirLoadW * 1e-3);
+		Root->SetObjectField(TEXT("sizing"), Sizing);
+	}
+
 	Root->SetObjectField(TEXT("checks"), MakeReportChecksJson(Snap));
 
 	TArray<TSharedPtr<FJsonValue>> EventItems;
@@ -4666,10 +4772,14 @@ static FAutoConsoleCommand GVrgWaterDemoCommand(
 
 static FAutoConsoleCommand GVrgEvalReportWhenDoneCommand(
 	TEXT("vrg.Eval.ReportWhenDone"),
-	TEXT("예약된 스텝(vrg.Air.RunSteps)이 끝나면 리포트를 쓴다. vrg.Eval.ReportWhenDone <이름>"),
+	TEXT("예약된 스텝(vrg.Air.RunSteps)이 끝나면 리포트를 쓴다. 둘째 인자 quit이면 쓴 뒤 종료(무인 실행). vrg.Eval.ReportWhenDone <이름> [quit]"),
 	FConsoleCommandWithArgsDelegate::CreateLambda([](const TArray<FString>& Args)
 	{
-		for (ADataCenterSimulationActor* Sim : EvalSimActors()) Sim->PendingReportName = Args.Num() > 0 ? Args[0] : FString(TEXT("report"));
+		for (ADataCenterSimulationActor* Sim : EvalSimActors())
+		{
+			Sim->PendingReportName = Args.Num() > 0 ? Args[0] : FString(TEXT("report"));
+			Sim->bQuitAfterPendingReport = Args.Num() > 1 && Args[1].Equals(TEXT("quit"), ESearchCase::IgnoreCase);
+		}
 	}));
 
 static FAutoConsoleCommand GVrgEvalSeedCommand(

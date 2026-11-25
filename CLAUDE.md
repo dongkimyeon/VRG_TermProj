@@ -8,6 +8,8 @@ UE 5.8 / C++ / 가상현실게임 텀프로젝트. 이 파일은 팀이 합의�
 
 ## 현재 상태 (2026-11-25)
 
+**2026-11-25 큰 홀·장비 대수 비교(사용자 지시로 중단, 이어서 할 것):** 64랙 홀 배치 생성(`Tools/make_hall_layout.py`, L_Test 기하 × 4포드), 제품 정격 모드 `vrg.Size.Rated`(CDU 액터 1대 = Vertiv CDU 2300 정격을 맡은 줄이 나눠 씀, 칠러 = Carrier 19XR 1558 kW; 기본 끔), 리포트 `sizing` 절, `vrg.Eval.ReportWhenDone <이름> quit`, 묶음 실행 `Tools/hall_sweep.ps1`(끝난 경우 건너뜀). 3건 완료: 랙 입구 냉각수 CDU 4대 26.0 / 2대 29.6 / 1대 44.3 °C, CRAH 16대는 흡기 33~36 °C로 부족. 남은 일(액랭 칩 온도 지표, 남은 5건, 설비 대수 비교)과 방법은 `Tools/큰홀_장비대수_계획.md`. 신규 `VRG.Size` 2건 + 관련 83건 성공.
+
 2026-11-25 실제 장비 자료로 추정값 점검(사용자: "실측 데이터 레퍼런스 기반으로"): CDU·밸브·감지기·팬 데이터시트(Vertiv CDU 2300·XDU450, LiquidStack, ColdLogik, CoolIT, Belimo, RLE, ebm-papst; PDF는 `markitdown[pdf]`로 읽음)와 대조. 바꾼 값 2개: 조절 밸브 행정 60 → 90 s(CRAH·FWS·CDU 1차, Belimo LR24A-SR), 시설 누수 로프·CDU 바닥 스팟 경보 지연 1 → 10 s(RLE SeaHawk LD310). 근거만 찾고 값 유지: CDU 접근 온도 4 K, CDU 펌프 효율 0.70, 랙 1.33 L/min/kW, 탱크 24 L, 차단 밸브 15 s, CRAH 팬 0.6, 드라이쿨러 모터 0.85. 실제와 다른 점: CDU 1대 실제 1.35~2.5 MW인데 L_Test는 1대가 32랙(기록만). 검증: Editor 빌드, 전체 `VRG` 401건 중 398 성공·시험 창 3건 수정 뒤 관련 93건 성공(NullRHI, RTX 3060 노트북), GPU·게임 빌드·L_Test 미실행. 상세 `docs/기록/09` 같은 날 절.
 
 2026-11-25 사용자 결정: **새 UI가 기본**(`vrg.Ui.Style` 기본 1, `F2`/`vrg.Ui.Style 0`으로 이전 UI). 같은 날 패널 위 클릭이 장면으로 새지 않게, 모든 패널이 한 배율(`VrgUi::HudScale`, UMG DPI 곡선)을 쓰게 고쳤다(화면 확인은 사용자가 나중에).

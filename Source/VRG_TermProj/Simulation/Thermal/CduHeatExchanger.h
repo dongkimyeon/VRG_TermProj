@@ -54,4 +54,16 @@ namespace CduHeatExchanger
 		if (Cr > 1.0 - 1e-9) return Eps / (1.0 - Eps);
 		return FMath::Loge((1.0 - Eps * Cr) / (1.0 - Eps)) / (1.0 - Cr);
 	}
+
+	// 2026-11-25 (vrg.Size.Rated): UA of one product from its rating point. RatedW is moved with the secondary supply
+	// ApproachK above the primary supply (the datasheets' "ATD") at the rated secondary capacity rate HotWK and primary
+	// capacity rate ColdWK, so the secondary return is ApproachK + RatedW / HotWK above the primary supply.
+	// Eps is capped at 0.99 (a rating a counterflow exchanger cannot reach is not extrapolated).
+	FORCEINLINE double RatedUAWK(double RatedW, double ApproachK, double HotWK, double ColdWK)
+	{
+		const double CMin = FMath::Min(HotWK, ColdWK), CMax = FMath::Max(HotWK, ColdWK);
+		if (RatedW <= 0.0 || CMin <= UE_DOUBLE_SMALL_NUMBER || ApproachK <= 0.0) return 0.0;
+		const double Eps = FMath::Min(RatedW / (CMin * (ApproachK + RatedW / HotWK)), .99);
+		return NtuForEffectiveness(Eps, CMin / CMax) * CMin;
+	}
 }

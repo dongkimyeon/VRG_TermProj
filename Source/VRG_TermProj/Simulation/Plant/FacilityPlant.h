@@ -88,6 +88,10 @@ struct FFacilityThermalSpec
 	// catalog only says the actuator is managed proportionally; 60 s was an estimate).
 	UPROPERTY(EditAnywhere, Category = "Plant") bool bCrahValveControl = true;
 	UPROPERTY(EditAnywhere, Category = "Plant") double ValveStrokeS = 90.0;
+	// 2026-11-25 (vrg.Size.Rated): every chiller and trim chiller is the curve set's own product at its reference
+	// capacity (Carrier 19XR, 1557.8 kW at 5.56 C / 21.11 C, EnergyPlus Chillers.idf) instead of being sized so the duty
+	// units make exactly the design load. Then the count matters: too few units run capacity limited. Off by default.
+	UPROPERTY(EditAnywhere, Category = "Plant") bool bRatedChillers = false;
 
 	// ---- F4 ----
 	// FWS trim chiller (same curve set as the CHW chillers), sized for the gap the dry coolers leave at the design air.

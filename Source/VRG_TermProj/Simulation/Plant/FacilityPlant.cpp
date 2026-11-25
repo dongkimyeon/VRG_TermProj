@@ -179,6 +179,7 @@ bool FFacilityPlant::Build(const FFacilityLoopSpec& LoopSpec, const FFacilityThe
 				const int32 N = FMath::Max(Thermal.TrimDutyChillers, 1);
 				TrimCapRefW = DesignTrimW / (N * FMath::Max(Chiller::Biquadratic(K.CapFt, FMath::Clamp(Thermal.SupplySetpointK - 273.15, K.MinX, K.MaxX),
 					FMath::Clamp(CwDesignInK - 273.15, K.MinY, K.MaxY)), 1e-6));
+				if (Thermal.bRatedChillers) TrimCapRefW = K.RefCapacityW;   // product rating, not the design gap
 				bTrim = true;
 			}
 		}
@@ -253,6 +254,7 @@ bool FFacilityPlant::BuildChilledWater(const TArray<FPlantCrahCoil>& Crahs, cons
 	// the CRAH design heat plus the CHW pumps' hydraulic power that ends up in the same water (F5).
 	ChillerCapRefW = (DesignChwW + (IsCombined() ? DesignHeatW : 0.0) + ChwLoop.GetTotalPumpHydraulicW()) / (NDuty * FMath::Max(Chiller::Biquadratic(K.CapFt,
 		FMath::Clamp(ChwSetpointK - 273.15, K.MinX, K.MaxX), FMath::Clamp(CwDesignInK - 273.15, K.MinY, K.MaxY)), 1e-6));
+	if (Thermal.bRatedChillers) ChillerCapRefW = K.RefCapacityW;   // product rating (vrg.Size.Rated), not exact sizing
 	const double TransitS = FMath::Max(Thermal.SupplySideTransitS, 1.0), TransitR = FMath::Max(Thermal.ReturnSideTransitS, 1.0);
 	Chw.SupplyCapJK = ChwTotalM3s * WaterRho * WaterCp * TransitS;
 	Chw.ReturnCapJK = ChwTotalM3s * WaterRho * WaterCp * TransitR;

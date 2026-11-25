@@ -304,6 +304,24 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Cooling|Coolant")
 	ECoolantRejection CoolantRejection = ECoolantRejection::CduHeatExchanger;
 
+	// 2026-11-25 real product ratings (vrg.Size.Rated, off by default = the old exact sizing at the design point).
+	// On: every CDU actor is one product of this rating, whatever it serves: its exchanger UA and primary flow come
+	// from the rating and are shared by the rows it serves in proportion to their design duty, so too few CDUs run
+	// overloaded (warmer secondary supply) and more CDUs add capacity. Default product: Vertiv CoolChip CDU 2300
+	// datasheet (SL-80607) "2300 kW @ 4 C ATD", nominal fluid flow 3400 l/min (brochure SL-80233). The primary rise
+	// is the CDU actor's FacilityDesignRiseK (ESTIMATE, no published primary flow). The plant's chillers use their
+	// reference capacity too (FFacilityThermalSpec::bRatedChillers). Applied at the next simulation entry.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Cooling|Rated")
+	bool bRatedEquipment = false;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Cooling|Rated", meta = (ClampMin = "1000.0"))
+	double CduRatedCapacityW = 2.3e6;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Cooling|Rated", meta = (ClampMin = "0.5"))
+	double CduRatedApproachK = 4.0;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Cooling|Rated", meta = (ClampMin = "0.0001"))
+	double CduRatedSecondaryFlowM3s = 3400.0 / 60000.0;
+	// Per CDU actor after sizing (rated mode): design duty of the rows it serves / its rated capacity.
+	TMap<FString, double> CduRatedLoadFraction;
+
 	// S8 F1/F2 (2026-10-20): facility water (FWS) plant for the CDU primaries. Off (default) = the fixed design
 	// facility flow and supply temperature of every CDU as before. On = the CDU groups become branches of an FWS
 	// network (pumps N+1, differential-pressure control, valves, dry cooler coils) sized at those same design flows;
@@ -616,6 +634,7 @@ public:
 	TArray<FEvalEvent> EvalEvents;
 	// Written when the queued warm-up steps finish (vrg.Eval.ReportWhenDone), then cleared.
 	FString PendingReportName;
+	bool bQuitAfterPendingReport = false;
 	// Writes Saved/Reports/<Name>.json and .md from the running evaluation; false before any simulation step.
 	bool WriteEvaluationReport(const FString& Name, FString& OutSummary) const;
 	const FVrgEvaluation& GetEvaluation() const { return Eval; }
