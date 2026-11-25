@@ -50,6 +50,9 @@ namespace
 	{
 		UCanvas* C = nullptr;
 		float S = 1.f;
+		TArray<FBox2D>* Hits = nullptr;   // panel rectangles that take clicks away from the scene
+
+		void Block(float X, float Y, float W, float H) const { if (Hits && W > 0.f && H > 0.f) Hits->Add(FBox2D(FVector2D(X, Y), FVector2D(X + W, Y + H))); }
 
 		void Rect(float X, float Y, float W, float H, const FLinearColor& Col) const
 		{
@@ -63,7 +66,7 @@ namespace
 			Rect(X, Y, W, 1.f, Col); Rect(X, Y + H - 1.f, W, 1.f, Col);
 			Rect(X, Y + 1.f, 1.f, H - 2.f, Col); Rect(X + W - 1.f, Y + 1.f, 1.f, H - 2.f, Col);
 		}
-		void Panel(float X, float Y, float W, float H) const { Rect(X, Y, W, H, VrgUi::Theme::Panel()); Frame(X, Y, W, H, Line()); }
+		void Panel(float X, float Y, float W, float H) const { Rect(X, Y, W, H, VrgUi::Theme::Panel()); Frame(X, Y, W, H, Line()); Block(X, Y, W, H); }
 		void Line2(float X0, float Y0, float X1, float Y1, const FLinearColor& Col, float Thick) const
 		{
 			FCanvasLineItem L(FVector2D(X0, Y0), FVector2D(X1, Y1));
@@ -226,6 +229,11 @@ namespace
 	}
 }
 
+bool ADataCenterLayoutHud::IsPointerOverPanel(const FVector2D& Screen) const
+{
+	return VrgUi::IsNewStyle() && VrgUi::HitAnyRect(PanelRects, Screen);
+}
+
 void ADataCenterLayoutHud::DrawMarquee()
 {
 	const auto* Controller = Cast<ADataCenterDebugController>(GetOwningPlayerController());
@@ -250,7 +258,8 @@ void ADataCenterLayoutHud::DrawAirLegendV2(float BottomMargin)
 	if (Legends.IsEmpty()) return;
 	FPaint P;
 	P.C = Canvas;
-	P.S = FMath::Clamp(GetDefault<UUserInterfaceSettings>()->GetDPIScaleBasedOnSize(FIntPoint(int32(Canvas->ClipX), int32(Canvas->ClipY))), .5f, 3.f);
+	P.Hits = &PanelRects;
+	P.S = VrgUi::HudScale(Canvas->ClipX, Canvas->ClipY);
 	const float S = P.S, Pad = 14.f * S, BarW = 320.f * S, BarH = 10.f * S;
 	const float Bw = BarW + 2.f * Pad, Bh = 38.f * S + Legends.Num() * 54.f * S;
 	const float X0 = Canvas->ClipX - 16.f * S - Bw, Y0 = Canvas->ClipY - BottomMargin - Bh;
@@ -287,7 +296,8 @@ void ADataCenterLayoutHud::DrawHudV2()
 	FVrgHudV2State& St = *V2;
 	FPaint P;
 	P.C = Canvas;
-	P.S = FMath::Clamp(GetDefault<UUserInterfaceSettings>()->GetDPIScaleBasedOnSize(FIntPoint(int32(Canvas->ClipX), int32(Canvas->ClipY))), .5f, 3.f);
+	P.Hits = &PanelRects;
+	P.S = VrgUi::HudScale(Canvas->ClipX, Canvas->ClipY);
 	const float S = P.S, W = Canvas->ClipX, H = Canvas->ClipY;
 	ADataCenterSimulationActor* Sim = FindSim(World);
 	const bool bSim = Sim && Sim->GetSimMode() == ESimMode::Simulation;
@@ -352,6 +362,7 @@ void ADataCenterLayoutHud::DrawHudV2()
 	// ---- top status bar ----
 	{
 		P.Rect(0, 0, W, BarH, PanelHi());
+		P.Block(0, 0, W, BarH);
 		P.Rect(0, BarH - 1.f, W, 1.f, Line());
 		float X = Margin;
 		const float Cy = .5f * BarH;
@@ -655,6 +666,7 @@ void ADataCenterLayoutHud::DrawHudV2()
 	if (bHelp)
 	{
 		P.Rect(0, BarH, W, H - BarH, FLinearColor(0, 0, 0, .45f));
+		P.Block(0, BarH, W, H - BarH);   // the overlay covers the scene: H closes it
 		struct FGroup { FString Name; TArray<FString> Items; };
 		TArray<FGroup> Groups;
 		for (const FString& L : HelpLines)

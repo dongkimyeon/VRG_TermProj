@@ -59,6 +59,13 @@ namespace VrgUi
 	// ("랙 #3")으로 바꾼다. "랙 <액터 이름>"은 "랙 랙 #3"이 되지 않게 함께 바꾼다.
 	VRG_TERMPROJ_API FString ShortenNames(const FString& Text, const TArray<TPair<FString, FString>>& Names);
 
+	// 새 HUD의 크기 배율: UMG와 같은 DPI 곡선(프로젝트 UI 설정)을 화면 크기에 적용한 값, [0.5, 3]. Canvas 패널과
+	// UMG 팔레트·누수 도구 패널이 같은 배율을 쓰게 한다(2026-11-25).
+	VRG_TERMPROJ_API float HudScale(float ViewportX, float ViewportY);
+
+	// 화면 좌표(뷰포트 픽셀)가 사각형 중 하나 안에 있는지(경계 포함). 새 HUD 패널 위 클릭을 장면에 넘기지 않는 데 쓴다.
+	VRG_TERMPROJ_API bool HitAnyRect(const TArray<FBox2D>& Rects, const FVector2D& Point);
+
 	// "기준선 없음" (SparkRange의 Threshold).
 	inline double NoThreshold() { return std::numeric_limits<double>::quiet_NaN(); }
 }

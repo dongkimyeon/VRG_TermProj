@@ -93,6 +93,7 @@ void UVrgPaletteV2::NativeOnInitialized()
 	auto* PanelBorder = WidgetTree->ConstructWidget<UBorder>();
 	PanelBorder->SetBrush(FSlateRoundedBoxBrush(Panel(), 10.f, Line(), 1.f));
 	PanelBorder->SetPadding(FMargin(12, 12, 12, 10));
+	PanelBorder->OnMouseButtonDownEvent.BindUFunction(this, GET_FUNCTION_NAME_CHECKED(UVrgPaletteV2, OnPanelMouseDown));
 	Width->AddChild(PanelBorder);
 	if (auto* S = Root->AddChildToCanvas(Width))
 	{
@@ -199,6 +200,11 @@ void UVrgPaletteV2::NativeTick(const FGeometry& Geometry, float DeltaTime)
 	if (HoleEditTitle) HoleEditTitle->SetText(FText::FromString(C->IsRoomCeilingHoleEditing() ? TEXT("구멍 편집 끝내기") : TEXT("구멍 선택·삭제")));
 	if (PlacingNote) PlacingNote->SetVisibility(C->IsAddingRack() ? ESlateVisibility::HitTestInvisible : ESlateVisibility::Collapsed);
 	if ((C->IsRoomCeilingEditing() || C->IsRoomCeilingHoleEditing() || C->IsRoomBoundsEditing()) && ActiveTab != 3) SetTab(3);
+}
+
+FEventReply UVrgPaletteV2::OnPanelMouseDown(FGeometry MyGeometry, const FPointerEvent& MouseEvent)
+{
+	return FEventReply(true);
 }
 
 void UVrgPaletteV2::OnTabIt() { SetTab(0); }

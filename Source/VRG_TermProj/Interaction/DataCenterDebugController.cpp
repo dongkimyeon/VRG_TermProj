@@ -10,6 +10,7 @@
 #include "Interaction/LayoutRackPalette.h"
 #include "Interaction/VrgPaletteV2.h"
 #include "Interaction/VrgUiStyle.h"
+#include "Interaction/DataCenterLayoutHud.h"
 #include "Interaction/RoomSettingsWidget.h"
 #include "Simulation/Core/VrgHud.h"
 
@@ -2632,6 +2633,10 @@ ADataCenterSimulationActor* ADataCenterDebugController::FindSimActor() const
 
 void ADataCenterDebugController::OnSelectLayoutEquipment()
 {
+	// 2026-11-25: a click on a new-HUD panel (status bar, inspector, KPI cards, event log...) stays with the panel.
+	float UiMouseX = 0.f, UiMouseY = 0.f;
+	if (const auto* Hud = Cast<ADataCenterLayoutHud>(GetHUD()))
+		if (GetMousePosition(UiMouseX, UiMouseY) && Hud->IsPointerOverPanel(FVector2D(UiMouseX, UiMouseY))) return;
 	if (!IsLayoutMode() && LeakToolMode != 0) { ApplyLeakToolClick(); return; }   // W1
 	LogLayoutInputState(TEXT("EnhancedSelectBegin"));
 	if (!IsLayoutMode() || !IsCameraInputAvailable() || IsInputKeyDown(EKeys::RightMouseButton)) return;

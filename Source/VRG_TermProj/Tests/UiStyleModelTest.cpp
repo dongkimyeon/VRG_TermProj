@@ -4,6 +4,8 @@
 #include "Interaction/VrgUiStyle.h"
 #include "Simulation/Evaluation/VrgFaultMonitor.h"
 #include "GameFramework/PlayerInput.h"
+#include "Engine/UserInterfaceSettings.h"
+#include "HAL/IConsoleManager.h"
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FVrgUiStyleModelTest, "VRG.Interaction.UiStyleModel",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::CommandletContext | EAutomationTestFlags::EngineFilter)
@@ -22,6 +24,30 @@ bool FVrgUiStyleModelTest::RunTest(const FString& Parameters)
 	bool bF2Debug = false;
 	for (const FKeyBind& B : GetDefault<UPlayerInput>()->DebugExecBindings) bF2Debug |= B.Key == EKeys::F2;
 	TestFalse(TEXT("no engine debug exec binding on F2"), bF2Debug);
+
+	// Default style: the new UI since 2026-11-25 (user decision); 0 keeps the previous HUD.
+	if (IConsoleVariable* Cv = IConsoleManager::Get().FindConsoleVariable(TEXT("vrg.Ui.Style")))
+	{
+		const FString Default = Cv->GetDefaultValue();
+		TestEqual(TEXT("default style is the new UI"), Default, FString(TEXT("1")));
+	}
+	else AddError(TEXT("vrg.Ui.Style missing"));
+
+	// Panel hit test (clicks on new-HUD panels stay out of the scene).
+	const TArray<FBox2D> Rects = { FBox2D(FVector2D(10, 10), FVector2D(110, 60)), FBox2D(FVector2D(0, 0), FVector2D(1920, 46)) };
+	TestTrue(TEXT("inside a panel"), VrgUi::HitAnyRect(Rects, FVector2D(50, 50)));
+	TestTrue(TEXT("on a panel edge"), VrgUi::HitAnyRect(Rects, FVector2D(110, 60)));
+	TestTrue(TEXT("inside the status bar"), VrgUi::HitAnyRect(Rects, FVector2D(1500, 20)));
+	TestFalse(TEXT("outside every panel"), VrgUi::HitAnyRect(Rects, FVector2D(500, 500)));
+	TestFalse(TEXT("no panels"), VrgUi::HitAnyRect({}, FVector2D(50, 50)));
+	TestFalse(TEXT("invalid box ignored"), VrgUi::HitAnyRect({ FBox2D(ForceInit) }, FVector2D(0, 0)));
+
+	// One scale for every panel: UMG DPI curve, clamped, not shrinking with a larger viewport.
+	const float S720 = VrgUi::HudScale(1280, 720), S1080 = VrgUi::HudScale(1920, 1080), S2160 = VrgUi::HudScale(3840, 2160);
+	TestTrue(TEXT("scale in [0.5, 3]"), S720 >= .5f && S2160 <= 3.f);
+	TestTrue(TEXT("scale non-decreasing with size"), S720 <= S1080 && S1080 <= S2160);
+	TestEqual(TEXT("scale equals the UMG DPI curve at 1080p"), S1080,
+		FMath::Clamp(GetDefault<UUserInterfaceSettings>()->GetDPIScaleBasedOnSize(FIntPoint(1920, 1080)), .5f, 3.f));
 
 	// Clock text.
 	TestEqual(TEXT("clock 0"), VrgUi::FormatClock(0.0), FString(TEXT("00:00.0")));

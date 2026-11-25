@@ -3,11 +3,13 @@
 #include "Simulation/Sensors/InstrumentBank.h"
 #include "HAL/IConsoleManager.h"
 #include "Algo/StableSort.h"
+#include "Engine/UserInterfaceSettings.h"
 
 namespace
 {
-	TAutoConsoleVariable<int32> CVarUiStyle(TEXT("vrg.Ui.Style"), 0,
-		TEXT("2026-11-24 UI demo: 0 = existing HUD and bottom palette (default), 1 = new HUD (status bar, KPI cards, event log, tool strip) and side palette. F2 toggles. Display only."));
+	// 2026-11-25 user decision: the new UI is the default; 0 keeps the previous HUD and bottom palette.
+	TAutoConsoleVariable<int32> CVarUiStyle(TEXT("vrg.Ui.Style"), 1,
+		TEXT("UI style (default 1 since 2026-11-25): 0 = previous HUD and bottom palette, 1 = new HUD (status bar, KPI cards, event log, tool strip) and side palette. F2 toggles. Display only."));
 
 	const TCHAR* PhaseName(const FString& P)
 	{
@@ -44,6 +46,20 @@ FString VrgUi::ShortenNames(const FString& Text, const TArray<TPair<FString, FSt
 		Out.ReplaceInline(*N.Key, *N.Value, ESearchCase::CaseSensitive);
 	}
 	return Out;
+}
+
+float VrgUi::HudScale(float ViewportX, float ViewportY)
+{
+	const UUserInterfaceSettings* Ui = GetDefault<UUserInterfaceSettings>();
+	const float Dpi = Ui ? Ui->GetDPIScaleBasedOnSize(FIntPoint(FMath::Max(1, int32(ViewportX)), FMath::Max(1, int32(ViewportY)))) : ViewportY / 1080.f;
+	return FMath::Clamp(Dpi, .5f, 3.f);
+}
+
+bool VrgUi::HitAnyRect(const TArray<FBox2D>& Rects, const FVector2D& Point)
+{
+	for (const FBox2D& R : Rects)
+		if (R.bIsValid && Point.X >= R.Min.X && Point.X <= R.Max.X && Point.Y >= R.Min.Y && Point.Y <= R.Max.Y) return true;
+	return false;
 }
 
 FString VrgUi::FormatClock(double TimeS, bool bTenths)

@@ -221,10 +221,13 @@ void ADataCenterLayoutHud::DrawHUD()
 	if (!Canvas || !Controller) return;
 	if (VrgUi::IsNewStyle())
 	{
-		// 2026-11-24 UI demo: same world labels and tools, new panels (DataCenterHudV2.cpp). Scale = UMG DPI curve.
-		const float S = FMath::Max(.5f, Canvas->ClipY / 1080.f);
+		// 2026-11-24 UI demo: same world labels and tools, new panels (DataCenterHudV2.cpp). One scale for every panel
+		// (UMG DPI curve, VrgUi::HudScale); the leak tool panel sits right of the KPI column, under the status bar.
+		PanelRects.Reset();
+		const float S = VrgUi::HudScale(Canvas->ClipX, Canvas->ClipY);
 		DrawTemperatureLabels();
-		DrawRackLeakTool(16.f * S + 300.f * S, 60.f * S + 46.f * S - 32.f * S, FMath::Max(Canvas->ClipX - 316.f * S - 412.f * S, 200.f));
+		const float LeakLeft = 16.f * S + 288.f * S + 12.f * S;
+		DrawRackLeakTool(LeakLeft, 46.f * S + 14.f * S + 5.f, FMath::Max(Canvas->ClipX - LeakLeft - 380.f * S - 28.f * S, 200.f));
 		DrawAirLegendV2(16.f * S + 48.f * S + 14.f * S);
 		DrawHudV2();
 		DrawMarquee();

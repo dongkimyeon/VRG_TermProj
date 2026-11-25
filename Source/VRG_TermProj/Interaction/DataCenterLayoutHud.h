@@ -13,6 +13,9 @@ class VRG_TERMPROJ_API ADataCenterLayoutHud : public AHUD
 	GENERATED_BODY()
 public:
 	virtual void DrawHUD() override;
+	// New HUD: true when Screen (viewport pixels) is over a panel drawn last frame; the controller then keeps the click
+	// out of the scene (2026-11-25). Always false in the previous style.
+	bool IsPointerOverPanel(const FVector2D& Screen) const;
 private:
 	void DrawTemperatureLabels();
 	void DrawAirLegend(float BottomMargin = 20.f);
@@ -21,4 +24,5 @@ private:
 	void DrawAirLegendV2(float BottomMargin);
 	void DrawMarquee();
 	TSharedPtr<FVrgHudV2State> V2;
+	TArray<FBox2D> PanelRects;   // panels drawn this frame, viewport pixels (display only)
 };

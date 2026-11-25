@@ -38,6 +38,8 @@ private:
 	void SetTab(int32 Tab);
 	ULayoutRackButton* AddItem(UVerticalBox* Page, const FLinearColor& Swatch, const TCHAR* Title, const TCHAR* Sub, TObjectPtr<UTextBlock>* OutTitle = nullptr);
 
+	// The panel background takes clicks between buttons so they do not select equipment behind it (2026-11-25).
+	UFUNCTION() FEventReply OnPanelMouseDown(FGeometry MyGeometry, const FPointerEvent& MouseEvent);
 	UFUNCTION() void OnTabIt();
 	UFUNCTION() void OnTabCooling();
 	UFUNCTION() void OnTabPlant();
