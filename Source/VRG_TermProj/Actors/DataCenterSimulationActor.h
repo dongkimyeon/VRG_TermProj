@@ -264,8 +264,11 @@ public:
 	FVector CrahPerimeterSizeM = FVector(0.9, 2.0, 2.0);
 
 	// CRAH fan electric input at the operating point (D8): P = FanPressurePa * flow / FanEfficiency.
-	// 250 Pa (coil + filter + casing) and 0.6 (EC fan and motor, wire to air) are ESTIMATES for a chilled-water
-	// cooler, not a product rating. The power becomes heat in the supply air and a ledger input (not IT heat).
+	// 250 Pa (coil + filter + casing) is an ESTIMATE for a chilled-water cooler. 0.6 wire to air: 2026-11-25 check,
+	// ebm-papst RadiCal (the EC plug fan family used in precision air conditioners) reaches a maximum fan efficiency of
+	// 68.5 % (ebm-papst press release 2019, RadiCal 310/630), and the EC motor + electronics take a further ~10 %, so
+	// 0.6 is that published best point times the drive (value kept; no CRAH product rates wire-to-air efficiency).
+	// The power becomes heat in the supply air and a ledger input (not IT heat).
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Cooling|CRAH", meta = (ClampMin = "0.0"))
 	double CrahFanPressurePa = 250.0;
 
@@ -712,7 +715,9 @@ public:
 		double TrayBmcDelayS = 1.0;          // ESTIMATE: the tray BMC reads its own detectors and acts (OOB power off / timer start)
 		double BmsPollS = 5.0;               // NVIDIA Mission Control-BMS integration heartbeat default 5 s, used as the BMS decision cycle
 		double ShelfOffDelayS = 0.5;         // ESTIMATE: power shelf DC output disable after the BMS command
-		double ValveStrokeS = 15.0;          // ESTIMATE: motorized ball valve full stroke; the valve model is shut/open at the stroke end
+		// Motorized ball valve full stroke; the valve model is shut/open at the stroke end. 2026-11-25 check: Belimo
+		// LRQ24A fast actuator 9 s / 90 deg, NRF24A spring-return fail-safe < 20 s; 15 s is between them (value kept).
+		double ValveStrokeS = 15.0;
 		double CduStopDelayS = 2.0;          // ESTIMATE: row CDU stop after the BMS command
 		double RecoveryPowerOnDelayS = 5.0;  // ESTIMATE: after the valves are open, before the breakers and power come back
 	};
@@ -939,7 +944,7 @@ private:
 	// CDU secondary supply temperature control (2026-11-03, Tools/실사양정합_계획.md P3), one entry per CDU group:
 	// setpoint [K], design facility flow [kg/s] (fixed boundary), valve opening (fixed boundary; the plant keeps its own),
 	// enabled (CDU bSupplyTempControl), valve stroke [s] and rangeability, and whether the target sat at a limit.
-	struct FCduSupplyControl { double SetpointK = 0.0, DesignFacilityKgs = 0.0, Opening = 1.0, StrokeS = 60.0, Rangeability = 50.0; bool bEnabled = false, bSaturated = false; };
+	struct FCduSupplyControl { double SetpointK = 0.0, DesignFacilityKgs = 0.0, Opening = 1.0, StrokeS = 90.0, Rangeability = 50.0; bool bEnabled = false, bSaturated = false; };
 	TArray<FCduSupplyControl> CduSupplyControls;
 	double CondensationRiskS = 0.0, MinDewMarginK = TNumericLimits<double>::Max();
 	bool bCondensationLogged = false;

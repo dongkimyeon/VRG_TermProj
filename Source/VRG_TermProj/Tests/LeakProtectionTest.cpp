@@ -152,7 +152,9 @@ bool FW53RowShutdownTest::RunTest(const FString& Parameters)
 	FW53Room R(true);
 	R.Run(0.5);
 	R.Sim->SetLiveLeak(R.Labeled(TEXT("랙 0 공급 헤더")), 5.0e-3, TEXT("test"));
-	R.Run(10.0);
+	// 2026-11-25: room ropes report through a facility leak controller (10 s contact-to-alarm, RLE SeaHawk LD310),
+	// so the window is the old 10 s plus that delay.
+	R.Run(20.0);
 	const bool bCduOff = !R.Cdu->IsPumpPowered() && !R.Room->GetNetwork().IsPumpPowered(R.Room->GetRowPumpIndex(0));
 	const bool bAllTripped = R.Racks[0]->GetModel().IsBusbarTripped() && R.Racks[1]->GetModel().IsBusbarTripped();
 	const double Flow = R.Room->GetNetwork().GetPumpFlowM3s(R.Room->GetRowPumpIndex(0));

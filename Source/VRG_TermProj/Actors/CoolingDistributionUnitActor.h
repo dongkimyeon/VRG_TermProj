@@ -96,6 +96,9 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hydraulics")
 	double PumpCurveCoeffPaS2M6 = 2.91e8;
 
+	// Pump wire-to-water efficiency (D8). 2026-11-25 check against CDU datasheets (value kept): CoolIT CHx2000
+	// 2125 L/min at 35 psi (241 kPa) with 12.24 kW unit power -> 8.55 kW hydraulic / 12.24 = 0.70; USystems ColdLogik
+	// 14.36 kg/s at 3.9 bar pump pressure with 8.2 kW at the duty point -> 0.68.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hydraulics", meta = (ClampMin = "0.01", ClampMax = "1.0"))
 	double PumpEfficiency = 0.7;
 
@@ -117,7 +120,9 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Heat Exchanger", meta = (ClampMin = "0.0"))
 	double HxUAWK = 0.0;
 
-	// Design assumptions for the sizing above (not measured): facility water rise [K], supply approach [K].
+	// Design values for the sizing above: facility water rise [K] (ESTIMATE), supply approach [K]. The 4 K approach is
+	// the published CDU rating point (2026-11-25 check): Vertiv CoolChip CDU 2300 "2300 kW @ 4 C ATD", Vertiv XDU450
+	// "453 kW at 4.0 C ATD", LiquidStack CDU 1.X "1,350 kW (4 degC ATD)"; CoolIT CHx2000 rates 2 MW at 5 C.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Heat Exchanger", meta = (ClampMin = "1.0"))
 	double FacilityDesignRiseK = 10.0;
 
@@ -144,7 +149,8 @@ public:
 
 	// Rack branch design flow [m^3/s]: GB200 NVL72 2.3 L/s = 138 L/min. Per kW: 138 / 104 kW liquid-cooled heat =
 	// 1.33 L/min/kW (OCP 1.25-2.0 L/min/kW range); per total rack 119 kW it is 1.16. Above Lenovo's GB300 NVL72 minimum
-	// of 89 L/min at a 35 C supply (2026-11-12 check).
+	// of 89 L/min at a 35 C supply (2026-11-12 check). CDU datasheets (2026-11-25): LiquidStack CDU 1.X 1.15-1.50
+	// L/min/kW (PG 25), CoolIT CHx2000 "2 MW cooling at 1.5 LPM/kW".
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Control", meta = (ClampMin = "0.0"))
 	double RackDesignFlowM3s = 2.3e-3;
 
@@ -162,9 +168,10 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Control")
 	bool bSupplyTempControl = true;
 	// Valve full stroke time [s] and equal-percentage rangeability, used without the plant model (with it, the FWS
-	// loop's valves are used). ESTIMATES, the same values as the plant's valves (ValveStrokeS, ValveRangeability).
+	// loop's valves are used). The same values as the plant's valves (ValveStrokeS, ValveRangeability): stroke 90 s =
+	// Belimo LR24A-SR running time (2026-11-25, was a 60 s estimate); rangeability 50 is still an ESTIMATE.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Control", meta = (ClampMin = "0.1"))
-	double PrimaryValveStrokeS = 60.0;
+	double PrimaryValveStrokeS = 90.0;
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Control", meta = (ClampMin = "1.01"))
 	double PrimaryValveRangeability = 50.0;
 

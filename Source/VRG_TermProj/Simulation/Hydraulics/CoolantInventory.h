@@ -26,8 +26,9 @@ struct FExpansionTankParams
 {
 	GENERATED_BODY()
 
-	// Total tank volume [m^3]. ESTIMATE: no public CDU datasheet found states its expansion vessel volume (Vertiv
-	// XDU450/1350 and Delta SuperCDU list expansion vessels without a size). 24 L is a placeholder of the right order.
+	// Total tank volume [m^3]. 2026-11-25 datasheet check: Vertiv XDU450 (SL-07622) "redundant 2.1 gal. (8.0 l)
+	// expansion vessels" (2 x 8 L = 16 L), USystems ColdLogik CDU data sheet (2023-12) "Expansions vessel 25L".
+	// 24 L is inside that published 16-25 L range (value kept; no datasheet of a CDU this size states it exactly).
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Inventory", meta = (ClampMin = "0.0001"))
 	double TankVolumeM3 = 0.024;
 

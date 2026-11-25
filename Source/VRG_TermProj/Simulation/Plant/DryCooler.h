@@ -36,7 +36,9 @@ struct FDryCoolerCatalog
 	UPROPERTY(EditAnywhere, Category = "Dry Cooler") int32 Fans = 8;
 	// "Rated motor hp" is the motor's rated output, not its electric input (D8); input = output / motor efficiency.
 	UPROPERTY(EditAnywhere, Category = "Dry Cooler") double FanRatedMotorOutputW = 0.75 * 745.7;
-	UPROPERTY(EditAnywhere, Category = "Dry Cooler") double FanMotorEfficiency = 0.85;   // ESTIMATE
+	// 2026-11-25 check (value kept): a 0.56 kW (3/4 hp) motor at IE4 is about this; IEC 60034-30-1 IE4 4-pole 50 Hz
+	// minimum 85.6 % at 0.75 kW (ABB note on the China/IEC grades). EC fans claim IE4 or better (ebm-papst GreenTech).
+	UPROPERTY(EditAnywhere, Category = "Dry Cooler") double FanMotorEfficiency = 0.85;
 	UPROPERTY(EditAnywhere, Category = "Dry Cooler") double UaAirFlowExponent = 0.6;     // ESTIMATE (see above)
 };
 

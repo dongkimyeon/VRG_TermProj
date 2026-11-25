@@ -104,10 +104,20 @@ namespace
 
 	// W5 contact specs (2026-11-03). ESTIMATES for generic detectors (no product rating): a floor rope / spot sensor is
 	// wet with 5 mL on the cells it covers now; a tray cold-plate or inner-manifold detector with 2 mL; a drip-tray spot
-	// sensor with 30 mL (the W3.5 drip tray value). Poll 1 s, debounce 1 s (the existing generic detector assumptions).
+	// sensor with 30 mL (the W3.5 drip tray value). Poll 1 s, debounce 1 s (the existing generic detector assumptions)
+	// for the detectors read by the rack / tray / CDU controllers.
 	FWaterContactSpec ContactSpec(double WettingM3, bool bCurrent)
 	{
 		FWaterContactSpec S; S.WettingVolumeM3 = WettingM3; S.bCurrentWater = bCurrent; return S;
+	}
+
+	// Facility leak ropes and floor spots (room and yard pipe ropes, the CDU footprint floor spot) report through a
+	// facility leak detection controller. 2026-11-25: its contact-to-alarm time from a product datasheet, RLE SeaHawk
+	// LD310 "Detection Response Time <20 sec; 10 sec typical" (LD1500 / LD2100: adjustable 5-995 s). Was 1 s (estimate).
+	constexpr double FacilityLeakControllerResponseS = 10.0;
+	FWaterContactSpec FacilityContactSpec(double WettingM3, bool bCurrent)
+	{
+		FWaterContactSpec S = ContactSpec(WettingM3, bCurrent); S.ResponseDelayS = FacilityLeakControllerResponseS; return S;
 	}
 
 	// W5-2: a make-up water meter is a positive-displacement / pulse meter: it reads zero without flow (no zero noise,
@@ -212,7 +222,7 @@ void ADataCenterSimulationActor::RebuildInstruments()
 			// reads the computed water there - the water shown is the water sensed. Room: water on its floor cells now
 			// (W3); yard: the spray's cumulative ground deposits under it (no outdoor spreading model).
 			Pt.bWaterContact = true;
-			Pt.Contact = ContactSpec(5.0e-6, Site == EInstrumentSite::RoomPipe);
+			Pt.Contact = FacilityContactSpec(5.0e-6, Site == EInstrumentSite::RoomPipe);
 			const TArray<FVector> Samples = SampleAlong(PointsM, Ranges[K], 0.5 * (Site == EInstrumentSite::RoomPipe ? CellM : Spray.GetSettings().FloorBinM));
 			Pt.CoverageStartM = Samples[0]; Pt.CoverageEndM = Samples.Last();
 			if (Site == EInstrumentSite::RoomPipe) AddPoint(Pt, { FlowNow, TempNow }, FloorCellsUnder(Samples));
@@ -374,7 +384,7 @@ void ADataCenterSimulationActor::RebuildInstruments()
 			FInstrumentPoint Pt;
 			Pt.Site = EInstrumentSite::CduFloorSpot; Pt.Id = Id + TEXT(":floor_spot");
 			Pt.Label = FString::Printf(TEXT("%s 바닥 스팟"), *Id); Pt.PositionM = CenterM;
-			Pt.bWaterContact = true; Pt.Contact = ContactSpec(5.0e-6, true);
+			Pt.bWaterContact = true; Pt.Contact = FacilityContactSpec(5.0e-6, true);
 			AddPoint(Pt, {}, FloorCellsUnder(Footprint));
 		}
 	}

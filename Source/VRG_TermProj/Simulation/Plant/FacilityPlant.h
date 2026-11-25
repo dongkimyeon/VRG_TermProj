@@ -83,10 +83,11 @@ struct FFacilityThermalSpec
 	// Condenser water: fans hold the chiller's entering condenser water at 85 F (29.44 C), the AHRI 550/590 standard
 	// rating condition for water-cooled chillers (ESTIMATE as a control setpoint; original standard not re-checked here).
 	UPROPERTY(EditAnywhere, Category = "Plant") double CwSupplySetpointK = 302.594;
-	// CRAH valve control on the coil leaving air (see above). Full stroke time 60 s: ESTIMATE (no public figure found
-	// in the Liebert PCW catalog, which only says the actuator is managed proportionally).
+	// CRAH valve control on the coil leaving air (see above). Full stroke time (also the FWS valves): 2026-11-25 changed
+	// 60 -> 90 s, the Belimo LR24A-SR modulating ball valve actuator "running time motor 90 s / 90 deg" (the Liebert PCW
+	// catalog only says the actuator is managed proportionally; 60 s was an estimate).
 	UPROPERTY(EditAnywhere, Category = "Plant") bool bCrahValveControl = true;
-	UPROPERTY(EditAnywhere, Category = "Plant") double ValveStrokeS = 60.0;
+	UPROPERTY(EditAnywhere, Category = "Plant") double ValveStrokeS = 90.0;
 
 	// ---- F4 ----
 	// FWS trim chiller (same curve set as the CHW chillers), sized for the gap the dry coolers leave at the design air.

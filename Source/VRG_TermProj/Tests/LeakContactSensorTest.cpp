@@ -117,7 +117,11 @@ bool FW5RoomRopeTest::RunTest(const FString& Parameters)
 	const int32 Before = Bank.GetAlarmLog().Num();
 	const int32 Site = R.SiteByLabel(TEXT("랙 0 공급 헤더"));
 	TestTrue(TEXT("header site opened"), R.Sim->SetLiveLeak(Site, 5.0e-3, TEXT("test")));
-	R.Run(8.0);
+	// The ropes' contact-to-alarm delay (10 s since 2026-11-25, facility leak controller): the windows add it.
+	double RopeDelayS = 0.0;
+	for (int32 I = 0; I < Bank.Num(); ++I)
+		if (Bank.GetPoint(I).Site == EInstrumentSite::RoomPipe) { RopeDelayS = Bank.GetPoint(I).Contact.ResponseDelayS; break; }
+	R.Run(7.0 + RopeDelayS);
 	int32 Ropes = 0, RopeAlarms = 0, WetRopes = 0, BadAlarms = 0;
 	double First = TNumericLimits<double>::Max();
 	for (int32 I = 0; I < Bank.Num(); ++I)
@@ -137,8 +141,8 @@ bool FW5RoomRopeTest::RunTest(const FString& Parameters)
 		BadAlarms += A.WaterM3 >= P.Contact.WettingVolumeM3 && A.ThresholdS >= 0.5 && A.TimeS + 1e-9 >= A.ThresholdS + P.Contact.ResponseDelayS ? 0 : 1;
 	}
 	const FFloorWaterTotals& F = R.Sim->GetFloorWater().GetTotals();
-	AddInfo(FString::Printf(TEXT("5 mm 헤더 누수 8 s: 바닥 물 %.3f L(배수 %.3f L), 배관 로프 %d개 중 지금 젖음 %d, 경보 %d(첫 %.2f s), 잘못된 경보 %d, 누수 전 경보 %d"),
-		F.StoredM3 * 1e3, F.DrainedM3 * 1e3, Ropes, WetRopes, RopeAlarms, First, BadAlarms, Before));
+	AddInfo(FString::Printf(TEXT("5 mm 헤더 누수 %.0f s(로프 지연 %.0f s 포함): 바닥 물 %.3f L(배수 %.3f L), 배관 로프 %d개 중 지금 젖음 %d, 경보 %d(첫 %.2f s), 잘못된 경보 %d, 누수 전 경보 %d"),
+		7.0 + RopeDelayS, RopeDelayS, F.StoredM3 * 1e3, F.DrainedM3 * 1e3, Ropes, WetRopes, RopeAlarms, First, BadAlarms, Before));
 	TestTrue(TEXT("no detector alarm before the leak"), Before == 0);
 	TestTrue(TEXT("ropes under the pipes exist"), Ropes > 0);
 	TestTrue(TEXT("the floor water reached at least one rope and it alarmed"), RopeAlarms > 0 && F.StoredM3 + F.DrainedM3 > 0.0);
@@ -146,7 +150,7 @@ bool FW5RoomRopeTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("dry ropes stay quiet (not every rope alarmed)"), RopeAlarms < Ropes);
 	// Operator reset: ropes still wet raise again; the count of latched alarms after a short wait = ropes still wet.
 	R.Sim->ResetLeakAlarms(INDEX_NONE);
-	R.Run(2.5);
+	R.Run(1.5 + RopeDelayS);
 	int32 Relatched = 0, StillWet = 0;
 	for (int32 I = 0; I < Bank.Num(); ++I)
 		if (Bank.GetPoint(I).Site == EInstrumentSite::RoomPipe)
@@ -154,7 +158,7 @@ bool FW5RoomRopeTest::RunTest(const FString& Parameters)
 			Relatched += Bank.IsLeakAlarm(I) ? 1 : 0;
 			StillWet += Bank.GetContactWaterM3(I) >= Bank.GetPoint(I).Contact.WettingVolumeM3 ? 1 : 0;
 		}
-	AddInfo(FString::Printf(TEXT("해제 2.5 s 뒤: 다시 울림 %d, 지금 젖음 %d"), Relatched, StillWet));
+	AddInfo(FString::Printf(TEXT("해제 %.1f s 뒤: 다시 울림 %d, 지금 젖음 %d"), 1.5 + RopeDelayS, Relatched, StillWet));
 	TestTrue(TEXT("after a reset the ropes still wet alarm again"), Relatched > 0 && Relatched <= RopeAlarms);
 	return true;
 }

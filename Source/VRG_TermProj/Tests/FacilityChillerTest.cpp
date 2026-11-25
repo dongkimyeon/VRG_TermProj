@@ -275,11 +275,12 @@ bool FChwValveInverseTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("above design: saturated open"), bSat[2] && Plant.GetCrahOpening(2) == 1.0);
 	TestTrue(TEXT("intake below the target: valve shut, no water"), Plant.GetCrahOpening(3) == 0.0 && Plant.GetCrahWaterKgs(3) == 0.0 && Plant.GetCrahEquivalentUAWK(3) == 0.0);
 	TestTrue(TEXT("equivalent UA follows the new flow (rel < 1e-12)"), EqRel < 1e-12);
-	// Stroke limit: from fully open, one 1 s step moves at most 1/60.
+	// Stroke limit: from fully open, one 1 s step moves at most 1 / stroke time (90 s since 2026-11-25, Belimo LR24A-SR).
 	FFacilityPlant Ramp;
 	Ramp.Build(Loop, Th, 0.8e6, ChwRho, ChwCp, FHydraulicSolveSettings(), Coils, 291.15);
 	Ramp.ControlCrahValves(1.0, Mix);
-	TestTrue(TEXT("stroke rate: 1 s moves 1/60 of the travel"), FMath::Abs(Ramp.GetCrahOpening(0) - (1.0 - 1.0 / 60.0)) < 1e-12 && Ramp.GetCrahOpening(3) == 1.0 - 1.0 / 60.0);
+	const double StepTravel = 1.0 / Th.ValveStrokeS;
+	TestTrue(TEXT("stroke rate: 1 s moves 1 / stroke time of the travel"), FMath::Abs(Ramp.GetCrahOpening(0) - (1.0 - StepTravel)) < 1e-12 && Ramp.GetCrahOpening(3) == 1.0 - StepTravel);
 	return true;
 }
 
