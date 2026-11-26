@@ -5,6 +5,7 @@ bool ADataCenterSimulationActor::SetOutdoorNoiseEnvironment(const VrgNoise::FOut
 	if (!Environment.IsValid() || (!OutdoorBoundaryPoints.IsEmpty() && !FMath::IsFinite(Environment.GroundZM + OutdoorBoundaryHeightM)))
 		return false;
 	OutdoorNoiseEnvironment = Environment;
+	ResetNoiseReceiverGroup(VrgNoise::EReceiverSet::Boundary);
 	ResetBoundaryNoisePaths();
 	return true;
 }
@@ -14,6 +15,8 @@ bool ADataCenterSimulationActor::SetOutdoorNoiseBoundary(const TArray<FVector2D>
 	if (!FMath::IsFinite(HeightM) || HeightM <= 0.0 || !FMath::IsFinite(OutdoorNoiseEnvironment.GroundZM + HeightM)
 		|| !VrgNoise::SampleOutdoorBoundary(VerticesM, SpacingM, OutdoorBoundaryPoints)) return false;
 	OutdoorBoundaryHeightM = HeightM;
+	OutdoorBoundaryRequest = VrgNoise::FBoundaryRequest{VerticesM, SpacingM, HeightM};
+	ResetNoiseReceiverGroup(VrgNoise::EReceiverSet::Boundary);
 	ResetBoundaryNoisePaths();
 	return true;
 }
@@ -21,6 +24,8 @@ bool ADataCenterSimulationActor::SetOutdoorNoiseBoundary(const TArray<FVector2D>
 void ADataCenterSimulationActor::ClearOutdoorNoiseBoundary()
 {
 	OutdoorBoundaryPoints.Reset();
+	OutdoorBoundaryRequest.Reset();
+	ResetNoiseReceiverGroup(VrgNoise::EReceiverSet::Boundary);
 	ResetBoundaryNoisePaths();
 	if (!OutdoorNoiseReceiver.IsSet()) ResetOutdoorNoiseRun();
 }

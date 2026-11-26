@@ -219,6 +219,7 @@ void ADataCenterLayoutHud::DrawHUD()
 	Super::DrawHUD();
 	const auto* Controller = Cast<ADataCenterDebugController>(GetOwningPlayerController());
 	if (!Canvas || !Controller) return;
+	DrawNoiseOverlay();
 	if (VrgUi::IsNewStyle())
 	{
 		// 2026-11-24 UI demo: same world labels and tools, new panels (DataCenterHudV2.cpp). Scale = UMG DPI curve.

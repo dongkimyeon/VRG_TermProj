@@ -27,6 +27,8 @@
 #include "Interaction/VrgLayoutFile.h"
 #include "Simulation/Acoustics/NoiseOutdoorPropagation.h"
 #include "Simulation/Acoustics/NoiseIndoor.h"
+#include "Simulation/Acoustics/NoiseLayout.h"
+#include "Simulation/Acoustics/NoiseMonitoring.h"
 #include "DataCenterSimulationActor.generated.h"
 
 class AAirFieldDebugActor;
@@ -369,6 +371,11 @@ public:
 	bool SetIndoorNoiseAbsorption(const VrgNoise::FIndoorAbsorption& Absorption);
 	bool SetIndoorNoiseCduRating(TOptional<double> WholeUnitLwA);
 	const TOptional<VrgNoise::FIndoorSnapshot>& GetIndoorNoiseSnapshot() const { return IndoorNoiseSnapshot; }
+	VrgNoise::FNoiseLayout CaptureNoiseLayout() const;
+	void ApplyNoiseLayout(const VrgNoise::FNoiseLayout& ValidatedSettings);
+	const VrgNoise::FNoiseReceiverGroup& GetNoiseReceiverGroup(VrgNoise::EReceiverSet Set) const { return NoiseReceiverGroups[int32(Set)]; }
+	TSharedRef<FJsonObject> MakeNoiseReportJson(bool bAllTraces, const FString& TraceId = FString()) const;
+	FString BuildNoiseDashboardJson(const FString& TraceId) const;
 
 	// ---- W1 live leaks (Tools/누수_실시간_계획.md L1, 2026-10-23) ----
 	// Every place a leak can start during a run: the room's closed sites (three per rack, ADataCenterRoomActor) and,
@@ -984,6 +991,7 @@ private:
 	void BuildOutdoorBoundaryPaths(double TemperatureK);
 	void UpdateOutdoorNoiseBoundary(const VrgNoise::FOutdoorSample& Sample, const TArray<VrgNoise::FLevel>& Powers);
 	VrgNoise::FOutdoorEnvironment OutdoorNoiseEnvironment;
+	TOptional<VrgNoise::FBoundaryRequest> OutdoorBoundaryRequest;
 	TArray<FVector2D> OutdoorBoundaryPoints;
 	double OutdoorBoundaryHeightM = 0.0;
 	TArray<FBoundaryNoisePath> OutdoorBoundaryPaths;
@@ -1011,6 +1019,9 @@ private:
 	void ResetIndoorNoiseRun();
 	void BuildIndoorNoise();
 	void IndoorNoiseAfterStep();
+	void ObserveNoiseAfterStep(const FVrgEvaluationSample& Evaluation, const TArray<double>& Inlets);
+	void ResetNoiseReceiverGroup(VrgNoise::EReceiverSet Set);
+	VrgNoise::FNoiseReceiverGroup NoiseReceiverGroups[int32(VrgNoise::EReceiverSet::Count)];
 	TOptional<FVector2D> IndoorNoisePositionM;
 	TOptional<double> IndoorNoiseMapSpacingM;
 	TOptional<double> IndoorCduRating;

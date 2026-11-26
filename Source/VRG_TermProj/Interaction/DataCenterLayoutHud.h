@@ -19,6 +19,7 @@ private:
 	void DrawRackLeakTool(float Left = 10.f, float Top = 90.f, float MaxWidth = 1100.f);
 	void DrawHudV2();
 	void DrawAirLegendV2(float BottomMargin);
+	void DrawNoiseOverlay();
 	void DrawMarquee();
 	TSharedPtr<FVrgHudV2State> V2;
 };

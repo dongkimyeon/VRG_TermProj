@@ -40,6 +40,7 @@ bool ADataCenterSimulationActor::SetOutdoorNoiseReceiver(const VrgNoise::FOutdoo
 {
 	if (!Receiver.IsValid()) return false;
 	OutdoorNoiseReceiver = Receiver;
+	ResetNoiseReceiverGroup(VrgNoise::EReceiverSet::Probe);
 	ResetOutdoorNoiseRun();
 	return true;
 }
@@ -47,6 +48,7 @@ bool ADataCenterSimulationActor::SetOutdoorNoiseReceiver(const VrgNoise::FOutdoo
 void ADataCenterSimulationActor::ClearOutdoorNoiseReceiver()
 {
 	OutdoorNoiseReceiver.Reset();
+	ResetNoiseReceiverGroup(VrgNoise::EReceiverSet::Probe);
 	ResetOutdoorNoiseRun();
 }
 

@@ -68,6 +68,9 @@ public:
 	void PublishStatus(FString&& InJson);
 	FString RequestStatusJson();
 	bool WantsStatus() const;
+	bool GetNoiseRequest(FString& OutTraceId) const;
+	void PublishNoise(const FString& TraceId, FString&& InJson);
+	FString RequestNoiseJson(const FString& TraceId);
 
 	// Stage 5: report save requests from the page (the only write the site makes). The game thread takes the request on
 	// its next publish and writes it with the same function as vrg.Eval.Report; the result is shown in the report list.
@@ -114,6 +117,8 @@ private:
 	double RoomAirAskedS = -1.0e9;
 	FString LatestStatus;
 	double StatusAskedS = -1.0e9;
+	FString LatestNoise, PublishedNoiseTrace, RequestedNoiseTrace;
+	double NoiseAskedS = -1.0e9;
 	FString PendingReport;
 	FString LastSaveName, LastSaveMessage;
 	bool bHasLastSave = false, bLastSaveOk = false;

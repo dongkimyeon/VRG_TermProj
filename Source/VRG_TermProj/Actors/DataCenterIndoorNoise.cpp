@@ -84,6 +84,7 @@ bool ADataCenterSimulationActor::SetIndoorNoiseCduRating(TOptional<double> Whole
 {
 	if (WholeUnitLwA.IsSet() && !FMath::IsFinite(*WholeUnitLwA)) return false;
 	IndoorCduRating = WholeUnitLwA;
+	ResetNoiseReceiverGroup(EReceiverSet::Indoor);
 	IndoorNoiseSnapshot.Reset();
 	NextIndoorNoiseSampleS = 0.0;
 	return true;
@@ -91,6 +92,7 @@ bool ADataCenterSimulationActor::SetIndoorNoiseCduRating(TOptional<double> Whole
 
 void ADataCenterSimulationActor::ResetIndoorNoiseRun()
 {
+	ResetNoiseReceiverGroup(EReceiverSet::Indoor);
 	IndoorNoiseSnapshot.Reset();
 	IndoorSourceBindings.Reset();
 	IndoorReceivers.Reset();

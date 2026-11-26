@@ -29,6 +29,7 @@
 #include "Visualization/CrahVisualModel.h"
 #include "Simulation/Air/AirSolver.h"
 #include "Simulation/Air/AirConnectivity.h"
+#include "Simulation/Acoustics/NoiseReporting.h"
 #include "Simulation/Core/SimUnits.h"
 #include "Simulation/Thermal/RackThermalModel.h"
 
@@ -1185,6 +1186,8 @@ void ADataCenterSimulationActor::BuildCoupling()
 	Clock.Reset(FixedStepS);
 	ResetOutdoorNoiseRun();
 	ResetIndoorNoiseRun();
+	ResetNoiseReceiverGroup(VrgNoise::EReceiverSet::Probe);
+	ResetNoiseReceiverGroup(VrgNoise::EReceiverSet::Boundary);
 
 	// 어디가 안 붙었는지 화면에 적는다. 조용히 예비값으로 도는 것보다 낫다.
 	TArray<FString> Missing;
@@ -3644,6 +3647,8 @@ void ADataCenterSimulationActor::PublishDashboard()
 	// 2026-11-11 tabs: built only while the page asked within the last few seconds (counted in the publish cost above).
 	if (Web.WantsRoomAir()) Web.PublishRoomAir(BuildDashboardRoomAir());
 	if (Web.WantsStatus()) Web.PublishStatus(BuildDashboardStatusJson());
+	FString TraceId;
+	if (Web.GetNoiseRequest(TraceId)) Web.PublishNoise(TraceId, BuildNoiseDashboardJson(TraceId));
 }
 
 void ADataCenterSimulationActor::DrawSummary() const
@@ -4182,6 +4187,7 @@ void ADataCenterSimulationActor::EvalAfterStep()
 	LeakProtectionAfterStep(); Lap(3);   // W5-3: acts on the next step's inputs
 	OutdoorNoiseAfterStep();
 	IndoorNoiseAfterStep();
+	ObserveNoiseAfterStep(Power, Inlets);
 }
 
 double ADataCenterSimulationActor::GetSiteEnergyInJ() const
@@ -4312,6 +4318,8 @@ bool ADataCenterSimulationActor::WriteEvaluationReport(const FString& Name, FStr
 	Root->SetObjectField(TEXT("waterImpact"), MakeWaterImpactReportJson());   // W4 (optional field): policy, state counts, power cuts
 	Root->SetObjectField(TEXT("waterDisplay"), MakeReportWaterDisplayJson());
 	Root->SetObjectField(TEXT("instruments"), MakeReportInstrumentsJson());
+	const auto Noise = MakeNoiseReportJson(true);
+	Root->SetObjectField(TEXT("noise"), Noise);
 
 	FString Json;
 	FJsonSerializer::Serialize(Root, TJsonWriterFactory<>::Create(&Json));
@@ -4348,6 +4356,7 @@ bool ADataCenterSimulationActor::WriteEvaluationReport(const FString& Name, FStr
 				Pt.bWaterContact ? *FString::Printf(TEXT("%.12g"), A.WaterM3) : TEXT("-"));
 		}
 	}
+	VrgNoise::AppendNoiseMarkdown(*Noise, Md);
 	Md += FString::Printf(TEXT("\n## 점검\n\n전역 정규화 열수지 잔차 %.3e. %s\n"), Snap.NormalizedEnergyResidual, *Bridge.DescribeEnergyLedger());
 	const bool bOk = FFileHelper::SaveStringToFile(Json, *JsonPath, FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM)
 		&& FFileHelper::SaveStringToFile(Md, *FPaths::Combine(Dir, Name + TEXT(".md")), FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM);
@@ -4445,6 +4454,7 @@ namespace
 			Md += FString::Printf(TEXT("| %d | %.2f | %.2f | %+.2f |\n"), I, VA, VB, VB - VA);
 		}
 		if (IA.Num() != IB.Num()) Md += FString::Printf(TEXT("\n흡기 수가 다르다(%d 대 %d) - 앞쪽만 짝지었다.\n"), IA.Num(), IB.Num());
+		VrgNoise::AppendNoiseComparison(*A, *B, Md);
 		const FString Path = FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("Reports"), FString::Printf(TEXT("AB_%s_vs_%s.md"), *NameA, *NameB));
 		FFileHelper::SaveStringToFile(Md, *Path, FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM);
 		OutSummary = FString::Printf(TEXT("%s | 흡기별 창 평균 최대 차 %.2f K"), *Path, MaxAbs);

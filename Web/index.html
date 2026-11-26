@@ -138,6 +138,20 @@
   .kv { display:grid; grid-template-columns:repeat(auto-fit, minmax(190px, 1fr)); gap:6px 14px; font:12px var(--mono); margin-top:6px; }
   .kv div span { display:block; color:var(--muted); font:11px system-ui, sans-serif; }
   .ok { color:var(--text); } .warn { color:#f0b43c; } .warn::before { content:'▲ '; }
+  .noisehead { display:flex; justify-content:space-between; gap:12px; align-items:center; flex-wrap:wrap; margin-bottom:10px; }
+  .noisehead label { color:var(--muted); font-size:12px; }
+  .noiselayout { display:grid; grid-template-columns:minmax(0, 1fr) minmax(180px, 255px); gap:18px; }
+  .noiseplot { display:block; width:100%; min-height:110px; border:1px solid var(--line); border-radius:8px; background:#101925; }
+  .noiselegend { display:flex; align-items:center; gap:8px; flex-wrap:wrap; color:var(--muted); font-size:11px; margin-top:7px; }
+  .noisegradient { width:min(32%, 170px); height:6px; border-radius:3px; background:linear-gradient(90deg,#61d1f9,#fde38b,#f4686c); }
+  .noisereadout { border-left:1px solid var(--line); padding-left:17px; display:grid; align-content:start; gap:17px; }
+  .noisereadout strong { display:block; line-height:1.3; font-size:clamp(16px, 2.4vw, 25px); font-variant-numeric:tabular-nums; }
+  #noisedetail { white-space:pre-line; line-height:1.65; }
+  @media (max-width:720px) {
+    .noiselayout { grid-template-columns:minmax(0, 1fr); }
+    .noisereadout { grid-template-columns:1fr 1fr; border-left:none; padding-left:0; }
+    #noisedetail { grid-column:1 / -1; }
+  }
 </style>
 <!-- 3D 보기: 데모와 같은 three.js 0.128 (전역 THREE + OrbitControls). 먼저 같은 서버의 사본(Web/vendor, 오프라인·패키지)을 읽고,
      없으면 CDN에서 읽는다. 둘 다 못 불러와도 나머지 화면은 동작한다. -->
@@ -173,6 +187,7 @@
     <button type="button" role="tab" id="tab-btn-racks" aria-selected="false" data-tab="racks">랙</button>
     <button type="button" role="tab" id="tab-btn-cooling" aria-selected="false" data-tab="cooling">냉각 설비·전력</button>
     <button type="button" role="tab" id="tab-btn-air" aria-selected="false" data-tab="air">방 공기</button>
+    <button type="button" role="tab" id="tab-btn-noise" aria-selected="false" data-tab="noise">소음</button>
     <button type="button" role="tab" id="tab-btn-check" aria-selected="false" data-tab="check">센서·검증</button>
     <button type="button" role="tab" id="tab-btn-ab" aria-selected="false" data-tab="ab">A/B 비교</button>
   </div>
@@ -217,6 +232,28 @@
     </div>
   </section>
 
+  <section id="tab-noise" hidden>
+    <div class="panel noisedash">
+      <div class="noisehead">
+        <div><h2 class="h2">소음 수신점 지도</h2><div class="sub2" id="noiseclock"></div></div>
+        <label>수신점 <select id="noisesel" aria-label="소음 수신점"></select></label>
+      </div>
+      <div class="noiselayout">
+        <div>
+          <svg id="noiseplan" class="noiseplot" aria-label="수신점의 세계 XY 위치와 순간 소음"></svg>
+          <div class="noiselegend"><span id="noiselo"></span><span class="noisegradient"></span><span id="noisehi"></span><span>회색 정지 · 보라 누락</span></div>
+        </div>
+        <div class="noisereadout">
+          <div><span class="sub2">순간 LpA</span><strong id="noiselpa">—</strong></div>
+          <div><span class="sub2">등가 소음 LAeq</span><strong id="noiselaeq">—</strong></div>
+          <div class="sub2" id="noisedetail"></div>
+        </div>
+      </div>
+      <div class="noisehead mt"><h2 class="h2">최근 시계열</h2><span class="sub2" id="noisetracewindow"></span></div>
+      <svg id="noisetrace" class="noiseplot" aria-label="선택한 수신점의 시뮬레이션 시간별 LpA"></svg>
+    </div>
+  </section>
+
   <section id="tab-check" hidden>
     <div class="panel"><h2 class="h2">보존·수렴 <span class="tag">계산값</span></h2><div id="checkbox"></div></div>
     <div class="panel mt"><h2 class="h2">흡기 센서 <span class="tag">모의 계측값 (D9)</span></h2><div class="sub2">판독값은 지연·주기·잡음·분해능을 넣은 모의 계측값이며 신뢰도 100%가 아니다. 실제 = 그 스텝의 흡기 공기값</div><div class="scroll"><table id="chksens"></table></div></div>
@@ -235,6 +272,10 @@
       </div>
       <div id="abwarn"></div>
       <div class="scroll"><table id="abtable"></table></div>
+    </div>
+    <div class="panel mt" id="abnoise" hidden>
+      <h2 class="h2">수신점 소음 비교</h2><div class="sub2" id="abnoisenote"></div><div class="sub2" id="abnoisecontext" style="white-space:pre-line"></div>
+      <div class="scroll"><table><thead><tr><th>유형</th><th>세계 좌표</th><th>A LAeq</th><th>B LAeq</th><th>B − A dB</th></tr></thead><tbody id="abnoiserows"></tbody></table></div>
     </div>
     <div class="panel" style="margin-top:12px">
       <div class="head" style="display:flex;gap:16px;align-items:flex-end;flex-wrap:wrap">
@@ -1383,7 +1424,7 @@ function renderDetail() {
   el.innerHTML = html + '</div><div class="mode" style="margin-top:6px">부품 허용 온도는 모델에 없어 여유를 표시하지 않는다.</div>';
   for (const d of el.querySelectorAll('details.slot')) d.addEventListener('toggle', () => d.open ? openSlots.add(+d.dataset.s) : openSlots.delete(+d.dataset.s));
 }
-{ const m = location.hash.match(/^#rack=(\d+)$/); if (m) { selected = +m[1]; tab = 'racks'; } else if (location.hash === '#racks') tab = 'racks'; else if (['cooling', 'air', 'check', 'ab'].includes(location.hash.slice(1))) tab = location.hash.slice(1); }
+{ const m = location.hash.match(/^#rack=(\d+)$/); if (m) { selected = +m[1]; tab = 'racks'; } else if (location.hash === '#racks') tab = 'racks'; else if (['cooling', 'air', 'noise', 'check', 'ab'].includes(location.hash.slice(1))) tab = location.hash.slice(1); }
 
 // ---- 리포트 저장 (5단계): 사이트가 하는 유일한 쓰기. 게임 스레드가 다음 발행(0.5 s 안)에 vrg.Eval.Report와 같은 함수로 쓴다. ----
 const NAME_OK = /^[A-Za-z0-9_\-가-힣]{1,64}$/;
@@ -1448,7 +1489,7 @@ $('abtbtn').addEventListener('click', () => { $('abrtable').hidden = !$('abrtabl
 async function renderAb() {
   fillSelect($('abA'), abPair[0]); fillSelect($('abB'), abPair[1]);
   const names = reportList ? reportList.reports.map(r => r.name) : [];
-  if (names.length < 2) { $('abtable').innerHTML = ''; $('abwarn').innerHTML = ''; $('abnote').textContent = '비교하려면 리포트가 두 개 이상 필요하다. 위에서 이름을 넣고 "리포트 저장"을 누른다.'; $('abplan').replaceChildren(); return; }
+  if (names.length < 2) { $('abnoise').hidden = true; $('abtable').innerHTML = ''; $('abwarn').innerHTML = ''; $('abnote').textContent = '비교하려면 리포트가 두 개 이상 필요하다. 위에서 이름을 넣고 "리포트 저장"을 누른다.'; $('abplan').replaceChildren(); return; }
   if (!abPair[0] || !abPair[1]) { abPair = [names[1], names[0]]; fillSelect($('abA'), abPair[0]); fillSelect($('abB'), abPair[1]); }   // 기본: 이전 것 A, 최신 B
   const [A, B] = [await loadReport(abPair[0]), await loadReport(abPair[1])];
   if (!A || !B) return;
@@ -1473,6 +1514,7 @@ async function renderAb() {
   $('abtable').innerHTML = `<thead><tr><th class="l">항목 (창 평균)</th><th>A ${abPair[0]}</th><th>B ${abPair[1]}</th><th>B − A</th></tr></thead><tbody>${rows}</tbody>`;
   $('abnote').textContent = '부분 PUE = (IT + CRAH 팬 + 펌프) / IT, 시설 PUE 아님. "-"는 옛 리포트에 없는 값.';
   drawAbPlan(A, B);
+  renderNoiseAb(A, B);
 }
 
 function drawAbPlan(A, B) {
@@ -1539,7 +1581,7 @@ function drawAbPlan(A, B) {
 // ---- 냉각 설비·전력 / 방 공기 / 센서·검증 탭 (2026-11-11) ----
 // 값은 전부 서버가 이미 계산된 값을 복사한 것이다(새 물리 없음). /api/status·/api/roomair는 페이지가 묻는 동안에만 게임 스레드가
 // 만든다(처음 요청은 202 = 다음 발행 때 만든다). 설비·검증 값은 리포트와 같은 함수로 만들어 같은 SimTime이면 리포트와 같다.
-const TABS = ['summary', 'racks', 'cooling', 'air', 'check', 'ab'];
+const TABS = ['summary', 'racks', 'cooling', 'air', 'noise', 'check', 'ab'];
 let cooling = null, statusJ = null, roomair = null, chkSensors = null;
 const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;' }[c]));
 const fx = (v, d) => (v === null || v === undefined || !isFinite(v)) ? '-' : (+v).toFixed(d);
@@ -1789,6 +1831,140 @@ function renderCheck() {
     ['결합 (재고·수력 / 랙 / 물)', `${fx(p.couplingMs, 2)} (${fx(p.inventoryHydraulicsMs, 2)} / ${fx(p.rackModelsMs, 2)} / ${fx(p.waterMs, 2)}) ms`], ['대시보드 발행', fx(p.dashboardMs, 3) + ' ms']]);
 }
 
+let noiseData = null, noiseSelection = '', noiseOptions = '';
+const noiseKind = {indoor:'실내', probe:'실외 단일점', boundary:'부지 경계'};
+const noiseState = {silent:'정지·무음', missing:'자료 없음', unavailable:'계산 범위 밖', partial:'부분', known:'계산됨'};
+const noiseDb = (value, state) => Number.isFinite(value)
+  ? value.toFixed(2) + ' dBA' + (state === 'partial' ? ' · 부분' : '') : (noiseState[state] || '—');
+const noisePos = r => [r.xM, r.yM, r.zM].map(v => v.toFixed(2)).join(', ') + ' m';
+
+$('noisesel').addEventListener('change', event => {
+  noiseSelection = event.target.value;
+  renderNoise();
+});
+
+function drawNoisePlan(rows, selected) {
+  const svg = $('noiseplan'), W = 760, H = 326;
+  svg.setAttribute('viewBox', '0 0 760 326');
+  svg.replaceChildren();
+  if (!rows.length) return;
+  const domain = selected.group === 'indoor' ? layout?.domain : null;
+  const xs = rows.map(r => r.xM), ys = rows.map(r => r.yM);
+  if (domain) { xs.push(domain.minXM, domain.maxXM); ys.push(domain.minYM, domain.maxYM); }
+  const minX = Math.min(...xs), minY = Math.min(...ys);
+  const spanX = Math.max(...xs) - minX, spanY = Math.max(...ys) - minY;
+  const scale = Math.min((W - 52) / Math.max(spanX, 1), (H - 52) / Math.max(spanY, 1));
+  const X = x => (W - spanX * scale) / 2 + (x - minX) * scale;
+  const Y = y => (H - spanY * scale) / 2 + (y - minY) * scale;
+  if (domain) {
+    mk('rect', {class:'domain', x:X(domain.minXM), y:Y(domain.minYM),
+      width:(domain.maxXM - domain.minXM) * scale, height:(domain.maxYM - domain.minYM) * scale}, svg);
+    for (const e of layout.equipment || []) {
+      if (e.xM < domain.minXM || e.xM > domain.maxXM || e.yM < domain.minYM || e.yM > domain.maxYM) continue;
+      const w = e.depthM * scale, h = e.widthM * scale;
+      mk('rect', {x:-w/2, y:-h/2, width:w, height:h, rx:2, fill:'#283747', stroke:'#526173',
+        transform:`translate(${X(e.xM)} ${Y(e.yM)}) rotate(${e.yawDeg})`}, svg);
+    }
+  }
+  for (const r of rows) {
+    const circle = mk('circle', {cx:X(r.xM), cy:Y(r.yM), r:r.id === selected.id ? 8 : 5,
+      fill:r.color, stroke:r.id === selected.id ? 'white' : '#111823', 'stroke-width':r.id === selected.id ? 2 : 1}, svg);
+    mk('title', {}, circle).textContent = noisePos(r) + ' · ' + noiseDb(r.lpA, r.state);
+    circle.style.cursor = 'pointer';
+    circle.addEventListener('click', () => {
+      noiseSelection = r.id;
+      $('noisesel').value = r.id;
+      renderNoise();
+    });
+  }
+}
+
+function drawNoiseTrace(trace) {
+  const svg = $('noisetrace');
+  svg.setAttribute('viewBox', '0 0 760 126');
+  svg.replaceChildren();
+  const finite = trace.filter(p => Number.isFinite(p.lpA));
+  $('noisetracewindow').textContent = trace.length ? `${trace[0].timeS.toFixed(2)}–${trace.at(-1).timeS.toFixed(2)} s · dBA` : '';
+  if (!finite.length) {
+    mk('text', {x:18, y:32, fill:'#a3b2c3', 'font-size':13}, svg).textContent = trace.length ? '표시할 유한 소음값이 없습니다.' : '시계열을 불러오는 중입니다.';
+    return;
+  }
+  const lo = Math.min(...finite.map(p => p.lpA)), hi = Math.max(...finite.map(p => p.lpA));
+  const ySpan = Math.max(hi - lo, 2), yMid = (hi + lo) / 2;
+  const X = t => 56 + (t - trace[0].timeS) / Math.max(trace.at(-1).timeS - trace[0].timeS, 0.01) * 680;
+  const Y = v => 60 - (v - yMid) / ySpan * 80;
+  for (const v of [yMid - ySpan / 2, yMid, yMid + ySpan / 2]) {
+    mk('line', {x1:56, x2:736, y1:Y(v), y2:Y(v), stroke:'#324353'}, svg);
+    mk('text', {x:48, y:Y(v) + 4, fill:'#a3b2c3', 'font-size':11, 'text-anchor':'end'}, svg).textContent = v.toFixed(1);
+  }
+  let path = '', connected = false;
+  for (const p of trace) {
+    if (!Number.isFinite(p.lpA)) { connected = false; continue; }
+    path += `${connected ? 'L' : 'M'}${X(p.timeS)} ${Y(p.lpA)} `;
+    connected = true;
+    mk('circle', {cx:X(p.timeS), cy:Y(p.lpA), r:2, fill:p.state === 'partial' ? '#f6ad58' : '#59c7ee'}, svg);
+  }
+  mk('path', {d:path.trim(), fill:'none', stroke:'#59c7ee', 'stroke-width':1.4}, svg);
+}
+
+function renderNoise() {
+  const rows = noiseData?.receivers || [];
+  const selected = rows.find(r => r.id === noiseSelection) || rows[0];
+  noiseSelection = selected?.id || '';
+  const key = rows.map(r => r.id).join('|');
+  const select = $('noisesel');
+  if (noiseOptions !== key) {
+    select.replaceChildren(...rows.map(r => new Option(noiseKind[r.group] + ' · ' + r.id.split(':').at(-1), r.id)));
+    noiseOptions = key;
+  }
+  select.disabled = !selected;
+  select.value = noiseSelection;
+  const group = noiseData?.groups?.find(g => g.group === selected?.group);
+  $('noiseclock').textContent = group
+    ? `시뮬레이션 ${group.sourceTimeS.toFixed(2)} s · ${noiseKind[selected.group]} · 추정`
+    : '게임 콘솔에서 수신점을 설정하세요. 예시 vrg.Noise.IndoorMap 1 1.5';
+  $('noiselpa').textContent = selected ? noiseDb(selected.lpA, selected.state) : '—';
+  $('noiselaeq').textContent = selected ? noiseDb(selected.laeq, selected.laeqState) : '—';
+  $('noiselo').textContent = selected ? noiseData.legendMinDb + ' dBA' : '';
+  $('noisehi').textContent = selected ? noiseData.legendMaxDb + ' dBA' : '';
+  $('noisedetail').textContent = selected
+    ? `세계 좌표 ${noisePos(selected)}\n음원 ${selected.known} · 정지 ${selected.stopped} · 누락 ${selected.missing} · 근접 ${selected.near}\n누적 ${selected.durationS.toFixed(2)} s · 불완전 ${selected.incompleteS.toFixed(2)} s`
+    : '';
+  drawNoisePlan(selected ? rows.filter(r => r.group === selected.group) : [], selected);
+  drawNoiseTrace(selected?.trace || []);
+  if (!selected) $('noisetrace').replaceChildren();
+}
+
+function renderNoiseAb(A, B) {
+  const panel = $('abnoise');
+  panel.hidden = !(A?.noise?.receivers?.length || B?.noise?.receivers?.length);
+  const table = $('abnoiserows');
+  table.replaceChildren();
+  const context = $('abnoisecontext');
+  context.textContent = '';
+  if (panel.hidden) return;
+  const inB = new Map((B?.noise?.receivers || []).map(r => [r.comparisonKey, r]));
+  const matched = new Set();
+  for (const a of A?.noise?.receivers || []) {
+    const b = a.comparisonKey && inB.get(a.comparisonKey);
+    if (!b) continue;
+    matched.add(a.group);
+    const delta = a.laeqState === 'known' && b.laeqState === 'known' && Number.isFinite(a.laeq) && Number.isFinite(b.laeq)
+      ? (b.laeq - a.laeq).toFixed(2) : '—';
+    const row = table.insertRow();
+    for (const text of [noiseKind[a.group], noisePos(a), noiseDb(a.laeq, a.laeqState), noiseDb(b.laeq, b.laeqState), delta])
+      row.insertCell().textContent = text;
+  }
+  $('abnoisenote').textContent = table.rows.length ? '같은 유형·위치·시간 구간의 LAeq' : '일치하는 위치와 시간 구간이 없습니다.';
+  const metric = (v, scale, offset = 0) => Number.isFinite(v) ? (v * scale + offset).toFixed(2) : '—';
+  const pair = (a, b, key, scale, offset) => metric(a[key], scale, offset) + ' / ' + metric(b[key], scale, offset);
+  context.textContent = Array.from(matched).flatMap(group => {
+    const a = A.noise.groups?.find(g => g.group === group), b = B.noise.groups?.find(g => g.group === group);
+    if (!a || !b) return [];
+    return [`${noiseKind[group]} ${a.startS.toFixed(2)}–${a.endS.toFixed(2)} s · 구간 평균 A / B · IT ${pair(a,b,'meanItW',.001)} kW · 냉각 ${pair(a,b,'meanCoolingW',.001)} kW · 최고 흡기 ${pair(a,b,'meanMaxInletK',1,-273.15)} °C`];
+  }).join('\n');
+}
+
 async function tick() {
   try {
     await pollSnapshot();
@@ -1817,6 +1993,11 @@ async function tick() {
     } else if (tab === 'air') {
       const ra = await getJson('/api/roomair', '방 공기'); if (ra !== undefined) roomair = ra;
       renderAir();
+    } else if (tab === 'noise') {
+      const data = await getJson('/api/noise?trace=' + encodeURIComponent(noiseSelection), '소음');
+      if (data !== undefined) noiseData = data;
+      if (noiseData?.receivers?.some(r => r.group === 'indoor')) await pollLayout();
+      renderNoise();
     } else if (tab === 'check') {
       const st = await getJson('/api/status', '상태'); if (st !== undefined) statusJ = st;
       chkSensors = await getJson('/api/sensors', '센서');
