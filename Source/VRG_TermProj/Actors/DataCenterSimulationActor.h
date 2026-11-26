@@ -26,6 +26,7 @@
 #include "Simulation/Air/RoomAirDomain.h"
 #include "Interaction/VrgLayoutFile.h"
 #include "Simulation/Acoustics/NoiseOutdoorPropagation.h"
+#include "Simulation/Acoustics/NoiseIndoor.h"
 #include "DataCenterSimulationActor.generated.h"
 
 class AAirFieldDebugActor;
@@ -362,6 +363,12 @@ public:
 	const VrgNoise::FOutdoorEnvironment& GetOutdoorNoiseEnvironment() const { return OutdoorNoiseEnvironment; }
 	const TOptional<VrgNoise::FOutdoorBoundarySnapshot>& GetOutdoorBoundarySnapshot() const { return OutdoorBoundarySnapshot; }
 	const FBoundaryNoisePath* GetOutdoorBoundaryPath(int32 Receiver, int32 Source) const;
+
+	bool SetIndoorNoiseReceivers(const FVector2D& PositionM, double HeightM, TOptional<double> MapSpacingM = {});
+	void ClearIndoorNoiseReceivers();
+	bool SetIndoorNoiseAbsorption(const VrgNoise::FIndoorAbsorption& Absorption);
+	bool SetIndoorNoiseCduRating(TOptional<double> WholeUnitLwA);
+	const TOptional<VrgNoise::FIndoorSnapshot>& GetIndoorNoiseSnapshot() const { return IndoorNoiseSnapshot; }
 
 	// ---- W1 live leaks (Tools/누수_실시간_계획.md L1, 2026-10-23) ----
 	// Every place a leak can start during a run: the room's closed sites (three per rack, ADataCenterRoomActor) and,
@@ -982,6 +989,41 @@ private:
 	TArray<FBoundaryNoisePath> OutdoorBoundaryPaths;
 	TOptional<double> OutdoorBoundaryPathTemperatureK;
 	TOptional<VrgNoise::FOutdoorBoundarySnapshot> OutdoorBoundarySnapshot;
+
+	struct FIndoorSourceBinding
+	{
+		int32 Index = INDEX_NONE;
+		int32 Slot = INDEX_NONE;
+		int32 Fans = 0;
+		double RatedFanW = 0.0;
+		double MinDistanceM = 1.0;
+		const VrgNoise::FSourceProfile* Profile = nullptr; // static catalog entry
+		TArray<int32> Pumps;
+	};
+	struct FIndoorReceiverPath
+	{
+		TOptional<double> TransferDb;
+		bool bLocal = false;
+		bool bBlockedDirect = false;
+		bool bNear = false;
+		bool bZero = false;
+	};
+	void ResetIndoorNoiseRun();
+	void BuildIndoorNoise();
+	void IndoorNoiseAfterStep();
+	TOptional<FVector2D> IndoorNoisePositionM;
+	TOptional<double> IndoorNoiseMapSpacingM;
+	TOptional<double> IndoorCduRating;
+	double IndoorNoiseHeightM = VrgNoise::DefaultEarHeightM;
+	double NextIndoorNoiseSampleS = 0.0;
+	bool bIndoorNoisePrepared = false;
+	VrgNoise::FIndoorAbsorption IndoorNoiseAbsorption;
+	TOptional<VrgNoise::FIndoorSnapshot> IndoorNoiseSnapshot;
+	TArray<VrgNoise::FIndoorZone> IndoorNoiseZones;
+	TArray<VrgNoise::FIndoorSourceLevel> IndoorSources;
+	TArray<VrgNoise::FIndoorReceiverLevel> IndoorReceivers;
+	TArray<FIndoorSourceBinding> IndoorSourceBindings;
+	TArray<FIndoorReceiverPath> IndoorReceiverPaths;
 
 	TArray<int32> CduGroupRows;   // S8 F5: room row of every CDU group (its pump feeds the group's coolant)
 	// CDU secondary supply temperature control (2026-11-03, Tools/실사양정합_계획.md P3), one entry per CDU group:

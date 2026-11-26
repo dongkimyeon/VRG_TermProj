@@ -1184,6 +1184,7 @@ void ADataCenterSimulationActor::BuildCoupling()
 
 	Clock.Reset(FixedStepS);
 	ResetOutdoorNoiseRun();
+	ResetIndoorNoiseRun();
 
 	// 어디가 안 붙었는지 화면에 적는다. 조용히 예비값으로 도는 것보다 낫다.
 	TArray<FString> Missing;
@@ -4180,6 +4181,7 @@ void ADataCenterSimulationActor::EvalAfterStep()
 	InstrumentsAfterStep(); Lap(2);
 	LeakProtectionAfterStep(); Lap(3);   // W5-3: acts on the next step's inputs
 	OutdoorNoiseAfterStep();
+	IndoorNoiseAfterStep();
 }
 
 double ADataCenterSimulationActor::GetSiteEnergyInJ() const

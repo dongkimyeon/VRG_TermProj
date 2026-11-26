@@ -184,6 +184,7 @@ public:
 	double GetLastHeatRemovedByCoolantW() const { return LastHeatRemovedByCoolantW; }
 	double GetLastTotalHeatToRoomAirW() const { return LastTotalHeatToRoomAirW; }
 	bool IsInFanMode() const { return bFanMode; }
+	double GetLastSlotFanPowerW(int32 Slot) const { return LastSlotFanPowerW.IsValidIndex(Slot) ? LastSlotFanPowerW[Slot] : 0.0; }
 	double GetLastTotalFanPowerW() const { double W = 0.0; for (const double P : LastSlotFanPowerW) W += P; return W; }
 	// PSU conversion loss of the last step [W] (sum of LossFractionOfRackLoad x DC load, without the PSU fans' share).
 	// Recorded where the step computes it; already part of GetLastTotalHeatW (dashboard power breakdown, 2026-10-14).
