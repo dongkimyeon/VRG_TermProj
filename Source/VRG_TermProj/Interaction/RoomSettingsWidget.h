@@ -8,6 +8,8 @@ class UCheckBox;
 class UEditableTextBox;
 class UTextBlock;
 class UHorizontalBox;
+class UBorder;
+class ULayoutRackButton;
 
 // Draft text is deliberately separate from the committed SI settings and live air grid.
 UCLASS()
@@ -34,6 +36,13 @@ private:
 	UPROPERTY() TObjectPtr<UTextBlock> Intro;
 	UPROPERTY() TObjectPtr<UTextBlock> ApplyLabel;
 	UPROPERTY() TObjectPtr<UTextBlock> HeightLabel;
+	// 2026-11-27 demo (vrg.Ui.Panels 1): the same widgets restyled after construction (RoomSettingsWidgetV2.cpp).
+	UPROPERTY() TObjectPtr<UBorder> BackdropBorder;
+	UPROPERTY() TObjectPtr<UBorder> PanelBorder;
+	UPROPERTY() TObjectPtr<UTextBlock> ModeText;
+	UPROPERTY() TObjectPtr<ULayoutRackButton> ApplyButtonRef;
+	UPROPERTY() TObjectPtr<ULayoutRackButton> CloseButtonRef;
+	void ApplyNewLook();
 	bool bCeilingMode = false;
 	bool bHoleMode = false;
 	FRoomAirDomainSettings DraftSeed;

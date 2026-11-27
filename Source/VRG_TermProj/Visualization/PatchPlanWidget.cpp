@@ -8,6 +8,7 @@
 #include "HAL/IConsoleManager.h"
 #include "Rendering/DrawElements.h"
 #include "Styling/CoreStyle.h"
+#include "Interaction/VrgUiStyle.h"
 
 void UPatchPlanWidget::SetRoom(ADataCenterRoomActor* InRoom)
 {
@@ -60,6 +61,7 @@ FVector2D UPatchPlanWidget::Project(const FVector& PointM,const FVector2D& Size)
 int32 UPatchPlanWidget::NativePaint(const FPaintArgs& Args,const FGeometry& Geometry,const FSlateRect& CullingRect,
 	FSlateWindowElementList& Elements,int32 Layer,const FWidgetStyle& Style,bool ParentEnabled) const
 {
+	if (VrgUi::IsNewPanels()) return PaintV2(Geometry,Elements,Layer);   // 2026-11-27 new look (vrg.Ui.Panels, default on); 0 keeps the paint below
 	const FVector2D Size=Geometry.GetLocalSize();
 	FSlateDrawElement::MakeBox(Elements,Layer,Geometry.ToPaintGeometry(),FCoreStyle::Get().GetBrush("WhiteBrush"),ESlateDrawEffect::None,FLinearColor(.012f,.02f,.035f,.97f));
 	auto Text=[&](const FVector2D& Position,const FString& Value,const FLinearColor& Color)

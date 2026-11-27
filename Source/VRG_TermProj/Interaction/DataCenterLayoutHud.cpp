@@ -12,6 +12,7 @@
 #include "EngineUtils.h"
 #include "HAL/IConsoleManager.h"
 #include "Interaction/VrgUiStyle.h"
+#include "Interaction/VrgHudPaint.h"
 
 namespace
 {
@@ -159,6 +160,45 @@ void ADataCenterLayoutHud::DrawTemperatureLabels()
 		}
 	}
 	Labels.Sort([](const FLabel& A, const FLabel& B) { return A.Priority != B.Priority ? A.Priority < B.Priority : A.DistCm < B.DistCm; });
+	if (VrgUi::IsNewPanels())
+	{
+		// 2026-11-27 demo (vrg.Ui.Panels 1): callout chips. The chip sits above its world point with a short stem and a
+		// dot; the part before the first " | " is the headline (in the value colour), the rest is muted. Same labels,
+		// same priority/distance order and the same "skip if it would overlap" rule as below. Display only.
+		using namespace VrgUi::Theme;
+		VrgUi::FHudPaint P;
+		P.C = Canvas;
+		P.S = VrgUi::HudScale(Canvas->ClipX, Canvas->ClipY);
+		const float S = P.S, Pad = 7.f * S, ChipH = 20.f * S, Lift = 12.f * S;
+		TArray<FBox2D> Taken;
+		for (const FLabel& L : Labels)
+		{
+			FString Head = L.Text, Rest;
+			L.Text.Split(TEXT(" | "), &Head, &Rest);
+			if (Head.IsEmpty()) Head = L.Text;
+			Rest.ReplaceInline(TEXT(" | "), TEXT("  ·  "));
+			const float Hw = P.Measure(Head, 10.f, true).X, Rw = Rest.IsEmpty() ? 0.f : P.Measure(Rest, 9.5f).X;
+			const float W = 3.f * S + Pad + Hw + (Rest.IsEmpty() ? 0.f : 8.f * S + Rw) + Pad;
+			const float Ax = L.X + .5f * L.W, Ay = L.Y + .5f * L.H;   // the projected world point
+			const float X0 = Ax - .5f * W, Y0 = Ay - Lift - ChipH;
+			const FBox2D Box(FVector2D(X0 - 3.f * S, Y0 - 2.f * S), FVector2D(X0 + W + 3.f * S, Ay + 3.f * S));
+			bool bOverlap = false;
+			for (const FBox2D& D : Taken) bOverlap |= D.Intersect(Box);
+			if (bOverlap) continue;
+			Taken.Add(Box);
+			const bool bAlarm = L.Priority == 0;
+			P.Rect(Ax - .5f, Y0 + ChipH, 1.f, Lift - 2.f * S, WithAlpha(L.Color, .7f));
+			P.Rect(Ax - 2.f * S, Ay - 2.f * S, 4.f * S, 4.f * S, L.Color);
+			P.Rect(X0, Y0, W, ChipH, bAlarm ? WithAlpha(Red(), .30f) : WithAlpha(Panel(), .90f));
+			P.Frame(X0, Y0, W, ChipH, bAlarm ? WithAlpha(Red(), .9f) : Line());
+			P.Rect(X0, Y0, 3.f * S, ChipH, L.Color);
+			const float Cy = Y0 + .5f * ChipH;
+			float Tx = X0 + 3.f * S + Pad;
+			Tx += P.TextMid(Head, Tx, Cy, 10.f, bAlarm ? FLinearColor::White : L.Color, true);
+			if (!Rest.IsEmpty()) P.TextMid(Rest, Tx + 8.f * S, Cy, 9.5f, bAlarm ? FLinearColor::White : Text2());
+		}
+		return;
+	}
 	TArray<FBox2f> Drawn;
 	for (const FLabel& L : Labels)
 	{

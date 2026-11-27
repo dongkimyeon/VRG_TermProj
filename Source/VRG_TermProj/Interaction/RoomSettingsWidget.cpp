@@ -1,6 +1,7 @@
 #include "Interaction/RoomSettingsWidget.h"
 #include "Interaction/DataCenterDebugController.h"
 #include "Interaction/LayoutRackPalette.h"
+#include "Interaction/VrgUiStyle.h"
 #include "Blueprint/WidgetTree.h"
 #include "Components/Border.h"
 #include "Components/CanvasPanel.h"
@@ -61,6 +62,7 @@ void URoomSettingsWidget::NativeOnInitialized()
 	auto* Backdrop = WidgetTree->ConstructWidget<UBorder>(); Backdrop->SetBrushColor(FLinearColor(0, 0, 0, .65f));
 	auto* BackSlot = Canvas->AddChildToCanvas(Backdrop); BackSlot->SetAnchors(FAnchors(0, 0, 1, 1)); BackSlot->SetOffsets(FMargin(0));
 	auto* Border = WidgetTree->ConstructWidget<UBorder>(); Border->SetBrushColor(FLinearColor(.035f, .045f, .055f, 1)); Border->SetPadding(FMargin(18));
+	BackdropBorder = Backdrop; PanelBorder = Border;
 	auto* PanelSlot = Canvas->AddChildToCanvas(Border); PanelSlot->SetAnchors(FAnchors(.5f, .5f)); PanelSlot->SetAlignment(FVector2D(.5, .5)); PanelSlot->SetSize(FVector2D(600, 600));
 	auto* Scroll = WidgetTree->ConstructWidget<UScrollBox>(); Border->SetContent(Scroll);
 	auto* Body = WidgetTree->ConstructWidget<UVerticalBox>(); Scroll->AddChild(Body);
@@ -73,7 +75,7 @@ void URoomSettingsWidget::NativeOnInitialized()
 	Title = Text(TEXT("방 설정 (m)")); Intro = Text(TEXT("바닥 Z=0m. 입력은 초안이며 적용 버튼으로 확정합니다.\n공기 격자는 시뮬레이션 진입 때 적용됩니다."));
 	Manual = WidgetTree->ConstructWidget<UCheckBox>();
 	auto* ModeLabel = WidgetTree->ConstructWidget<UTextBlock>(); ModeLabel->SetText(FText::FromString(TEXT("수동 방 (해제하면 장비에 자동 맞춤)")));
-	Manual->AddChild(ModeLabel); Manual->OnCheckStateChanged.AddDynamic(this, &URoomSettingsWidget::OnModeChanged);
+	ModeText = ModeLabel; Manual->AddChild(ModeLabel); Manual->OnCheckStateChanged.AddDynamic(this, &URoomSettingsWidget::OnModeChanged);
 	Body->AddChildToVerticalBox(Manual)->SetPadding(FMargin(0, 0, 0, 12));
 	const TCHAR* Names[] = {TEXT("최소 X (m)"), TEXT("최대 X (m)"), TEXT("최소 Y (m)"), TEXT("최대 Y (m)"), TEXT("천장 높이 (m)")};
 	for (const auto* Name : Names)
@@ -96,8 +98,10 @@ void URoomSettingsWidget::NativeOnInitialized()
 	};
 	auto* ApplyButton = Button(TEXT("적용")); ApplyLabel = Cast<UTextBlock>(ApplyButton->GetChildAt(0));
 	ApplyButton->OnClicked.AddDynamic(this, &URoomSettingsWidget::OnApply);
-	Button(TEXT("닫기 (Esc)"))->OnClicked.AddDynamic(this, &URoomSettingsWidget::OnClose);
+	CloseButtonRef = Button(TEXT("닫기 (Esc)")); CloseButtonRef->OnClicked.AddDynamic(this, &URoomSettingsWidget::OnClose);
+	ApplyButtonRef = ApplyButton;
 	Body->AddChildToVerticalBox(Buttons); Status = Text(TEXT("")); Plan = Text(TEXT(""));
+	if (VrgUi::IsNewPanels()) ApplyNewLook();   // 2026-11-27 new look (vrg.Ui.Panels, default on); 0 keeps the look above
 }
 
 void URoomSettingsWidget::InitializeDraft(const FRoomAirDomainSettings& Settings, bool bCeiling)

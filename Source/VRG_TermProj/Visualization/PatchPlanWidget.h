@@ -34,4 +34,7 @@ private:
 	TArray<TArray<FVector>> PlantUnits;
 	int32 PlantPipes=0, PlantClashes=0;
 	FVector2D Project(const FVector& PointM, const FVector2D& Size) const;
+	// 2026-11-27 demo (vrg.Ui.Panels 1): the same snapshot drawn in the new UI look (PatchPlanWidgetV2.cpp). Same
+	// projection as the existing paint, so cable picking is unchanged.
+	int32 PaintV2(const FGeometry& Geometry, FSlateWindowElementList& Elements, int32 Layer) const;
 };

@@ -11,6 +11,10 @@ namespace
 	TAutoConsoleVariable<int32> CVarUiStyle(TEXT("vrg.Ui.Style"), 1,
 		TEXT("UI style (default 1 since 2026-11-25): 0 = previous HUD and bottom palette, 1 = new HUD (status bar, KPI cards, event log, tool strip) and side palette. F2 toggles. Display only."));
 
+	// 2026-11-27 user decision: the new look is the default; 0 keeps the previous labels/dialog/patch map.
+	TAutoConsoleVariable<int32> CVarUiPanels(TEXT("vrg.Ui.Panels"), 1,
+		TEXT("With the new UI (vrg.Ui.Style 1): 1 = 3D temperature labels, room settings dialog and patch map in the new look (default since 2026-11-27), 0 = their previous look. Display only."));
+
 	const TCHAR* PhaseName(const FString& P)
 	{
 		if (P == TEXT("wet")) return TEXT("젖음");
@@ -23,6 +27,8 @@ namespace
 
 bool VrgUi::IsNewStyle() { return CVarUiStyle.GetValueOnGameThread() != 0; }
 void VrgUi::SetNewStyle(bool bNew) { CVarUiStyle->Set(bNew ? 1 : 0, ECVF_SetByConsole); }
+bool VrgUi::IsNewPanels() { return IsNewStyle() && CVarUiPanels.GetValueOnGameThread() != 0; }
+void VrgUi::SetNewPanels(bool bNew) { CVarUiPanels->Set(bNew ? 1 : 0, ECVF_SetByConsole); }
 
 FString VrgUi::ShortenNames(const FString& Text, const TArray<TPair<FString, FString>>& Names)
 {

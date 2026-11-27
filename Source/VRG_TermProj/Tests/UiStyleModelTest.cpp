@@ -49,6 +49,19 @@ bool FVrgUiStyleModelTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("scale equals the UMG DPI curve at 1080p"), S1080,
 		FMath::Clamp(GetDefault<UUserInterfaceSettings>()->GetDPIScaleBasedOnSize(FIntPoint(1920, 1080)), .5f, 3.f));
 
+	// 2026-11-27 new-look labels/dialog/patch map: on by default (user decision), and only with the new style.
+	if (IConsoleVariable* Pv = IConsoleManager::Get().FindConsoleVariable(TEXT("vrg.Ui.Panels")))
+		TestEqual(TEXT("new-look panels on by default"), Pv->GetDefaultValue(), FString(TEXT("1")));
+	else AddError(TEXT("vrg.Ui.Panels missing"));
+	{
+		const bool bStyle = VrgUi::IsNewStyle(), bPanels = IConsoleManager::Get().FindConsoleVariable(TEXT("vrg.Ui.Panels"))->GetInt() != 0;
+		VrgUi::SetNewStyle(true); VrgUi::SetNewPanels(true);
+		TestTrue(TEXT("panels on with new style"), VrgUi::IsNewPanels());
+		VrgUi::SetNewStyle(false);
+		TestFalse(TEXT("panels need the new style"), VrgUi::IsNewPanels());
+		VrgUi::SetNewStyle(bStyle); VrgUi::SetNewPanels(bPanels);
+	}
+
 	// Clock text.
 	TestEqual(TEXT("clock 0"), VrgUi::FormatClock(0.0), FString(TEXT("00:00.0")));
 	TestEqual(TEXT("clock 134.37"), VrgUi::FormatClock(134.37), FString(TEXT("02:14.3")));

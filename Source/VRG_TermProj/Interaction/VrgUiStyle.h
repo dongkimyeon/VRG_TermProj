@@ -14,6 +14,11 @@ namespace VrgUi
 	VRG_TERMPROJ_API bool IsNewStyle();
 	VRG_TERMPROJ_API void SetNewStyle(bool bNew);
 
+	// 2026-11-27: vrg.Ui.Panels 1(기본, 같은 날 사용자 결정)이면 새 UI(Style 1)에서 3D 온도 라벨·방 설정 창·패치 평면도도
+	// 새 모양으로 그린다. 0이면 이전 모양. 표시만 바뀐다.
+	VRG_TERMPROJ_API bool IsNewPanels();
+	VRG_TERMPROJ_API void SetNewPanels(bool bNew);
+
 	// 표시 색(UI 전용, 물리 값 아님). sRGB로 적고 FLinearColor(FColor)로 바꾼다.
 	namespace Theme
 	{
