@@ -219,7 +219,6 @@ void ADataCenterLayoutHud::DrawHUD()
 	Super::DrawHUD();
 	const auto* Controller = Cast<ADataCenterDebugController>(GetOwningPlayerController());
 	if (!Canvas || !Controller) return;
-	DrawNoiseOverlay();
 	if (VrgUi::IsNewStyle())
 	{
 		// 2026-11-24 UI demo: same world labels and tools, new panels (DataCenterHudV2.cpp). Scale = UMG DPI curve.
@@ -229,6 +228,7 @@ void ADataCenterLayoutHud::DrawHUD()
 		DrawAirLegendV2(16.f * S + 48.f * S + 14.f * S);
 		DrawHudV2();
 		DrawMarquee();
+		DrawNoiseOverlay();
 		return;
 	}
 	DrawTemperatureLabels();   // under the key hint
@@ -288,4 +288,5 @@ void ADataCenterLayoutHud::DrawHUD()
 	}
 
 	DrawMarquee();
+	DrawNoiseOverlay();
 }

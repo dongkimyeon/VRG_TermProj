@@ -73,6 +73,8 @@ void ADataCenterLayoutHud::DrawNoiseOverlay()
 	}
 	if (!Selected) return;
 	const auto& Level = Selected->Latest.Pressure;
+	DrawRect(FLinearColor::White, SelectedPosition.X - 6.f, SelectedPosition.Y - 6.f, 12.f, 12.f);
+	DrawRect(FLinearColor(NoiseLevelColor(Level)), SelectedPosition.X - 4.f, SelectedPosition.Y - 4.f, 8.f, 8.f);
 	const auto Average = Selected->Average.GetDb();
 	const FString Now = Level.Db.IsSet()
 		? FString::Printf(TEXT("%.2f dBA%s"), *Level.Db, Level.MissingSources > 0 ? TEXT(" (부분)") : TEXT(""))
@@ -82,8 +84,8 @@ void ADataCenterLayoutHud::DrawNoiseOverlay()
 		: Selected->Average.GetState();
 	const FString Label = FString::Printf(TEXT("LpA %s  ·  LAeq %s  ·  t %.2f s  ·  누락 %d"), *Now, *Eq, SelectedGroup->LatestSourceS, Level.MissingSources);
 	Canvas->TextSize(Font, Label, Width, Height);
-	const float LabelX = FMath::Clamp(float(SelectedPosition.X + 12.f), 8.f, FMath::Max(8.f, Canvas->ClipX - Width - 10.f));
-	const float LabelY = FMath::Clamp(float(SelectedPosition.Y - 24.f), 8.f, Canvas->ClipY - 30.f);
+	const float LabelX = FMath::Max(8.f, (Canvas->ClipX - Width) * .5f);
+	const float LabelY = FMath::Max(8.f, Y - Height - 16.f);
 	DrawRect(FLinearColor(0, 0, 0, .76f), LabelX - 5.f, LabelY - 4.f, Width + 10.f, Height + 8.f);
 	DrawText(Label, FLinearColor::White, LabelX, LabelY, Font);
 }
