@@ -408,6 +408,10 @@ private:
 	bool bLastUiNewStyle = false;
 	void UpdateUiStyleWidgets();
 	void OnToggleUiStyle();
+	// 2026-11-28 N (simulation mode): noise view on/off (vrg.Noise.Show). With no receivers set it lays an indoor map
+	// (ear height, the finest spacing within the 256-point limit) and removes that map again when turned off.
+	void OnToggleNoiseView();
+	bool bAutoNoiseMap = false;
 	UPROPERTY(Transient) TObjectPtr<URoomSettingsWidget> RoomSettingsWidget;
 	bool bRoomSettingsOpen = false;
 	bool bRoomCeilingOpen = false;

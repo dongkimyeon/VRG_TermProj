@@ -268,10 +268,11 @@ void ADataCenterLayoutHud::DrawHUD()
 		DrawTemperatureLabels();
 		const float LeakLeft = 16.f * S + 288.f * S + 12.f * S;
 		DrawRackLeakTool(LeakLeft, 46.f * S + 14.f * S + 5.f, FMath::Max(Canvas->ClipX - LeakLeft - 380.f * S - 28.f * S, 200.f));
-		DrawAirLegendV2(16.f * S + 48.f * S + 14.f * S);
+		const float LegendMargin = 16.f * S + 48.f * S + 14.f * S;
+		const float AirH = DrawAirLegendV2(LegendMargin);
+		DrawNoiseV2(LegendMargin + (AirH > 0.f ? AirH + 10.f * S : 0.f));   // 2026-11-28: noise in the new look
 		DrawHudV2();
 		DrawMarquee();
-		DrawNoiseOverlay();
 		return;
 	}
 	DrawTemperatureLabels();   // under the key hint

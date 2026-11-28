@@ -5,6 +5,8 @@
 #include "Interaction/DataCenterDebugController.h"
 #include "Interaction/VrgUiStyle.h"
 #include "Interaction/VrgHudPaint.h"
+#include "Interaction/VrgNoiseView.h"
+#include "Simulation/Acoustics/NoiseMonitoring.h"
 #include "Actors/DataCenterSimulationActor.h"
 #include "Actors/RackThermalActor.h"
 #include "Actors/SpineCabinetActor.h"
@@ -138,14 +140,14 @@ void ADataCenterLayoutHud::DrawMarquee()
 }
 
 // The air view colour bar in the new panel style (same legends and colormap as DrawAirLegend).
-void ADataCenterLayoutHud::DrawAirLegendV2(float BottomMargin)
+float ADataCenterLayoutHud::DrawAirLegendV2(float BottomMargin)
 {
 	ADataCenterSimulationActor* Sim = FindSim(GetWorld());
-	if (!Canvas || !Sim) return;
+	if (!Canvas || !Sim) return 0.f;
 	TArray<FAirFlowLegend> Legends;
 	FString Note;
 	Sim->GetAirFlowLegends(Legends, Note);
-	if (Legends.IsEmpty()) return;
+	if (Legends.IsEmpty()) return 0.f;
 	FPaint P;
 	P.C = Canvas;
 	P.Hits = &PanelRects;
@@ -175,6 +177,7 @@ void ADataCenterLayoutHud::DrawAirLegendV2(float BottomMargin)
 		}
 		Y += 31.f * S - 4.f * S;
 	}
+	return Bh;
 }
 
 void ADataCenterLayoutHud::DrawHudV2()
@@ -192,6 +195,8 @@ void ADataCenterLayoutHud::DrawHudV2()
 	ADataCenterSimulationActor* Sim = FindSim(World);
 	const bool bSim = Sim && Sim->GetSimMode() == ESimMode::Simulation;
 	const double RealS = World->GetRealTimeSeconds();
+	FVrgNoiseView Noise;
+	GatherNoiseView(Noise);   // 2026-11-28: noise card, top bar segment, tool strip
 
 	// ---- sample (4 Hz of real time; the drawn numbers then hold still between samples) ----
 	if (RealS >= St.NextSampleRealS)
@@ -288,6 +293,7 @@ void ADataCenterLayoutHud::DrawHudV2()
 			FString Unit; const FString It = PowerText(St.bHaveSummary ? St.Summary.ItNowW : 0.0, Unit);
 			Seg(TEXT("IT 부하"), It + TEXT(" ") + Unit, Text());
 			Seg(TEXT("공기 보기"), AirFlowView::Name(Sim->GetAirView()), Text());
+			if (Noise.bShow) Seg(TEXT("소음 최고 LpA"), Noise.MaxDb.IsSet() ? FString::Printf(TEXT("%.1f dBA"), *Noise.MaxDb) : FString(TEXT("-")), Text());
 			Seg(TEXT("레벨"), MapName, Text2());
 		}
 		// Right side: alarms, help, classic UI.
@@ -458,6 +464,29 @@ void ADataCenterLayoutHud::DrawHudV2()
 			St.PartT, SPartC, .5, PartC > 75.0 ? 85.0 : VrgUi::NoThreshold());
 		Card(TEXT("부분 PUE"), TEXT("(IT + CRAH 팬 + 펌프) / IT"), Su.bPartialPueValid ? FString::Printf(TEXT("%.3f"), Su.PartialPueWindow) : FString(TEXT("-")), TEXT(""),
 			Accent(), SPueT, SPue, .004, VrgUi::NoThreshold());
+		// 2026-11-28: noise card while the noise view is on (N). Value and trace of the point nearest the screen centre.
+		if (Noise.bShow)
+		{
+			TArray<double> NT, NV;
+			FString Value = TEXT("-"), Qual = TEXT("화면 가운데로 수신점을 겨누세요");
+			FLinearColor NCol = Gray();
+			if (Noise.Selected)
+			{
+				const VrgNoise::FNoiseTrack& Tr = *Noise.Selected;
+				const int32 N = Tr.Trace.Num();
+				for (int32 I = 0; I < N; ++I)
+				{
+					const VrgNoise::FNoiseTraceSample& Smp = Tr.Trace[N < VrgNoise::NoiseTraceLimit ? I : (Tr.NextTrace + I) % N];
+					NT.Add(Smp.TimeS); NV.Add(Smp.Db.IsSet() ? *Smp.Db : VrgUi::NoThreshold());
+				}
+				const VrgNoise::FLevel& L = Tr.Latest.Pressure;
+				if (L.Db.IsSet()) Value = FString::Printf(TEXT("%.1f"), *L.Db);
+				const TOptional<double> Eq = Tr.Average.GetDb();
+				Qual = FString::Printf(TEXT("%s · LAeq %s"), *Noise.SelectedGroup, Eq.IsSet() ? *FString::Printf(TEXT("%.1f"), *Eq) : Tr.Average.GetState());
+				NCol = FLinearColor(VrgNoise::NoiseLevelColor(L));
+			}
+			Card(TEXT("소음 LpA"), Qual, Value, TEXT("dBA"), NCol, NT, NV, 1.0, VrgUi::NoThreshold());
+		}
 		// Heat removal split.
 		{
 			const float Sh = 92.f * S;
@@ -524,6 +553,7 @@ void ADataCenterLayoutHud::DrawHudV2()
 				{ TEXT("[  ]"), TEXT("배속"), FString::Printf(TEXT("x%g"), Req), Req != 1.0 },
 				{ TEXT("T"), TEXT("유닛 탈착"), TEXT(""), false },
 				{ TEXT("R"), TEXT("처음부터"), TEXT(""), false },
+				{ TEXT("N"), TEXT("소음"), Noise.bShow ? TEXT("켬") : TEXT("끔"), Noise.bShow },
 				{ TEXT("Enter"), TEXT("배치 모드"), TEXT(""), false },
 			};
 			const float Th = 48.f * S, Gp = 10.f * S;

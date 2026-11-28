@@ -382,6 +382,7 @@ void ADataCenterDebugController::SetupInputComponent()
 		{ TEXT("SimSpeedDown"), EKeys::LeftBracket, &ADataCenterDebugController::OnSimSpeedDown },   // 2026-11-12 time scale
 		{ TEXT("SimSpeedUp"), EKeys::RightBracket, &ADataCenterDebugController::OnSimSpeedUp },
 		{ TEXT("ToggleUiStyle"), EKeys::F2, &ADataCenterDebugController::OnToggleUiStyle },   // 2026-11-24 UI demo
+		{ TEXT("NoiseView"), EKeys::N, &ADataCenterDebugController::OnToggleNoiseView },    // 2026-11-28 noise view
 	};
 
 	for (const FBinding& Binding : Bindings)
@@ -3483,6 +3484,37 @@ bool ADataCenterDebugController::IsCameraInputAvailable() const
 	return !Viewport || !Viewport->ViewportConsole || Viewport->ViewportConsole->ConsoleState == NAME_None;
 }
 
+void ADataCenterDebugController::OnToggleNoiseView()
+{
+	ADataCenterSimulationActor* Sim = FindSimActor();
+	if (IsLayoutMode() || !Sim || Sim->GetSimMode() != ESimMode::Simulation || !IsCameraInputAvailable()) return;
+	IConsoleVariable* Show = IConsoleManager::Get().FindConsoleVariable(TEXT("vrg.Noise.Show"));
+	if (!Show) return;
+	const bool bOn = Show->GetInt() == 0;
+	Show->Set(bOn ? 1 : 0, ECVF_SetByConsole);
+	if (bOn)
+	{
+		const VrgNoise::FNoiseLayout Current = Sim->CaptureNoiseLayout();
+		if (!Current.IndoorPositionM.IsSet() && !Current.Probe.IsSet() && !Current.Boundary.IsSet())
+		{
+			// UI choice of map spacing [m]: finest first; the actor rejects maps over its 256-receiver limit.
+			for (const double SpacingM : { 1.0, 1.5, 2.0, 3.0, 4.0, 6.0 })
+				if (Sim->SetIndoorNoiseReceivers(FVector2D::ZeroVector, VrgNoise::DefaultEarHeightM, SpacingM))
+				{
+					bAutoNoiseMap = true;
+					UE_LOG(LogTemp, Display, TEXT("[Noise] N: 실내 소음 지도 자동 설정 (간격 %.1f m, 귀 높이 %.1f m)"), SpacingM, VrgNoise::DefaultEarHeightM);
+					break;
+				}
+		}
+	}
+	else if (bAutoNoiseMap)
+	{
+		Sim->ClearIndoorNoiseReceivers();
+		bAutoNoiseMap = false;
+	}
+	UE_LOG(LogTemp, Display, TEXT("[Noise] N: 소음 보기 %s"), bOn ? TEXT("켬") : TEXT("끔"));
+}
+
 void ADataCenterDebugController::OnToggleUiStyle()
 {
 	VrgUi::SetNewStyle(!VrgUi::IsNewStyle());
@@ -3771,6 +3803,7 @@ void ADataCenterDebugController::GetHelpLines(TArray<FString>& Out) const
 		TEXT("[누수] L 누수 도구(5 mm → 30 mm → 파단 → 수리 → 끔) · 지점 클릭 적용(회색 닫힘·빨강 열림·노랑 조준) · Esc 끄기"),
 		TEXT("[보기] V 공기 표시: 온도 볼륨 → 유선(속도) → 유선(온도) → 유선+볼륨 → 평면(위에서) → 화살표"),
 		TEXT("[시간·시연] [ / ] 배속 0.5·1·2·4배 · 콘솔 vrg.Demo leak | leakprotect | pump | flood | valve | heatwave | clear"),
+		TEXT("[소음] N 소음 보기 켜기·끄기(수신점이 없으면 실내 지도 자동) · 화면 가운데 점의 LpA·LAeq · 콘솔 vrg.Noise.*"),
 	};
 	if (bLayout) for (const TCHAR* Text : LayoutLines) Out.Add(Text);
 	else for (const TCHAR* Text : SimLines) Out.Add(Text);

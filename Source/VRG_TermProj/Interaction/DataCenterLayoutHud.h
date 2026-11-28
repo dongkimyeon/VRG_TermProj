@@ -4,6 +4,7 @@
 #include "DataCenterLayoutHud.generated.h"
 
 struct FVrgHudV2State;
+struct FVrgNoiseView;
 
 // Passive viewport-pixel outline only; input stays with the controller.
 // 2026-11-24 UI demo: vrg.Ui.Style 1 draws the new HUD (DataCenterHudV2.cpp) instead of the key-hint text and W4 box.
@@ -21,8 +22,11 @@ private:
 	void DrawAirLegend(float BottomMargin = 20.f);
 	void DrawRackLeakTool(float Left = 10.f, float Top = 90.f, float MaxWidth = 1100.f);
 	void DrawHudV2();
-	void DrawAirLegendV2(float BottomMargin);
+	float DrawAirLegendV2(float BottomMargin);   // returns the legend height (0 when none)
 	void DrawNoiseOverlay();
+	// 2026-11-28 noise in the new UI (DataCenterNoiseHudV2.cpp): receiver dots, picked-point callout, colour bar.
+	bool GatherNoiseView(FVrgNoiseView& Out) const;
+	void DrawNoiseV2(float LegendBottomMargin);
 	void DrawMarquee();
 	TSharedPtr<FVrgHudV2State> V2;
 	TArray<FBox2D> PanelRects;   // panels drawn this frame, viewport pixels (display only)

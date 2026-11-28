@@ -24,6 +24,11 @@ bool FVrgUiStyleModelTest::RunTest(const FString& Parameters)
 	bool bF2Debug = false;
 	for (const FKeyBind& B : GetDefault<UPlayerInput>()->DebugExecBindings) bF2Debug |= B.Key == EKeys::F2;
 	TestFalse(TEXT("no engine debug exec binding on F2"), bF2Debug);
+	// 2026-11-28: N = noise view; it must not collide with an engine debug binding either.
+	bool bNDebug = false;
+	for (const FKeyBind& B : GetDefault<UPlayerInput>()->DebugExecBindings) bNDebug |= B.Key == EKeys::N;
+	TestFalse(TEXT("no engine debug exec binding on N"), bNDebug);
+	TestNotNull(TEXT("noise view switch exists"), IConsoleManager::Get().FindConsoleVariable(TEXT("vrg.Noise.Show")));
 
 	// Default style: the new UI since 2026-11-25 (user decision); 0 keeps the previous HUD.
 	if (IConsoleVariable* Cv = IConsoleManager::Get().FindConsoleVariable(TEXT("vrg.Ui.Style")))
