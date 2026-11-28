@@ -16,6 +16,7 @@ class UWorld;
 // Optional v2 settings.roomAirDomain stores authored metres; absence preserves the current room.
 // Optional v2 settings.roomCeilingPlates is the complete metre XY/height list; [] clears, absence retains.
 // Room validation projects the final inventory before live changes. Barriers retain their existing v2 path.
+// Optional v2 settings.noise stores authored acoustic settings; absence preserves current settings.
 // Version 1 remains move-only. No solver state or Undo history is saved.
 // Files live in Saved/Layouts/<name>.json. Loading switches the simulation to layout mode first (the next simulation
 // entry rebuilds everything from the loaded layout).

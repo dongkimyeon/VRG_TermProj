@@ -152,6 +152,29 @@ bool FVrgWebDashboard::WantsStatus() const
 	return FPlatformTime::Seconds() - StatusAskedS < AskWindowS;
 }
 
+bool FVrgWebDashboard::GetNoiseRequest(FString& OutTraceId) const
+{
+	FScopeLock Guard(&Lock);
+	if (FPlatformTime::Seconds() - NoiseAskedS >= AskWindowS) return false;
+	OutTraceId = RequestedNoiseTrace;
+	return true;
+}
+
+void FVrgWebDashboard::PublishNoise(const FString& TraceId, FString&& InJson)
+{
+	FScopeLock Guard(&Lock);
+	PublishedNoiseTrace = TraceId;
+	LatestNoise = MoveTemp(InJson);
+}
+
+FString FVrgWebDashboard::RequestNoiseJson(const FString& TraceId)
+{
+	FScopeLock Guard(&Lock);
+	NoiseAskedS = FPlatformTime::Seconds();
+	RequestedNoiseTrace = TraceId;
+	return PublishedNoiseTrace == TraceId ? LatestNoise : FString();
+}
+
 void FVrgWebDashboard::PublishCooling(FVrgDashboardCooling&& InCooling)
 {
 	FScopeLock Guard(&Lock);
@@ -324,6 +347,10 @@ void FVrgWebDashboard::Stop()
 	bHasRoomAir = false;
 	RoomAirAskedS = -1.0e9;
 	LatestStatus.Reset();
+	LatestNoise.Reset();
+	PublishedNoiseTrace.Reset();
+	RequestedNoiseTrace.Reset();
+	NoiseAskedS = -1.0e9;
 	StatusAskedS = -1.0e9;
 	PendingReport.Reset();
 	bHasLastSave = false;
@@ -506,6 +533,21 @@ bool FVrgWebDashboard::ApplySettings()
 		FHttpRequestHandler::CreateLambda([this](const FHttpServerRequest&, const FHttpResultCallback& OnComplete)
 		{
 			const FString Json = RequestStatusJson();
+			OnComplete(NoStore(Json.IsEmpty()
+				? FHttpServerResponse::Error(EHttpServerResponseCodes::Accepted, TEXT("pending"), TEXT("다음 발행 때 만든다"))
+				: FHttpServerResponse::Create(Json, TEXT("application/json; charset=utf-8"))));
+			return true;
+		})));
+	Routes.Add(Router->BindRoute(FHttpPath(TEXT("/api/noise")), EHttpServerRequestVerbs::VERB_GET,
+		FHttpRequestHandler::CreateLambda([this](const FHttpServerRequest& Request, const FHttpResultCallback& OnComplete)
+		{
+			const FString* Trace = Request.QueryParams.Find(TEXT("trace"));
+			if (Trace && Trace->Len() > 24)
+			{
+				OnComplete(NoStore(FHttpServerResponse::Error(EHttpServerResponseCodes::BadRequest, TEXT("bad_trace"), TEXT("Invalid receiver ID"))));
+				return true;
+			}
+			const FString Json = RequestNoiseJson(Trace ? *Trace : FString());
 			OnComplete(NoStore(Json.IsEmpty()
 				? FHttpServerResponse::Error(EHttpServerResponseCodes::Accepted, TEXT("pending"), TEXT("다음 발행 때 만든다"))
 				: FHttpServerResponse::Create(Json, TEXT("application/json; charset=utf-8"))));

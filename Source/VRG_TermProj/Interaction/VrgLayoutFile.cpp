@@ -254,6 +254,7 @@ bool VrgLayoutFile::Save(UWorld* World, const FString& Name, FString& OutSummary
 			}
 			Plates.Add(MakeShared<FJsonValueObject>(O));
 		}
+		Settings->SetObjectField(TEXT("noise"), VrgNoise::WriteNoiseLayout(Sim->CaptureNoiseLayout()));
 		Settings->SetArrayField(TEXT("roomCeilingPlates"), Plates); // Complete authored metre list; empty clears, absent retains.
 	}
 	if (const AAirFieldDebugActor* Air = LayoutFindFirst<AAirFieldDebugActor>(World))
@@ -627,6 +628,14 @@ bool VrgLayoutFile::Load(UWorld* World, const FString& Name, FString& OutSummary
 			LoadedCeilings.Add(P);
 		}
 	}
+	TOptional<VrgNoise::FNoiseLayout> NoiseSettings;
+	if (Version == 2 && (*SettingsObject)->HasField(TEXT("noise")))
+	{
+		if (!Sim) return Fail(TEXT("소음 설정 통합 액터 없음"));
+		const TSharedPtr<FJsonObject>* Noise = nullptr;
+		if (!(*SettingsObject)->TryGetObjectField(TEXT("noise"), Noise)
+			|| !VrgNoise::ReadNoiseLayout(**Noise, NoiseSettings.Emplace())) return Fail(TEXT("소음 설정 형식 또는 범위 오류"));
+	}
 	// Walls / curtains: validate the whole list before anything changes. Absent flag = barriers stay as they are.
 	bool bBarrierInventory = false;
 	if (Version == 2 && Root->HasField(TEXT("barrierInventory")) && !Root->TryGetBoolField(TEXT("barrierInventory"), bBarrierInventory))
@@ -767,6 +776,8 @@ bool VrgLayoutFile::Load(UWorld* World, const FString& Name, FString& OutSummary
 		if (!ValidateLoadedRoom(World, Sim, LoadedRoom, LoadedCeilings, *SettingsObject, Items, Current, Removed, RoomGrid, RoomBounds, RoomReason))
 			return Fail(TEXT("불러올 배치의 방 설정 거절: ") + RoomReason); // Before live spawn, transform, removal or history change.
 	}
+	if (NoiseSettings.IsSet() && !NoiseSettings->IsValid(RoomBounds))
+		return Fail(TEXT("불러올 방의 소음 수신 높이 또는 지도 크기 오류"));
 	TArray<FTransform> OldTransforms;
 	for (AActor* Actor:Current) OldTransforms.Add(Actor->GetActorTransform());
 	struct FRemovalBackup {
@@ -1032,6 +1043,7 @@ bool VrgLayoutFile::Load(UWorld* World, const FString& Name, FString& OutSummary
 		if ((*SettingsObject)->TryGetNumberField(TEXT("crahLayout"),V)) Sim->CrahLayout=static_cast<ECrahLayout>(FMath::Clamp(int32(V),0,2));
 		if ((*SettingsObject)->TryGetNumberField(TEXT("coolantRejection"),V)) Sim->CoolantRejection=static_cast<ECoolantRejection>(FMath::Clamp(int32(V),0,1));
 		if (bPlantEnabledStored) Sim->bFacilityPlant=bLoadedPlantEnabled;
+		if (NoiseSettings.IsSet()) Sim->ApplyNoiseLayout(*NoiseSettings);
 		if (LoadedPlantTopology>=0) Sim->PlantThermalSpec.Topology=static_cast<EPlantTopology>(int32(LoadedPlantTopology));
 	}
 	if (auto* Air=LayoutFindFirst<AAirFieldDebugActor>(World))

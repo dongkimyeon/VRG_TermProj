@@ -271,6 +271,7 @@ void ADataCenterLayoutHud::DrawHUD()
 		DrawAirLegendV2(16.f * S + 48.f * S + 14.f * S);
 		DrawHudV2();
 		DrawMarquee();
+		DrawNoiseOverlay();
 		return;
 	}
 	DrawTemperatureLabels();   // under the key hint
@@ -330,4 +331,5 @@ void ADataCenterLayoutHud::DrawHUD()
 	}
 
 	DrawMarquee();
+	DrawNoiseOverlay();
 }
