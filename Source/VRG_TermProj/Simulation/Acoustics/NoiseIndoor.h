@@ -14,9 +14,15 @@ enum class EIndoorSourceKind : uint8 { Rack, Spine, Crah, Cdu };
 
 struct FIndoorAbsorption
 {
-	// ASHRAE 2023 Applications ch. 49 table 12. Repeat 4 kHz at 8 kHz.
-	double Shell[IndoorOctaves] = {.01, .01, .01, .02, .02, .02, .03, .03};
-	double Equipment[IndoorOctaves] = {.04, .04, .04, .05, .05, .05, .07, .07};
+	// 2026-11-28 field calibration (ESTIMATE from one measured site): room-average absorption back-calculated with
+	// Sabine from the early decay times measured in a working colocation server room (BYU acoustic report for C7 Data
+	// Centers, 28 x 31.7 x 4.1 m, EDT 1.5..2.1 s at 1 kHz, 1.1..3.2 s near 100 Hz, 0.47..0.59 s at 8 kHz; 8 kHz with the
+	// room's air absorption removed, 4 kHz interpolated). It replaces the bare concrete/sheet-metal references
+	// (ASHRAE 2023 Applications ch. 49 table 12: shell .01..03, equipment .04..07), which gave several-second
+	// reverberation and put the ear-height map 15..25 dB above field data-hall levels (docs/기록/10_소음.md, 2026-11-28).
+	// The measured value already contains the racks, so shell and equipment use the same room average.
+	double Shell[IndoorOctaves] = {.13, .13, .14, .15, .14, .15, .22, .33};
+	double Equipment[IndoorOctaves] = {.13, .13, .14, .15, .14, .15, .22, .33};
 	bool IsValid() const;
 };
 
