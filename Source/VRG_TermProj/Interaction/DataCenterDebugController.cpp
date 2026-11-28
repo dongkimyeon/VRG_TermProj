@@ -3484,6 +3484,31 @@ bool ADataCenterDebugController::IsCameraInputAvailable() const
 	return !Viewport || !Viewport->ViewportConsole || Viewport->ViewportConsole->ConsoleState == NAME_None;
 }
 
+int32 ADataCenterDebugController::DemoSelectRacks(int32 Count)
+{
+	if (!IsLayoutMode() || !GetWorld()) return 0;
+	LayoutSelection.Reset();
+	for (TActorIterator<ARackThermalActor> It(GetWorld()); It && LayoutSelection.Num() < Count; ++It) LayoutSelection.Add(*It);
+	return LayoutSelection.Num();
+}
+
+namespace
+{
+	// 2026-11-28 theme demo captures without mouse or keyboard: open/close the key list (H) and select racks.
+	FAutoConsoleCommandWithWorldAndArgs GVrgUiHelp(TEXT("vrg.Ui.Help"), TEXT("Show (1) or hide (0) the key list, as H does."),
+		FConsoleCommandWithWorldAndArgsDelegate::CreateLambda([](const TArray<FString>& Args, UWorld* World)
+		{
+			if (auto* C = World ? Cast<ADataCenterDebugController>(World->GetFirstPlayerController()) : nullptr)
+				C->bShowHelp = Args.IsEmpty() ? !C->bShowHelp : FCString::Atoi(*Args[0]) != 0;
+		}));
+	FAutoConsoleCommandWithWorldAndArgs GVrgUiDemoSelect(TEXT("vrg.Ui.DemoSelect"), TEXT("Layout mode: select the first N racks (default 1)."),
+		FConsoleCommandWithWorldAndArgsDelegate::CreateLambda([](const TArray<FString>& Args, UWorld* World)
+		{
+			if (auto* C = World ? Cast<ADataCenterDebugController>(World->GetFirstPlayerController()) : nullptr)
+				UE_LOG(LogTemp, Display, TEXT("[VrgUi] 선택 %d대"), C->DemoSelectRacks(Args.IsEmpty() ? 1 : FMath::Max(1, FCString::Atoi(*Args[0]))));
+		}));
+}
+
 void ADataCenterDebugController::OnToggleNoiseView()
 {
 	ADataCenterSimulationActor* Sim = FindSimActor();
@@ -3533,6 +3558,12 @@ void ADataCenterDebugController::UpdateUiStyleWidgets()
 		return;
 	}
 	if (GetLocalPlayer() == nullptr) return;   // automation worlds have no viewport
+	if (VrgUi::ThemeIndex() != LastUiTheme)
+	{
+		// 2026-11-28: the palette takes its colours and corners at construction; rebuild it for a new theme.
+		LastUiTheme = VrgUi::ThemeIndex();
+		if (PaletteV2) { PaletteV2->RemoveFromParent(); PaletteV2 = nullptr; }
+	}
 	const bool bShow = IsLayoutMode() && !bRoomSettingsOpen && OpenPatchMaps == 0;
 	if (!PaletteV2 && bShow)
 	{

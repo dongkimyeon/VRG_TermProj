@@ -96,12 +96,12 @@ struct FHudPaint
 		return Cut + TEXT("…");
 	}
 	// A key cap centred on Cy; returns its width.
-	float Key(const FString& K, float X, float Cy, const FLinearColor& Fill = FLinearColor(1, 1, 1, .07f)) const
+	float Key(const FString& K, float X, float Cy, const FLinearColor& Fill = VrgUi::Theme::KeyFill()) const
 	{
 		const FVector2D Sz = Measure(K, 9.5f, true);
 		const float W = Sz.X + 12.f * S, H = 19.f * S;
 		Rect(X, Cy - .5f * H, W, H, Fill);
-		Frame(X, Cy - .5f * H, W, H, FLinearColor(1, 1, 1, .22f));
+		Frame(X, Cy - .5f * H, W, H, VrgUi::Theme::KeyEdge());
 		Rect(X + 1.f, Cy + .5f * H - 2.f, W - 2.f, 1.f, FLinearColor(0, 0, 0, .35f));   // bottom edge of the cap
 		Text(K, X + 6.f * S, Cy - .5f * Sz.Y - .5f * S, 9.5f, VrgUi::Theme::Text(), true);
 		return W;
@@ -126,7 +126,7 @@ struct FHudPaint
 		Rect(X, Cy - .5f * H, W, H, WithAlpha(Col, .20f));
 		Frame(X, Cy - .5f * H, W, H, WithAlpha(Col, .65f));
 		if (bDot) Rect(X + 10.f * S, Cy - 3.f * S, 6.f * S, 6.f * S, WithAlpha(Col, DotAlpha));
-		Text(T, X + 10.f * S + Dot, Cy - .5f * Sz.Y, 10.f, FLinearColor::White, true);
+		Text(T, X + 10.f * S + Dot, Cy - .5f * Sz.Y, 10.f, VrgUi::Theme::Text(), true);
 		OutW = W;
 	}
 };

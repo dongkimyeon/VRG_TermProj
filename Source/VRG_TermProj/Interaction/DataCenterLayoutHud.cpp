@@ -189,12 +189,14 @@ void ADataCenterLayoutHud::DrawTemperatureLabels()
 			const bool bAlarm = L.Priority == 0;
 			P.Rect(Ax - .5f, Y0 + ChipH, 1.f, Lift - 2.f * S, WithAlpha(L.Color, .7f));
 			P.Rect(Ax - 2.f * S, Ay - 2.f * S, 4.f * S, 4.f * S, L.Color);
-			P.Rect(X0, Y0, W, ChipH, bAlarm ? WithAlpha(Red(), .30f) : WithAlpha(Panel(), .90f));
+			P.Rect(X0, Y0, W, ChipH, bAlarm ? WithAlpha(Red(), VrgUi::ActiveTheme().bLight ? .92f : .30f) : WithAlpha(Panel(), FMath::Max(Panel().A, .90f)));
 			P.Frame(X0, Y0, W, ChipH, bAlarm ? WithAlpha(Red(), .9f) : Line());
 			P.Rect(X0, Y0, 3.f * S, ChipH, L.Color);
 			const float Cy = Y0 + .5f * ChipH;
 			float Tx = X0 + 3.f * S + Pad;
-			Tx += P.TextMid(Head, Tx, Cy, 10.f, bAlarm ? FLinearColor::White : L.Color, true);
+			// Light theme: the headline in the body colour (the value colour stays on the strip and the dot).
+			const FLinearColor HeadCol = bAlarm ? FLinearColor::White : VrgUi::ActiveTheme().bLight ? Text() : L.Color;
+			Tx += P.TextMid(Head, Tx, Cy, 10.f, HeadCol, true);
 			if (!Rest.IsEmpty()) P.TextMid(Rest, Tx + 8.f * S, Cy, 9.5f, bAlarm ? FLinearColor::White : Text2());
 		}
 		return;
@@ -267,7 +269,7 @@ void ADataCenterLayoutHud::DrawHUD()
 		const float S = VrgUi::HudScale(Canvas->ClipX, Canvas->ClipY);
 		DrawTemperatureLabels();
 		const float LeakLeft = 16.f * S + 288.f * S + 12.f * S;
-		DrawRackLeakTool(LeakLeft, 46.f * S + 14.f * S + 5.f, FMath::Max(Canvas->ClipX - LeakLeft - 380.f * S - 28.f * S, 200.f));
+		DrawRackLeakTool(LeakLeft, VrgUi::BarBottom(S) + 14.f * S + 5.f, FMath::Max(Canvas->ClipX - LeakLeft - 380.f * S - 28.f * S, 200.f));
 		const float LegendMargin = 16.f * S + 48.f * S + 14.f * S;
 		const float AirH = DrawAirLegendV2(LegendMargin);
 		DrawNoiseV2(LegendMargin + (AirH > 0.f ? AirH + 10.f * S : 0.f));   // 2026-11-28: noise in the new look

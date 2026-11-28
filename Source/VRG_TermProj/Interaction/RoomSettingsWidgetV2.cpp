@@ -25,10 +25,10 @@ namespace
 	FButtonStyle ButtonStyle(const FLinearColor& Normal, const FLinearColor& Hover, const FLinearColor& Outline)
 	{
 		FButtonStyle S;
-		S.SetNormal(FSlateRoundedBoxBrush(Normal, 6.f, Outline, 1.f));
-		S.SetHovered(FSlateRoundedBoxBrush(Hover, 6.f, Outline, 1.f));
-		S.SetPressed(FSlateRoundedBoxBrush(Normal, 6.f, Outline, 1.f));
-		S.SetDisabled(FSlateRoundedBoxBrush(WithAlpha(Normal, .4f), 6.f));
+		S.SetNormal(FSlateRoundedBoxBrush(Normal, Radius(6.f), Outline, 1.f));
+		S.SetHovered(FSlateRoundedBoxBrush(Hover, Radius(6.f), Outline, 1.f));
+		S.SetPressed(FSlateRoundedBoxBrush(Normal, Radius(6.f), Outline, 1.f));
+		S.SetDisabled(FSlateRoundedBoxBrush(WithAlpha(Normal, .4f), Radius(6.f)));
 		S.SetNormalPadding(FMargin(0.f));
 		S.SetPressedPadding(FMargin(0.f));
 		return S;
@@ -45,10 +45,12 @@ namespace
 
 void URoomSettingsWidget::ApplyNewLook()
 {
-	if (BackdropBorder) BackdropBorder->SetBrushColor(FLinearColor(FColor(6, 8, 11, 150)));
+	if (BackdropBorder) BackdropBorder->SetBrushColor(Scrim());
 	if (PanelBorder)
 	{
-		PanelBorder->SetBrush(FSlateRoundedBoxBrush(PanelHi(), 10.f, Line(), 1.f));
+		PanelBorder->SetBrush(FSlateRoundedBoxBrush(PanelHi(), Radius(10.f), Line(), 1.f));
+		// The base dialog tints its border dark; the themes need their own panel colour (theme 0 keeps the approved look).
+		if (VrgUi::ThemeIndex() != 0) PanelBorder->SetBrushColor(FLinearColor::White);
 		PanelBorder->SetPadding(FMargin(26, 22, 26, 18));
 		if (auto* PanelSlot = Cast<UCanvasPanelSlot>(PanelBorder->Slot)) PanelSlot->SetSize(FVector2D(620, 560));   // UI pixels
 	}
@@ -57,16 +59,16 @@ void URoomSettingsWidget::ApplyNewLook()
 	Restyle(ModeText, 14, Text());
 	for (UTextBlock* L : InputLabels) Restyle(L, 14, Text2());
 	FEditableTextBoxStyle Field = Inputs.IsEmpty() ? FEditableTextBoxStyle() : Inputs[0]->GetWidgetStyle();
-	Field.SetBackgroundImageNormal(FSlateRoundedBoxBrush(WithAlpha(Text(), .05f), 5.f, Line(), 1.f));
-	Field.SetBackgroundImageHovered(FSlateRoundedBoxBrush(WithAlpha(Text(), .08f), 5.f, WithAlpha(Text(), .25f), 1.f));
-	Field.SetBackgroundImageFocused(FSlateRoundedBoxBrush(WithAlpha(Accent(), .10f), 5.f, Accent(), 1.f));
-	Field.SetBackgroundImageReadOnly(FSlateRoundedBoxBrush(WithAlpha(Text(), .02f), 5.f, LineSoft(), 1.f));
+	Field.SetBackgroundImageNormal(FSlateRoundedBoxBrush(WithAlpha(Text(), .05f), Radius(5.f), Line(), 1.f));
+	Field.SetBackgroundImageHovered(FSlateRoundedBoxBrush(WithAlpha(Text(), .08f), Radius(5.f), WithAlpha(Text(), .25f), 1.f));
+	Field.SetBackgroundImageFocused(FSlateRoundedBoxBrush(WithAlpha(Accent(), .10f), Radius(5.f), Accent(), 1.f));
+	Field.SetBackgroundImageReadOnly(FSlateRoundedBoxBrush(WithAlpha(Text(), .02f), Radius(5.f), LineSoft(), 1.f));
 	Field.SetForegroundColor(FSlateColor(Text()));
-	Field.SetFocusedForegroundColor(FSlateColor(FLinearColor::White));
+	Field.SetFocusedForegroundColor(FSlateColor(Text()));
 	Field.SetPadding(FMargin(10, 6, 10, 6));
 	Field.SetFont(FCoreStyle::GetDefaultFontStyle("Regular", 14));
 	for (UEditableTextBox* Box : Inputs) { Box->SetWidgetStyle(Field); Box->SetMinDesiredWidth(260); }
-	RestyleButton(ApplyButtonRef, ButtonStyle(AccentDim(), Accent(), WithAlpha(Accent(), .9f)), FLinearColor::White, true);
+	RestyleButton(ApplyButtonRef, ButtonStyle(AccentDim(), Accent(), WithAlpha(Accent(), .9f)), OnAccent(), true);
 	RestyleButton(CloseButtonRef, ButtonStyle(WithAlpha(Text(), .03f), WithAlpha(Text(), .08f), Line()), Text2(), false);
 	Restyle(Status, 13, Amber());
 	Restyle(Plan, 13, Text2());

@@ -83,7 +83,7 @@ void ADataCenterLayoutHud::DrawNoiseV2(float LegendBottomMargin)
 		const FLevel& L = V.Selected->Latest.Pressure;
 		const FLinearColor Col(NoiseLevelColor(L));
 		const FVector2D A = V.SelectedScreen;
-		P.Frame(A.X - 8.f * S, A.Y - 8.f * S, 16.f * S, 16.f * S, FLinearColor::White);
+		P.Frame(A.X - 8.f * S, A.Y - 8.f * S, 16.f * S, 16.f * S, VrgUi::ActiveTheme().bLight ? Text() : FLinearColor::White);
 		const TOptional<double> Eq = V.Selected->Average.GetDb();
 		const FString Head = L.Db.IsSet() ? FString::Printf(TEXT("%.1f dBA"), *L.Db) : FString(NoiseLevelState(L));
 		FString Rest = FString::Printf(TEXT("LAeq %s"), Eq.IsSet() ? *FString::Printf(TEXT("%.1f dBA"), *Eq) : V.Selected->Average.GetState());

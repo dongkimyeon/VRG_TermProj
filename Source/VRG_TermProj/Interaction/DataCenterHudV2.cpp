@@ -132,7 +132,7 @@ void ADataCenterLayoutHud::DrawMarquee()
 	FBox2D Rect;
 	if (!Controller || !Controller->GetLayoutMarqueeRect(Rect)) return;
 	const FLinearColor Color(.2f, .8f, 1.f);
-	if (VrgUi::IsNewStyle()) DrawRect(FLinearColor(.2f, .55f, .9f, .10f), Rect.Min.X, Rect.Min.Y, Rect.Max.X - Rect.Min.X, Rect.Max.Y - Rect.Min.Y);
+	if (VrgUi::IsNewStyle()) DrawRect(WithAlpha(Accent(), .10f), Rect.Min.X, Rect.Min.Y, Rect.Max.X - Rect.Min.X, Rect.Max.Y - Rect.Min.Y);
 	DrawLine(Rect.Min.X, Rect.Min.Y, Rect.Max.X, Rect.Min.Y, Color, 2.f);
 	DrawLine(Rect.Max.X, Rect.Min.Y, Rect.Max.X, Rect.Max.Y, Color, 2.f);
 	DrawLine(Rect.Max.X, Rect.Max.Y, Rect.Min.X, Rect.Max.Y, Color, 2.f);
@@ -256,11 +256,19 @@ void ADataCenterLayoutHud::DrawHudV2()
 
 	// ---- top status bar ----
 	{
-		P.Rect(0, 0, W, BarH, PanelHi());
-		P.Block(0, 0, W, BarH);
-		P.Rect(0, BarH - 1.f, W, 1.f, Line());
-		float X = Margin;
-		const float Cy = .5f * BarH;
+		// 2026-11-28 themes: a floating bar (inset panel) or a full-width strip.
+		const bool bFloat = VrgUi::ActiveTheme().bFloatingBar;
+		const float BarX = bFloat ? Margin : 0.f, BarY = bFloat ? 10.f * S : 0.f, BarWd = W - 2.f * BarX;
+		if (bFloat) P.Panel(BarX, BarY, BarWd, BarH);
+		else
+		{
+			P.Rect(0, 0, W, BarH, PanelHi());
+			P.Block(0, 0, W, BarH);
+			P.Rect(0, BarH - 1.f, W, 1.f, Line());
+		}
+		if (bFloat) P.Rect(BarX, BarY, BarWd, BarH, WithAlpha(PanelHi(), PanelHi().A * .5f));
+		float X = BarX + (bFloat ? 14.f * S : Margin);
+		const float Cy = BarY + .5f * BarH;
 		X += P.TextMid(TEXT("VRG"), X, Cy, 13.f, Text(), true) + 8.f * S;
 		X += P.TextMid(TEXT("AI 데이터센터 냉각 디지털 트윈"), X, Cy, 10.f, Text2()) + 18.f * S;
 		float PillW = 0.f;
@@ -269,10 +277,10 @@ void ADataCenterLayoutHud::DrawHudV2()
 		X += PillW + 14.f * S;
 		auto Seg = [&](const FString& Label, const FString& Value, const FLinearColor& ValueCol)
 		{
-			P.Rect(X, 10.f * S, 1.f, BarH - 20.f * S, Line());
+			P.Rect(X, BarY + 10.f * S, 1.f, BarH - 20.f * S, Line());
 			X += 12.f * S;
-			const float Lw = P.Text(Label, X, 7.f * S, 8.5f, Text3());
-			const float Vw = P.Text(Value, X, 21.f * S, 11.f, ValueCol, true);
+			const float Lw = P.Text(Label, X, BarY + 7.f * S, 8.5f, Text3());
+			const float Vw = P.Text(Value, X, BarY + 21.f * S, 11.f, ValueCol, true);
 			X += FMath::Max(Lw, Vw) + 14.f * S;
 		};
 		FString MapName = World->GetMapName();
@@ -297,7 +305,7 @@ void ADataCenterLayoutHud::DrawHudV2()
 			Seg(TEXT("레벨"), MapName, Text2());
 		}
 		// Right side: alarms, help, classic UI.
-		float R = W - Margin;
+		float R = W - BarX - (bFloat ? 14.f * S : Margin);
 		R -= P.KeyHintWidth(TEXT("F2"), TEXT("기존 UI"));
 		P.KeyHint(TEXT("F2"), TEXT("기존 UI"), R, Cy);
 		R -= 16.f * S + P.KeyHintWidth(TEXT("H"), TEXT("단축키"));
@@ -312,7 +320,7 @@ void ADataCenterLayoutHud::DrawHudV2()
 		}
 	}
 
-	const float Top = BarH + 14.f * S;
+	const float Top = VrgUi::BarBottom(S) + 14.f * S;
 
 	if (!bSim)
 	{
@@ -445,7 +453,8 @@ void ADataCenterLayoutHud::DrawHudV2()
 			const TArray<double>& T, const TArray<double>& V, double MinSpan, double Thresh)
 		{
 			P.Panel(X0, Y, Cw, Ch);
-			P.Rect(X0, Y, 3.f * S, Ch, StatusCol);
+			if (VrgUi::ActiveTheme().bCardStripTop) P.Rect(X0, Y, Cw, 2.f * S, StatusCol);
+			else P.Rect(X0, Y, 3.f * S, Ch, StatusCol);
 			const float Lw = P.Text(Label, X0 + Pad, Y + 10.f * S, 10.f, Text2());
 			P.TextRight(P.Fit(Qual, Cw - 2.f * Pad - Lw - 10.f * S, 8.5f), X0 + Cw - Pad, Y + 11.f * S, 8.5f, Text3());
 			const float Vw = P.Text(Value, X0 + Pad, Y + 26.f * S, 19.f, Text(), true);
@@ -574,9 +583,9 @@ void ADataCenterLayoutHud::DrawHudV2()
 				const float Iy = Y0 + 7.f * S, Ih = Th - 14.f * S, Cy = Y0 + .5f * Th;
 				if (T.bActive) { P.Rect(Tx, Iy, Widths[I], Ih, WithAlpha(Accent(), .22f)); P.Frame(Tx, Iy, Widths[I], Ih, WithAlpha(Accent(), .8f)); }
 				float Ix = Tx + 10.f * S;
-				Ix += P.Key(T.Key, Ix, Cy, T.bActive ? WithAlpha(Accent(), .55f) : FLinearColor(1, 1, 1, .07f)) + 8.f * S;
+				Ix += P.Key(T.Key, Ix, Cy, T.bActive ? WithAlpha(Accent(), .55f) : KeyFill()) + 8.f * S;
 				Ix += P.TextMid(T.Label, Ix, Cy, 10.f, Text2());
-				if (!T.Value.IsEmpty()) P.TextMid(T.Value, Ix + 8.f * S, Cy, 10.5f, T.bActive ? FLinearColor::White : Text(), true);
+				if (!T.Value.IsEmpty()) P.TextMid(T.Value, Ix + 8.f * S, Cy, 10.5f, Text(), true);
 				Tx += Widths[I] + Gp;
 				if (I + 1 < Tools.Num() && I == 2) P.Rect(Tx - .5f * Gp, Y0 + 12.f * S, 1.f, Th - 24.f * S, Line());
 			}
@@ -585,8 +594,8 @@ void ADataCenterLayoutHud::DrawHudV2()
 
 	if (bHelp)
 	{
-		P.Rect(0, BarH, W, H - BarH, FLinearColor(0, 0, 0, .45f));
-		P.Block(0, BarH, W, H - BarH);   // the overlay covers the scene: H closes it
+		P.Rect(0, VrgUi::BarBottom(S), W, H - VrgUi::BarBottom(S), Scrim());
+		P.Block(0, VrgUi::BarBottom(S), W, H - VrgUi::BarBottom(S));   // the overlay covers the scene: H closes it
 		struct FGroup { FString Name; TArray<FString> Items; };
 		TArray<FGroup> Groups;
 		for (const FString& L : HelpLines)
@@ -609,7 +618,7 @@ void ADataCenterLayoutHud::DrawHudV2()
 			if (LeftH <= RightH) { Side.Add(0); LeftH += Gh; } else { Side.Add(1); RightH += Gh; }
 		}
 		const float Ph = 70.f * S + FMath::Max(LeftH, RightH) + 30.f * S;
-		const float X0 = .5f * (W - Pw), Y0 = FMath::Max(BarH + 20.f * S, .5f * (H - Ph));
+		const float X0 = .5f * (W - Pw), Y0 = FMath::Max(VrgUi::BarBottom(S) + 20.f * S, .5f * (H - Ph));
 		P.Panel(X0, Y0, Pw, Ph);
 		P.Rect(X0, Y0, Pw, 3.f * S, bSim ? Teal() : Accent());
 		P.Text(TEXT("단축키"), X0 + 20.f * S, Y0 + 18.f * S, 14.f, Text(), true);

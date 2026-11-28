@@ -13,8 +13,20 @@ namespace
 {
 	using namespace VrgUi::Theme;
 
-	const FSlateBrush* FillBrush() { static const FSlateRoundedBoxBrush B(FLinearColor::White, 8.f); return &B; }
-	const FSlateBrush* OutlineBrush() { static const FSlateRoundedBoxBrush B(FLinearColor::Transparent, 8.f, FLinearColor::White, 1.f); return &B; }
+	// One brush per theme (corner radius differs); kept alive for the draw lists.
+	const FSlateBrush* FillBrush()
+	{
+		static const FSlateRoundedBoxBrush B[VrgUi::NumThemes] = { { FLinearColor::White, 8.f * VrgUi::GetTheme(0).RadiusScale }, { FLinearColor::White, 8.f * VrgUi::GetTheme(1).RadiusScale },
+			{ FLinearColor::White, 8.f * VrgUi::GetTheme(2).RadiusScale }, { FLinearColor::White, 8.f * VrgUi::GetTheme(3).RadiusScale } };
+		return &B[VrgUi::ThemeIndex()];
+	}
+	const FSlateBrush* OutlineBrush()
+	{
+		static const FSlateRoundedBoxBrush B[VrgUi::NumThemes] = {
+			{ FLinearColor::Transparent, 8.f * VrgUi::GetTheme(0).RadiusScale, FLinearColor::White, 1.f }, { FLinearColor::Transparent, 8.f * VrgUi::GetTheme(1).RadiusScale, FLinearColor::White, 1.f },
+			{ FLinearColor::Transparent, 8.f * VrgUi::GetTheme(2).RadiusScale, FLinearColor::White, 1.f }, { FLinearColor::Transparent, 8.f * VrgUi::GetTheme(3).RadiusScale, FLinearColor::White, 1.f } };
+		return &B[VrgUi::ThemeIndex()];
+	}
 	const FSlateBrush* Solid() { return FCoreStyle::Get().GetBrush("WhiteBrush"); }
 
 	FVector2D Measure(const FString& S, const FSlateFontInfo& F)
@@ -42,8 +54,16 @@ int32 UPatchPlanWidget::PaintV2(const FGeometry& Geometry, FSlateWindowElementLi
 	};
 	auto Card = [&](const FVector2D& Pos, const FVector2D& Sz, const FLinearColor& Fill, const FLinearColor& Edge)
 	{
-		Box(1, Pos, Sz, FillBrush(), Fill);
-		Box(1, Pos, Sz, OutlineBrush(), Edge);
+		if (VrgUi::ThemeIndex() == 0)
+		{
+			// The approved default look (2026-11-27): fill brush plus an outline brush whose tint also lightens the inside.
+			Box(1, Pos, Sz, FillBrush(), Fill);
+			Box(1, Pos, Sz, OutlineBrush(), Edge);
+			return;
+		}
+		// Themes: one brush; Slate fills a rounded box with the element colour and draws the brush outline colour.
+		const FSlateRoundedBoxBrush B(FLinearColor::White, Radius(8.f), Edge, 1.f);
+		Box(1, Pos, Sz, &B, Fill);   // the element colour fills; the brush keeps the outline colour
 	};
 	auto Font = [](int32 Pt, bool bBold) { return FCoreStyle::GetDefaultFontStyle(bBold ? "Bold" : "Regular", Pt); };
 	auto Write = [&](const FVector2D& Pos, const FString& S, int32 Pt, const FLinearColor& Color, bool bBold = false)
@@ -67,7 +87,7 @@ int32 UPatchPlanWidget::PaintV2(const FGeometry& Geometry, FSlateWindowElementLi
 	};
 
 	// Backdrop and header.
-	Box(0, FVector2D::ZeroVector, Size, Solid(), FLinearColor(FColor(9, 11, 15, 248)));
+	Box(0, FVector2D::ZeroVector, Size, Solid(), PlanBg());
 	Box(1, FVector2D::ZeroVector, FVector2D(Size.X, 52.f), Solid(), PanelHi());
 	Box(1, FVector2D(0.f, 51.f), FVector2D(Size.X, 1.f), Solid(), Line());
 	float X = 24.f;
@@ -104,8 +124,8 @@ int32 UPatchPlanWidget::PaintV2(const FGeometry& Geometry, FSlateWindowElementLi
 	// Legend (right of the stats).
 	{
 		struct FKey { FString Name; FLinearColor Color; float Width; };
-		TArray<FKey> Keys = { { TEXT("업링크"), FLinearColor(0, .7f, 1), 2.f }, { TEXT("스파인 간"), FLinearColor::White, 2.f },
-			{ TEXT("간섭"), FLinearColor(1, .15f, .1f), 2.f }, { TEXT("선택"), FLinearColor::Yellow, 3.f } };
+		TArray<FKey> Keys = { { TEXT("업링크"), FLinearColor(0, .7f, 1), 2.f }, { TEXT("스파인 간"), SpineLine(), 2.f },
+			{ TEXT("간섭"), FLinearColor(1, .15f, .1f), 2.f }, { TEXT("선택"), SelectLine(), 3.f } };
 		if (bShowPlant)
 		{
 			Keys.Add({ TEXT("FWS"), FLinearColor(1, .45f, .1f), 3.f });
@@ -123,7 +143,7 @@ int32 UPatchPlanWidget::PaintV2(const FGeometry& Geometry, FSlateWindowElementLi
 
 	// Plan area: panel behind the projection with a 1 m grid inside the drawn bounds.
 	const float PlanTop = 124.f, PlanBottom = Size.Y - 96.f;
-	Card(FVector2D(24.f, PlanTop), FVector2D(Size.X - 48.f, PlanBottom - PlanTop), FLinearColor(FColor(13, 17, 22, 255)), Line());
+	Card(FVector2D(24.f, PlanTop), FVector2D(Size.X - 48.f, PlanBottom - PlanTop), PlanArea(), Line());
 	if (BoundsM.IsValid)
 	{
 		const FVector Lo = BoundsM.Min, Hi = BoundsM.Max;
@@ -156,14 +176,14 @@ int32 UPatchPlanWidget::PaintV2(const FGeometry& Geometry, FSlateWindowElementLi
 		// The name only where it fits inside the footprint (dense rows stay readable; the selection card names both ends).
 		const float Lw = Measure(Short[Di], Font(8, false)).X;
 		if (Lw + 4.f <= Max.X - Min.X || Lw + 4.f <= Max.Y - Min.Y)
-			Write(At - FVector2D(.5f * Lw, 6.f), Short[Di], 8, FLinearColor(FColor(159, 225, 203)));
+			Write(At - FVector2D(.5f * Lw, 6.f), Short[Di], 8, Text2());
 	}
 	TSet<int32> Interfering;
 	for (const Patch::FInterference& Hit : Snapshot.Interferences) { Interfering.Add(Hit.CableA); Interfering.Add(Hit.CableB); }
 	for (int32 I = 0; I < Snapshot.Cables.Num(); ++I)
 	{
 		const Patch::FCable& C = Snapshot.Cables[I];
-		Poly(C.PointsM, Interfering.Contains(I) ? FLinearColor(1, .15f, .1f) : C.bSpineToSpine ? WithAlpha(FLinearColor::White, .85f) : FLinearColor(0, .7f, 1, .85f), 1.f, 3);
+		Poly(C.PointsM, Interfering.Contains(I) ? FLinearColor(1, .15f, .1f) : C.bSpineToSpine ? SpineLine() : FLinearColor(0, .7f, 1, .85f), 1.f, 3);
 	}
 
 	// Selection card.
@@ -172,12 +192,12 @@ int32 UPatchPlanWidget::PaintV2(const FGeometry& Geometry, FSlateWindowElementLi
 	if (Snapshot.Cables.IsValidIndex(Selected))
 	{
 		const Patch::FCable& C = Snapshot.Cables[Selected];
-		Poly(C.PointsM, FLinearColor::Yellow, 3.f, 3);
-		if (C.PointsM.Num()) { const FVector2D E = Project(C.PointsM[0], Size); Box(3, E - FVector2D(4, 4), FVector2D(8, 8), Solid(), FLinearColor::Yellow); }
+		Poly(C.PointsM, SelectLine(), 3.f, 3);
+		if (C.PointsM.Num()) { const FVector2D E = Project(C.PointsM[0], Size); Box(3, E - FVector2D(4, 4), FVector2D(8, 8), Solid(), SelectLine()); }
 		double LengthM = 0.0;
 		for (int32 I = 1; I < C.PointsM.Num(); ++I) LengthM += FVector::Distance(C.PointsM[I - 1], C.PointsM[I]);
 		auto Name = [&](int32 I) { return Short.IsValidIndex(I) ? Short[I] : FString(TEXT("?")); };
-		Box(2, FVector2D(24.f, By), FVector2D(3.f, 60.f), Solid(), FLinearColor::Yellow);
+		Box(2, FVector2D(24.f, By), FVector2D(3.f, 60.f), Solid(), SelectLine());
 		Write(FVector2D(40.f, By + 9.f), FString::Printf(TEXT("케이블 %d / %d"), Selected + 1, Snapshot.Cables.Num()), 9, Text3());
 		Write(FVector2D(40.f, By + 25.f), FString::Printf(TEXT("%s  포트 %d   →   %s  포트 %d"), *Name(C.FromDevice), C.FromPort + 1, *Name(C.ToDevice), C.ToPort + 1), 12, VrgUi::Theme::Text(), true);
 		const FString Len = FString::Printf(TEXT("%.2f m"), LengthM);

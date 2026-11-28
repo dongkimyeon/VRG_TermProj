@@ -64,6 +64,8 @@ public:
 	ADataCenterDebugController();
 	// 2026-11-24 UI demo: current leak tool step for the new HUD (0 off).
 	int32 GetLeakToolMode() const { return LeakToolMode; }
+	// 2026-11-28 theme demo captures (no mouse): select the first Count racks in layout mode (vrg.Ui.DemoSelect).
+	int32 DemoSelectRacks(int32 Count);
 
 	virtual void Tick(float DeltaTime) override;
 	virtual void UpdateRotation(float DeltaTime) override;
@@ -412,6 +414,7 @@ private:
 	// (ear height, the finest spacing within the 256-point limit) and removes that map again when turned off.
 	void OnToggleNoiseView();
 	bool bAutoNoiseMap = false;
+	int32 LastUiTheme = -1;   // the palette is rebuilt when vrg.Ui.Theme changes
 	UPROPERTY(Transient) TObjectPtr<URoomSettingsWidget> RoomSettingsWidget;
 	bool bRoomSettingsOpen = false;
 	bool bRoomCeilingOpen = false;

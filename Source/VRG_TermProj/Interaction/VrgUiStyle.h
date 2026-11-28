@@ -19,24 +19,55 @@ namespace VrgUi
 	VRG_TERMPROJ_API bool IsNewPanels();
 	VRG_TERMPROJ_API void SetNewPanels(bool bNew);
 
-	// 표시 색(UI 전용, 물리 값 아님). sRGB로 적고 FLinearColor(FColor)로 바꾼다.
+	// 2026-11-28 UI 테마(사용자: "다른 버전 데모 3개, 골라서 확정"): 색과 스타일 값 묶음. vrg.Ui.Theme 0 = 지금 모양
+	// (값 그대로), 1 = 관제실 앰버, 2 = 라이트, 3 = 네온 미니멀. 표시 전용(물리 값 아님). 색은 sRGB.
+	struct FTheme
+	{
+		const TCHAR* Name;
+		FColor Panel, PanelHi, Line, LineSoft, Text, Text2, Text3;
+		FColor Accent, AccentDim, OnAccent;            // OnAccent = 강조색 바탕 위 글자
+		FColor Teal, Amber, Red, Cyan, Purple, Gray;   // 상태·분류 색
+		FColor Scrim, KeyFill, KeyEdge;                // 오버레이 어둡게, 키캡
+		FColor PlanBg, PlanArea, SpineLine, SelectLine; // 배선 평면도
+		float RadiusScale;      // UMG 둥근 모서리 배율(0 = 각진 모서리)
+		bool bFloatingBar;      // 상단 바를 화면 가장자리에서 띄운 패널로
+		bool bCardStripTop;     // 지표 카드 상태 띠를 위쪽에(아니면 왼쪽)
+		bool bLight;            // 밝은 바탕: 3D 말풍선 글자를 값 색 대신 본문 색으로
+	};
+	inline constexpr int32 NumThemes = 4;
+	VRG_TERMPROJ_API int32 ThemeIndex();
+	VRG_TERMPROJ_API void SetThemeIndex(int32 Index);
+	VRG_TERMPROJ_API const FTheme& GetTheme(int32 Index);
+	inline const FTheme& ActiveTheme() { return GetTheme(ThemeIndex()); }
+	// 상단 바가 차지하는 아래쪽 끝(뷰포트 픽셀, 배율 S): 그 아래부터 패널을 놓는다.
+	inline float BarBottom(float S) { return ActiveTheme().bFloatingBar ? (10.f + 46.f) * S : 46.f * S; }
+
 	namespace Theme
 	{
-		inline FLinearColor Panel()      { return FLinearColor(FColor(13, 16, 21, 228)); }
-		inline FLinearColor PanelHi()    { return FLinearColor(FColor(22, 27, 35, 236)); }
-		inline FLinearColor Line()       { return FLinearColor(FColor(255, 255, 255, 30)); }
-		inline FLinearColor LineSoft()   { return FLinearColor(FColor(255, 255, 255, 16)); }
-		inline FLinearColor Text()       { return FLinearColor(FColor(229, 233, 238)); }
-		inline FLinearColor Text2()      { return FLinearColor(FColor(150, 160, 173)); }
-		inline FLinearColor Text3()      { return FLinearColor(FColor(98, 108, 121)); }
-		inline FLinearColor Accent()     { return FLinearColor(FColor(55, 138, 221)); }
-		inline FLinearColor AccentDim()  { return FLinearColor(FColor(24, 95, 165)); }
-		inline FLinearColor Teal()       { return FLinearColor(FColor(29, 158, 117)); }
-		inline FLinearColor Amber()      { return FLinearColor(FColor(239, 159, 39)); }
-		inline FLinearColor Red()        { return FLinearColor(FColor(226, 75, 74)); }
-		inline FLinearColor Cyan()       { return FLinearColor(FColor(93, 190, 229)); }
-		inline FLinearColor Purple()     { return FLinearColor(FColor(127, 119, 221)); }
-		inline FLinearColor Gray()       { return FLinearColor(FColor(136, 135, 128)); }
+		inline FLinearColor Panel()      { return FLinearColor(ActiveTheme().Panel); }
+		inline FLinearColor PanelHi()    { return FLinearColor(ActiveTheme().PanelHi); }
+		inline FLinearColor Line()       { return FLinearColor(ActiveTheme().Line); }
+		inline FLinearColor LineSoft()   { return FLinearColor(ActiveTheme().LineSoft); }
+		inline FLinearColor Text()       { return FLinearColor(ActiveTheme().Text); }
+		inline FLinearColor Text2()      { return FLinearColor(ActiveTheme().Text2); }
+		inline FLinearColor Text3()      { return FLinearColor(ActiveTheme().Text3); }
+		inline FLinearColor Accent()     { return FLinearColor(ActiveTheme().Accent); }
+		inline FLinearColor AccentDim()  { return FLinearColor(ActiveTheme().AccentDim); }
+		inline FLinearColor OnAccent()   { return FLinearColor(ActiveTheme().OnAccent); }
+		inline FLinearColor Teal()       { return FLinearColor(ActiveTheme().Teal); }
+		inline FLinearColor Amber()      { return FLinearColor(ActiveTheme().Amber); }
+		inline FLinearColor Red()        { return FLinearColor(ActiveTheme().Red); }
+		inline FLinearColor Cyan()       { return FLinearColor(ActiveTheme().Cyan); }
+		inline FLinearColor Purple()     { return FLinearColor(ActiveTheme().Purple); }
+		inline FLinearColor Gray()       { return FLinearColor(ActiveTheme().Gray); }
+		inline FLinearColor Scrim()      { return FLinearColor(ActiveTheme().Scrim); }
+		inline FLinearColor KeyFill()    { return FLinearColor(ActiveTheme().KeyFill); }
+		inline FLinearColor KeyEdge()    { return FLinearColor(ActiveTheme().KeyEdge); }
+		inline FLinearColor PlanBg()     { return FLinearColor(ActiveTheme().PlanBg); }
+		inline FLinearColor PlanArea()   { return FLinearColor(ActiveTheme().PlanArea); }
+		inline FLinearColor SpineLine()  { return FLinearColor(ActiveTheme().SpineLine); }
+		inline FLinearColor SelectLine() { return FLinearColor(ActiveTheme().SelectLine); }
+		inline float Radius(float Base)  { return Base * ActiveTheme().RadiusScale; }
 		inline FLinearColor WithAlpha(FLinearColor C, float A) { C.A = A; return C; }
 	}
 

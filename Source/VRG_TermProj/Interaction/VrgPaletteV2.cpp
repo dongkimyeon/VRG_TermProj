@@ -22,13 +22,14 @@ namespace
 {
 	using namespace VrgUi::Theme;
 
-	FButtonStyle MakeButtonStyle(const FLinearColor& Normal, const FLinearColor& Hover, const FLinearColor& Pressed, float Radius = 6.f)
+	FButtonStyle MakeButtonStyle(const FLinearColor& Normal, const FLinearColor& Hover, const FLinearColor& Pressed, float BaseRadius = 6.f)
 	{
 		FButtonStyle S;
-		S.SetNormal(FSlateRoundedBoxBrush(Normal, Radius));
-		S.SetHovered(FSlateRoundedBoxBrush(Hover, Radius));
-		S.SetPressed(FSlateRoundedBoxBrush(Pressed, Radius));
-		S.SetDisabled(FSlateRoundedBoxBrush(Normal, Radius));
+		const float R = VrgUi::Theme::Radius(BaseRadius);
+		S.SetNormal(FSlateRoundedBoxBrush(Normal, R));
+		S.SetHovered(FSlateRoundedBoxBrush(Hover, R));
+		S.SetPressed(FSlateRoundedBoxBrush(Pressed, R));
+		S.SetDisabled(FSlateRoundedBoxBrush(Normal, R));
 		S.SetNormalPadding(FMargin(0.f));
 		S.SetPressedPadding(FMargin(0.f));
 		return S;
@@ -65,7 +66,7 @@ ULayoutRackButton* UVrgPaletteV2::AddItem(UVerticalBox* Page, const FLinearColor
 	auto* SwatchBox = WidgetTree->ConstructWidget<USizeBox>();
 	SwatchBox->SetWidthOverride(3.f); SwatchBox->SetHeightOverride(30.f);
 	auto* SwatchFill = WidgetTree->ConstructWidget<UBorder>();
-	SwatchFill->SetBrush(FSlateRoundedBoxBrush(Swatch, 1.5f));
+	SwatchFill->SetBrush(FSlateRoundedBoxBrush(Swatch, VrgUi::Theme::Radius(1.5f)));
 	SwatchBox->AddChild(SwatchFill);
 	if (auto* S = Row->AddChildToHorizontalBox(SwatchBox)) { S->SetVerticalAlignment(VAlign_Center); S->SetPadding(FMargin(0, 0, 10, 0)); }
 	auto* Texts = WidgetTree->ConstructWidget<UVerticalBox>();
@@ -91,14 +92,14 @@ void UVrgPaletteV2::NativeOnInitialized()
 	auto* Width = WidgetTree->ConstructWidget<USizeBox>();
 	Width->SetWidthOverride(272.f);
 	auto* PanelBorder = WidgetTree->ConstructWidget<UBorder>();
-	PanelBorder->SetBrush(FSlateRoundedBoxBrush(Panel(), 10.f, Line(), 1.f));
+	PanelBorder->SetBrush(FSlateRoundedBoxBrush(Panel(), VrgUi::Theme::Radius(10.f), Line(), 1.f));
 	PanelBorder->SetPadding(FMargin(12, 12, 12, 10));
 	PanelBorder->OnMouseButtonDownEvent.BindUFunction(this, GET_FUNCTION_NAME_CHECKED(UVrgPaletteV2, OnPanelMouseDown));
 	Width->AddChild(PanelBorder);
 	if (auto* S = Root->AddChildToCanvas(Width))
 	{
 		S->SetAnchors(FAnchors(0, 0)); S->SetAlignment(FVector2D(0, 0));
-		S->SetPosition(FVector2D(16, 60)); S->SetAutoSize(true);
+		S->SetPosition(FVector2D(16, VrgUi::BarBottom(1.f) + 14.f)); S->SetAutoSize(true);
 	}
 	auto* Col = WidgetTree->ConstructWidget<UVerticalBox>();
 	PanelBorder->AddChild(Col);
@@ -114,7 +115,7 @@ void UVrgPaletteV2::NativeOnInitialized()
 	{
 		auto* B = WidgetTree->ConstructWidget<ULayoutRackButton>();
 		B->SetStyle(TabStyle(I == 0));
-		UTextBlock* L = MakeText(WidgetTree, TabNames[I], 10, I == 0 ? FLinearColor::White : Text2());
+		UTextBlock* L = MakeText(WidgetTree, TabNames[I], 10, I == 0 ? OnAccent() : Text2());
 		B->AddChild(L);
 		if (auto* S = Cast<UButtonSlot>(B->GetContentSlot())) { S->SetPadding(FMargin(4, 5, 4, 5)); S->SetHorizontalAlignment(HAlign_Center); }
 		if (auto* S = Tabs->AddChildToHorizontalBox(B)) { S->SetSize(FSlateChildSize(ESlateSizeRule::Fill)); S->SetPadding(FMargin(I == 0 ? 0 : 2, 0, I == 3 ? 0 : 2, 0)); }
@@ -177,7 +178,7 @@ void UVrgPaletteV2::SetTab(int32 Tab)
 	{
 		Pages[I]->SetVisibility(I == ActiveTab ? ESlateVisibility::SelfHitTestInvisible : ESlateVisibility::Collapsed);
 		TabButtons[I]->SetStyle(TabStyle(I == ActiveTab));
-		TabLabels[I]->SetColorAndOpacity(FSlateColor(I == ActiveTab ? FLinearColor::White : Text2()));
+		TabLabels[I]->SetColorAndOpacity(FSlateColor(I == ActiveTab ? OnAccent() : Text2()));
 	}
 }
 
