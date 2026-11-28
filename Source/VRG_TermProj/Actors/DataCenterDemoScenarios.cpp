@@ -94,7 +94,10 @@ FString ADataCenterSimulationActor::StartDemoScenario(const FString& InName, boo
 	{
 		Exec(TEXT("vrg.Water.Impact 1"));
 		if (Room != nullptr) Room->SetCoolantMakeup(true);
-		Add(T0, TEXT("leakat"), INDEX_NONE, 3.0e-3, { TEXT("room:2:supply") });
+		// 2026-11-18 (user report: no trip in the package): rack numbers follow actor iteration order, which differs
+		// between the editor and a cooked build, so "room:2:supply" was another rack whose spray only reached the floor.
+		// The site is chosen by position instead: the supply branch whose spray wets that rack's power shelf (L_Test).
+		Add(T0, TEXT("leakat"), INDEX_NONE, 3.0e-3, { TEXT("3.72"), TEXT("3.42"), TEXT("0.38") });
 	}
 	else if (Name == TEXT("valve"))
 	{
